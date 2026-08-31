@@ -1,0 +1,1115 @@
+{
+  "sheetName": "资产负债表(定义)",
+  "totalCells": 233,
+  "totalFormulas": 24,
+  "data": {
+    "1": [
+      {
+        "address": "A1",
+        "value": "资产负债表"
+      }
+    ],
+    "2": [
+      {
+        "address": "F2",
+        "value": " 会政财01表"
+      }
+    ],
+    "3": [
+      {
+        "address": "A3",
+        "value": "编制单位:%U         "
+      },
+      {
+        "address": "C3",
+        "value": "   %yh%mh%dh"
+      },
+      {
+        "address": "F3",
+        "value": "单位：元"
+      }
+    ],
+    "4": [
+      {
+        "address": "A4",
+        "value": "资 产 "
+      },
+      {
+        "address": "B4",
+        "value": "期末余额 "
+      },
+      {
+        "address": "C4",
+        "value": "年初余额 "
+      },
+      {
+        "address": "D4",
+        "value": "负债和净资产 "
+      },
+      {
+        "address": "E4",
+        "value": "期末余额 "
+      },
+      {
+        "address": "F4",
+        "value": "年初余额 "
+      }
+    ],
+    "5": [
+      {
+        "address": "A5",
+        "value": "流动资产： "
+      },
+      {
+        "address": "B5",
+        "value": "　"
+      },
+      {
+        "address": "D5",
+        "value": "流动负债： "
+      },
+      {
+        "address": "E5",
+        "value": "　"
+      },
+      {
+        "address": "F5",
+        "value": "　"
+      }
+    ],
+    "6": [
+      {
+        "address": "A6",
+        "value": " 货币资金 "
+      },
+      {
+        "address": "B6",
+        "value": "@ye(1001,99)+ye(1002,99)+ye(1011,99)+ye(1012,99)"
+      },
+      {
+        "address": "C6",
+        "value": "@nc(1001)+nc(1002)+nc(1011)+nc(1012)"
+      },
+      {
+        "address": "D6",
+        "value": " 短期借款 "
+      },
+      {
+        "address": "E6",
+        "value": "@ye(2001,99)"
+      },
+      {
+        "address": "F6",
+        "value": "@nc(2001)"
+      }
+    ],
+    "7": [
+      {
+        "address": "A7",
+        "value": " 短期投资 "
+      },
+      {
+        "address": "B7",
+        "value": "@ye(1101,99)"
+      },
+      {
+        "address": "C7",
+        "value": "@nc(1101)"
+      },
+      {
+        "address": "D7",
+        "value": " 应缴增值税"
+      },
+      {
+        "address": "E7",
+        "value": "@ye(2101,99)"
+      },
+      {
+        "address": "F7",
+        "value": "@nc(2101)"
+      }
+    ],
+    "8": [
+      {
+        "address": "A8",
+        "value": " 财政应返还额度 "
+      },
+      {
+        "address": "B8",
+        "value": "@ye(1201,99)"
+      },
+      {
+        "address": "C8",
+        "value": "@nc(1201)"
+      },
+      {
+        "address": "D8",
+        "value": " 其他应交税费 "
+      },
+      {
+        "address": "E8",
+        "value": "@ye(2102,99)"
+      },
+      {
+        "address": "F8",
+        "value": "@nc(2102)"
+      }
+    ],
+    "9": [
+      {
+        "address": "A9",
+        "value": " 应收票据 "
+      },
+      {
+        "address": "B9",
+        "value": "@ye(1211,99)"
+      },
+      {
+        "address": "C9",
+        "value": "@nc(1211)"
+      },
+      {
+        "address": "D9",
+        "value": " 应缴财政款"
+      },
+      {
+        "address": "E9",
+        "value": "@ye(2103,99)"
+      },
+      {
+        "address": "F9",
+        "value": "@nc(2103)"
+      }
+    ],
+    "10": [
+      {
+        "address": "A10",
+        "value": " 应收账款净额"
+      },
+      {
+        "address": "B10",
+        "value": "@mjy(1212,99)+mjy(2305,99)"
+      },
+      {
+        "address": "C10",
+        "value": "@mnj(1212)+mnj(2305)"
+      },
+      {
+        "address": "D10",
+        "value": " 应付职工薪酬 "
+      },
+      {
+        "address": "E10",
+        "value": "@ye(2201,99)"
+      },
+      {
+        "address": "F10",
+        "value": "@nc(2201)"
+      }
+    ],
+    "11": [
+      {
+        "address": "A11",
+        "value": " 预付账款 "
+      },
+      {
+        "address": "B11",
+        "value": "@mjy(1214,99)+mjy(2302,99)"
+      },
+      {
+        "address": "C11",
+        "value": "@mnj(1214)+mnj(2302)"
+      },
+      {
+        "address": "D11",
+        "value": " 应付票据 "
+      },
+      {
+        "address": "E11",
+        "value": "@ye(2301,99)"
+      },
+      {
+        "address": "F11",
+        "value": "@nc(2301)"
+      }
+    ],
+    "12": [
+      {
+        "address": "A12",
+        "value": " 应收股利"
+      },
+      {
+        "address": "B12",
+        "value": "@ye(1215,99)"
+      },
+      {
+        "address": "C12",
+        "value": "@nc(1215)"
+      },
+      {
+        "address": "D12",
+        "value": " 应付账款 "
+      },
+      {
+        "address": "E12",
+        "value": "@mdy(1214,99)+mdy(2302,99)"
+      },
+      {
+        "address": "F12",
+        "value": "@mnd(1214)+mnd(2302)"
+      }
+    ],
+    "13": [
+      {
+        "address": "A13",
+        "value": " 应收利息"
+      },
+      {
+        "address": "B13",
+        "value": "@ye(1216,99)"
+      },
+      {
+        "address": "C13",
+        "value": "@nc(1216)"
+      },
+      {
+        "address": "D13",
+        "value": " 应付政府补贴款"
+      },
+      {
+        "address": "E13",
+        "value": "@ye(2303,99)"
+      },
+      {
+        "address": "F13",
+        "value": "@nc(2303)"
+      }
+    ],
+    "14": [
+      {
+        "address": "A14",
+        "value": " 其他应收款净额 "
+      },
+      {
+        "address": "B14",
+        "value": "@ye(1218,99)"
+      },
+      {
+        "address": "C14",
+        "value": "@nc(1218)"
+      },
+      {
+        "address": "D14",
+        "value": " 应付利息"
+      },
+      {
+        "address": "E14",
+        "value": "@ye(2304,99)"
+      },
+      {
+        "address": "F14",
+        "value": "@nc(2304)"
+      }
+    ],
+    "15": [
+      {
+        "address": "A15",
+        "value": " 存 货 "
+      },
+      {
+        "address": "B15",
+        "value": "@ye(1301,99)+ye(1302,99)+ye(1303,99)"
+      },
+      {
+        "address": "C15",
+        "value": "@nc(1301)+nc(1302)+nc(1303)"
+      },
+      {
+        "address": "D15",
+        "value": " 预收账款 "
+      },
+      {
+        "address": "E15",
+        "value": "@mdy(1212,99)+mdy(2305,99)"
+      },
+      {
+        "address": "F15",
+        "value": "@mnd(1212)+mnd(2305)"
+      }
+    ],
+    "16": [
+      {
+        "address": "A16",
+        "value": " 待摊费用 "
+      },
+      {
+        "address": "B16",
+        "value": "@ye(1401,99)"
+      },
+      {
+        "address": "C16",
+        "value": "@nc(1401)"
+      },
+      {
+        "address": "D16",
+        "value": " 其他应付款 "
+      },
+      {
+        "address": "E16",
+        "value": "@ye(2307,99)"
+      },
+      {
+        "address": "F16",
+        "value": "@nc(2307)"
+      }
+    ],
+    "17": [
+      {
+        "address": "A17",
+        "value": " 一年内到期的非流动资产"
+      },
+      {
+        "address": "B17",
+        "value": 0
+      },
+      {
+        "address": "C17",
+        "value": 0
+      },
+      {
+        "address": "D17",
+        "value": " 预提费用"
+      },
+      {
+        "address": "E17",
+        "value": "@ye(2401,99)"
+      },
+      {
+        "address": "F17",
+        "value": "@nc(2401)"
+      }
+    ],
+    "18": [
+      {
+        "address": "A18",
+        "value": " 其他流动资产 "
+      },
+      {
+        "address": "B18",
+        "value": 0
+      },
+      {
+        "address": "C18",
+        "value": 0
+      },
+      {
+        "address": "D18",
+        "value": " 一年内到期的非流动负债"
+      },
+      {
+        "address": "E18",
+        "value": 0
+      },
+      {
+        "address": "F18",
+        "value": 0
+      }
+    ],
+    "19": [
+      {
+        "address": "A19",
+        "value": "流动资产合计 "
+      },
+      {
+        "address": "B19",
+        "value": 15
+      },
+      {
+        "address": "C19",
+        "value": 15
+      },
+      {
+        "address": "D19",
+        "value": " 其他流动负债 "
+      },
+      {
+        "address": "E19",
+        "value": 0
+      },
+      {
+        "address": "F19",
+        "value": 0
+      }
+    ],
+    "20": [
+      {
+        "address": "A20",
+        "value": "非流动资产： "
+      },
+      {
+        "address": "B20",
+        "value": "　"
+      },
+      {
+        "address": "C20",
+        "value": "　"
+      },
+      {
+        "address": "D20",
+        "value": "流动负债合计 "
+      },
+      {
+        "address": "E20",
+        "value": 15
+      },
+      {
+        "address": "F20",
+        "value": 15
+      }
+    ],
+    "21": [
+      {
+        "address": "A21",
+        "value": " 长期股权投资 "
+      },
+      {
+        "address": "B21",
+        "value": "@ye(1501,99)"
+      },
+      {
+        "address": "C21",
+        "value": "@nc(1501)"
+      },
+      {
+        "address": "D21",
+        "value": "非流动负债： "
+      },
+      {
+        "address": "E21",
+        "value": "　"
+      },
+      {
+        "address": "F21",
+        "value": "　"
+      }
+    ],
+    "22": [
+      {
+        "address": "A22",
+        "value": " 长期债券投资 "
+      },
+      {
+        "address": "B22",
+        "value": "@ye(1502,99)"
+      },
+      {
+        "address": "C22",
+        "value": "@nc(1502)"
+      },
+      {
+        "address": "D22",
+        "value": " 长期借款 "
+      },
+      {
+        "address": "E22",
+        "value": "@ye(2501,99)"
+      },
+      {
+        "address": "F22",
+        "value": "@nc(2501)"
+      }
+    ],
+    "23": [
+      {
+        "address": "A23",
+        "value": " 固定资产原值 "
+      },
+      {
+        "address": "B23",
+        "value": "@ye(1601,99)"
+      },
+      {
+        "address": "C23",
+        "value": "@nc(1601)"
+      },
+      {
+        "address": "D23",
+        "value": " 长期应付款 "
+      },
+      {
+        "address": "E23",
+        "value": "@ye(2502,99)"
+      },
+      {
+        "address": "F23",
+        "value": "@nc(2502)"
+      }
+    ],
+    "24": [
+      {
+        "address": "A24",
+        "value": "  减：固定资产累计折旧 "
+      },
+      {
+        "address": "B24",
+        "value": "@ye(1602,99)"
+      },
+      {
+        "address": "C24",
+        "value": "@nc(1602)"
+      },
+      {
+        "address": "D24",
+        "value": " 预计负债 "
+      },
+      {
+        "address": "E24",
+        "value": "@ye(2601,99)"
+      },
+      {
+        "address": "F24",
+        "value": "@nc(2601)"
+      }
+    ],
+    "25": [
+      {
+        "address": "A25",
+        "value": " 固定资产净值 "
+      },
+      {
+        "address": "B25",
+        "value": 15
+      },
+      {
+        "address": "C25",
+        "value": 15
+      },
+      {
+        "address": "D25",
+        "value": " 其他非流动负债 "
+      },
+      {
+        "address": "E25",
+        "value": 0
+      },
+      {
+        "address": "F25",
+        "value": 0
+      }
+    ],
+    "26": [
+      {
+        "address": "A26",
+        "value": " 工程物资"
+      },
+      {
+        "address": "B26",
+        "value": "@ye(1611,99)"
+      },
+      {
+        "address": "C26",
+        "value": "@nc(1611)"
+      },
+      {
+        "address": "D26",
+        "value": "非流动负债合计 "
+      },
+      {
+        "address": "E26",
+        "value": 15
+      },
+      {
+        "address": "F26",
+        "value": 15
+      }
+    ],
+    "27": [
+      {
+        "address": "A27",
+        "value": " 在建工程 "
+      },
+      {
+        "address": "B27",
+        "value": "@ye(1613,99)"
+      },
+      {
+        "address": "C27",
+        "value": "@nc(1613)"
+      },
+      {
+        "address": "D27",
+        "value": " 受托代理负债 "
+      },
+      {
+        "address": "E27",
+        "value": "@ye(2901,99)"
+      },
+      {
+        "address": "F27",
+        "value": "@nc(2901)"
+      }
+    ],
+    "28": [
+      {
+        "address": "A28",
+        "value": " 无形资产原值 "
+      },
+      {
+        "address": "B28",
+        "value": "@ye(1701,99)"
+      },
+      {
+        "address": "C28",
+        "value": "@nc(1701)"
+      },
+      {
+        "address": "D28",
+        "value": "负债合计 "
+      },
+      {
+        "address": "E28",
+        "value": 15
+      },
+      {
+        "address": "F28",
+        "value": 15
+      }
+    ],
+    "29": [
+      {
+        "address": "A29",
+        "value": "  减：无形资产累计摊销 "
+      },
+      {
+        "address": "B29",
+        "value": "@ye(1702,99)"
+      },
+      {
+        "address": "C29",
+        "value": "@nc(1702)"
+      }
+    ],
+    "30": [
+      {
+        "address": "A30",
+        "value": " 无形资产净值 "
+      },
+      {
+        "address": "B30",
+        "value": 15
+      },
+      {
+        "address": "C30",
+        "value": 15
+      }
+    ],
+    "31": [
+      {
+        "address": "A31",
+        "value": " 研发支出"
+      },
+      {
+        "address": "B31",
+        "value": "@ye(1703,99)"
+      },
+      {
+        "address": "C31",
+        "value": "@nc(1703)"
+      }
+    ],
+    "32": [
+      {
+        "address": "A32",
+        "value": " 公共基础设施原值 "
+      },
+      {
+        "address": "B32",
+        "value": "@ye(1801,99)"
+      },
+      {
+        "address": "C32",
+        "value": "@nc(1801)"
+      }
+    ],
+    "33": [
+      {
+        "address": "A33",
+        "value": "  减：公共基础设施累计折旧（摊销）"
+      },
+      {
+        "address": "B33",
+        "value": "@ye(1802,99)"
+      },
+      {
+        "address": "C33",
+        "value": "@nc(1802)"
+      }
+    ],
+    "34": [
+      {
+        "address": "A34",
+        "value": " 公共基础设施净值 "
+      },
+      {
+        "address": "B34",
+        "value": 15
+      },
+      {
+        "address": "C34",
+        "value": 15
+      }
+    ],
+    "35": [
+      {
+        "address": "A35",
+        "value": " 政府储备物资"
+      },
+      {
+        "address": "B35",
+        "value": "@ye(1811,99)"
+      },
+      {
+        "address": "C35",
+        "value": "@nc(1811)"
+      }
+    ],
+    "36": [
+      {
+        "address": "A36",
+        "value": " 文物文化资产"
+      },
+      {
+        "address": "B36",
+        "value": "@ye(1821,99)"
+      },
+      {
+        "address": "C36",
+        "value": "@nc(1821)"
+      }
+    ],
+    "37": [
+      {
+        "address": "A37",
+        "value": " 保障性住房原值 "
+      },
+      {
+        "address": "B37",
+        "value": "@ye(1831,99)"
+      },
+      {
+        "address": "C37",
+        "value": "@nc(1831)"
+      }
+    ],
+    "38": [
+      {
+        "address": "A38",
+        "value": "  减：保障性住房累计折旧"
+      },
+      {
+        "address": "B38",
+        "value": "@ye(1832,99)"
+      },
+      {
+        "address": "C38",
+        "value": "@nc(1832)"
+      },
+      {
+        "address": "D38",
+        "value": "净资产： "
+      },
+      {
+        "address": "E38",
+        "value": "　"
+      },
+      {
+        "address": "F38",
+        "value": "　"
+      }
+    ],
+    "39": [
+      {
+        "address": "A39",
+        "value": " 保障性住房净值 "
+      },
+      {
+        "address": "B39",
+        "value": 15
+      },
+      {
+        "address": "C39",
+        "value": 15
+      },
+      {
+        "address": "D39",
+        "value": " 累计盈余 "
+      },
+      {
+        "address": "E39",
+        "value": "@ye(3001,99)"
+      },
+      {
+        "address": "F39",
+        "value": "@nc(3001)"
+      }
+    ],
+    "40": [
+      {
+        "address": "A40",
+        "value": " 长期待摊费用"
+      },
+      {
+        "address": "B40",
+        "value": "@ye(1901,99)"
+      },
+      {
+        "address": "C40",
+        "value": "@nc(1901)"
+      },
+      {
+        "address": "D40",
+        "value": " 专用基金 "
+      },
+      {
+        "address": "E40",
+        "value": "@ye(3101,99)"
+      },
+      {
+        "address": "F40",
+        "value": "@nc(3101)"
+      }
+    ],
+    "41": [
+      {
+        "address": "A41",
+        "value": " 待处理资产损溢 "
+      },
+      {
+        "address": "B41",
+        "value": "@ye(1902,99)"
+      },
+      {
+        "address": "C41",
+        "value": "@nc(1902)"
+      },
+      {
+        "address": "D41",
+        "value": " 权益法调整"
+      },
+      {
+        "address": "E41",
+        "value": "@ye(3201,99)"
+      },
+      {
+        "address": "F41",
+        "value": "@nc(3201)"
+      }
+    ],
+    "42": [
+      {
+        "address": "A42",
+        "value": " 其他非流动资产 "
+      },
+      {
+        "address": "B42",
+        "value": 0
+      },
+      {
+        "address": "C42",
+        "value": 0
+      },
+      {
+        "address": "D42",
+        "value": " 无偿调拨净资产*"
+      },
+      {
+        "address": "E42",
+        "value": "@ye(3401,99)"
+      },
+      {
+        "address": "F42",
+        "value": "@nc(3401)"
+      }
+    ],
+    "43": [
+      {
+        "address": "A43",
+        "value": "非流动资产合计 "
+      },
+      {
+        "address": "B43",
+        "value": 15
+      },
+      {
+        "address": "C43",
+        "value": 15
+      },
+      {
+        "address": "D43",
+        "value": " 本期盈余* "
+      },
+      {
+        "address": "E43",
+        "value": "@ye(3301,99)"
+      },
+      {
+        "address": "F43",
+        "value": "@nc(3301)"
+      }
+    ],
+    "44": [
+      {
+        "address": "A44",
+        "value": "受托代理资产"
+      },
+      {
+        "address": "B44",
+        "value": "@ye(1891,99)"
+      },
+      {
+        "address": "C44",
+        "value": "@nc(1891)"
+      },
+      {
+        "address": "D44",
+        "value": "  净资产合计 "
+      },
+      {
+        "address": "E44",
+        "value": 15
+      },
+      {
+        "address": "F44",
+        "value": 15
+      }
+    ],
+    "45": [
+      {
+        "address": "A45",
+        "value": "资产总计 "
+      },
+      {
+        "address": "B45",
+        "value": 15
+      },
+      {
+        "address": "C45",
+        "value": 15
+      },
+      {
+        "address": "D45",
+        "value": "负债和净资产总计 "
+      },
+      {
+        "address": "E45",
+        "value": 15
+      },
+      {
+        "address": "F45",
+        "value": 15
+      }
+    ],
+    "46": [
+      {
+        "address": "A46",
+        "value": "注：“*”标识项目为月报项目，年报中不需列示。"
+      }
+    ],
+    "47": [
+      {
+        "address": "A47",
+        "value": "单位负责人："
+      },
+      {
+        "address": "C47",
+        "value": "财务负责人："
+      },
+      {
+        "address": "E47",
+        "value": "制表："
+      }
+    ]
+  },
+  "formulas": [
+    {
+      "address": "B19",
+      "formula": "B6+B7+B8+B9+B10+B11+B12+B13+B14+B15+B16+B17+B18"
+    },
+    {
+      "address": "C19",
+      "formula": "C6+C7+C8+C9+C10+C11+C12+C13+C14+C15+C16+C17+C18"
+    },
+    {
+      "address": "E20",
+      "formula": "E6+E7+E8+E9+E10+E11+E12+E13+E14+E15+E16+E17+E18+E19"
+    },
+    {
+      "address": "F20",
+      "formula": "F6+F7+F8+F9+F10+F11+F12+F13+F14+F15+F16+F17+F18+F19"
+    },
+    {
+      "address": "B25",
+      "formula": "B23-B24"
+    },
+    {
+      "address": "C25",
+      "formula": "C23-C24"
+    },
+    {
+      "address": "E26",
+      "formula": "E22+E23+E24+E25"
+    },
+    {
+      "address": "F26",
+      "formula": "F22+F23+F24+F25"
+    },
+    {
+      "address": "E28",
+      "formula": "E20+E26+E27"
+    },
+    {
+      "address": "F28",
+      "formula": "F20+F26+F27"
+    },
+    {
+      "address": "B30",
+      "formula": "B28-B29"
+    },
+    {
+      "address": "C30",
+      "formula": "C28-C29"
+    },
+    {
+      "address": "B34",
+      "formula": "B32-B33"
+    },
+    {
+      "address": "C34",
+      "formula": "C32-C33"
+    },
+    {
+      "address": "B39",
+      "formula": "B37-B38"
+    },
+    {
+      "address": "C39",
+      "formula": "C37-C38"
+    },
+    {
+      "address": "B43",
+      "formula": "B21+B22+B25+B26+B27+B30+B31+B34+B35+B36+B39+B40+B41+B42"
+    },
+    {
+      "address": "C43",
+      "formula": "C21+C22+C25+C26+C27+C30+C31+C34+C35+C36+C39+C40+C41+C42"
+    },
+    {
+      "address": "E44",
+      "formula": "E39+E40+E41+E42+E43"
+    },
+    {
+      "address": "F44",
+      "formula": "F39+F40+F41+F42+F43"
+    }
+  ]
+}

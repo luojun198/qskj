@@ -1,0 +1,25 @@
+<!-- @dsCard group="Brand" viewport="700x200" name="Logo" subtitle="The soap-bubble mark + wordmark, on light and dark." -->
+<!DOCTYPE html>
+<html lang="zh"><head><meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body{margin:0;font-family:var(--font-sans);background:var(--surface-card);padding:0;display:flex;}
+  .panel{flex:1;display:flex;align-items:center;justify-content:center;gap:14px;padding:30px;}
+  .light{background:var(--grad-rinse);}
+  .dark{background:var(--surface-inverse);}
+  .mark{width:60px;height:60px;}
+  .wm{display:flex;flex-direction:column;line-height:1;}
+  .zh{font:var(--w-black) 27px/1 var(--font-sans);letter-spacing:1px;}
+  .en{font:var(--w-bold) 11px/1 var(--font-display);letter-spacing:2.5px;margin-top:7px;}
+  .light .zh{color:var(--ink-900);} .light .en{color:var(--mint-600);}
+  .dark .zh{color:#EAF6F4;} .dark .en{color:var(--mint-300);}
+</style></head><body>
+  <div class="panel light">
+    <img class="mark" src="../assets/logo-mark.svg" alt="">
+    <div class="wm"><div class="zh">财务洗头膏</div><div class="en">FINANCE&nbsp;SHAMPOO</div></div>
+  </div>
+  <div class="panel dark">
+    <img class="mark" src="../assets/logo-mark.svg" alt="">
+    <div class="wm"><div class="zh">财务洗头膏</div><div class="en">FINANCE&nbsp;SHAMPOO</div></div>
+  </div>
+</body></html>

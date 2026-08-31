@@ -1,0 +1,1957 @@
+import { Router } from 'express'
+import { authMiddleware, AuthRequest } from '../middleware/index.js'
+import { getDb } from '../db/index.js'
+import {
+  buildCashJournalQuery,
+  buildChronologicalQuery,
+  buildGeneralLedgerQuery,
+  buildLedgerBalanceQuery,
+  buildLedgerDetailQuery,
+  buildLedgerGeneralQuery,
+  supplementMissingParents,
+  accumulateParentBalances,
+  accumulateParentBalancesWithMonths,
+  supplementMissingParentsWithMonths,
+  getCodeLengths,
+} from '../services/ledgerQuery.js'
+import {
+  buildAuxFieldValuesSelect,
+  appendAuxItemMatchParams,
+  buildAuxIdSelect,
+  buildAuxItemLookup,
+  buildAuxItemMatchCondition,
+  buildAuxMatchOptions,
+  buildAuxNameSelect,
+  enrichAuxLedgerEntry,
+} from '../utils/auxLedgerQuery.js'
+import {
+  applyEntryToSignedBalance,
+  buildSignedEntryAmountSql,
+  calcInitBalanceFromDebitCredit,
+} from '../utils/accountBalance.js'
+import {
+  getCashFlowTrialBalance,
+  type CashFlowTrialBalanceScope,
+} from '../services/cashFlowTrialBalance.js'
+import { getCashFlowVoucherCheck } from '../services/cashFlowVoucherCheck.js'
+import { isCashFlowEnabledForAccountSet } from '../services/voucherEntry.js'
+import {
+  appendAccountScopeCondition,
+  assertAccountCodePrefixInScope,
+  assertAccountIdInScope,
+  filterLedgerRowsByScope,
+} from '../services/accountAuthorization.js'
+import { AUX_BALANCE_ITEM_BATCH, MAX_PAGE_SIZE, parsePageSizeParam } from '../utils/listLimits.js'
+
+const router = Router()
+router.use(authMiddleware)
+
+// ===================== 总账 =====================
+
+router.get('/general', (req: AuthRequest, res) => {
+  const db = getDb()
+  const {
+    start_date,
+    end_date,
+    account_code,
+    account_level,
+    account_code_start,
+    account_code_end,
+    filter_types,
+    include_unposted,
+  } = req.query
+  const maxLevel = account_level ? Number(account_level) : undefined
+
+  // 将逗号分隔的字符串转为数组
+  let filterTypesArray: string[] | undefined
+  if (filter_types && typeof filter_types === 'string') {
+    filterTypesArray = filter_types.split(',').filter(t => t.trim())
+  }
+
+  const query = buildLedgerGeneralQuery({
+    accountSetId: req.accountSetId || '',
+    startDate: start_date as string | undefined,
+    endDate: end_date as string | undefined,
+    accountCode: account_code as string | undefined,
+    accountLevel: undefined, // 不限制级次，确保子科目能正确汇总到父科目
+    accountCodeStart: account_code_start as string | undefined,
+    accountCodeEnd: account_code_end as string | undefined,
+    filterTypes: undefined,
+    includeUnposted: include_unposted === 'true',
+    accountScope: req.accountScope,
+  })
+
+  let list = db.prepare(query.sql).all(...query.params) as any[]
+
+  // 获取科目编码长度配置
+  const codeLengths = getCodeLengths(db, req.accountSetId || '')
+
+  // 补充缺失的父科目
+  list = supplementMissingParents(list, db, req.accountSetId || '', codeLengths)
+
+  // 将子科目金额汇总到父科目
+  list = accumulateParentBalances(list, codeLengths)
+  list = filterLedgerRowsByScope(req.accountScope, list)
+
+  // 汇总完成后，再应用筛选条件
+  if (filterTypesArray && filterTypesArray.length > 0) {
+    list = list.filter(row => {
+      const conditions: boolean[] = []
+
+      if (filterTypesArray.includes('init_balance')) {
+        conditions.push(row.init_balance !== 0)
+      }
+
+      if (filterTypesArray.includes('has_amount')) {
+        conditions.push(row.current_debit !== 0 || row.current_credit !== 0)
+      }
+
+      if (filterTypesArray.includes('has_balance')) {
+        conditions.push(row.end_balance !== 0)
+      }
+
+      return conditions.length === 0 || conditions.some(c => c)
+    })
+  }
+
+  // 如果指定了科目级次，在汇总计算完成后过滤展示
+  if (maxLevel) {
+    list = list.filter(row => row.level <= maxLevel)
+  }
+
+  res.json({ code: 0, data: list })
+})
+
+// ===================== 明细账 =====================
+
+router.get('/detail', (req: AuthRequest, res) => {
+  const db = getDb()
+  const {
+    year,
+    period,
+    account_id,
+    start_date,
+    end_date,
+    aux_type,
+    aux_id,
+    voucher_type_id,
+    maker_name,
+    auditor_name,
+    summary_keyword,
+    min_amount,
+    max_amount,
+    account_code_start,
+    account_code_end,
+    include_unposted,
+    page = 1,
+    pageSize = 100,
+  } = req.query
+
+  if (account_id && typeof account_id === 'string') {
+    const scopeErr = assertAccountIdInScope(req.accountScope, account_id)
+    if (scopeErr) {
+      return res.status(403).json({ code: 403, message: scopeErr })
+    }
+  }
+
+  const query = buildLedgerDetailQuery({
+    accountSetId: req.accountSetId || '',
+    year: year as string | number | undefined,
+    period: period as string | number | undefined,
+    accountId: account_id as string | undefined,
+    startDate: start_date as string | undefined,
+    endDate: end_date as string | undefined,
+    auxType: aux_type as string | undefined,
+    auxId: aux_id as string | undefined,
+    voucherTypeId: voucher_type_id as string | undefined,
+    makerName: maker_name as string | undefined,
+    auditorName: auditor_name as string | undefined,
+    summaryKeyword: summary_keyword as string | undefined,
+    minAmount: min_amount ? Number(min_amount) : undefined,
+    maxAmount: max_amount ? Number(max_amount) : undefined,
+    accountCodeStart: account_code_start as string | undefined,
+    accountCodeEnd: account_code_end as string | undefined,
+    includeUnposted: include_unposted === 'true',
+    page: Number(page),
+    pageSize: Number(pageSize),
+    accountScope: req.accountScope,
+  })
+
+  const initBal = db.prepare(query.initBalanceSql).get(...query.initBalanceParams) as any
+  const total = (db.prepare(query.countSql).get(...query.countParams) as any).count
+  const entries = db.prepare(query.listSql).all(...query.listParams)
+
+  res.json({
+    code: 0,
+    data: entries,
+    initBalance: initBal?.init_balance || 0,
+    total
+  })
+})
+
+// ===================== 余额表 =====================
+
+router.get('/balance', (req: AuthRequest, res) => {
+  const db = getDb()
+  const { year, period } = req.query
+
+  // 不传递 filterTypes，我们在汇总后再过滤
+  const query = buildLedgerBalanceQuery({
+    accountSetId: req.accountSetId || '',
+    year: year as string | number | undefined,
+    period: period as string | number | undefined,
+    accountScope: req.accountScope,
+  })
+  let list = db.prepare(query.sql).all(...query.params) as any[]
+
+  // 去重：如果同一个科目出现多次，合并它们的金额
+  const deduplicatedMap = new Map<string, any>()
+  list.forEach(row => {
+    if (deduplicatedMap.has(row.account_code)) {
+      // 如果已存在，合并金额
+      const existing = deduplicatedMap.get(row.account_code)
+      existing.init_balance = (existing.init_balance || 0) + (row.init_balance || 0)
+      existing.current_debit = (existing.current_debit || 0) + (row.current_debit || 0)
+      existing.current_credit = (existing.current_credit || 0) + (row.current_credit || 0)
+      existing.end_balance = (existing.end_balance || 0) + (row.end_balance || 0)
+    } else {
+      deduplicatedMap.set(row.account_code, { ...row })
+    }
+  })
+  list = Array.from(deduplicatedMap.values())
+
+  const codeLengths = getCodeLengths(db, req.accountSetId || '')
+  list = supplementMissingParents(list, db, req.accountSetId || '', codeLengths)
+  list = accumulateParentBalances(list, codeLengths)
+  list = filterLedgerRowsByScope(req.accountScope, list)
+
+  const summary = {
+    totalInitDebit: 0,
+    totalInitCredit: 0,
+    totalDebit: 0,
+    totalCredit: 0,
+    totalEndDebit: 0,
+    totalEndCredit: 0,
+  }
+  for (const row of list as any[]) {
+    if (row.init_balance > 0) {
+      if (row.direction === 'debit') summary.totalInitDebit += row.init_balance
+      else summary.totalInitCredit += row.init_balance
+    } else if (row.init_balance < 0) {
+      // 负数余额反向显示
+      if (row.direction === 'debit') summary.totalInitCredit += Math.abs(row.init_balance)
+      else summary.totalInitDebit += Math.abs(row.init_balance)
+    }
+    summary.totalDebit += row.current_debit
+    summary.totalCredit += row.current_credit
+    if (row.end_balance > 0) {
+      if (row.direction === 'debit') summary.totalEndDebit += row.end_balance
+      else summary.totalEndCredit += row.end_balance
+    } else if (row.end_balance < 0) {
+      // 负数余额反向显示
+      if (row.direction === 'debit') summary.totalEndCredit += Math.abs(row.end_balance)
+      else summary.totalEndDebit += Math.abs(row.end_balance)
+    }
+  }
+
+  res.json({ code: 0, data: list, summary })
+})
+
+// ===================== 总分类账（带月度汇总） =====================
+
+router.get('/general-ledger', (req: AuthRequest, res) => {
+  const db = getDb()
+  const { year, account_code, account_level, include_unposted } = req.query
+  const maxLevel = account_level ? Number(account_level) : undefined
+
+  // 注意：不传 accountLevel 给 SQL 查询，确保所有级次的科目都被查询到
+  // 这样才能正确汇总子科目到父科目，级次过滤在汇总计算完成后进行
+  const query = buildGeneralLedgerQuery({
+    accountSetId: req.accountSetId || '',
+    year: year as string | number | undefined,
+    accountCode: account_code as string | undefined,
+    accountLevel: undefined, // 不限制级次，查询所有科目用于汇总计算
+    includeUnposted: include_unposted === 'true',
+    accountScope: req.accountScope,
+  })
+
+  let list = db.prepare(query.sql).all(...query.params)
+
+  // 去重：如果同一个科目出现多次，合并它们的金额
+  const deduplicatedMap = new Map<string, any>()
+  ;(list as any[]).forEach(row => {
+    if (deduplicatedMap.has(row.account_code)) {
+      // 如果已存在，合并金额
+      const existing = deduplicatedMap.get(row.account_code)
+      existing.init_balance = (existing.init_balance || 0) + (row.init_balance || 0)
+      // 合并12个月的借贷方发生额
+      for (let m = 1; m <= 12; m++) {
+        existing[`month${m}_debit`] = (existing[`month${m}_debit`] || 0) + (row[`month${m}_debit`] || 0)
+        existing[`month${m}_credit`] = (existing[`month${m}_credit`] || 0) + (row[`month${m}_credit`] || 0)
+      }
+    } else {
+      deduplicatedMap.set(row.account_code, { ...row })
+    }
+  })
+  list = Array.from(deduplicatedMap.values())
+
+  const codeLengths = getCodeLengths(db, req.accountSetId || '')
+  list = supplementMissingParentsWithMonths(list, db, req.accountSetId || '', codeLengths)
+  list = accumulateParentBalancesWithMonths(list, codeLengths)
+  list = filterLedgerRowsByScope(req.accountScope, list)
+
+  // 计算累计和期末余额
+  const result = (list as any[]).map(row => {
+    // 计算本年累计借方和贷方
+    let yearDebit = 0
+    let yearCredit = 0
+    for (let m = 1; m <= 12; m++) {
+      yearDebit += (row[`month${m}_debit`] || 0)
+      yearCredit += (row[`month${m}_credit`] || 0)
+    }
+
+    // 计算期末余额
+    let endBalance = row.init_balance
+    if (row.direction === 'debit') {
+      endBalance += yearDebit - yearCredit
+    } else {
+      endBalance += yearCredit - yearDebit
+    }
+
+    return {
+      ...row,
+      year_debit: yearDebit,
+      year_credit: yearCredit,
+      end_balance: endBalance,
+    }
+  })
+
+  // 如果指定了科目级次，在汇总计算完成后过滤展示
+  let finalData = result
+  if (maxLevel) {
+    finalData = (result as any[]).filter(row => row.level <= maxLevel)
+  }
+
+  // 合计计算：统一按"叶节点"——数据集中没有任何子项以本科目编码为前缀。
+  // 不分级次单独处理，避免"展开到 N 级但实际数据没那么深"时漏掉行（如展开到
+  // 3 级但所有科目最深只到 2 级，按 level===3 过滤就空了）。
+  const leafData = finalData.filter(
+    (row: any) =>
+      !finalData.some((r: any) => r.account_code !== row.account_code && r.account_code.startsWith(row.account_code))
+  )
+  const summary: any = {
+    totalInitDebit: 0,
+    totalInitCredit: 0,
+    totalMonthDebit: {},
+    totalMonthCredit: {},
+    totalYearDebit: 0,
+    totalYearCredit: 0,
+    totalEndDebit: 0,
+    totalEndCredit: 0,
+  }
+
+  // 初始化月度合计
+  for (let m = 1; m <= 12; m++) {
+    summary.totalMonthDebit[m] = 0
+    summary.totalMonthCredit[m] = 0
+  }
+
+  for (const row of leafData) {
+    // 期初余额
+    if (row.init_balance > 0) {
+      if (row.direction === 'debit') summary.totalInitDebit += row.init_balance
+      else summary.totalInitCredit += row.init_balance
+    } else if (row.init_balance < 0) {
+      if (row.direction === 'debit') summary.totalInitCredit += Math.abs(row.init_balance)
+      else summary.totalInitDebit += Math.abs(row.init_balance)
+    }
+
+    // 月度发生额
+    for (let m = 1; m <= 12; m++) {
+      summary.totalMonthDebit[m] += (row[`month${m}_debit`] || 0)
+      summary.totalMonthCredit[m] += (row[`month${m}_credit`] || 0)
+    }
+
+    // 本年累计
+    summary.totalYearDebit += row.year_debit
+    summary.totalYearCredit += row.year_credit
+
+    // 期末余额
+    if (row.end_balance > 0) {
+      if (row.direction === 'debit') summary.totalEndDebit += row.end_balance
+      else summary.totalEndCredit += row.end_balance
+    } else if (row.end_balance < 0) {
+      if (row.direction === 'debit') summary.totalEndCredit += Math.abs(row.end_balance)
+      else summary.totalEndDebit += Math.abs(row.end_balance)
+    }
+  }
+
+  const y = Number(year) || new Date().getFullYear()
+  const voucherStatusCondition = include_unposted === 'true'
+    ? "v.status IN ('draft', 'audited', 'posted')"
+    : "v.status = 'posted'"
+  const lastMonthRow = db
+    .prepare(
+      `
+      SELECT MAX(CAST(strftime('%m', v.voucher_date) AS INTEGER)) as last_month
+      FROM vouchers v
+      WHERE v.account_set_id = ?
+        AND ${voucherStatusCondition}
+        AND v.voucher_date >= ?
+        AND v.voucher_date <= ?
+    `
+    )
+    .get(req.accountSetId, `${y}-01-01`, `${y}-12-31`) as { last_month: number | null } | undefined
+  const lastActiveMonth = lastMonthRow?.last_month ? Number(lastMonthRow.last_month) : 0
+
+  res.json({ code: 0, data: finalData, summary, lastActiveMonth })
+})
+
+// ===================== 日记账 =====================
+
+router.get('/cash-journal', (req: AuthRequest, res) => {
+  const db = getDb()
+  const {
+    year,
+    period,
+    start_date,
+    end_date,
+    account_id,
+    account_type,
+    direction,
+    min_amount,
+    max_amount,
+    opposite_account_code,
+    include_unposted,
+    page = 1,
+    pageSize = 100,
+  } = req.query
+
+  // 未指定科目范围时不查询全账套，避免误解为「全部科目日记账」
+  if (!account_id && !account_type) {
+    return res.json({ code: 0, data: [], total: 0, initBalance: 0 })
+  }
+
+  if (account_id && typeof account_id === 'string') {
+    const scopeErr = assertAccountIdInScope(req.accountScope, account_id)
+    if (scopeErr) {
+      return res.status(403).json({ code: 403, message: scopeErr })
+    }
+  }
+
+  const query = buildCashJournalQuery({
+    accountSetId: req.accountSetId || '',
+    year: year as string | number | undefined,
+    period: period as string | number | undefined,
+    startDate: start_date as string | undefined,
+    endDate: end_date as string | undefined,
+    accountId: account_id as string | undefined,
+    accountType: account_type as string | undefined,
+    direction: direction as string | undefined,
+    minAmount: min_amount ? Number(min_amount) : undefined,
+    maxAmount: max_amount ? Number(max_amount) : undefined,
+    oppositeAccountCode: opposite_account_code as string | undefined,
+    includeUnposted: include_unposted === 'true',
+    page: Number(page),
+    pageSize: Number(pageSize),
+    accountScope: req.accountScope,
+  })
+
+  const total = (db.prepare(query.countSql).get(...query.countParams) as any).count
+  const list = db.prepare(query.listSql).all(...query.listParams)
+  const initBal = db.prepare(query.initBalanceSql).get(...query.initBalanceParams) as any
+  const carryAmount = db.prepare(query.carryAmountSql).get(...query.carryAmountParams) as any
+  let runningBalance = (initBal?.init_balance || 0) + (carryAmount?.carry_amount || 0)
+
+  for (const entry of list as any[]) {
+    const accountDirection = entry.account_direction === 'credit' ? 'credit' : 'debit'
+    runningBalance = applyEntryToSignedBalance(
+      runningBalance,
+      entry.amount,
+      entry.direction,
+      accountDirection
+    )
+    entry.running_balance = runningBalance
+  }
+
+  res.json({ code: 0, data: list, total, initBalance: initBal?.init_balance || 0 })
+})
+
+// ===================== 序时账 =====================
+
+router.get('/chronological', (req: AuthRequest, res) => {
+  const db = getDb()
+  const {
+    year,
+    period,
+    start_date,
+    end_date,
+    include_unposted,
+    summary_keyword,
+    min_amount,
+    max_amount,
+    maker_name,
+    auditor_name,
+    page = 1,
+    pageSize = 100,
+  } = req.query
+
+  const query = buildChronologicalQuery({
+    accountSetId: req.accountSetId || '',
+    year: year as string | number | undefined,
+    period: period as string | number | undefined,
+    startDate: start_date as string | undefined,
+    endDate: end_date as string | undefined,
+    includeUnposted: include_unposted === 'true',
+    summaryKeyword: summary_keyword as string | undefined,
+    minAmount: min_amount as string | number | undefined,
+    maxAmount: max_amount as string | number | undefined,
+    makerName: maker_name as string | undefined,
+    auditorName: auditor_name as string | undefined,
+    page: Number(page),
+    pageSize: Number(pageSize),
+    accountScope: req.accountScope,
+  })
+
+  const total = (db.prepare(query.countSql).get(...query.countParams) as any).count
+  const list = db.prepare(query.listSql).all(...query.listParams)
+  res.json({ code: 0, data: list, total })
+})
+
+// ===================== 辅助项目余额表 =====================
+
+router.post('/aux-balance', (req: AuthRequest, res) => {
+  const db = getDb()
+  const {
+    aux_category_ids,
+    aux_ids,
+    start_date,
+    end_date,
+    account_code,
+    include_unposted,
+    page,
+    pageSize,
+    item_offset,
+    item_limit,
+    summary_only,
+    skip_summary,
+  } = req.body
+  const accountSetId = req.accountSetId!
+
+  const itemOffset = Math.max(0, Number(item_offset) || 0)
+  const itemLimitProvided = item_limit !== undefined && item_limit !== null && item_limit !== ''
+  const itemLimitNum = itemLimitProvided ? Math.max(0, Number(item_limit) || 0) : null
+  const metaOnly = itemLimitNum === 0
+  const summaryOnly = summary_only === true || summary_only === 'true'
+  const skipSummary = skip_summary === true || skip_summary === 'true'
+  const chunkedMode = itemLimitProvided && itemLimitNum !== null && itemLimitNum > 0
+
+  // 参数验证：aux_category_ids 必填，aux_ids 可选（不传时查类别下所有项目）
+  if (!aux_category_ids) {
+    return res.status(400).json({ code: 1, error: '缺少必要参数：aux_category_ids' })
+  }
+
+  const rawCategoryIdArray = (aux_category_ids as string).split(',').filter(id => id.trim())
+  const auxIdArray = aux_ids ? (aux_ids as string).split(',').filter(id => id.trim()) : []
+
+  if (rawCategoryIdArray.length === 0) {
+    return res.status(400).json({ code: 1, error: '辅助类别不能为空' })
+  }
+
+  if (account_code) {
+    const codeErr = assertAccountCodePrefixInScope(
+      db,
+      req.accountScope,
+      accountSetId,
+      String(account_code)
+    )
+    if (codeErr) {
+      return res.status(403).json({ code: 403, message: codeErr })
+    }
+  }
+
+  // 现金流量项目本质是凭证级标签而非辅助核算项目，从辅助账簿中剔除（兜底，防止前端漏过滤）
+  const cfRows = db
+    .prepare(`SELECT id FROM aux_categories WHERE code = 'cash_flow' AND account_set_id = ?`)
+    .all(accountSetId) as { id: string }[]
+  const cashFlowCatIds = new Set(cfRows.map(r => r.id))
+  const categoryIdArray = rawCategoryIdArray.filter(id => !cashFlowCatIds.has(id))
+
+  if (categoryIdArray.length === 0) {
+    return res.json({ code: 0, data: [], categoryFields: {}, total: 0, totals: null })
+  }
+
+  // 兼容布尔值和字符串
+  const statusValue = (include_unposted === true || include_unposted === 'true')
+    ? ['draft', 'audited', 'posted']
+    : ['posted']
+
+  const startTime = Date.now()
+  const catPlaceholders = categoryIdArray.map(() => '?').join(',')
+
+  // 查询自定义字段定义（meta / 正式查询均需要）
+  const fieldDefs = db.prepare(`
+    SELECT f.category_id, f.field_key, f.field_name, f.sort_order
+    FROM aux_category_fields f
+    WHERE f.category_id IN (${catPlaceholders}) AND f.is_enabled = 1
+    ORDER BY f.category_id, f.sort_order
+  `).all(...categoryIdArray) as any[]
+
+  const categoryMeta = db.prepare(`
+    SELECT id, code, name FROM aux_categories WHERE id IN (${catPlaceholders})
+  `).all(...categoryIdArray) as any[]
+
+  const categoryFields: Record<string, { name: string; fields: { field_key: string; field_name: string }[] }> = {}
+  const categoryNameByCode = new Map<string, string>()
+  const categoryIdByCode = new Map<string, string>()
+  for (const cat of categoryMeta) {
+    categoryNameByCode.set(cat.code, cat.name)
+    categoryIdByCode.set(cat.code, cat.id)
+    categoryFields[cat.code] = {
+      name: cat.name,
+      fields: fieldDefs.filter(f => f.category_id === cat.id).map(f => ({ field_key: f.field_key, field_name: f.field_name })),
+    }
+  }
+
+  const itemsCountRow = db
+    .prepare(
+      `SELECT COUNT(*) as count FROM aux_items ai WHERE ai.type IN (${catPlaceholders}) AND ai.account_set_id = ?`
+    )
+    .get(...categoryIdArray, accountSetId) as { count: number }
+  const itemsTotal = auxIdArray.length > 0 ? auxIdArray.length : (itemsCountRow?.count ?? 0)
+
+  if (metaOnly) {
+    return res.json({
+      code: 0,
+      data: [],
+      total: 0,
+      items_total: itemsTotal,
+      categoryFields,
+      totals: null,
+    })
+  }
+
+  try {
+    // 查询辅助项目信息（同样剔除属于 cash_flow 类目的项目）
+    let items: any[]
+    if (auxIdArray.length > 0) {
+      const itemsPlaceholders = auxIdArray.map(() => '?').join(',')
+      const itemsSql = `
+        SELECT ai.id, ai.code, ai.name, ai.type as category_id, ac.code as category_code, ac.name as category_name
+        FROM aux_items ai
+        LEFT JOIN aux_categories ac ON ac.id = ai.type
+        WHERE ai.id IN (${itemsPlaceholders}) AND ai.account_set_id = ?
+          AND (ac.code IS NULL OR ac.code != 'cash_flow')
+      `
+      items = db.prepare(itemsSql).all(...auxIdArray, accountSetId) as any[]
+    } else if (summaryOnly && auxIdArray.length === 0) {
+      items = []
+    } else if (chunkedMode || summaryOnly) {
+      const limit = summaryOnly ? itemsTotal : Math.min(itemLimitNum!, AUX_BALANCE_ITEM_BATCH)
+      const itemsSql = `
+        SELECT ai.id, ai.code, ai.name, ai.type as category_id, ac.code as category_code, ac.name as category_name
+        FROM aux_items ai
+        LEFT JOIN aux_categories ac ON ac.id = ai.type
+        WHERE ai.type IN (${catPlaceholders}) AND ai.account_set_id = ?
+          AND (ac.code IS NULL OR ac.code != 'cash_flow')
+        ORDER BY ac.code, ai.code
+        LIMIT ? OFFSET ?
+      `
+      items = db.prepare(itemsSql).all(...categoryIdArray, accountSetId, limit, itemOffset) as any[]
+    } else {
+      // 常规分页不再一次读取类别下全部项目；后续按固定批次聚合到临时表。
+      items = []
+    }
+
+    if (items.length === 0 && !summaryOnly && (auxIdArray.length > 0 || chunkedMode)) {
+      return res.json({
+        code: 0,
+        data: [],
+        categoryFields,
+        total: 0,
+        items_total: itemsTotal,
+        items_processed: Math.min(itemOffset + (itemLimitNum ?? 0), itemsTotal),
+        totals: null,
+      })
+    }
+
+    if (!summaryOnly) {
+      console.log(`辅助项目余额表：本批处理 ${items.length} 个辅助项目（offset=${itemOffset}）`)
+    }
+
+    const groupItemsByCategory = (itemBatch: any[]) => {
+      const grouped = new Map<string, any[]>()
+      for (const item of itemBatch) {
+        if (!item.category_code) continue
+        if (!grouped.has(item.category_code)) grouped.set(item.category_code, [])
+        grouped.get(item.category_code)!.push(item)
+      }
+      return grouped
+    }
+    const itemsByCategory = groupItemsByCategory(items)
+
+    db.exec('DROP TABLE IF EXISTS _tmp_aux_balance_rows')
+    db.exec(`CREATE TEMP TABLE _tmp_aux_balance_rows (
+      row_key TEXT PRIMARY KEY,
+      account_code TEXT,
+      account_name TEXT,
+      account_direction TEXT,
+      aux_id TEXT,
+      aux_name TEXT,
+      field_values_json TEXT,
+      category_code TEXT,
+      category_name TEXT,
+      init_balance REAL DEFAULT 0,
+      current_debit REAL DEFAULT 0,
+      current_credit REAL DEFAULT 0,
+      end_balance REAL DEFAULT 0
+    )`)
+    const upsertAuxBalanceRow = db.prepare(`
+      INSERT INTO _tmp_aux_balance_rows (
+        row_key, account_code, account_name, account_direction,
+        aux_id, aux_name, field_values_json, category_code, category_name,
+        init_balance, current_debit, current_credit, end_balance
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(row_key) DO UPDATE SET
+        account_name=excluded.account_name,
+        account_direction=excluded.account_direction,
+        aux_name=COALESCE(NULLIF(excluded.aux_name,''), _tmp_aux_balance_rows.aux_name),
+        field_values_json=COALESCE(excluded.field_values_json, _tmp_aux_balance_rows.field_values_json),
+        category_name=COALESCE(NULLIF(excluded.category_name,''), _tmp_aux_balance_rows.category_name),
+        init_balance=_tmp_aux_balance_rows.init_balance + excluded.init_balance,
+        current_debit=_tmp_aux_balance_rows.current_debit + excluded.current_debit,
+        current_credit=_tmp_aux_balance_rows.current_credit + excluded.current_credit,
+        end_balance=_tmp_aux_balance_rows.end_balance + excluded.end_balance
+    `)
+    const writeAuxBalanceRows = db.transaction((rows: any[]) => {
+      for (const row of rows) {
+        const auxId = String(row.aux_id || '')
+        if (!auxId) continue
+        upsertAuxBalanceRow.run(
+          `${row.account_code}|${row.category_code}|${auxId}`,
+          row.account_code,
+          row.account_name,
+          row.account_direction,
+          auxId,
+          row.aux_name || '',
+          row.field_values_json || null,
+          row.category_code,
+          row.category_name || '',
+          Number(row.init_balance || 0),
+          Number(row.current_debit || 0),
+          Number(row.current_credit || 0),
+          Number(row.end_balance || 0)
+        )
+      }
+    })
+
+    const statusPlaceholders = statusValue.map(() => '?').join(',')
+    const processBalanceItemBatch = (itemBatch: any[]) => {
+      const auxLookup = buildAuxItemLookup(itemBatch)
+      const groupedItems = groupItemsByCategory(itemBatch)
+      for (const [categoryCode, categoryItems] of groupedItems) {
+      // SQLite 参数限制为 999，分批查询
+      // SQLite 参数上限 999，每个辅助项目最多生成 ~5 个 SQL 参数
+      // （JSON 双 key + legacy 列 + 编码匹配），加上基础参数约 20 个，
+      // 安全批次 = floor((999 - 20) / 5) ≈ 195，取 150 留余量
+      const batchSize = 150
+      for (let i = 0; i < categoryItems.length; i += batchSize) {
+        const batch = categoryItems.slice(i, i + batchSize)
+        const itemIds = batch.map(item => item.id)
+        const itemIdsPlaceholders = itemIds.map(() => '?').join(',')
+        const matchOpts = buildAuxMatchOptions(categoryCode, categoryIdByCode, batch)
+        const auxMatchCondition = buildAuxItemMatchCondition(categoryCode, itemIdsPlaceholders, matchOpts)
+
+        const baseConditions = [
+          've.account_set_id = ?',
+          `v.status IN (${statusPlaceholders})`,
+          auxMatchCondition,
+        ]
+        const baseParams: any[] = [accountSetId, ...statusValue]
+        appendAuxItemMatchParams(baseParams, categoryCode, itemIds, matchOpts)
+
+        if (account_code) {
+          baseConditions.push('ve.account_code LIKE ?')
+          baseParams.push(`${account_code}%`)
+        }
+
+        appendAccountScopeCondition(req.accountScope, 've.account_id', baseConditions, baseParams)
+
+        const signedEntryAmount = buildSignedEntryAmountSql('a.direction', 've.direction', 've.amount')
+        const sql = `
+          SELECT
+            ve.account_code,
+            ve.account_name,
+            a.direction as account_direction,
+            ${buildAuxIdSelect(categoryCode, categoryIdByCode.get(categoryCode))} as aux_id,
+            ${buildAuxNameSelect(categoryCode, categoryIdByCode.get(categoryCode))} as aux_name,
+            MAX(${buildAuxFieldValuesSelect(categoryCode, categoryIdByCode.get(categoryCode))}) as field_values_json,
+            '${categoryCode}' as category_code,
+            COALESCE(SUM(CASE
+              WHEN v.voucher_date >= ? AND v.voucher_date < ? THEN ${signedEntryAmount}
+              ELSE 0
+            END), 0) as init_balance,
+            COALESCE(SUM(CASE
+              WHEN v.voucher_date >= ? AND v.voucher_date <= ? AND ve.direction = 'debit'
+              THEN ve.amount ELSE 0
+            END), 0) as current_debit,
+            COALESCE(SUM(CASE
+              WHEN v.voucher_date >= ? AND v.voucher_date <= ? AND ve.direction = 'credit'
+              THEN ve.amount ELSE 0
+            END), 0) as current_credit,
+            COALESCE(SUM(CASE
+              WHEN v.voucher_date >= ? AND v.voucher_date <= ? THEN ${signedEntryAmount}
+              ELSE 0
+            END), 0) as end_balance
+          FROM voucher_entries ve
+          JOIN vouchers v ON v.id = ve.voucher_id
+          JOIN accounts a ON a.id = ve.account_id
+          WHERE ${baseConditions.join(' AND ')}
+          GROUP BY ve.account_code, ve.account_name, a.direction, aux_id, aux_name
+          HAVING init_balance != 0 OR current_debit != 0 OR current_credit != 0 OR end_balance != 0
+          ORDER BY ve.account_code, aux_name
+        `
+
+        // P1-14：凭证期初/期末只累计「当年年初」起的分录，避免与下方 init_balances 表
+        // （年结已写入上年余额）合并时把上年活动重复计入
+        const auxYearStartDate = start_date
+          ? `${new Date(start_date).getFullYear()}-01-01`
+          : '1900-01-01'
+        const balanceParams = [
+          auxYearStartDate,                 // init 下限：当年年初
+          start_date || '1900-01-01',       // init 上限：< start_date
+          start_date || '1900-01-01',       // current_debit >=
+          end_date || '9999-12-31',         // current_debit <=
+          start_date || '1900-01-01',       // current_credit >=
+          end_date || '9999-12-31',         // current_credit <=
+          auxYearStartDate,                 // end_balance 下限：当年年初
+          end_date || '9999-12-31',         // end_balance 上限：<= end_date
+          ...baseParams,
+        ]
+
+        const batchResults = db.prepare(sql).all(...balanceParams) as any[]
+        for (const row of batchResults) {
+          enrichAuxLedgerEntry(row, categoryCode, categoryNameByCode, auxLookup)
+          const token = String(row.aux_id || '')
+          const itemMeta = auxLookup.byId.get(token) || auxLookup.byCode.get(`${categoryCode}:${token}`)
+          if (itemMeta) {
+            row.aux_id = itemMeta.id
+            if (!row.aux_name || row.aux_name === 'null') row.aux_name = itemMeta.name
+          }
+        }
+        writeAuxBalanceRows(batchResults)
+      }
+      }
+    }
+
+    const loadReferencedItems = () => {
+      const referencedItems: any[] = []
+      for (const category of categoryMeta) {
+        const rawAuxId = buildAuxIdSelect(category.code, category.id)
+        const conditions = [
+          've.account_set_id=?',
+          `v.status IN (${statusPlaceholders})`,
+          `(${rawAuxId}) IS NOT NULL`,
+        ]
+        const params: any[] = [
+          accountSetId,
+          category.id,
+          accountSetId,
+          ...statusValue,
+        ]
+        if (account_code) {
+          conditions.push('ve.account_code LIKE ?')
+          params.push(`${account_code}%`)
+        }
+        appendAccountScopeCondition(req.accountScope, 've.account_id', conditions, params)
+        const rows = db
+          .prepare(
+            `SELECT DISTINCT matched_ai.id, matched_ai.code, matched_ai.name,
+                    matched_ai.type as category_id,
+                    ? as category_code, ? as category_name
+             FROM voucher_entries ve
+             JOIN vouchers v ON v.id=ve.voucher_id
+             JOIN aux_items matched_ai
+               ON matched_ai.account_set_id=? AND matched_ai.type=?
+              AND (matched_ai.id=(${rawAuxId}) OR matched_ai.code=(${rawAuxId}))
+             WHERE ${conditions.join(' AND ')}`
+          )
+          .all(category.code, category.name, ...params) as any[]
+        referencedItems.push(...rows)
+      }
+      for (const [code, rows] of groupItemsByCategory(referencedItems)) {
+        itemsByCategory.set(code, rows)
+      }
+      return referencedItems
+    }
+
+    if (!summaryOnly) {
+      if (items.length > 0) {
+        processBalanceItemBatch(items)
+      } else {
+        // 全类别查询只解析凭证中实际出现过的项目。项目档案很多但凭证较少时，
+        // 不再遍历全部档案；纯期初项目由下方 init_balances 合并。
+        const referencedItems = loadReferencedItems()
+        processBalanceItemBatch(referencedItems)
+      }
+    } else if (itemsByCategory.size === 0) {
+      // 汇总模式同样需要发现凭证中实际引用的项目，否则临时 entry id 表为空，合计会被错误算成 0。
+      loadReferencedItems()
+    }
+
+    if (!summaryOnly) {
+      const rowCount = (db.prepare('SELECT COUNT(*) AS count FROM _tmp_aux_balance_rows').get() as any)?.count || 0
+      console.log(`辅助项目余额表：聚合 ${rowCount} 条余额明细到临时表`)
+    }
+
+    // ===== 合并 init_balances 表中的辅助期初 =====
+    const initYear = start_date ? new Date(start_date).getFullYear() : new Date().getFullYear()
+    const accountCodeFilter = account_code ? ` AND a.code LIKE ?` : ''
+    const initBalanceSql = `
+      SELECT a.code as account_code, a.name as account_name, a.direction,
+             ib.aux_item_id, ib.init_balance, ib.init_debit, ib.init_credit
+      FROM init_balances ib
+      JOIN accounts a ON a.id = ib.account_id
+      WHERE ib.account_set_id = ? AND ib.year = ? AND ib.aux_item_id != ''
+      ${accountCodeFilter}
+    `
+    const initBalanceParams: any[] = [accountSetId, initYear]
+    if (account_code) initBalanceParams.push(`${account_code}%`)
+    const auxInitStatement = db.prepare(initBalanceSql)
+    const iterateAuxInitRows = () => auxInitStatement.iterate(...initBalanceParams) as Iterable<any>
+    const auxInitRowCount = (
+      db.prepare(`SELECT COUNT(*) AS count FROM (${initBalanceSql})`).get(...initBalanceParams) as any
+    )?.count || 0
+
+    const selectedCategoryCodes = new Set(
+      auxIdArray.length > 0 || chunkedMode
+        ? Array.from(itemsByCategory.keys())
+        : categoryMeta.map((cat: any) => String(cat.code))
+    )
+    const selectedCategoryFilterCodes = new Set(categoryMeta.map((c: any) => c.code))
+    const selectedItemIdsByCat = new Map<string, Set<string>>()
+    for (const [code, arr] of itemsByCategory) {
+      selectedItemIdsByCat.set(code, new Set(arr.map((it: any) => String(it.id))))
+    }
+    const restrictItemIds = auxIdArray.length > 0 || (chunkedMode && !summaryOnly)
+    const categoryIdBySelectedCode = new Map(categoryMeta.map((cat: any) => [String(cat.code), String(cat.id)]))
+    const resolveInitAuxItem = db.prepare(
+      `SELECT id, name FROM aux_items
+       WHERE account_set_id=? AND type=? AND (id=? OR code=?) LIMIT 1`
+    )
+
+    if (!summaryOnly) {
+    const initBalanceWriteBuffer: any[] = []
+    for (const row of iterateAuxInitRows()) {
+      const parts = row.aux_item_id.split('|')
+      // aux_item_id 单类目格式 `code:itemId`，组合格式 `code1:id1|code2:id2`
+      // 取每个部分分别处理（与多类目分标签录入一致）
+      for (const part of parts) {
+        const idx = part.indexOf(':')
+        if (idx <= 0) continue
+        const categoryCode = part.slice(0, idx)
+        const itemToken = part.slice(idx + 1)
+        if (!selectedCategoryCodes.has(categoryCode)) continue
+        const categoryId = categoryIdBySelectedCode.get(categoryCode)
+        if (!categoryId) continue
+        const resolvedItem = resolveInitAuxItem.get(
+          accountSetId,
+          categoryId,
+          itemToken,
+          itemToken
+        ) as { id: string; name: string } | undefined
+        if (!resolvedItem) continue
+        const itemId = resolvedItem.id
+        if (restrictItemIds) {
+          const allowedIds = selectedItemIdsByCat.get(categoryCode)
+          if (!allowedIds || !allowedIds.size || !allowedIds.has(itemId)) continue
+        }
+
+        const initDebit = row.init_debit || 0
+        const initCredit = row.init_credit || 0
+        const initBalance = calcInitBalanceFromDebitCredit(
+          row.direction === 'credit' ? 'credit' : 'debit',
+          initDebit,
+          initCredit,
+          row.init_balance
+        )
+        initBalanceWriteBuffer.push({
+          account_code: row.account_code,
+          account_name: row.account_name,
+          account_direction: row.direction === 'credit' ? 'credit' : 'debit',
+          aux_id: itemId,
+          aux_name: resolvedItem.name || '',
+          field_values_json: null,
+          category_code: categoryCode,
+          category_name: categoryNameByCode.get(categoryCode) || categoryCode,
+          init_balance: initBalance,
+          current_debit: 0,
+          current_credit: 0,
+          end_balance: initBalance,
+        })
+        if (initBalanceWriteBuffer.length >= 500) {
+          writeAuxBalanceRows(initBalanceWriteBuffer)
+          initBalanceWriteBuffer.length = 0
+        }
+      }
+    }
+    if (initBalanceWriteBuffer.length > 0) writeAuxBalanceRows(initBalanceWriteBuffer)
+    }
+
+    if (!summaryOnly) {
+      const rowCount = (db.prepare('SELECT COUNT(*) AS count FROM _tmp_aux_balance_rows').get() as any)?.count || 0
+      console.log(`辅助项目余额表：合并辅助期初 ${auxInitRowCount} 条，临时表共 ${rowCount} 条明细`)
+    }
+
+    let grandTotals = {
+      init_balance: 0,
+      current_debit: 0,
+      current_credit: 0,
+      end_balance: 0,
+    }
+
+    if (!skipSummary) {
+    // ===== 独立查询科目汇总行余额（临时表去重，避免多类目重复计算同一分录）=====
+    // 当用户选多个辅助类目时，同一条分录可能命中多个类目查询（如既有 dept 又有 person 标签），
+    // 若直接把明细行加总会导致同一笔金额被多次累加。
+    // 用临时表收集所有匹配的 voucher_entry ID（自动去重），再做科目维度汇总，
+    // 同时避免 OR 合并所有类目条件导致 SQL 参数超过 SQLite 999 上限。
+    db.exec('CREATE TEMP TABLE IF NOT EXISTS _tmp_aux_entry_ids (entry_id TEXT)')
+    db.exec('DELETE FROM _tmp_aux_entry_ids')
+
+    const insertEntryId = db.prepare('INSERT INTO _tmp_aux_entry_ids (entry_id) VALUES (?)')
+    const summaryBatchSize = 150
+
+    const fillTempTableForCategoryItems = (catCode: string, catItems: any[]) => {
+      for (let i = 0; i < catItems.length; i += summaryBatchSize) {
+        const batch = catItems.slice(i, i + summaryBatchSize)
+        const ids = batch.map((it: any) => it.id)
+        const ph = ids.map(() => '?').join(',')
+        const matchOpts = buildAuxMatchOptions(catCode, categoryIdByCode, batch)
+        const auxCond = buildAuxItemMatchCondition(catCode, ph, matchOpts)
+
+        const conds = [
+          've.account_set_id = ?',
+          `v.status IN (${statusPlaceholders})`,
+          auxCond,
+        ]
+        const params: any[] = [accountSetId, ...statusValue]
+        appendAuxItemMatchParams(params, catCode, ids, matchOpts)
+
+        if (account_code) {
+          conds.push('ve.account_code LIKE ?')
+          params.push(`${account_code}%`)
+        }
+        appendAccountScopeCondition(req.accountScope, 've.account_id', conds, params)
+
+        const selectSql = `
+          SELECT DISTINCT ve.id
+          FROM voucher_entries ve
+          JOIN vouchers v ON v.id = ve.voucher_id
+          WHERE ${conds.join(' AND ')}
+        `
+        const entryRows = db.prepare(selectSql).all(...params) as { id: string }[]
+        const insertMany = db.transaction((rows: { id: string }[]) => {
+          for (const row of rows) {
+            insertEntryId.run(row.id)
+          }
+        })
+        insertMany(entryRows)
+      }
+    }
+
+    for (const [catCode, catItems] of itemsByCategory) {
+      fillTempTableForCategoryItems(catCode, catItems)
+    }
+
+    const signedAmtSqlSummary = buildSignedEntryAmountSql('a.direction', 've.direction', 've.amount')
+    const accountSummarySql = `
+      SELECT
+        ve.account_code,
+        ve.account_name,
+        a.direction as account_direction,
+        COALESCE(SUM(CASE
+          WHEN v.voucher_date < ? THEN ${signedAmtSqlSummary}
+          ELSE 0
+        END), 0) as init_balance,
+        COALESCE(SUM(CASE
+          WHEN v.voucher_date >= ? AND v.voucher_date <= ? AND ve.direction = 'debit'
+          THEN ve.amount ELSE 0
+        END), 0) as current_debit,
+        COALESCE(SUM(CASE
+          WHEN v.voucher_date >= ? AND v.voucher_date <= ? AND ve.direction = 'credit'
+          THEN ve.amount ELSE 0
+        END), 0) as current_credit,
+        COALESCE(SUM(CASE
+          WHEN v.voucher_date <= ? THEN ${signedAmtSqlSummary}
+          ELSE 0
+        END), 0) as end_balance
+      FROM voucher_entries ve
+      JOIN vouchers v ON v.id = ve.voucher_id
+      JOIN accounts a ON a.id = ve.account_id
+      WHERE ve.id IN (SELECT DISTINCT entry_id FROM _tmp_aux_entry_ids)
+      GROUP BY ve.account_code, ve.account_name, a.direction
+    `
+    const accountSummaryBalanceParams = [
+      start_date || '1900-01-01',
+      start_date || '1900-01-01',
+      end_date || '9999-12-31',
+      start_date || '1900-01-01',
+      end_date || '9999-12-31',
+      end_date || '9999-12-31',
+    ]
+    const accountSummaryRows = db.prepare(accountSummarySql).all(...accountSummaryBalanceParams) as any[]
+
+    // 清理临时表
+    db.exec('DROP TABLE IF EXISTS _tmp_aux_entry_ids')
+
+    // 科目汇总余额 Map（来自凭证，不含 init_balances 期初）
+    const accountSummaryMap = new Map<string, { init_balance: number; current_debit: number; current_credit: number; end_balance: number; account_direction: 'debit' | 'credit' }>()
+    for (const row of accountSummaryRows) {
+      accountSummaryMap.set(row.account_code, {
+        init_balance: row.init_balance || 0,
+        current_debit: row.current_debit || 0,
+        current_credit: row.current_credit || 0,
+        end_balance: row.end_balance || 0,
+        account_direction: row.account_direction === 'credit' ? 'credit' : 'debit',
+      })
+    }
+
+    // 把 init_balances 的辅助期初也折入科目汇总
+    // （辅助期初已合并到临时结果表，这里对科目汇总单独加一遍）
+    // 修复：一行 aux_item_id 可能形如 "cash_flow:xxx|person:yyy"（组合），
+    // 按 parts 累加会把同一行算多次，应"命中即一次"。
+    const accountInitMap = new Map<string, { initBalance: number; account_direction: 'debit' | 'credit' }>()
+    for (const row of iterateAuxInitRows()) {
+      let hit = false
+      for (const part of String(row.aux_item_id).split('|')) {
+        const idx = part.indexOf(':')
+        if (idx <= 0) continue
+        const catCode = part.slice(0, idx)
+        const itemToken = part.slice(idx + 1)
+        if (!selectedCategoryFilterCodes.has(catCode)) continue
+        if (restrictItemIds) {
+          const categoryId = categoryIdBySelectedCode.get(catCode)
+          if (!categoryId) continue
+          const resolvedItem = resolveInitAuxItem.get(
+            accountSetId,
+            categoryId,
+            itemToken,
+            itemToken
+          ) as { id: string } | undefined
+          if (!resolvedItem) continue
+          const allowedIds = selectedItemIdsByCat.get(catCode)
+          if (!allowedIds || !allowedIds.size || !allowedIds.has(resolvedItem.id)) continue
+        }
+        hit = true
+        break
+      }
+      if (hit) {
+        const initBalance = calcInitBalanceFromDebitCredit(
+          row.direction === 'credit' ? 'credit' : 'debit',
+          row.init_debit || 0,
+          row.init_credit || 0,
+          row.init_balance
+        )
+        const existing = accountInitMap.get(row.account_code)
+        accountInitMap.set(row.account_code, {
+          initBalance: (existing?.initBalance || 0) + initBalance,
+          account_direction: row.direction === 'credit' ? 'credit' : 'debit',
+        })
+      }
+    }
+    for (const [acctCode, initInfo] of accountInitMap) {
+      const existing = accountSummaryMap.get(acctCode)
+      if (existing) {
+        existing.init_balance += initInfo.initBalance
+        existing.end_balance += initInfo.initBalance
+      } else {
+        // 只有期初、无凭证的科目
+        accountSummaryMap.set(acctCode, {
+          init_balance: initInfo.initBalance,
+          current_debit: 0,
+          current_credit: 0,
+          end_balance: initInfo.initBalance,
+          account_direction: initInfo.account_direction,
+        })
+      }
+    }
+
+    for (const accSum of accountSummaryMap.values()) {
+      grandTotals.init_balance += accSum.init_balance || 0
+      grandTotals.current_debit += accSum.current_debit || 0
+      grandTotals.current_credit += accSum.current_credit || 0
+      grandTotals.end_balance += accSum.end_balance || 0
+    }
+    }
+
+    if (summaryOnly) {
+      const queryTime = Date.now() - startTime
+      console.log(`辅助项目余额表：合计查询完成，耗时 ${queryTime}ms`)
+      return res.json({
+        code: 0,
+        data: [],
+        total: 0,
+        items_total: itemsTotal,
+        totals: grandTotals,
+        categoryFields,
+      })
+    }
+
+    const hydrateRows = (rows: any[]) => rows.map(detail => {
+      let field_values: Record<string, any> = {}
+      try {
+        if (detail.field_values_json) {
+          field_values = JSON.parse(detail.field_values_json)
+        }
+      } catch {}
+
+      return {
+        ...detail,
+        direction: detail.account_direction,
+        field_values,
+        field_values_json: undefined,
+      }
+    })
+
+    const itemsProcessed = Math.min(
+      itemOffset + (chunkedMode ? items.length : itemsTotal),
+      itemsTotal
+    )
+    const queryTime = Date.now() - startTime
+
+    if (chunkedMode) {
+      const flatRows = hydrateRows(
+        db.prepare(
+          `SELECT * FROM _tmp_aux_balance_rows
+           ORDER BY account_code, category_code, aux_name, aux_id`
+        ).all() as any[]
+      )
+      console.log(
+        `辅助项目余额表：分批查询完成，耗时 ${queryTime}ms，本批明细 ${flatRows.length} 行，项目进度 ${itemsProcessed}/${itemsTotal}`
+      )
+      return res.json({
+        code: 0,
+        data: flatRows,
+        total: flatRows.length,
+        chunk_rows: flatRows.length,
+        items_total: itemsTotal,
+        items_processed: itemsProcessed,
+        totals: skipSummary ? null : grandTotals,
+        categoryFields,
+      })
+    }
+
+    const totalRows = Number(
+      (db.prepare('SELECT COUNT(*) AS count FROM _tmp_aux_balance_rows').get() as any)?.count || 0
+    )
+    const currentPage = Math.max(1, Number(page) || 1)
+    const pageSizeNum = Math.max(1, Math.min(Number(pageSize) || 50, MAX_PAGE_SIZE))
+    const offset = (currentPage - 1) * pageSizeNum
+    const pagedResults = hydrateRows(
+      db.prepare(
+        `SELECT * FROM _tmp_aux_balance_rows
+         ORDER BY account_code, category_code, aux_name, aux_id
+         LIMIT ? OFFSET ?`
+      ).all(pageSizeNum, offset) as any[]
+    )
+
+    console.log(
+      `辅助项目余额表：查询完成，耗时 ${queryTime}ms，明细 ${totalRows} 行，返回第 ${currentPage} 页 ${pagedResults.length} 行`
+    )
+
+    res.json({
+      code: 0,
+      data: pagedResults,
+      total: totalRows,
+      items_total: itemsTotal,
+      totals: skipSummary ? null : grandTotals,
+      categoryFields,
+    })
+  } catch (error: any) {
+    console.error('辅助项目余额表查询失败:', error)
+    res.status(500).json({ code: 1, error: error.message || '查询失败' })
+  }
+})
+
+// ===================== 辅助项目明细账 =====================
+
+router.post('/aux-detail', (req: AuthRequest, res) => {
+  const db = getDb()
+  const {
+    aux_category_ids,
+    aux_ids,
+    start_date,
+    end_date,
+    account_code,
+    summary_keyword,
+    min_amount,
+    max_amount,
+    maker_name,
+    auditor_name,
+    include_unposted,
+    page,
+    pageSize,
+  } = req.body
+  const accountSetId = req.accountSetId!
+
+  console.log('辅助明细账查询参数:', { aux_category_ids, aux_ids, page, pageSize, start_date, end_date })
+
+  // 参数验证：aux_category_ids 必填，aux_ids 可选（不传时查类别下所有项目）
+  if (!aux_category_ids) {
+    return res.status(400).json({ code: 1, error: '缺少必要参数：aux_category_ids' })
+  }
+
+  const rawCategoryIdArray = (aux_category_ids as string).split(',').filter(id => id.trim())
+  const auxIdArray = aux_ids ? (aux_ids as string).split(',').filter(id => id.trim()) : []
+
+  if (rawCategoryIdArray.length === 0) {
+    return res.status(400).json({ code: 1, error: '辅助类别不能为空' })
+  }
+
+  if (account_code) {
+    const codeErr = assertAccountCodePrefixInScope(
+      db,
+      req.accountScope,
+      accountSetId,
+      String(account_code)
+    )
+    if (codeErr) {
+      return res.status(403).json({ code: 403, message: codeErr })
+    }
+  }
+
+  // 现金流量项目本质是凭证级标签而非辅助核算项目，从辅助账簿中剔除（兜底，防止前端漏过滤）
+  const cfRowsDetail = db
+    .prepare(`SELECT id FROM aux_categories WHERE code = 'cash_flow' AND account_set_id = ?`)
+    .all(accountSetId) as { id: string }[]
+  const cashFlowCatIdsDetail = new Set(cfRowsDetail.map(r => r.id))
+  const categoryIdArray = rawCategoryIdArray.filter(id => !cashFlowCatIdsDetail.has(id))
+
+  if (categoryIdArray.length === 0) {
+    return res.json({ code: 0, data: [], initBalance: 0, categoryFields: {}, total: 0 })
+  }
+
+  // 构建凭证状态过滤条件（兼容布尔值和字符串）
+  const statusValue = (include_unposted === true || include_unposted === 'true')
+    ? ['draft', 'audited', 'posted']
+    : ['posted']
+  const statusPlaceholders = statusValue.map(() => '?').join(',')
+
+  try {
+    // 查询辅助项目信息：如果指定了 aux_ids 则按 ID 查，否则查类别下所有项目
+    // 同样剔除属于 cash_flow 类目的项目
+    let items: any[]
+    if (auxIdArray.length > 0) {
+      const itemsPlaceholders = auxIdArray.map(() => '?').join(',')
+      const itemsSql = `
+        SELECT ai.id, ai.code, ai.name, ai.type, ac.code as category_code, ac.name as category_name
+        FROM aux_items ai
+        LEFT JOIN aux_categories ac ON ac.id = ai.type
+        WHERE ai.id IN (${itemsPlaceholders}) AND ai.account_set_id = ?
+          AND (ac.code IS NULL OR ac.code != 'cash_flow')
+      `
+      items = db.prepare(itemsSql).all(...auxIdArray, accountSetId) as any[]
+    } else {
+      // 未指定项目时不再把类别下全部项目读入 Node 内存；后续按类别使用
+      // EXISTS(aux_items) 直接匹配有效项目，并只解析当前页涉及的项目。
+      items = []
+    }
+
+    if (auxIdArray.length > 0 && items.length === 0) {
+      console.log('辅助明细账：未找到辅助项目')
+      return res.json({ code: 0, data: [], initBalance: 0, categoryFields: {}, total: 0 })
+    }
+
+    console.log('辅助明细账：指定辅助项目数量:', items.length)
+    if (items.length > 0) {
+      console.log('辅助明细账：第一个项目示例:', {
+        id: items[0].id,
+        code: items[0].code,
+        name: items[0].name,
+        category_code: items[0].category_code
+      })
+    }
+
+    // 查询所选类别的自定义字段定义
+    const catPlaceholders2 = categoryIdArray.map(() => '?').join(',')
+    const fieldDefs = db.prepare(`
+      SELECT f.category_id, f.field_key, f.field_name, f.sort_order
+      FROM aux_category_fields f
+      WHERE f.category_id IN (${catPlaceholders2}) AND f.is_enabled = 1
+      ORDER BY f.category_id, f.sort_order
+    `).all(...categoryIdArray) as any[]
+
+    const categoryMeta = db.prepare(`
+      SELECT id, code, name FROM aux_categories WHERE id IN (${catPlaceholders2})
+    `).all(...categoryIdArray) as any[]
+
+    const categoryFields: Record<string, { name: string; fields: { field_key: string; field_name: string }[] }> = {}
+    const categoryNameByCode = new Map<string, string>()
+    const categoryIdByCode = new Map<string, string>()
+    for (const cat of categoryMeta) {
+      categoryNameByCode.set(cat.code, cat.name)
+      categoryIdByCode.set(cat.code, cat.id)
+      categoryFields[cat.code] = {
+        name: cat.name,
+        fields: fieldDefs.filter((f: any) => f.category_id === cat.id).map((f: any) => ({ field_key: f.field_key, field_name: f.field_name })),
+      }
+    }
+
+    const auxLookup = buildAuxItemLookup(items)
+
+    // 按类别分组辅助项目
+    const itemsByCategory = new Map<string, any[]>()
+    for (const item of items) {
+      if (!item.category_code) continue
+      if (!itemsByCategory.has(item.category_code)) {
+        itemsByCategory.set(item.category_code, [])
+      }
+      itemsByCategory.get(item.category_code)!.push(item)
+    }
+    const restrictItemIds = auxIdArray.length > 0
+    const categoryWork = restrictItemIds
+      ? Array.from(itemsByCategory.entries()).map(([code, categoryItems]) => ({
+          code,
+          id: categoryIdByCode.get(code) || '',
+          items: categoryItems,
+        }))
+      : categoryMeta.map((cat: any) => ({ code: cat.code, id: cat.id, items: [] as any[] }))
+
+    function buildCategoryMatch(categoryCode: string, categoryId: string, batch: any[]) {
+      if (restrictItemIds) {
+        const ids = batch.map((it: any) => it.id)
+        const ph = ids.map(() => '?').join(',')
+        const matchOpts = buildAuxMatchOptions(categoryCode, categoryIdByCode, batch)
+        const params: any[] = []
+        appendAuxItemMatchParams(params, categoryCode, ids, matchOpts)
+        return {
+          sql: buildAuxItemMatchCondition(categoryCode, ph, matchOpts),
+          params,
+        }
+      }
+      const rawId = buildAuxIdSelect(categoryCode, categoryId)
+      return {
+        sql: `(${rawId}) IS NOT NULL AND EXISTS (
+          SELECT 1 FROM aux_items matched_ai
+          WHERE matched_ai.account_set_id=? AND matched_ai.type=?
+            AND (matched_ai.id=(${rawId}) OR matched_ai.code=(${rawId}))
+        )`,
+        params: [accountSetId, categoryId],
+      }
+    }
+
+    // ===== 临时表收集所有匹配的分录 ID（去重 COUNT / 期初用） =====
+    // 同一条分录可能同时打了多个类目标签（如 cash_flow + person），若按类目分别 COUNT/累加会重复。
+    // 用临时表收集所有匹配的 entry ID（自动去重），避免 OR 合并所有类目导致 SQL 参数超 999。
+    db.exec('CREATE TEMP TABLE IF NOT EXISTS _tmp_aux_detail_ids (entry_id TEXT)')
+    db.exec('DELETE FROM _tmp_aux_detail_ids')
+    // P0-5：期初分录专用临时表（voucher_date < start_date），与区间临时表分开收集
+    db.exec('CREATE TEMP TABLE IF NOT EXISTS _tmp_aux_detail_init_ids (entry_id TEXT)')
+    db.exec('DELETE FROM _tmp_aux_detail_init_ids')
+
+    // 公共筛选条件构造器（避免在多处重复拼接）
+    function buildCommonFilter(opts: { withRangeDate?: boolean; lessThanStart?: boolean }) {
+      const conds: string[] = []
+      const params: any[] = []
+      if (opts.withRangeDate) {
+        if (start_date) {
+          conds.push('v.voucher_date >= ?')
+          params.push(start_date)
+        }
+        if (end_date) {
+          conds.push('v.voucher_date <= ?')
+          params.push(end_date)
+        }
+      }
+      if (opts.lessThanStart && start_date) {
+        // P1-14：期初凭证只累计「当年年初」起的分录，避免与 init_balances 表
+        // （年结已写入上年余额）合并时把上年活动重复计入
+        conds.push('v.voucher_date >= ? AND v.voucher_date < ?')
+        params.push(`${new Date(start_date).getFullYear()}-01-01`, start_date)
+      }
+      if (account_code) {
+        conds.push('ve.account_code LIKE ?')
+        params.push(`${account_code}%`)
+      }
+      appendAccountScopeCondition(req.accountScope, 've.account_id', conds, params)
+      if (summary_keyword) {
+        conds.push('ve.summary LIKE ?')
+        params.push(`%${summary_keyword}%`)
+      }
+      if (min_amount !== undefined) {
+        conds.push('ve.amount >= ?')
+        params.push(parseFloat(min_amount as string))
+      }
+      if (max_amount !== undefined) {
+        conds.push('ve.amount <= ?')
+        params.push(parseFloat(max_amount as string))
+      }
+      if (maker_name) {
+        conds.push('v.maker_name LIKE ?')
+        params.push(`%${maker_name}%`)
+      }
+      if (auditor_name) {
+        conds.push('v.auditor_name LIKE ?')
+        params.push(`%${auditor_name}%`)
+      }
+      return { conds, params }
+    }
+
+    // 按批次收集匹配的 entry ID 到临时表
+    const insertDetailEntryId = db.prepare('INSERT INTO _tmp_aux_detail_ids (entry_id) VALUES (?)')
+    const insertDetailInitEntryId = db.prepare('INSERT INTO _tmp_aux_detail_init_ids (entry_id) VALUES (?)')
+    const detailCollectBatchSize = 150
+
+    const insertIdsTx = db.transaction((rows: { id: string }[], stmt: any) => {
+      for (const row of rows) stmt.run(row.id)
+    })
+
+    for (const category of categoryWork) {
+      const batches = restrictItemIds
+        ? Array.from(
+            { length: Math.ceil(category.items.length / detailCollectBatchSize) },
+            (_, index) => category.items.slice(index * detailCollectBatchSize, (index + 1) * detailCollectBatchSize)
+          )
+        : [[]]
+      for (const batch of batches) {
+        const match = buildCategoryMatch(category.code, category.id, batch)
+
+        const baseConds = [
+          've.account_set_id = ?',
+          `v.status IN (${statusPlaceholders})`,
+          match.sql,
+        ]
+        const baseParams: any[] = [accountSetId, ...statusValue]
+        baseParams.push(...match.params)
+
+        // 区间分录（日期范围 + 科目/摘要等筛选）→ 明细列表临时表
+        {
+          const dataCommon = buildCommonFilter({ withRangeDate: true })
+          const conds = [...baseConds, ...dataCommon.conds]
+          const params = [...baseParams, ...dataCommon.params]
+          const rows = db
+            .prepare(
+              `SELECT DISTINCT ve.id
+               FROM voucher_entries ve
+               JOIN vouchers v ON v.id = ve.voucher_id
+               WHERE ${conds.join(' AND ')}`
+            )
+            .all(...params) as { id: string }[]
+          insertIdsTx(rows, insertDetailEntryId)
+        }
+
+        // P0-5：期初分录（voucher_date < start_date）→ 期初临时表，
+        // 与 categoryInitBalances 同口径。原实现复用区间临时表（其分录均 >= start_date），
+        // 与「< start_date」条件交集为空，导致合计期初的凭证部分恒为 0。
+        if (start_date) {
+          const initCommon = buildCommonFilter({ lessThanStart: true })
+          const conds = [...baseConds, ...initCommon.conds]
+          const params = [...baseParams, ...initCommon.params]
+          const rows = db
+            .prepare(
+              `SELECT DISTINCT ve.id
+               FROM voucher_entries ve
+               JOIN vouchers v ON v.id = ve.voucher_id
+               WHERE ${conds.join(' AND ')}`
+            )
+            .all(...params) as { id: string }[]
+          insertIdsTx(rows, insertDetailInitEntryId)
+        }
+      }
+    }
+
+    // ===== 使用临时表 COUNT(DISTINCT)，避免同一分录被多个类目重复计数 =====
+    const totalCount = (db.prepare(`
+      SELECT COUNT(DISTINCT entry_id) as count FROM _tmp_aux_detail_ids
+    `).get() as any)?.count || 0
+
+    console.log('辅助明细账：COUNT 查询完成，总记录数:', totalCount)
+
+    const currentPage = Math.max(1, Number(page) || 1)
+    const pageSizeNum = parsePageSizeParam(pageSize, 50)
+    const offset = (currentPage - 1) * pageSizeNum
+    const pageIdRows = db
+      .prepare(
+        `SELECT ve.id
+         FROM voucher_entries ve
+         JOIN vouchers v ON v.id=ve.voucher_id
+         WHERE ve.id IN (SELECT DISTINCT entry_id FROM _tmp_aux_detail_ids)
+         ORDER BY v.voucher_date, v.voucher_no, ve.seq
+         LIMIT ? OFFSET ?`
+      )
+      .all(pageSizeNum, offset) as Array<{ id: string }>
+    const pageEntryIds = pageIdRows.map(row => row.id)
+    const carryRow = db
+      .prepare(
+        `SELECT COALESCE(SUM(${buildSignedEntryAmountSql('account_direction', 'direction', 'amount')}),0) AS amount
+         FROM (
+           SELECT ve.direction, ve.amount, a.direction AS account_direction
+           FROM voucher_entries ve
+           JOIN vouchers v ON v.id=ve.voucher_id
+           JOIN accounts a ON a.id=ve.account_id
+           WHERE ve.id IN (SELECT DISTINCT entry_id FROM _tmp_aux_detail_ids)
+           ORDER BY v.voucher_date, v.voucher_no, ve.seq
+           LIMIT ?
+         )`
+      )
+      .get(offset) as { amount?: number }
+    const carryAmount = Number(carryRow?.amount || 0)
+
+    // 批量查询所有辅助项目的数据（性能优化：使用 IN 子句替代循环查询）
+    let allEntries: any[] = []
+    let totalInitBalance = 0
+    const categoryInitBalances: {
+      category_code: string
+      category_name: string
+      init_balance: number
+    }[] = []
+
+    const initYearAuxDetail = start_date ? new Date(start_date).getFullYear() : new Date().getFullYear()
+    const selectedCategoryCodes = new Set(categoryWork.map(category => category.code))
+    const selectedItemIdsByCat = new Map<string, Set<string>>()
+    for (const [code, arr] of itemsByCategory) {
+      selectedItemIdsByCat.set(code, new Set(arr.map((it: any) => String(it.id))))
+    }
+
+    const accountCodeFilter = account_code ? ` AND a.code LIKE ?` : ''
+    const initRowsSql = `
+      SELECT a.code as account_code, a.direction, ib.aux_item_id, ib.init_balance, ib.init_debit, ib.init_credit
+      FROM init_balances ib
+      JOIN accounts a ON a.id = ib.account_id
+      WHERE ib.account_set_id = ? AND ib.year = ? AND ib.aux_item_id != ''
+      ${accountCodeFilter}
+    `
+    const initRowsParams: any[] = [accountSetId, initYearAuxDetail]
+    if (account_code) initRowsParams.push(`${account_code}%`)
+    const initRowsStatement = db.prepare(initRowsSql)
+    const resolveInitAuxItemDetail = db.prepare(
+      `SELECT id FROM aux_items
+       WHERE account_set_id=? AND type=? AND (id=? OR code=?) LIMIT 1`
+    )
+    const auxInitBalanceByCategory = new Map<string, number>()
+    let auxInitTotalBalance = 0
+    let auxInitRowCount = 0
+
+    // 期初明细可能达到十几万行：流式遍历一次，同时算出分类合计和去重后的总合计，
+    // 避免把全部记录留在 Node 数组中，也避免每个类别重复扫描整批期初数据。
+    for (const row of initRowsStatement.iterate(...initRowsParams) as Iterable<any>) {
+      auxInitRowCount += 1
+      const matchedCategories = new Set<string>()
+      for (const part of String(row.aux_item_id).split('|')) {
+        const idx = part.indexOf(':')
+        if (idx <= 0) continue
+        const categoryCode = part.slice(0, idx)
+        const itemToken = part.slice(idx + 1)
+        if (!selectedCategoryCodes.has(categoryCode)) continue
+        if (restrictItemIds) {
+          const categoryId = categoryIdByCode.get(categoryCode)
+          if (!categoryId) continue
+          const resolvedItem = resolveInitAuxItemDetail.get(
+            accountSetId,
+            categoryId,
+            itemToken,
+            itemToken
+          ) as { id: string } | undefined
+          const allowed = selectedItemIdsByCat.get(categoryCode)
+          if (!resolvedItem || !allowed?.has(resolvedItem.id)) continue
+        }
+        matchedCategories.add(categoryCode)
+      }
+      if (matchedCategories.size === 0) continue
+
+      const initBalance = calcInitBalanceFromDebitCredit(
+        row.direction === 'credit' ? 'credit' : 'debit',
+        row.init_debit || 0,
+        row.init_credit || 0,
+        row.init_balance
+      )
+      auxInitTotalBalance += initBalance
+      const firstMatchedCategory = categoryWork.find(category => matchedCategories.has(category.code))?.code
+      if (firstMatchedCategory) {
+        auxInitBalanceByCategory.set(
+          firstMatchedCategory,
+          (auxInitBalanceByCategory.get(firstMatchedCategory) || 0) + initBalance
+        )
+      }
+    }
+
+    /** 组合 aux_item_id 行只计入首个命中的类目，避免拆行展示时重复 */
+    function addAuxInitBalanceForCategory(categoryCode: string): number {
+      return auxInitBalanceByCategory.get(categoryCode) || 0
+    }
+
+    // ===== 按辅助类别分别汇总期初（用于前端分开展示） =====
+    for (const category of categoryWork) {
+      const categoryCode = category.code
+      const categoryItems = category.items
+      let catInit = 0
+      if (start_date) {
+        const initCommon = buildCommonFilter({ lessThanStart: true })
+        const batchSize = 150
+        const batches = restrictItemIds
+          ? Array.from(
+              { length: Math.ceil(categoryItems.length / batchSize) },
+              (_, index) => categoryItems.slice(index * batchSize, (index + 1) * batchSize)
+            )
+          : [[]]
+        for (const batch of batches) {
+          const match = buildCategoryMatch(categoryCode, category.id, batch)
+
+          const initSqlCat = `
+            SELECT COALESCE(SUM(
+              ${buildSignedEntryAmountSql('account_direction', 'direction', 'amount')}
+            ), 0) as init_balance
+            FROM (
+              SELECT DISTINCT ve.id, ve.direction, ve.amount, a.direction as account_direction
+              FROM voucher_entries ve
+              JOIN vouchers v ON v.id = ve.voucher_id
+              JOIN accounts a ON a.id = ve.account_id
+              WHERE ve.account_set_id = ?
+                AND v.status IN (${statusPlaceholders})
+                AND ${match.sql}
+                ${initCommon.conds.length > 0 ? 'AND ' + initCommon.conds.join(' AND ') : ''}
+            )
+          `
+          const initRowCat = db.prepare(initSqlCat).get(
+            accountSetId,
+            ...statusValue,
+            ...match.params,
+            ...initCommon.params
+          ) as any
+          catInit += initRowCat?.init_balance || 0
+        }
+      }
+      catInit += addAuxInitBalanceForCategory(categoryCode)
+      if (catInit !== 0) {
+        categoryInitBalances.push({
+          category_code: categoryCode,
+          category_name: categoryNameByCode.get(categoryCode) || categoryCode,
+          init_balance: catInit,
+        })
+      }
+    }
+
+    // ===== 合计期初（凭证 DISTINCT 去重 + 期初表每行只计一次） =====
+    if (start_date) {
+      // P0-5：从「期初临时表」求和（其分录已按 voucher_date < start_date 收集、跨类目去重），
+      // 不再复用区间临时表（分录均 >= start_date，交集为空导致期初恒 0）
+      const initSqlAll = `
+        SELECT COALESCE(SUM(
+          ${buildSignedEntryAmountSql('a.direction', 've.direction', 've.amount')}
+        ), 0) as init_balance
+        FROM voucher_entries ve
+        JOIN vouchers v ON v.id = ve.voucher_id
+        JOIN accounts a ON a.id = ve.account_id
+        WHERE ve.id IN (SELECT DISTINCT entry_id FROM _tmp_aux_detail_init_ids)
+      `
+      const initRow = db.prepare(initSqlAll).get() as any
+      totalInitBalance += initRow?.init_balance || 0
+    }
+
+    totalInitBalance += auxInitTotalBalance
+    console.log(
+      `辅助明细账：合并辅助期初记录 ${auxInitRowCount} 条，年度 ${initYearAuxDetail}，分类期初 ${categoryInitBalances.length} 项`
+    )
+
+    // 为每个类别执行批量查询，结果按 ve.id 去重合并到 entryMap
+    // 同一条分录可能同时被多个类目命中（如 cash_flow + person），用 Map 去重，多个类目的标签合并到同一行
+    const entryMap = new Map<string, any>()
+
+    const pageIdsJson = JSON.stringify(pageEntryIds)
+    const resolveAuxItem = db.prepare(
+      `SELECT id, code, name FROM aux_items
+       WHERE account_set_id=? AND type=? AND (id=? OR code=?) LIMIT 1`
+    )
+    for (const category of categoryWork) {
+      const categoryCode = category.code
+      const categoryItems = category.items
+      const batchSize = 150
+      const batches = restrictItemIds
+        ? Array.from(
+            { length: Math.ceil(categoryItems.length / batchSize) },
+            (_, index) => categoryItems.slice(index * batchSize, (index + 1) * batchSize)
+          )
+        : [[]]
+      for (const batch of batches) {
+        if (pageEntryIds.length === 0) continue
+        const match = buildCategoryMatch(categoryCode, category.id, batch)
+
+        // 查询明细分录
+        const dataConditions = [
+          've.account_set_id = ?',
+          `v.status IN (${statusPlaceholders})`,
+          match.sql,
+          've.id IN (SELECT value FROM json_each(?))',
+        ]
+        const dataParams: any[] = [accountSetId, ...statusValue]
+        dataParams.push(...match.params, pageIdsJson)
+
+        const dataCommon = buildCommonFilter({ withRangeDate: true })
+        dataConditions.push(...dataCommon.conds)
+        dataParams.push(...dataCommon.params)
+
+        const detailSql = `
+          SELECT
+            ve.id as entry_id,
+            ve.voucher_id,
+            v.status as voucher_status,
+            v.voucher_date,
+            v.voucher_no,
+            ve.seq,
+            ve.account_code,
+            ve.account_name,
+            a.direction as account_direction,
+            ve.summary,
+            ve.direction,
+            ve.amount,
+            ${buildAuxIdSelect(categoryCode, categoryIdByCode.get(categoryCode))} as aux_id,
+            ${buildAuxNameSelect(categoryCode, categoryIdByCode.get(categoryCode))} as aux_name,
+            '${categoryCode}' as category_code,
+            ${buildAuxFieldValuesSelect(categoryCode, categoryIdByCode.get(categoryCode))} as field_values_json
+          FROM voucher_entries ve
+          JOIN vouchers v ON v.id = ve.voucher_id
+          JOIN accounts a ON a.id = ve.account_id
+          WHERE ${dataConditions.join(' AND ')}
+          ORDER BY v.voucher_date, v.voucher_no, ve.seq
+        `
+        const entries = db.prepare(detailSql).all(...dataParams) as any[]
+
+        for (const entry of entries) {
+          let field_values: Record<string, any> = {}
+          try {
+            if (entry.field_values_json) {
+              const raw =
+                typeof entry.field_values_json === 'string'
+                  ? entry.field_values_json
+                  : JSON.stringify(entry.field_values_json)
+              field_values = JSON.parse(raw)
+            }
+          } catch {}
+          entry.field_values = field_values
+          delete entry.field_values_json
+
+          enrichAuxLedgerEntry(entry, categoryCode, categoryNameByCode, auxLookup)
+          const token = String(entry.aux_id || '')
+          const resolved = resolveAuxItem.get(
+            accountSetId,
+            category.id,
+            token,
+            token
+          ) as { id: string; name: string } | undefined
+          if (resolved) {
+            entry.aux_id = resolved.id
+            if (!entry.aux_name || entry.aux_name === 'null') entry.aux_name = resolved.name
+          }
+
+          const existing = entryMap.get(entry.entry_id)
+          if (existing) {
+            // 同一条分录被多个类目命中：合并 category_name / aux_name，金额不重复累加
+            const newCatName = entry.category_name || categoryCode
+            const newAuxName = entry.aux_name || ''
+            if (newCatName && !String(existing.category_name || '').split('、').includes(newCatName)) {
+              existing.category_name = existing.category_name
+                ? `${existing.category_name}、${newCatName}`
+                : newCatName
+            }
+            if (newAuxName && !String(existing.aux_name || '').split('、').includes(newAuxName)) {
+              existing.aux_name = existing.aux_name
+                ? `${existing.aux_name}、${newAuxName}`
+                : newAuxName
+            }
+            // 自定义字段：浅合并
+            existing.field_values = { ...(existing.field_values || {}), ...field_values }
+          } else {
+            entryMap.set(entry.entry_id, entry)
+          }
+        }
+      }
+    }
+
+    allEntries = Array.from(entryMap.values())
+
+    console.log('辅助明细账：数据查询完成，去重后分录数:', allEntries.length)
+
+    // 按日期、凭证号、分录序排序（去重后多类目混合时需稳定排序）
+    allEntries.sort((a, b) => {
+      if (a.voucher_date !== b.voucher_date) {
+        return a.voucher_date.localeCompare(b.voucher_date)
+      }
+      if (a.voucher_no !== b.voucher_no) {
+        return a.voucher_no.localeCompare(b.voucher_no)
+      }
+      return (a.seq || 0) - (b.seq || 0)
+    })
+
+    const paginatedEntries = allEntries
+
+    console.log('辅助明细账查询结果:', {
+      totalCount,
+      allEntriesLength: allEntries.length,
+      paginatedEntriesLength: paginatedEntries.length,
+      currentPage,
+      pageSizeNum,
+      offset
+    })
+
+    // 清理临时表
+    db.exec('DROP TABLE IF EXISTS _tmp_aux_detail_ids')
+    db.exec('DROP TABLE IF EXISTS _tmp_aux_detail_init_ids')
+
+    res.json({
+      code: 0,
+      data: paginatedEntries,
+      initBalance: totalInitBalance,
+      categoryInitBalances,
+      pageStartBalance: totalInitBalance + carryAmount,
+      categoryFields,
+      total: totalCount,
+    })
+  } catch (error: any) {
+    console.error('辅助项目明细账查询失败:', error)
+    res.status(500).json({ code: 1, error: error.message || '查询失败' })
+  }
+})
+
+router.get('/cash-flow-trial-balance', (req: AuthRequest, res) => {
+  try {
+    const accountSetId = req.accountSetId || ''
+    if (!isCashFlowEnabledForAccountSet(getDb(), accountSetId)) {
+      return res.status(400).json({ code: 400, message: '账套未启用现金流核算' })
+    }
+
+    const year = Number(req.query.year) || new Date().getFullYear()
+    const period = Number(req.query.period) || new Date().getMonth() + 1
+    const scope: CashFlowTrialBalanceScope = req.query.scope === 'ytd' ? 'ytd' : 'month'
+    const includeUnposted = req.query.include_unposted === 'true'
+
+    const data = getCashFlowTrialBalance(getDb(), accountSetId, year, period, scope, includeUnposted)
+    res.json({ code: 0, data })
+  } catch (error: any) {
+    console.error('现金流量试算平衡表查询失败:', error)
+    res.status(500).json({ code: 500, message: error.message || '查询失败' })
+  }
+})
+
+router.get('/cash-flow-voucher-check', (req: AuthRequest, res) => {
+  try {
+    const accountSetId = req.accountSetId || ''
+    if (!isCashFlowEnabledForAccountSet(getDb(), accountSetId)) {
+      return res.status(400).json({ code: 400, message: '账套未启用现金流核算' })
+    }
+
+    const year = Number(req.query.year) || new Date().getFullYear()
+    const period = Number(req.query.period) || new Date().getMonth() + 1
+    const scope: CashFlowTrialBalanceScope = req.query.scope === 'ytd' ? 'ytd' : 'month'
+    const includeUnposted = req.query.include_unposted === 'true'
+
+    const data = getCashFlowVoucherCheck(getDb(), accountSetId, year, period, scope, includeUnposted)
+    res.json({ code: 0, data })
+  } catch (error: any) {
+    console.error('现金流量凭证检查失败:', error)
+    res.status(500).json({ code: 500, message: error.message || '查询失败' })
+  }
+})
+
+export default router
+ 

@@ -1,0 +1,42 @@
+{
+  "name": "cw-finance",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "client",
+    "server",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:client": "npm run dev --workspace=client",
+    "dev:server": "npm run dev --workspace=server",
+    "build": "npm run build --workspace=client && npm run build --workspace=server",
+    "build:parallel": "concurrently --kill-others-on-failure \"npm run build --workspace=client\" \"npm run build --workspace=server\"",
+    "start": "npm run start --workspace=server",
+    "lint": "eslint . --ext .js,.ts,.vue",
+    "lint:fix": "eslint . --ext .js,.ts,.vue --fix",
+    "format": "prettier --write \"**/*.{js,ts,vue,json,md}\"",
+    "format:check": "prettier --check \"**/*.{js,ts,vue,json,md}\"",
+    "changelog:excel": "node scripts/convert-changelog-to-excel.mjs",
+    "license:generate": "node tools/license-generator/generate-license.mjs",
+    "license:build-tool": "node scripts/build-license-tool.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "@typescript-eslint/eslint-plugin": "^7.1.0",
+    "@typescript-eslint/parser": "^7.1.0",
+    "concurrently": "^8.2.2",
+    "eslint": "^8.57.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-vue": "^9.22.0",
+    "prettier": "^3.2.5"
+  },
+  "dependencies": {
+    "@dabh/diagnostics": "^2.0.8",
+    "exceljs": "^4.4.0",
+    "form-data": "^4.0.5",
+    "node-fetch": "^3.3.2",
+    "vue-draggable-resizable": "^3.0.0"
+  }
+}

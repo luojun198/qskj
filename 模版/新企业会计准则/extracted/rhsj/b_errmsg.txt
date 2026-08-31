@@ -1,0 +1,21 @@
+2023-03-14 17:16:57.051	系统管理	2	Null object reference at line 43 in user_prt_lx event of object w_zc_zc_1.	w_zc_zc_1	w_zc_zc_1	user_prt_lx	43	1
+2023-08-23 16:08:25.24	系统管理	35	Error calling external object function readex at line 24 in function wf_open of object w_bb_def_pos.	w_bb_def_pos	w_bb_def_pos	wf_open	24	1
+2019-10-21 09:43:51.471	系统管理	2	Null object reference at line 7 in ue_paint event of object st_1 of w_main1.	w_main1	st_1	ue_paint	7	1
+2019-10-21 09:51:43.007	系统管理	2	Null object reference at line 7 in ue_paint event of object st_1 of w_main1.	w_main1	st_1	ue_paint	7	1
+2019-10-21 10:01:23.227	系统管理	2	Null object reference at line 7 in ue_paint event of object st_1 of w_main1.	w_main1	st_1	ue_paint	7	1
+2019-10-21 10:03:08.368	系统管理	2	Null object reference at line 7 in ue_paint event of object st_1 of w_main1.	w_main1	st_1	ue_paint	7	1
+2019-10-21 10:05:41.328	系统管理	2	Null object reference at line 7 in ue_paint event of object st_1 of w_main1.	w_main1	st_1	ue_paint	7	1
+2020-01-20 08:40:31.066	系统管理	2	Null object reference at line 607 in ue_action_get event of object w_bb_saveas.	w_bb_saveas	w_bb_saveas	ue_action_get	607	1
+2020-03-08 10:07:39.895	系统管理	7	Unresolvable external w_pz_pzedit_b when linking reference at line 10 in ue_action_new event of object w_pz_pzxsb.	w_pz_pzxsb	w_pz_pzxsb	ue_action_new	10	1
+2020-03-08 10:08:00.431	系统管理	7	Unresolvable external w_pz_pzedit_b when linking reference at line 10 in ue_action_new event of object w_pz_pzxsb.	w_pz_pzxsb	w_pz_pzxsb	ue_action_new	10	1
+2020-03-08 10:08:22.049	系统管理	7	Unresolvable external w_pz_pzedit_b when linking reference at line 10 in ue_action_new event of object w_pz_pzxsb.	w_pz_pzxsb	w_pz_pzxsb	ue_action_new	10	1
+2021-03-19 14:30:50.793	系统管理	35	Error calling external object function editcopy at line 1 in u_copy event of object w_bb_def.	w_bb_def	w_bb_def	u_copy	1	1
+2021-03-19 14:31:00.849	系统管理	35	Error calling external object function editcopy at line 1 in u_copy event of object w_bb_def.	w_bb_def	w_bb_def	u_copy	1	1
+2021-03-19 14:54:21.792	系统管理	35	Error calling external object function editcopy at line 1 in u_copy event of object w_bb_def.	w_bb_def	w_bb_def	u_copy	1	1
+2021-03-19 14:54:30.854	系统管理	35	Error calling external object function editcopy at line 1 in u_copy event of object w_bb_def.	w_bb_def	w_bb_def	u_copy	1	1
+2021-05-20 11:56:14.966	系统管理	2	Null object reference at line 1 in u_open event of object w_xt_xm_sc.	w_xt_xm_sc	w_xt_xm_sc	u_open	1	1
+2024-09-06 10:53:52.351	系统管理	35	Error calling external object function colwidth at line 21 in u_colw event of object w_bb_def_pos.	w_bb_def_pos	w_bb_def_pos	u_colw	21	1
+2024-09-06 10:53:59.36	系统管理	35	Error calling external object function colwidth at line 21 in u_colw event of object w_bb_def_pos.	w_bb_def_pos	w_bb_def_pos	u_colw	21	1
+2024-09-06 10:54:06.385	系统管理	35	Error calling external object function colwidth at line 21 in u_colw event of object w_bb_def_pos.	w_bb_def_pos	w_bb_def_pos	u_colw	21	1
+2024-09-06 10:54:52.211	系统管理	35	Error calling external object function setrowheight at line 29 in u_rowh event of object w_bb_def.	w_bb_def	w_bb_def	u_rowh	29	1
+2024-09-06 10:55:32.016	系统管理	35	Error calling external object function setrowheight at line 29 in u_rowh event of object w_bb_def.	w_bb_def	w_bb_def	u_rowh	29	1

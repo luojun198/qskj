@@ -1,0 +1,519 @@
+/* ========== Apple Style Login Page ========== */
+/* 苹果设计风格登录页 + 中国行政事业元素 */
+
+.login-container {
+  width: 100%;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 设计系统薄荷渐变（深色版）：深青薄荷 → 泡沫蓝 */
+  background: linear-gradient(135deg, #0E665B 0%, #0AA694 38%, #1E6AD6 100%);
+  position: relative;
+  overflow: hidden;
+}
+
+/* 背景装饰 - 泡泡光晕 */
+.login-container::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 20% 80%, rgba(255, 255, 255, 0.10) 0%, transparent 40%),
+    radial-gradient(circle at 80% 20%, rgba(102, 224, 203, 0.12) 0%, transparent 35%);
+  pointer-events: none;
+}
+
+/* 中式纹样叠加 */
+.login-container::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M30 5L35 15L45 15L40 25L45 35L35 35L30 45L25 35L15 35L20 25L15 15L25 15L30 5Z' fill='none' stroke='rgba(255,215,0,0.03)' stroke-width='1'/%3E%3C/svg%3E");
+  background-size: 60px 60px;
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* 登录卡片 */
+.login-box {
+  width: 400px;
+  padding: 24px 28px 20px;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  box-shadow: 
+    0 20px 60px rgba(0, 0, 0, 0.3),
+    0 0 0 1px rgba(255, 215, 0, 0.1);
+  position: relative;
+  z-index: 10;
+  animation: login-box-enter 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes login-box-enter {
+  from {
+    opacity: 0;
+    transform: translateY(30px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* 登录头部 */
+.login-header {
+  text-align: center;
+  margin-bottom: 18px;
+}
+
+.login-header h2 {
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', sans-serif;
+  font-size: 19px;
+  color: #0d2b4e;
+  font-weight: 700;
+  margin: 0 0 4px 0;
+  letter-spacing: 1px;
+  line-height: 1.35;
+}
+
+.login-header p {
+  font-size: 11px;
+  color: #8ba4be;
+  letter-spacing: 0.5px;
+  font-weight: 500;
+  margin: 0;
+  line-height: 1.3;
+}
+
+/* 登录表单 */
+.login-form {
+  margin-bottom: 12px;
+}
+
+.login-form :deep(.el-form-item) {
+  margin-bottom: 12px;
+}
+
+.login-form :deep(.login-submit-item) {
+  margin-bottom: 0;
+}
+
+.login-form :deep(.login-submit-item .el-checkbox) {
+  margin-bottom: 8px;
+  height: auto;
+}
+
+.login-form :deep(.el-input__wrapper),
+.login-form :deep(.el-select__wrapper) {
+  border-radius: 10px !important;
+  padding: 2px 11px !important;
+  min-height: 36px !important;
+  background: rgba(0, 0, 0, 0.02) !important;
+  border: 1px solid rgba(0, 0, 0, 0.08) !important;
+  transition: all 0.25s ease !important;
+}
+
+.login-form :deep(.el-input__wrapper:hover),
+.login-form :deep(.el-select__wrapper:hover) {
+  border-color: rgba(0, 0, 0, 0.12) !important;
+  background: rgba(0, 0, 0, 0.03) !important;
+}
+
+.login-form :deep(.el-input__wrapper:focus-within),
+.login-form :deep(.el-select__wrapper:focus-within) {
+  border-color: #007AFF !important;
+  background: #fff !important;
+  box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.15) !important;
+}
+
+.login-form :deep(.el-input__inner) {
+  font-size: 14px !important;
+  color: #1d1d1f !important;
+}
+
+.login-form :deep(.el-checkbox__label) {
+  font-size: 12px;
+  color: #6e6e73;
+}
+
+/* 登录按钮 */
+.login-form :deep(.el-button--primary) {
+  width: 100%;
+  height: 38px;
+  border-radius: 10px !important;
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  letter-spacing: 1px !important;
+  background: var(--grad-bubble, linear-gradient(135deg, #12C7AE 0%, #2E84F5 100%)) !important;
+  border: none !important;
+  box-shadow: var(--shadow-mint, 0 10px 28px rgba(18, 199, 174, 0.32)) !important;
+  transition: all 0.25s ease !important;
+}
+
+.login-form :deep(.el-button--primary:hover) {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 30px rgba(18, 199, 174, 0.42) !important;
+}
+
+.login-form :deep(.el-button--primary:active) {
+  transform: translateY(0);
+}
+
+/* 登录底部 */
+.login-footer {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.login-footer :deep(.el-button) {
+  font-size: 12px;
+  color: #6e6e73;
+  padding: 4px 10px;
+  border-radius: 8px;
+  transition: all 0.2s ease;
+}
+
+.login-footer :deep(.el-button:hover) {
+  color: #007AFF;
+  background: rgba(0, 122, 255, 0.08);
+}
+
+.login-footer :deep(.el-button .el-icon) {
+  margin-right: 6px;
+}
+
+.login-version {
+  margin: 10px 0 0;
+  padding-top: 8px;
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #8e8e93;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: 0.02em;
+  border-top: 1px solid rgba(0, 0, 0, 0.04);
+}
+
+.login-version.is-mismatch {
+  color: #e6a23c;
+}
+
+.login-version__warn {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #e6a23c;
+}
+
+/* 表单项 */
+.login-container :deep(.el-form-item__label) {
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  color: #1d1d1f !important;
+}
+
+.login-container :deep(.el-input__wrapper) {
+  border-radius: 10px !important;
+}
+
+.login-container :deep(.el-radio__label) {
+  font-size: 13px !important;
+}
+
+/* 提示信息 */
+.login-container :deep(.el-alert) {
+  border-radius: 12px !important;
+  padding: 12px 16px !important;
+}
+
+.login-container :deep(.el-alert--info) {
+  background: rgba(0, 122, 255, 0.08) !important;
+  border: 1px solid rgba(0, 122, 255, 0.15) !important;
+}
+
+/* 文件选择区域 */
+.file-pick-area {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.file-pick-area :deep(.el-button) {
+  border-radius: 10px !important;
+}
+
+.file-name {
+  color: #34C759;
+  font-size: 13px;
+  font-weight: 500;
+  word-break: break-all;
+}
+
+.file-hint {
+  color: #86868b;
+  font-size: 13px;
+}
+
+/* 导入结果 */
+.import-result-success,
+.import-result-error {
+  padding: 24px 0;
+}
+
+.result-header {
+  text-align: center;
+  margin-bottom: 24px;
+}
+
+.result-header h3 {
+  margin-top: 16px;
+  margin-bottom: 8px;
+  font-size: 20px;
+  color: #1d1d1f;
+  font-weight: 600;
+}
+
+.result-header p {
+  margin: 0;
+  color: #6e6e73;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.success-icon,
+.error-icon {
+  margin-bottom: 12px;
+}
+
+.result-info {
+  background: rgba(0, 0, 0, 0.02);
+  padding: 16px;
+  border-radius: 12px;
+}
+
+.info-item {
+  display: flex;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.info-item:last-child {
+  margin-bottom: 0;
+}
+
+.info-item .label {
+  color: #6e6e73;
+  font-weight: 500;
+  min-width: 90px;
+}
+
+.info-item .value {
+  color: #1d1d1f;
+  flex: 1;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.result-stats {
+  margin-bottom: 24px;
+}
+
+.result-stats h4 {
+  font-size: 14px;
+  color: #1d1d1f;
+  margin-bottom: 16px;
+  font-weight: 600;
+}
+
+.result-stats :deep(.el-table) {
+  border-radius: 12px !important;
+}
+
+.result-warnings {
+  background: rgba(255, 149, 0, 0.08);
+  border: 1px solid rgba(255, 149, 0, 0.18);
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.result-warnings h4 {
+  font-size: 14px;
+  color: #8a5a00;
+  margin: 0 0 12px;
+  font-weight: 600;
+}
+
+.result-warnings ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.result-warnings li {
+  position: relative;
+  color: #4f4f54;
+  line-height: 1.7;
+  font-size: 13px;
+  padding: 8px 0 8px 16px;
+  border-bottom: 1px solid rgba(255, 149, 0, 0.12);
+}
+
+.result-warnings li:last-child {
+  border-bottom: 0;
+}
+
+.result-warnings li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 17px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #ff9500;
+}
+
+.import-detail-page {
+  padding: 4px 0 0;
+}
+
+.detail-account {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+  margin-bottom: 20px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(0, 122, 255, 0.08), rgba(52, 199, 89, 0.08));
+  border: 1px solid rgba(0, 122, 255, 0.12);
+}
+
+.detail-account strong {
+  color: #1d1d1f;
+  font-size: 16px;
+  text-align: right;
+  word-break: break-all;
+}
+
+.detail-label {
+  color: #6e6e73;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.warnings-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.warnings-title h4 {
+  margin: 0;
+}
+
+.warnings-title span {
+  color: #8a5a00;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.error-message {
+  background: rgba(255, 59, 48, 0.06);
+  border: 1px solid rgba(255, 59, 48, 0.15);
+  border-radius: 12px;
+  padding: 16px;
+  color: #FF3B30;
+  text-align: center;
+  font-size: 14px;
+}
+
+.create-account-dialog :deep(.el-dialog__header) {
+  padding: 12px 16px !important;
+}
+
+.create-account-dialog :deep(.el-dialog__title) {
+  font-size: 15px !important;
+}
+
+.create-account-dialog :deep(.el-dialog__body) {
+  padding: 12px 16px 4px !important;
+}
+
+.create-account-dialog :deep(.el-dialog__footer) {
+  padding: 10px 16px !important;
+}
+
+.create-account-form :deep(.el-form-item) {
+  margin-bottom: 10px;
+}
+
+.create-account-form :deep(.el-form-item__label) {
+  font-size: 12px !important;
+  padding-right: 8px !important;
+}
+
+.template-radio-group {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.template-radio-group :deep(.el-radio) {
+  margin-right: 0;
+  height: 24px;
+}
+
+.template-radio-group :deep(.el-radio__label) {
+  font-size: 12px !important;
+  padding-left: 6px;
+}
+
+.template-select {
+  width: 100%;
+}
+
+.code-lengths-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lengths-sep {
+  color: #86868b;
+  font-size: 14px;
+}
+
+.code-lengths-row :deep(.el-input-number) {
+  width: 56px;
+}
+
+/* ========== 响应式 ========== */
+@media (max-width: 480px) {
+  .login-box {
+    width: 90%;
+    padding: 20px 20px 16px;
+    margin: 16px;
+  }
+  
+  .login-header {
+    margin-bottom: 14px;
+  }
+
+  .login-header h2 {
+    font-size: 17px;
+  }
+  
+  .login-footer {
+    flex-direction: column;
+    gap: 4px;
+  }
+}

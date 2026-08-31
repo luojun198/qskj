@@ -1,0 +1,20 @@
+<!-- @dsCard group="Colors" viewport="700x180" name="Secondary — Soap-Bubble Blue" subtitle="--secondary = --blue-500. Links, info, the second bubble." -->
+<!DOCTYPE html>
+<html lang="zh"><head><meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body{margin:0;font-family:var(--font-sans);background:var(--surface-card);color:var(--text-body);padding:22px 24px;}
+  .row{display:flex;gap:6px;}
+  .sw{flex:1;display:flex;flex-direction:column;gap:7px;}
+  .chip{height:62px;border-radius:var(--radius-sm);box-shadow:var(--sheen);}
+  .nm{font:var(--w-medium) 11px/1 var(--font-mono);color:var(--text-muted);}
+  .hex{font:var(--w-regular) 10px/1 var(--font-mono);color:var(--text-subtle);}
+  .star{outline:2px solid var(--ink-900);outline-offset:2px;}
+</style></head><body>
+  <div class="row" id="r"></div>
+  <script>
+    const steps=[50,100,200,300,400,500,600,700];
+    const hex={50:'#EAF4FF',100:'#D2E7FF',200:'#A9D0FF',300:'#79B4FF',400:'#4D9BFF',500:'#2E84F5',600:'#1E6AD6',700:'#1A54A8'};
+    document.getElementById('r').innerHTML=steps.map(s=>`<div class="sw"><div class="chip${s===500?' star':''}" style="background:var(--blue-${s})"></div><div class="nm">${s}</div><div class="hex">${hex[s]}</div></div>`).join('');
+  </script>
+</body></html>

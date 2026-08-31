@@ -1,0 +1,77 @@
+<!-- @dsCard group="Components" viewport="700x540" name="Core — Buttons, Badges, Stats" subtitle="Button / Badge / Avatar / Card / StatTile" -->
+<!DOCTYPE html>
+<html lang="zh"><head><meta charset="utf-8">
+<link rel="stylesheet" href="../../styles.css">
+<style>
+  body{margin:0;font-family:var(--font-sans);background:var(--surface-canvas);color:var(--text-body);padding:24px;}
+  .sec{margin-bottom:22px;}
+  .lbl{font:var(--w-bold) 11px var(--font-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--text-subtle);margin-bottom:12px;}
+  .row{display:flex;flex-wrap:wrap;gap:12px;align-items:center;}
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}
+</style></head><body>
+  <div id="root"></div>
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+  <script src="../../_ds_bundle.js"></script>
+  <script type="text/babel">
+    const { Button, Badge, Avatar, Card, StatTile } = window.DesignSystem_6b732f;
+    const Ic = (n) => <i data-lucide={n}></i>;
+    function Demo(){
+      return (
+        <div>
+          <div className="sec">
+            <div className="lbl">Button · variants</div>
+            <div className="row">
+              <Button variant="primary" icon={Ic("sparkles")}>开始清洗</Button>
+              <Button variant="secondary" icon={Ic("refresh-cw")}>同步</Button>
+              <Button variant="soft">软按钮</Button>
+              <Button variant="ghost">幽灵</Button>
+              <Button variant="outline">描边</Button>
+              <Button variant="danger">删除</Button>
+            </div>
+          </div>
+          <div className="sec">
+            <div className="lbl">Button · sizes & states</div>
+            <div className="row">
+              <Button size="sm">小</Button>
+              <Button size="md">中</Button>
+              <Button size="lg" iconRight={Ic("arrow-right")}>大</Button>
+              <Button disabled>禁用</Button>
+            </div>
+          </div>
+          <div className="sec">
+            <div className="lbl">Badge</div>
+            <div className="row">
+              <Badge tone="success" dot>已对账</Badge>
+              <Badge tone="warning">待处理</Badge>
+              <Badge tone="danger" dot>逾期</Badge>
+              <Badge tone="blue">收入</Badge>
+              <Badge tone="neutral">草稿</Badge>
+              <Badge tone="solid">PRO</Badge>
+            </div>
+          </div>
+          <div className="sec">
+            <div className="lbl">StatTile</div>
+            <div className="grid">
+              <StatTile label="本月支出" value="12,480.00" delta="+8.2%" icon={Ic("trending-up")} />
+              <StatTile label="本月收入" value="38,900.00" delta="+15%" icon={Ic("wallet")} />
+              <StatTile label="待对账" value="3" unit="" delta="-2" icon={Ic("inbox")} />
+            </div>
+          </div>
+          <div className="sec" style={{marginBottom:0}}>
+            <div className="lbl">Avatar</div>
+            <div className="row">
+              <Avatar name="林晚晴" size="sm" />
+              <Avatar name="Ada Wang" size="md" />
+              <Avatar name="财务" size="lg" />
+            </div>
+          </div>
+        </div>
+      );
+    }
+    ReactDOM.createRoot(document.getElementById("root")).render(<Demo/>);
+    setTimeout(()=>window.lucide&&window.lucide.createIcons(),60);
+  </script>
+</body></html>

@@ -1,0 +1,193 @@
+/* ========== 报表模块统一样式 ========== */
+
+/* 覆盖 apple-element-override 的 min-height，锁定在 main 可视区内，由 body 内滚动 */
+.page.report-page,
+.page.cash-flow-page {
+  height: 100%;
+  min-height: 0;
+  max-height: 100%;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.report-page {
+  display: flex;
+  flex-direction: column;
+  padding: 14px 18px 18px;
+  background: var(--surface-canvas, #f3faf9);
+}
+
+.report-page > .report-header {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: transparent;
+}
+
+.report-page > .report-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* —— 工具栏 —— */
+.report-toolbar-row,
+.report-view-toolbar__main {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  background: var(--surface-card, #fff);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xs);
+}
+
+.report-view-toolbar__title h3 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-strong);
+  letter-spacing: -0.5px;
+}
+
+.report-view-toolbar__subtitle {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.formula-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 16px;
+  background: var(--surface-card, #fff);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xs);
+}
+
+.toolbar-row {
+  display: flex;
+  gap: 14px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  background: var(--surface-card, #fff);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xs);
+  justify-content: flex-start;
+}
+
+.toolbar-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--ink-50);
+}
+
+/* —— 网格 —— */
+.sheet-grid-wrap {
+  --sheet-grid-line: var(--border-default);
+  --sheet-grid-header-line: var(--border-strong);
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--sheet-grid-line);
+  border-radius: var(--radius-lg);
+  background: var(--surface-card, #fff);
+  box-shadow: var(--shadow-sm);
+}
+
+.row-index,
+.column-header-cell {
+  background: var(--grad-foam) !important;
+  color: var(--text-muted) !important;
+  font-size: 13px;
+  font-weight: 700;
+  border: 1px solid var(--sheet-grid-line);
+}
+
+.column-header-cell {
+  border-bottom: 2px solid var(--sheet-grid-header-line);
+}
+
+.column-header-cell.active,
+.row-index.active {
+  background: var(--surface-brand-soft) !important;
+  color: var(--brand-mint) !important;
+}
+
+.cell {
+  border: 1px solid var(--sheet-grid-line);
+}
+
+.cell-formula {
+  background: #fef9f0;
+  color: #b88230;
+}
+
+.cell.selected,
+.cell.bulk-selected {
+  outline: 2px solid var(--brand-mint) !important;
+  outline-offset: -2px;
+}
+
+.cell.editing {
+  background: var(--surface-brand-soft);
+}
+
+.cell-editor-input {
+  background: var(--white);
+}
+
+/* —— CashFlow 页 —— */
+.cash-flow-page {
+  display: flex;
+  flex-direction: column;
+  padding: 14px 18px 18px;
+  background: var(--surface-canvas);
+}
+
+.rpt-table {
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+}
+
+.rpt-table th {
+  background: var(--grad-foam);
+  color: var(--text-strong);
+  font-weight: 700;
+  padding: 10px 14px;
+}
+
+.rpt-table td {
+  border: 1px solid var(--border-default);
+  padding: 8px 14px;
+}
+
+.rpt-table .section-header td {
+  background: var(--ink-50);
+  font-weight: 700;
+  color: var(--text-strong);
+}
+
+.rpt-table .subtotal-row td,
+.rpt-table .total-row td {
+  background: var(--surface-brand-soft);
+  font-weight: 600;
+}

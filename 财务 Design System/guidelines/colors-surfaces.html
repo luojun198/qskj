@@ -1,0 +1,20 @@
+<!-- @dsCard group="Colors" viewport="700x200" name="Surfaces" subtitle="Canvas, card, sunken, inverse — the layering stack." -->
+<!DOCTYPE html>
+<html lang="zh"><head><meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body{margin:0;font-family:var(--font-sans);background:var(--surface-canvas);color:var(--text-body);padding:22px 24px;}
+  .row{display:flex;gap:14px;}
+  .cell{flex:1;border-radius:var(--radius-md);overflow:hidden;border:1px solid var(--border-subtle);}
+  .chip{height:70px;display:flex;align-items:center;justify-content:center;font:var(--w-bold) 13px var(--font-sans);}
+  .meta{padding:9px 12px;background:var(--surface-card);}
+  .lab{font:var(--w-bold) 13px/1 var(--font-sans);color:var(--text-strong);}
+  .nm{margin-top:4px;font:var(--w-regular) 10px/1 var(--font-mono);color:var(--text-subtle);}
+</style></head><body>
+  <div class="row">
+    <div class="cell"><div class="chip" style="background:var(--surface-canvas)">页面</div><div class="meta"><div class="lab">Canvas</div><div class="nm">--surface-canvas</div></div></div>
+    <div class="cell"><div class="chip" style="background:var(--surface-card);box-shadow:var(--shadow-sm)">卡片</div><div class="meta"><div class="lab">Card</div><div class="nm">--surface-card</div></div></div>
+    <div class="cell"><div class="chip" style="background:var(--surface-sunken)">凹陷</div><div class="meta"><div class="lab">Sunken</div><div class="nm">--surface-sunken</div></div></div>
+    <div class="cell"><div class="chip" style="background:var(--surface-inverse);color:var(--text-on-dark)">深色</div><div class="meta"><div class="lab">Inverse</div><div class="nm">--surface-inverse</div></div></div>
+  </div>
+</body></html>

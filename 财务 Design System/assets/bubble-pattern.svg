@@ -1,0 +1,19 @@
+<svg width="480" height="240" viewBox="0 0 480 240" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="bubble pattern">
+  <defs>
+    <radialGradient id="bp" cx="38%" cy="32%" r="72%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.9"></stop>
+      <stop offset="60%" stop-color="#9FEDDF" stop-opacity="0.35"></stop>
+      <stop offset="100%" stop-color="#2E84F5" stop-opacity="0.55"></stop>
+    </radialGradient>
+  </defs>
+  <g fill="url(#bp)" stroke="#66E0CB" stroke-opacity="0.5" stroke-width="1.5">
+    <circle cx="60" cy="70" r="34"></circle>
+    <circle cx="170" cy="150" r="22"></circle>
+    <circle cx="250" cy="50" r="16"></circle>
+    <circle cx="330" cy="120" r="40"></circle>
+    <circle cx="430" cy="60" r="26"></circle>
+    <circle cx="120" cy="200" r="14"></circle>
+    <circle cx="400" cy="190" r="20"></circle>
+    <circle cx="220" cy="210" r="10"></circle>
+  </g>
+</svg>

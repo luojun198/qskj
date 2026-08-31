@@ -1,0 +1,374 @@
+/**
+ * Finance Shampoo Design System - Element Plus Override
+ * 财务洗头膏设计系统 - Element Plus组件覆盖
+ * 泡泡薄荷风格：薄荷绿主色 + 泡泡蓝辅助 + 柔和圆角 + 冰镇清爽感
+ */
+
+/* ========== 全局变量 ========== */
+:root {
+  /* 品牌色彩（引用 design-tokens） */
+  --brand-mint: var(--mint-500, #12C7AE);
+  --brand-blue: var(--blue-500, #2E84F5);
+  
+  /* 灰度参考色（直接给值，避免递归自引用 var(--ink-900, ...) 导致变量未定义。
+     design-tokens/colors.css 定义了同名 token，若已加载会被 :root 覆盖为相同值，兼容。） */
+  --ink-900: #0C2A2E;
+  --ink-700: #2B4C51;
+  --ink-500: #62858A;
+  --ink-200: #D6E5E6;
+  --ink-100: #E9F2F2;
+  --ink-50:  #F4F9F9;
+
+  /* 文本 */
+  --text-primary: var(--text-strong);
+  --text-secondary: var(--text-body);
+  --text-tertiary: var(--text-muted);
+  --text-disabled: var(--text-subtle);
+
+  /* 边框 */
+  --border-light: var(--border-subtle);
+  --border-medium: var(--border-default);
+  --border-strong: var(--border-strong);
+
+  /* 阴影 */
+  --shadow-xs: 0 1px 2px rgba(12, 42, 46, 0.04);
+  --shadow-sm: 0 2px 8px rgba(12, 42, 46, 0.06);
+  --shadow-md: 0 4px 16px rgba(12, 42, 46, 0.08);
+  --shadow-lg: 0 8px 32px rgba(12, 42, 46, 0.12);
+  --shadow-xl: 0 16px 48px rgba(12, 42, 46, 0.16);
+  --shadow-mint: 0 4px 14px rgba(18, 199, 174, 0.25);
+
+  /* 圆角 */
+  --radius-sm: var(--radius-sm, 10px);
+  --radius-md: var(--radius-md, 14px);
+  --radius-lg: var(--radius-lg, 20px);
+  --radius-xl: var(--radius-xl, 24px);
+  --radius-pill: 9999px;
+
+  /* 字体 */
+  --font-display: var(--cw-font-heading);
+  --font-body: var(--cw-font-body);
+  --font-mono: var(--cw-font-number);
+
+  /* 动画曲线 */
+  --ease-out: cubic-bezier(0.25, 0.1, 0.25, 1);
+  --ease-bubble: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --duration-fast: 150ms;
+  --duration-normal: 250ms;
+}
+
+/* ========== 按钮 (Bubbly Buttons) ========== */
+.el-button {
+  border-radius: 20px !important; /* 更大的圆角，极致泡泡感 */
+  font-weight: 700 !important;
+  font-family: var(--font-body) !important;
+  border: none !important;
+  transition: all var(--duration-fast) var(--ease-bubble) !important;
+  letter-spacing: 0.3px;
+  position: relative;
+  overflow: hidden;
+}
+
+.el-button--small {
+  border-radius: 16px !important;
+  padding: 0 14px !important;
+}
+
+.el-button--large {
+  border-radius: 28px !important;
+  padding: 0 28px !important;
+}
+
+.el-button:hover {
+  transform: translateY(-2px) scale(1.02);
+  filter: saturate(1.1);
+}
+
+.el-button:active {
+  transform: translateY(1px) scale(0.97);
+  opacity: 0.9;
+}
+
+/* 主要按钮 - 签名薄荷渐变 */
+.el-button--primary:not(.is-link):not(.is-text) {
+  background: var(--grad-bubble, linear-gradient(135deg, #12C7AE 0%, #2E84F5 100%)) !important;
+  color: #fff !important;
+  box-shadow: 0 4px 14px rgba(18, 199, 174, 0.3) !important;
+}
+
+.el-button--primary:not(.is-link):not(.is-text):hover {
+  box-shadow: 0 6px 20px rgba(18, 199, 174, 0.45) !important;
+}
+
+/* 成功按钮 - 翡翠绿 */
+.el-button--success:not(.is-link):not(.is-text) {
+  background: linear-gradient(135deg, #0FB57E 0%, #0AA694 100%) !important;
+  color: #fff !important;
+  box-shadow: 0 4px 12px rgba(15, 181, 126, 0.25) !important;
+}
+
+/* 警告按钮 - 活力橙 */
+.el-button--warning:not(.is-link):not(.is-text) {
+  background: linear-gradient(135deg, #F4A52E 0%, #E68600 100%) !important;
+  color: #fff !important;
+  box-shadow: 0 4px 12px rgba(244, 165, 46, 0.25) !important;
+}
+
+/* 危险按钮 - 珊瑚红 */
+.el-button--danger:not(.is-link):not(.is-text) {
+  background: linear-gradient(135deg, #F2545B 0%, #E0434A 100%) !important;
+  color: #fff !important;
+  box-shadow: 0 4px 12px rgba(242, 84, 91, 0.25) !important;
+}
+
+/* 信息/次要按钮 - 泡泡蓝 */
+.el-button--info:not(.is-link):not(.is-text) {
+  background: linear-gradient(135deg, #A9D0FF 0%, #79B4FF 100%) !important;
+  color: #1A54A8 !important;
+  box-shadow: 0 4px 12px rgba(121, 180, 255, 0.2) !important;
+}
+
+/* 默认/朴素按钮 */
+.el-button.is-plain:not(.el-button--primary):not(.el-button--success):not(.el-button--warning):not(.el-button--danger):not(.el-button--info) {
+  background: var(--white) !important;
+  border: 1.5px solid var(--mint-200) !important;
+  color: var(--mint-700) !important;
+  box-shadow: var(--shadow-xs) !important;
+}
+
+.el-button.is-plain:hover {
+  background: var(--mint-50) !important;
+  border-color: var(--mint-400) !important;
+}
+
+/* Link类型按钮 - 极简 */
+.el-button.is-link {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  transform: none !important;
+  padding: 4px 8px !important;
+  font-weight: 600 !important;
+  border-radius: 8px !important;
+}
+
+.el-button.is-link:hover {
+  background: var(--mint-50) !important;
+  transform: translateY(-1px);
+}
+
+/* ========== 输入框 (更多特征，更易识别) ========== */
+.el-input__wrapper,
+.el-textarea__inner,
+.el-select__wrapper {
+  border-radius: var(--radius-sm) !important;
+  background-color: #f8fbfb !important; /* 淡淡的青绿底色 */
+  border: 1px solid var(--ink-200) !important;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.03) !important;
+  transition: all var(--duration-fast) var(--ease-out) !important;
+}
+
+.el-input__wrapper:hover,
+.el-select__wrapper:hover,
+.el-textarea__inner:hover {
+  border-color: var(--mint-400) !important;
+  background-color: var(--white) !important;
+}
+
+.el-input__wrapper.is-focus,
+.el-select__wrapper.is-focus,
+.el-textarea__inner:focus {
+  border-color: var(--brand-mint) !important;
+  background-color: var(--white) !important;
+  box-shadow: 0 0 0 3px rgba(18, 199, 174, 0.12) !important;
+}
+
+.el-input__inner,
+.el-select__inner {
+  color: var(--ink-900) !important;
+  font-weight: 500 !important;
+}
+
+.el-input.is-disabled .el-input__wrapper {
+  background-color: var(--ink-50) !important;
+}
+
+/* ========== disabled 输入框：已输入文字保持深色、placeholder 仍浅色、可选中复制 ==========
+ * 根因：EP 2.6.1 在 input.scss 中对 .el-input.is-disabled .el-input__inner 用
+ *   -webkit-text-fill-color: var(--el-disabled-text-color) 强制浅色，
+ *   该属性优先级高于 color，所以仅覆盖 color 不生效，必须同时覆盖 -webkit-text-fill-color。
+ *   （上面第 191 行原曾给 wrapper 设 color，但 wrapper 不承载文字，无效，已删除。）
+ * 范围：全局所有详情/查看/审核后 disabled 的 el-input / el-textarea / el-input-number /
+ *       el-autocomplete / el-date-picker / el-select，不区分业务模块。
+ * placeholder 显式保留 EP 默认浅灰，避免被 inner 的 color 规则污染。
+ */
+.el-input.is-disabled .el-input__inner,
+.el-textarea.is-disabled .el-textarea__inner,
+.el-input-number.is-disabled .el-input__inner,
+.el-autocomplete.is-disabled .el-input__inner,
+.el-date-editor.is-disabled .el-input__inner {
+  color: var(--ink-900) !important;
+  -webkit-text-fill-color: var(--ink-900) !important;
+  cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* el-select 的已选文字与占位文字是独立元素（selected-item / placeholder）。
+ * EP 2.6.1 的 disabled 类挂在 .el-select__wrapper 上（不在 .el-select 根元素），
+ * 故选择器以 wrapper.is-disabled 为基准；EP 默认 user-select:none。
+ * 注意：空字段下 .el-select__placeholder 带 is-transparent 类才是真正的占位提示，
+ *       未选时 selected-item 与 placeholder 显示同一文案，需靠 transparent 区分。 */
+.el-select__wrapper.is-disabled .el-select__selected-item {
+  color: var(--ink-900) !important;
+  cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
+}
+/* 占位提示（空字段）保持 EP 默认浅灰 */
+.el-select__wrapper.is-disabled .el-select__placeholder.is-transparent {
+  color: var(--el-text-color-placeholder, #a8abb2) !important;
+}
+
+/* placeholder 在 disabled 下保持 EP 默认浅灰（显式声明，防止被上面的 inner color 规则污染） */
+.el-input.is-disabled .el-input__inner::placeholder,
+.el-textarea.is-disabled .el-textarea__inner::placeholder,
+.el-date-editor.is-disabled .el-input__inner::placeholder {
+  color: var(--el-text-color-placeholder, #a8abb2) !important;
+  -webkit-text-fill-color: var(--el-text-color-placeholder, #a8abb2) !important;
+}
+
+/* ========== 卡片 ========== */
+.el-card {
+  border-radius: var(--radius-lg) !important;
+  border: 1px solid var(--border-subtle) !important;
+  box-shadow: var(--shadow-xs), var(--sheen) !important;
+  transition: all var(--duration-normal) var(--ease-bubble) !important;
+}
+
+.el-card:hover {
+  box-shadow: var(--shadow-lg) !important;
+  transform: translateY(-4px);
+}
+
+.el-card__header {
+  padding: 20px 24px !important;
+  border-bottom: 1px solid var(--border-subtle) !important;
+  background: var(--grad-foam) !important;
+}
+
+/* ========== 表格 ========== */
+.el-table {
+  border-radius: var(--radius-lg) !important;
+  overflow: hidden !important;
+}
+
+.el-table th.el-table__cell {
+  background: var(--grad-foam) !important;
+  font-weight: 700 !important;
+  color: var(--text-strong) !important;
+  border-bottom: 1px solid var(--border-subtle) !important;
+}
+
+.el-table tr:hover > td.el-table__cell {
+  background-color: var(--surface-brand-soft) !important;
+}
+
+/* ========== 对话框 (Bubbly Modal) ========== */
+.el-dialog {
+  border-radius: var(--radius-xl) !important;
+  border: 1px solid var(--border-subtle) !important;
+  box-shadow: var(--shadow-xl) !important;
+  overflow: hidden;
+  background: var(--white) !important;
+}
+
+.el-dialog__header {
+  padding: 24px 32px !important;
+  background: var(--grad-rinse, radial-gradient(120% 120% at 0% 0%, #E8FBF7 0%, #EAF4FF 55%, #F3FAF9 100%)) !important;
+  margin-right: 0 !important;
+  border-bottom: 1px solid var(--border-subtle) !important;
+  position: relative;
+}
+
+.el-dialog__header::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, var(--mint-300) 0%, transparent 100%);
+  opacity: 0.5;
+}
+
+.el-dialog__title {
+  font-size: 22px !important;
+  font-weight: 800 !important;
+  color: var(--ink-900) !important;
+  letter-spacing: -0.02em !important;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.05);
+}
+.el-dialog__body {
+  padding: 20px 28px 24px !important;
+  background: var(--white) !important;
+}
+
+.el-dialog__footer {
+  padding: 14px 28px !important;
+  background: var(--ink-50) !important;
+  border-top: 1px solid var(--border-subtle) !important;
+  box-shadow: inset 0 1px 3px rgba(0,0,0,0.02);
+}
+
+/* —— 档案类表单板块 (Archive Form Sectors) —— */
+.form-sector {
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px dashed var(--border-subtle);
+}
+
+.form-sector:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+}
+
+.form-sector-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--mint-700);
+  margin-bottom: 12px;
+  position: relative;
+}
+
+.form-sector-title::before {
+  content: '';
+  width: 4px;
+  height: 12px;
+  background: var(--brand-mint);
+  border-radius: 2px;
+}
+
+/* —— 紧凑表单项 —— */
+.el-form-item {
+  margin-bottom: 14px !important;
+}
+.el-form-item--small.el-form-item {
+  margin-bottom: 12px !important;
+}
+
+/* ========== 标签 ========== */
+.el-tag {
+  border-radius: var(--radius-pill) !important;
+  font-weight: 600 !important;
+  padding: 0 12px !important;
+}
+
+.el-tag--primary {
+  background: var(--surface-brand-soft) !important;
+  color: var(--mint-600) !important;
+  border: 1px solid var(--mint-200) !important;
+}

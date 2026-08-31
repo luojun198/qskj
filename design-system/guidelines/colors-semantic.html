@@ -1,0 +1,21 @@
+<!-- @dsCard group="Colors" viewport="700x180" name="Semantic" subtitle="Success / Warning / Danger / Info — each with a soft tint." -->
+<!DOCTYPE html>
+<html lang="zh"><head><meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body{margin:0;font-family:var(--font-sans);background:var(--surface-card);color:var(--text-body);padding:22px 24px;}
+  .row{display:flex;gap:14px;}
+  .cell{flex:1;}
+  .pair{display:flex;gap:6px;}
+  .chip{flex:1;height:52px;border-radius:var(--radius-sm);}
+  .soft{height:24px;}
+  .lab{margin-top:9px;font:var(--w-bold) 13px/1 var(--font-sans);color:var(--text-strong);}
+  .nm{margin-top:4px;font:var(--w-regular) 10px/1 var(--font-mono);color:var(--text-subtle);}
+</style></head><body>
+  <div class="row">
+    <div class="cell"><div class="chip" style="background:var(--success)"></div><div class="chip soft" style="background:var(--success-soft);margin-top:6px"></div><div class="lab">成功 Success</div><div class="nm">--success · #0FB57E</div></div>
+    <div class="cell"><div class="chip" style="background:var(--warning)"></div><div class="chip soft" style="background:var(--warning-soft);margin-top:6px"></div><div class="lab">警告 Warning</div><div class="nm">--warning · #F4A52E</div></div>
+    <div class="cell"><div class="chip" style="background:var(--danger)"></div><div class="chip soft" style="background:var(--danger-soft);margin-top:6px"></div><div class="lab">危险 Danger</div><div class="nm">--danger · #F2545B</div></div>
+    <div class="cell"><div class="chip" style="background:var(--info)"></div><div class="chip soft" style="background:var(--info-soft);margin-top:6px"></div><div class="lab">信息 Info</div><div class="nm">--info · #2E84F5</div></div>
+  </div>
+</body></html>

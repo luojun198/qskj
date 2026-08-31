@@ -1,0 +1,168 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+client/public/version.json
+*.tsbuildinfo
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Database
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/backup/
+data/_backup/
+data/snapshots/*.db
+data/snapshots/*.db-wal
+data/snapshots/*.db-shm
+data/*.backup-*
+data/_debug_*.xlsx
+data/_style_check.xlsx
+server/data/*.db
+server/data/*.db-wal
+server/data/*.db-shm
+server/backups/*.db
+server/backups/*.db-wal
+server/backups/*.db-shm
+
+# Deploy artifacts
+deploy/
+deploy-portable/
+deploy-final/
+deploy-final.prev-*/
+node-v*-win-x64/
+node-v*-win-x64.zip
+
+# Logs
+*.log
+debug.log
+stdout.*.log
+*_stdout*.log
+*_stderr*.log
+
+# Misc
+*.zip
+__MACOSX/
+temp_*.tar.gz
+temp_*.zip
+
+# 软件授权私钥（不入库）
+tools/license-keys/*.pem
+注册机/license-private.pem
+注册机/generate-license.exe
+
+# 临时 / 一次性脚本（连字符 + 下划线 + 多扩展名）
+test-*.js
+test-*.mjs
+test-*.cjs
+test-*.ps1
+check_*.js
+check-*.js
+check-*.mjs
+check-*.cjs
+check_*.mjs
+check_*.cjs
+tmp_*.py
+tmp_*.js
+tmp_*.mjs
+tmp_*.cjs
+debug-*.ps1
+verify-*.ps1
+verify-*.mjs
+analyze-*.mjs
+clear-*.mjs
+query-*.mjs
+find-*.mjs
+find_*.cjs
+run-migration*.mjs
+run-migration*.js
+run-migrations-*.mjs
+run-*.ps1
+post-and-*.ps1
+import-*.js
+init-*.js
+add-*.js
+migrate-*.js
+complete-*.js
+complete-*.ps1
+final-*.ps1
+fix-fts5-*.sql
+fix-fts-*.sql
+fix-voucher-*.sql
+
+# 部署历史 / 临时 JSON / 安装包
+deploy-final.prev-*/
+node-v*-win-x64/
+node-v*-win-x64.zip
+login_result.json
+*.tar.gz
+
+# 临时文件和备份
+*.bak
+tmp_*/
+temp_*/
+*_backup_*/
+手动备份_*/
+backups/
+uploads/
+server/uploads/
+优化日志.txt
+优化日志.xlsx
+功能评审报告.json
+test/
+tools/
+upgrade-output/
+stdout
+tmp_xlsx_bak/
+
+# AI 工具本地配置
+.reasonix/
+.claude/launch.json
+.claude/settings.local.json
+
+# 百度云上传配置
+*.baiduyun.uploading.cfg
+
+# 产品入库单（数据文件）
+产品入库单/
+
+# 压缩部署相关
+压缩部署包.bat
+一键打包.bat
+
+# 注册机（已排除私钥，但排除整个目录）
+注册机/
+
+# Claude/Codex 工作树（不应提交）
+.claude/worktrees/
+
+# 其他临时脚本
+start-openclaw-gateway.ps1
+buildSheetRows_new.ts
+
+# 清理补充（2026-08-31）
+logs/
+deploy-output/*.zip
+data/recovery/
+data/*.db.upload_*
+data/*.db.bak-*
+data/*.db.corrupted-*
+.tmp-*.log
+sout.log
+serr.log
+scratch/temp/

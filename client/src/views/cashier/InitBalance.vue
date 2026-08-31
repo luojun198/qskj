@@ -1,0 +1,180 @@
+<template>
+  <div class="page page-cashier-initbal">
+    <div class="page-header">
+      <h3>出纳期初余额</h3>
+      <div class="filter-row">
+        <el-button type="primary" :loading="saving" :disabled="locked" @click="handleSaveAll">
+          <el-icon><Check /></el-icon>
+          保存
+        </el-button>
+      </div>
+    </div>
+    <div ref="tableContainerRef" class="table-container">
+      <el-table ref="tableRef" :data="rows" :height="tableHeight" border size="small" @header-dragend="onDragEnd">
+        <el-table-column label="科目编码" prop="account_code" :width="cw('account_code', 120)" />
+        <el-table-column label="科目名称" prop="account_name" min-width="160" :width="widths.account_name" />
+        <el-table-column label="币别" prop="currency" :width="cw('currency', 80)" />
+        <el-table-column label="期初余额" column-key="balance" :width="cw('balance', 160)" align="right">
+          <template #default="{ row }">
+            <el-input-number
+              v-model="row.balance"
+              :precision="2"
+              :controls="false"
+              style="width:100%"
+              size="small"
+              :disabled="locked"
+              @change="row._dirty = true"
+            />
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, onMounted } from 'vue'
+import { ElMessage } from 'element-plus'
+import { Check, Download, Upload, Document } from '@element-plus/icons-vue'
+import { cashierApi } from '@/api/cashier'
+import { useFillHeightTable } from '@/composables/useFillHeightTable'
+import { useColumnWidthMemory } from '@/composables/useColumnWidthMemory'
+
+const { tableRef, containerRef: tableContainerRef, tableHeight } = useFillHeightTable()
+const { colWidth, onDragEnd, widths, bindTable } = useColumnWidthMemory('cashier_init_balance')
+function cw(key: string, fallback: number) { return colWidth(key, fallback) }
+bindTable(tableRef)
+
+interface Row {
+  account_code: string
+  account_name?: string
+  currency: string
+  balance: number
+  _dirty?: boolean
+}
+
+const rows = ref<Row[]>([])
+const saving = ref(false)
+const initDate = ref<string | null>(null)
+const locked = ref(false)
+let dateDirty = false
+
+function markDateDirty() { dateDirty = true }
+
+onMounted(async () => {
+  const [ibRes, acRes] = await Promise.all([
+    cashierApi.getInitBalances(),
+    cashierApi.getAccounts(),
+  ])
+  const acMap = new Map((acRes.data ?? []).map((a: any) => [a.code, a.name]))
+  const { rows: ibRows, init_date, locked: isLocked } = ibRes.data as any
+  initDate.value = init_date ?? null
+  locked.value = !!isLocked
+
+  const existing = new Map((ibRows ?? []).map((r: any) => [`${r.account_code}::${r.currency}`, r.balance]))
+  rows.value = (acRes.data ?? []).map((a: any) => ({
+    account_code: a.code,
+    account_name: acMap.get(a.code) as string | undefined,
+    currency: 'RMB',
+    balance: existing.get(`${a.code}::RMB`) ?? 0,
+    _dirty: false,
+  }))
+})
+
+async function handleSaveAll() {
+  const dirty = rows.value.filter(r => r._dirty)
+  if (!dirty.length && !dateDirty) return ElMessage.info('没有修改')
+  saving.value = true
+  try {
+    for (const r of dirty) {
+      await cashierApi.upsertInitBalance({
+        account_code: r.account_code,
+        currency: r.currency,
+        balance: r.balance,
+        init_date: initDate.value ?? undefined,
+      })
+      r._dirty = false
+    }
+    if (!dirty.length && dateDirty && rows.value.length) {
+      const r = rows.value[0]
+      await cashierApi.upsertInitBalance({
+        account_code: r.account_code,
+        currency: r.currency,
+        balance: r.balance,
+        init_date: initDate.value ?? undefined,
+      })
+    }
+    dateDirty = false
+    ElMessage.success('保存成功')
+  } finally {
+    saving.value = false
+  }
+}
+
+// ── 导出 ──────────────────────────────────────────────────
+async function handleExport() {
+  const XLSX = await import('xlsx')
+  const data = [
+    ['科目编码', '科目名称', '币别', '期初余额'],
+    ...rows.value.map(r => [r.account_code, r.account_name ?? '', r.currency, r.balance]),
+  ]
+  const ws = XLSX.utils.aoa_to_sheet(data)
+  ws['!cols'] = [{ wch: 14 }, { wch: 22 }, { wch: 8 }, { wch: 14 }]
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, '出纳期初余额')
+  XLSX.writeFile(wb, `出纳期初余额_${initDate.value ?? '未设置'}.xlsx`)
+}
+
+// ── 下载模版 ───────────────────────────────────────────────
+async function handleDownloadTemplate() {
+  const XLSX = await import('xlsx')
+  const data = [
+    ['科目编码', '科目名称', '币别', '期初余额'],
+    ['1001', '库存现金', 'RMB', 0],
+    ['1002', '银行存款', 'RMB', 0],
+  ]
+  const ws = XLSX.utils.aoa_to_sheet(data)
+  ws['!cols'] = [{ wch: 14 }, { wch: 22 }, { wch: 8 }, { wch: 14 }]
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, '出纳期初余额')
+  XLSX.writeFile(wb, '出纳期初余额导入模版.xlsx')
+}
+
+// ── 导入 ──────────────────────────────────────────────────
+async function handleImport(file: any) {
+  const XLSX = await import('xlsx')
+  const raw: File = file.raw
+  if (!raw) return
+  const buf = await raw.arrayBuffer()
+  const wb = XLSX.read(buf, { type: 'array' })
+  const ws = wb.Sheets[wb.SheetNames[0]]
+  const data: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
+  // 找表头行（含"科目编码"的行）
+  const headerIdx = data.findIndex(r => String(r[0]).includes('科目编码'))
+  if (headerIdx < 0) return ElMessage.error('未找到表头行（需包含"科目编码"列）')
+  const dataRows = data.slice(headerIdx + 1).filter(r => r[0])
+
+  // 按科目编码更新余额
+  const codeMap = new Map(rows.value.map(r => [r.account_code, r]))
+  let updated = 0
+  for (const r of dataRows) {
+    const code = String(r[0]).trim()
+    const balance = Number(r[3]) || 0
+    const row = codeMap.get(code)
+    if (row) {
+      row.balance = balance
+      row._dirty = true
+      updated++
+    }
+  }
+  if (!updated) return ElMessage.warning('未匹配到任何科目编码，请检查文件格式')
+  ElMessage.success(`已导入 ${updated} 条，请点击保存`)
+}
+</script>
+
+<style scoped>
+.page-cashier-initbal { display: flex; flex-direction: column; height: 100%; }
+.filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.label { font-size: 13px; color: var(--el-text-color-regular); }
+.table-container { flex: 1; overflow: hidden; padding: 0 16px 8px; }
+</style>

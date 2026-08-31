@@ -1,0 +1,35 @@
+/* ========== Apple Style Amount Display ========== */
+
+.apple-amount {
+  font-family: 'SF Mono', 'Menlo', 'Monaco', 'Courier New', monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  font-weight: 500;
+}
+
+/* 正数（借方） */
+.apple-amount--positive {
+  color: #34C759;
+  font-weight: 600;
+}
+
+/* 负数（贷方） */
+.apple-amount--negative {
+  color: #FF3B30;
+  font-weight: 600;
+}
+
+/* 零 */
+.apple-amount--zero {
+  color: #86868b;
+}
+
+/* 大号金额 */
+.apple-amount--lg {
+  font-size: 16px;
+}
+
+/* 小号金额 */
+.apple-amount--sm {
+  font-size: 12px;
+}

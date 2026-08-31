@@ -1,0 +1,31 @@
+#!/usr/bin/env python3
+import os
+
+content = '''<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.user.ccswitch-default</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/luojun/projects/cw/模版/测试账套/ccswitch-startup.sh</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>/tmp/ccswitch-startup.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/ccswitch-startup.log</string>
+</dict>
+</plist>
+'''
+
+path = os.path.expanduser('~/Library/LaunchAgents/com.user.ccswitch-default.plist')
+with open(path, 'w') as f:
+    f.write(content)
+os.chmod(path, 0o644)
+print('LaunchAgent 已安装:', path)

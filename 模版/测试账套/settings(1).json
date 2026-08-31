@@ -1,0 +1,34 @@
+{
+  "env": {
+    "ANTHROPIC_API_KEY": "sk-BN99gi9ZI5GiCklLFbKMu1TwoiPEKGgo5nYug2nU2uOpAeZw",
+    "ANTHROPIC_BASE_URL": "http://43.110.46.94/",
+    "ANTHROPIC_MODEL": "claude-sonnet-4-6",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4-6",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-7",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-sonnet-4-6",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION": "claude-opus-4-6",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME": "claude-opus-4-6",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION": "Claude Opus 4.6",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "claude-sonnet-4-6",
+    "ENABLE_EXPERIMENTAL_MCP_CLI": "true"
+  },
+  "theme": "light",
+  "baseUrl": "http://43.110.46.94/",
+  "models": {
+    "claude-sonnet-4-6": {
+      "maxTokens": 200000,
+      "contextWindow": 200000
+    },
+    "claude-opus-4-6": {
+      "maxTokens": 200000,
+      "contextWindow": 200000
+    },
+    "claude-opus-4-7": {
+      "maxTokens": 200000,
+      "contextWindow": 200000
+    }
+  },
+  "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+  "model": "opus",
+  "enableThinking": true
+}

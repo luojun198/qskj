@@ -1,0 +1,289 @@
+/* ========== Base Module - Apple Style ========== */
+/* 基础数据模块 - 苹果设计风格 */
+
+/* 基础数据页面通用样式 */
+.base-page {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 96px);
+  background: var(--gray-100);
+}
+
+/* 会计科目页面 */
+.account-page {
+  display: flex;
+  flex-direction: column;
+}
+
+.account-header {
+  /* 布局见 common.css .page-header；此处仅保留模块间距 */
+  margin-bottom: 20px;
+}
+
+.account-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* 科目树形表格 */
+.account-tree-table {
+  flex: 1;
+  min-height: 0;
+  border-radius: var(--radius-xl) !important;
+  overflow: hidden !important;
+}
+
+.account-tree-table th.el-table__cell {
+  background: linear-gradient(to bottom, var(--gray-100) 0%, var(--gray-200) 100%) !important;
+  font-family: var(--cw-table-header-font-family) !important;
+  font-weight: var(--cw-table-header-font-weight) !important;
+  font-size: var(--cw-table-header-font-size) !important;
+  text-transform: none !important;
+  letter-spacing: 0 !important;
+}
+
+.account-tree-table .el-tree-node__content {
+  height: 40px;
+  border-radius: var(--radius-sm);
+  margin: 2px 0;
+  transition: background var(--duration-fast) var(--ease-out);
+}
+
+.account-tree-table .el-tree-node__content:hover {
+  background: rgba(0, 122, 255, 0.06);
+}
+
+.account-tree-table .el-tree-node.is-current > .el-tree-node__content {
+  background: rgba(0, 122, 255, 0.12);
+  font-weight: 500;
+}
+
+/* 科目编码 */
+.account-code {
+  font-family: 'SF Mono', 'Menlo', monospace;
+  font-weight: 500;
+  color: var(--apple-blue);
+}
+
+/* 科目名称 */
+.account-name {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+/* 科目类别标签 */
+.account-category {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 12px;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.account-category--asset {
+  background: rgba(0, 122, 255, 0.12);
+  color: var(--apple-blue);
+}
+
+.account-category--liability {
+  background: rgba(255, 149, 0, 0.12);
+  color: var(--apple-orange);
+}
+
+.account-category--equity {
+  background: rgba(175, 82, 222, 0.12);
+  color: var(--apple-purple);
+}
+
+.account-category--income {
+  background: rgba(52, 199, 89, 0.12);
+  color: var(--apple-green);
+}
+
+.account-category--expense {
+  background: rgba(255, 59, 48, 0.12);
+  color: var(--apple-red);
+}
+
+/* 余额方向 */
+.balance-direction {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.balance-direction--debit {
+  background: rgba(52, 199, 89, 0.12);
+  color: var(--apple-green);
+}
+
+.balance-direction--credit {
+  background: rgba(255, 59, 48, 0.12);
+  color: var(--apple-red);
+}
+
+.balance-direction--both {
+  background: rgba(142, 142, 147, 0.12);
+  color: var(--gray-600);
+}
+
+/* 项目管理页面 */
+.project-page {
+  display: flex;
+  flex-direction: column;
+}
+
+.project-header {
+  /* 布局见 common.css .page-header 及 Project.vue scoped；此处仅保留模块间距 */
+  margin-bottom: 20px;
+}
+
+.project-table {
+  flex: 1;
+  min-height: 0;
+  border-radius: var(--radius-xl) !important;
+}
+
+/* 凭证类型页面 */
+.voucher-type-page {
+  display: flex;
+  flex-direction: column;
+}
+
+.voucher-type-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.voucher-type-table {
+  flex: 1;
+  min-height: 0;
+  border-radius: var(--radius-xl) !important;
+}
+
+/* 期初余额页面 */
+.init-balance-page {
+  display: flex;
+  flex-direction: column;
+}
+
+.init-balance-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.init-balance-table {
+  flex: 1;
+  min-height: 0;
+  border-radius: var(--radius-xl) !important;
+}
+
+/* 打印模板页面 */
+.print-template-page {
+  display: flex;
+  flex-direction: column;
+}
+
+.print-template-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+/* 快捷键页面 */
+.shortcuts-page {
+  display: flex;
+  flex-direction: column;
+}
+
+.shortcuts-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.shortcuts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 20px;
+}
+
+.shortcut-card {
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  border-radius: var(--radius-xl);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  padding: 20px;
+}
+
+.shortcut-card-title {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 16px;
+}
+
+.shortcut-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.shortcut-item:last-child {
+  border-bottom: none;
+}
+
+.shortcut-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: 'SF Mono', 'Menlo', monospace;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.shortcut-key kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 6px;
+  background: var(--gray-200);
+  border-radius: 4px;
+  border: 1px solid var(--gray-300);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .account-header,
+  .project-header,
+  .voucher-type-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  
+  .shortcuts-grid {
+    grid-template-columns: 1fr;
+  }
+}

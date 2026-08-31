@@ -1,0 +1,81 @@
+/* ========== Apple Style 403 Page ========== */
+
+.forbidden {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+  background: linear-gradient(135deg, #f5f5f7 0%, #e8e8ed 100%);
+  position: relative;
+}
+
+.forbidden::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 30% 30%, rgba(255, 59, 48, 0.05) 0%, transparent 50%),
+    radial-gradient(circle at 70% 70%, rgba(255, 149, 0, 0.05) 0%, transparent 50%);
+  pointer-events: none;
+}
+
+.forbidden :deep(.el-result) {
+  padding: 48px;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  border-radius: 24px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
+  max-width: 400px;
+  animation: forbidden-enter 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes forbidden-enter {
+  from {
+    opacity: 0;
+    transform: translateY(20px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.forbidden :deep(.el-result__icon svg) {
+  width: 80px;
+  height: 80px;
+  color: #ff3b30;
+}
+
+.forbidden :deep(.el-result__title) {
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', sans-serif;
+  font-size: 48px;
+  font-weight: 700;
+  color: #1d1d1f;
+  margin-bottom: 12px;
+  letter-spacing: -1px;
+}
+
+.forbidden :deep(.el-result__subtitle) {
+  font-size: 15px;
+  color: #6e6e73;
+  margin-bottom: 32px;
+}
+
+.forbidden :deep(.el-button--primary) {
+  height: 44px;
+  padding: 12px 32px;
+  border-radius: 12px !important;
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  background: linear-gradient(135deg, #007aff 0%, #5856d6 100%) !important;
+  border: none !important;
+  box-shadow: 0 4px 12px rgba(0, 122, 255, 0.3) !important;
+  transition: all 0.25s ease !important;
+}
+
+.forbidden :deep(.el-button--primary:hover) {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0, 122, 255, 0.4) !important;
+}

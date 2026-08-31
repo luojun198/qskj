@@ -1,0 +1,17 @@
+<!-- @dsCard group="Spacing" viewport="700x170" name="Spacing Scale" subtitle="4px base. --space-1 → --space-16." -->
+<!DOCTYPE html>
+<html lang="zh"><head><meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body{margin:0;font-family:var(--font-sans);background:var(--surface-card);color:var(--text-body);padding:22px 24px;}
+  .row{display:flex;align-items:flex-end;gap:14px;}
+  .c{display:flex;flex-direction:column;align-items:center;gap:8px;}
+  .b{background:var(--grad-bubble);border-radius:4px;width:26px;}
+  .n{font:var(--w-medium) 10px/1 var(--font-mono);color:var(--text-muted);}
+</style></head><body>
+  <div class="row" id="r"></div>
+  <script>
+    const v={1:4,2:8,3:12,4:16,5:20,6:24,8:32,10:40,12:48,16:64};
+    document.getElementById('r').innerHTML=Object.entries(v).map(([k,px])=>`<div class="c"><div class="b" style="height:${px}px"></div><div class="n">${k}·${px}</div></div>`).join('');
+  </script>
+</body></html>

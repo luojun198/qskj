@@ -1,0 +1,222 @@
+/* ========== Ledger Module - Apple Style ========== */
+/* 账簿模块 - 苹果设计风格 */
+
+/* 账簿页面通用样式 */
+.ledger-page {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 96px);
+  background: var(--gray-100);
+}
+
+/* 账簿筛选栏 */
+.ledger-filter {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 16px 20px;
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  border-radius: var(--radius-xl);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  margin-bottom: 20px;
+}
+
+/* 账簿表格 */
+.ledger-table {
+  flex: 1;
+  min-height: 0;
+  border-radius: var(--radius-xl) !important;
+  overflow: hidden !important;
+  box-shadow: var(--shadow-sm) !important;
+}
+
+.ledger-table th.el-table__cell {
+  background: linear-gradient(to bottom, var(--gray-100) 0%, var(--gray-200) 100%) !important;
+  font-family: var(--cw-table-header-font-family) !important;
+  font-weight: var(--cw-table-header-font-weight) !important;
+  font-size: var(--cw-table-header-font-size) !important;
+  text-transform: none !important;
+  letter-spacing: 0 !important;
+  color: var(--cw-text-primary) !important;
+}
+
+.ledger-table tbody tr:hover > td.el-table__cell:not(.el-table-fixed-column--left):not(.el-table-fixed-column--right) {
+  background: rgba(0, 122, 255, 0.06) !important;
+}
+
+/* 科目编码列 */
+.account-code-cell {
+  font-family: 'SF Mono', 'Menlo', monospace;
+  font-weight: 500;
+  color: var(--apple-blue);
+}
+
+/* 科目名称列 */
+.account-name-cell {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+/* 金额列 */
+.ledger-amount {
+  text-align: right;
+  font-family: 'SF Mono', 'Menlo', monospace;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.ledger-amount--debit {
+  color: var(--apple-green);
+}
+
+.ledger-amount--credit {
+  color: var(--apple-red);
+}
+
+.ledger-amount--balance {
+  color: var(--apple-blue);
+}
+
+.ledger-amount--zero {
+  color: var(--text-tertiary);
+}
+
+/* 合计行 */
+.ledger-total-row {
+  background: var(--gray-100) !important;
+  font-weight: 600 !important;
+}
+
+.ledger-total-row td {
+  font-weight: 600 !important;
+  background: var(--gray-100) !important;
+}
+
+/* 科目余额表 */
+.balance-sheet {
+  display: flex;
+  flex-direction: column;
+}
+
+.balance-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.balance-title {
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* 总账 */
+.general-ledger {
+  display: flex;
+  flex-direction: column;
+}
+
+.general-ledger-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+/* 明细账 */
+.detail-ledger {
+  display: flex;
+  flex-direction: column;
+}
+
+.detail-ledger-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+/* 序时账 */
+.chronological-ledger {
+  display: flex;
+  flex-direction: column;
+}
+
+.chronological-ledger-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+/* 现金日记账 */
+.cash-journal {
+  display: flex;
+  flex-direction: column;
+}
+
+.cash-journal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+/* 辅助核算账簿 */
+.aux-ledger {
+  display: flex;
+  flex-direction: column;
+}
+
+.aux-ledger-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+/* 打印标题 */
+.print-title-row {
+  display: none;
+}
+
+@media print {
+  .print-title-row {
+    display: block;
+    text-align: center;
+    margin-bottom: 24px;
+  }
+  
+  .print-title {
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 8px;
+  }
+  
+  .print-date-range {
+    font-size: 14px;
+    color: var(--text-secondary);
+  }
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .ledger-filter {
+    padding: 12px;
+    gap: 8px;
+  }
+  
+  .balance-header,
+  .general-ledger-header,
+  .detail-ledger-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+}

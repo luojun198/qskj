@@ -1,0 +1,128 @@
+/* 凭证列表页（录入 / 审核 / 查询）紧凑布局 */
+.voucher-list-page {
+  padding: 14px 18px !important;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-canvas, #f3faf9);
+}
+
+.voucher-list-page .page-header {
+  margin-bottom: 12px;
+  gap: 12px;
+}
+
+.voucher-list-page .page-header h3 {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-strong);
+}
+
+/* ========== 分组彩色工具栏 ========== */
+.voucher-toolbar,
+.voucher-draft-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  justify-content: flex-end;
+}
+
+.voucher-toolbar-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-card);
+  box-shadow: var(--shadow-xs);
+}
+
+.voucher-toolbar-group-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.voucher-toolbar-group--primary {
+  background: var(--surface-brand-soft);
+  border-color: var(--mint-200);
+}
+
+.voucher-list-page .voucher-toolbar-btn.el-button {
+  height: 28px !important;
+  border-radius: var(--radius-sm) !important;
+}
+
+/* 筛选区 */
+.voucher-list-page .voucher-filter-card {
+  border-radius: var(--radius-lg) !important;
+  margin-bottom: 12px;
+}
+
+/* 录入列表卡片 */
+.voucher-list-page .draft-card {
+  border-radius: var(--radius-lg) !important;
+  box-shadow: var(--shadow-sm) !important;
+}
+
+.voucher-list-page .draft-card .el-card__header {
+  background: var(--grad-foam) !important;
+  padding: 10px 16px !important;
+}
+
+/* 表格行高 */
+.voucher-list-page .el-table {
+  border-radius: var(--radius-md) !important;
+}
+
+.voucher-list-page .el-table th.el-table__cell {
+  background: var(--grad-foam) !important;
+  color: var(--text-strong) !important;
+  font-weight: 700 !important;
+}
+
+.voucher-list-page .el-table__body tr.is-selected td.el-table__cell {
+  background-color: var(--surface-brand-soft) !important;
+  font-weight: 600;
+}
+
+/* 审核页批量操作栏 —— 单行横向排列，节省垂直空间 */
+.voucher-list-page .voucher-batch-bar:has(.voucher-batch-bar__group) {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.voucher-list-page .voucher-batch-bar__group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-xs);
+}
+
+.voucher-list-page .voucher-batch-bar__label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+}
+
+.voucher-list-page .batch-selected-text {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-strong);
+  white-space: nowrap;
+}

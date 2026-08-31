@@ -1,0 +1,19 @@
+<!-- @dsCard group="Spacing" viewport="700x180" name="Motion" subtitle="Gentle ease-out + a soft bubble overshoot. Hover to play." -->
+<!DOCTYPE html>
+<html lang="zh"><head><meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body{margin:0;font-family:var(--font-sans);background:var(--surface-card);color:var(--text-body);padding:22px 24px;}
+  .row{display:flex;flex-direction:column;gap:16px;}
+  .track{display:flex;align-items:center;gap:14px;}
+  .lab{flex:0 0 220px;font:var(--w-regular) 11px var(--font-mono);color:var(--text-muted);}
+  .rail{flex:1;height:14px;background:var(--surface-sunken);border-radius:var(--radius-pill);position:relative;}
+  .dot{position:absolute;top:-5px;left:2px;width:24px;height:24px;border-radius:50%;background:var(--grad-bubble);box-shadow:var(--shadow-mint);}
+  body:hover .d1{transform:translateX(380px);transition:transform var(--dur-slow) var(--ease-out);}
+  body:hover .d2{transform:translateX(380px);transition:transform var(--dur-slow) var(--ease-bubble);}
+</style></head><body>
+  <div class="row">
+    <div class="track"><div class="lab">--ease-out · 420ms</div><div class="rail"><div class="dot d1"></div></div></div>
+    <div class="track"><div class="lab">--ease-bubble · 420ms</div><div class="rail"><div class="dot d2"></div></div></div>
+  </div>
+</body></html>

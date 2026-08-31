@@ -1,0 +1,101 @@
+/* ============================================================
+   财务洗头膏 — Color tokens
+   World: soap-bubble freshness. Aqua-mint primary, soap-bubble
+   blue secondary, deep teal ink, lots of white. Iridescent lilac
+   used sparingly as a "bubble shimmer" accent.
+   ============================================================ */
+
+:root {
+  /* ---- Brand: aqua-mint (primary) ---------------------------- */
+  --mint-50:  #E8FBF7;
+  --mint-100: #CFF6EF;
+  --mint-200: #9FEDDF;
+  --mint-300: #66E0CB;
+  --mint-400: #2DCFB5;
+  --mint-500: #12C7AE;   /* primary brand */
+  --mint-600: #0AA694;
+  --mint-700: #0A8576;
+  --mint-800: #0E665B;
+  --mint-900: #103F39;
+
+  /* ---- Soap-bubble blue (secondary) -------------------------- */
+  --blue-50:  #EAF4FF;
+  --blue-100: #D2E7FF;
+  --blue-200: #A9D0FF;
+  --blue-300: #79B4FF;
+  --blue-400: #4D9BFF;
+  --blue-500: #2E84F5;   /* secondary */
+  --blue-600: #1E6AD6;
+  --blue-700: #1A54A8;
+
+  /* ---- Iridescent lilac (shimmer accent — sparing) ----------- */
+  --lilac-300: #D4CCFF;
+  --lilac-400: #B8AEFF;
+  --lilac-500: #9C8FF5;
+
+  /* ---- Ink: cool teal-tinted neutrals ------------------------ */
+  --ink-950: #071A1D;
+  --ink-900: #0C2A2E;
+  --ink-800: #163A3F;
+  --ink-700: #2B4C51;
+  --ink-600: #46676C;
+  --ink-500: #62858A;
+  --ink-400: #8AA8AC;
+  --ink-300: #B4CBCE;
+  --ink-200: #D6E5E6;
+  --ink-100: #E9F2F2;
+  --ink-50:  #F4F9F9;
+  --white:   #FFFFFF;
+
+  /* ---- Semantic ---------------------------------------------- */
+  --success: #0FB57E;
+  --success-soft: #E2F7EF;
+  --warning: #F4A52E;
+  --warning-soft: #FCEFD7;
+  --danger:  #F2545B;
+  --danger-soft: #FDE6E7;
+  --info:    #2E84F5;
+  --info-soft: #E5F0FF;
+
+  /* ============================================================
+     SEMANTIC ALIASES — reference these in product code
+     ============================================================ */
+
+  /* surfaces */
+  --surface-canvas:  #F3FAF9;   /* app / page background, faint mint */
+  --surface-card:    #FFFFFF;
+  --surface-sunken:  #ECF6F4;
+  --surface-inverse: #0C2A2E;
+  --surface-brand-soft: #E8FBF7;
+  --surface-overlay: rgba(7, 26, 29, 0.45);
+
+  /* text */
+  --text-strong:   var(--ink-900);
+  --text-body:     var(--ink-700);
+  --text-muted:    var(--ink-500);
+  --text-subtle:   var(--ink-400);
+  --text-on-brand: #052B27;
+  --text-on-dark:  #EAF6F4;
+  --text-link:     var(--blue-600);
+
+  /* brand / interactive */
+  --brand:           var(--mint-500);
+  --brand-hover:     var(--mint-600);
+  --brand-active:    var(--mint-700);
+  --brand-contrast:  #052B27;   /* text on a mint fill */
+  --secondary:       var(--blue-500);
+  --secondary-hover: var(--blue-600);
+
+  /* borders & lines */
+  --border-subtle:  var(--ink-100);
+  --border-default: var(--ink-200);
+  --border-strong:  var(--ink-300);
+  --border-brand:   var(--mint-300);
+  --focus-ring:     rgba(18, 199, 174, 0.45);
+
+  /* ---- Signature gradients (soap-bubble) --------------------- */
+  --grad-bubble:  linear-gradient(135deg, #12C7AE 0%, #2E84F5 100%); /* @kind color */
+  --grad-shimmer: linear-gradient(120deg, #66E0CB 0%, #79B4FF 45%, #B8AEFF 100%); /* @kind color */
+  --grad-foam:    linear-gradient(180deg, #F3FAF9 0%, #E8FBF7 100%); /* @kind color */
+  --grad-rinse:   radial-gradient(120% 120% at 0% 0%, #E8FBF7 0%, #EAF4FF 55%, #F3FAF9 100%); /* @kind color */
+}

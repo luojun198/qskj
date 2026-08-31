@@ -1,0 +1,10 @@
+/* ============================================================
+   财务洗头膏 — Webfonts
+   Chinese-first UI (Noto Sans SC) + Latin display (Space Grotesk)
+   + ledger numerals / labels (Space Mono).
+   Loaded from Google Fonts. These ARE the brand fonts (greenfield
+   brand) — no substitution. Swap the @import for self-hosted
+   woff2 if you need offline / CDN-independent builds.
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700;900&family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap');

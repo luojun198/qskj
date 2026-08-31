@@ -1,0 +1,8 @@
+{
+  "createdAt": "2026-05-23T01:17:03+08:00",
+  "database": "snapshot_20260523_011703.db",
+  "databasePath": "data/snapshots/snapshot_20260523_011703.db",
+  "description": "项目快照：代码 + 数据库一致性备份",
+  "gitTag": "snapshot-20260523-011703",
+  "gitCommit": "b2619e8"
+}

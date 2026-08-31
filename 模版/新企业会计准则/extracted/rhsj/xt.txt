@@ -1,0 +1,109 @@
+gs_bbh	2026.04.06
+xt_cb_kzrq	2021-01-01
+zzs_j_mc1	进项税额
+xt_ht_bz	2
+zzs_d_km4	2221001009
+zzs_j_km1	2221001001
+fp_zw_jyfj	2221013001
+fp_zw_yfzk	2202
+xt_gz_kzrq	2024.04.01
+fp_zw_fwkm	6001002
+print_color	0
+pz_zg	0
+fp_zw_yywsr	6301
+fp_zw_cjs	2221008
+fp_zw_yszk	1122
+fp_zw_ckxz	0
+gdzc_bz1	1
+pz_right	0
+print_fx	0
+dj_f	4
+xt_zc_jzyf	2021.09
+xt_zc_qlkm	
+xt_xjll_sz	1
+pz_left	24
+xt_gz_jzyf	2024.04
+xt_len1	4
+pz_bott	0
+zc_left	24
+hl_f	4
+xt_zc_kzrq	2021.09.01
+xt_cb_djws	0
+xt_cb_slws	0
+xt_cb_yysl	0
+xt_cb_zzsl	0
+xt_cb_jzyf	2020-12
+fp_zw_ycl	1403
+xt_zc_zjkm	
+nsh	44030027946437
+zzs_d_mc1	销项税额
+zzs_d_km1	2221001005
+zc_right	24
+zzs_d_mc3	进项税额转出
+xt_len3	3
+zzs_j_km4	2221001004
+zzs_j_em4	REDUCTION AND EXEMPTION TAXES
+zzs_d_km2	2221001006
+zzs_j_mc2	已交税金
+zzs_j_mc4	减免税款
+zzs_d_em3	INPUT TAX TRANSMIT
+xt_len5	2
+fp_zw_yffs	2
+fp_zw_yysj	6405
+zzs_j_mc3	转出未交增值税
+zzs_d_mc4	转出多交增值税
+zzs_d_em4	TRANSMIT.VAT OVERPAID
+xt_len7	0
+xt_len9	0
+xt_kzrq	2026.01.01
+xt_jzyf	2026.01
+xt_hlgl	1
+xt_hy	01
+xt_bb_win8	1
+xt_bbh	8.01
+xt_len2	3
+xt_len4	2
+xt_len6	2
+xt_len8	0
+xt_len10	0
+xt_bhsz	1
+xt_dwmc	xx公司
+xt_bwb	RMB
+xt_kjqj	1
+xt_print_bz	0
+print_dwmc	1
+xt_yh_kzyf	
+pz_zoom	100
+zc_top	24
+zc_len	38
+sl_f	6
+fp_kh_xz	2
+zzs_j_km3	2221001003
+zzs_d_km3	2221001007
+zc_bott	24
+fp_zw_jxs	2221001001
+zzs_d_km5	
+zzs_j_em2	TAXES-PAID
+fp_gys_xz	2
+zzs_d_em5	
+zzs_d_em2	TAX REFUND OF EXPORT
+zzs_d_mc5	
+zzs_j_mc5	
+zzs_j_em5	
+fp_zw_xxs	2221001005
+zzs_j_km5	
+zzs_j_em3	TRANSMIT.VAT PAYABLE
+zzs_d_mc2	出口退税
+zzs_j_km2	2221001002
+zzs_j_em1	INPUT TAXES
+zzs_d_em1	OUTPUT TAXES
+nsmc	深圳市润衡财经软件有限公司
+fp_gys_bh	GY
+fp_qyxs	1
+fp_kh_bh	Sa
+pz_zgmc	
+fp_qyxz	0
+fp_zw_dfjy	2221013001
+fp_zw_ysfs	2
+pz_top	24
+pz_len	6

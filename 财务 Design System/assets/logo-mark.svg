@@ -1,0 +1,20 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="财务洗头膏 mark">
+  <defs>
+    <radialGradient id="bubbleFill" cx="38%" cy="32%" r="72%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.95"></stop>
+      <stop offset="42%" stop-color="#9FEDDF" stop-opacity="0.55"></stop>
+      <stop offset="78%" stop-color="#66E0CB" stop-opacity="0.8"></stop>
+      <stop offset="100%" stop-color="#2E84F5" stop-opacity="0.95"></stop>
+    </radialGradient>
+    <linearGradient id="bubbleRim" x1="12" y1="8" x2="54" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#2DCFB5"></stop>
+      <stop offset="55%" stop-color="#12C7AE"></stop>
+      <stop offset="100%" stop-color="#2E84F5"></stop>
+    </linearGradient>
+  </defs>
+  <circle cx="32" cy="32" r="25" fill="url(#bubbleFill)"></circle>
+  <circle cx="32" cy="32" r="25" fill="none" stroke="url(#bubbleRim)" stroke-width="4"></circle>
+  <circle cx="22.5" cy="22" r="6.5" fill="#FFFFFF" opacity="0.85"></circle>
+  <circle cx="41" cy="18.5" r="2.6" fill="#FFFFFF" opacity="0.7"></circle>
+  <circle cx="50" cy="46" r="4" fill="#B8AEFF" opacity="0.55"></circle>
+</svg>

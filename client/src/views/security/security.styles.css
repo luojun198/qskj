@@ -1,0 +1,167 @@
+/* ========== Security Module - Apple Style ========== */
+/* 安全模块 - 苹果设计风格 */
+
+.security-page {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 96px);
+  background: var(--gray-100);
+}
+
+.security-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.security-title {
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* 备份页面 */
+.backup-page {
+  display: flex;
+  flex-direction: column;
+}
+
+.backup-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+/* 备份列表 */
+.backup-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+.backup-card {
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  border-radius: var(--radius-xl);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  padding: 20px;
+  transition: all var(--duration-normal) var(--ease-out);
+}
+
+.backup-card:hover {
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+}
+
+.backup-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+
+.backup-card-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, rgba(0, 122, 255, 0.12) 0%, rgba(88, 86, 214, 0.12) 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--apple-blue);
+}
+
+.backup-card-info {
+  flex: 1;
+  margin-left: 16px;
+}
+
+.backup-card-name {
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.backup-card-date {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.backup-card-meta {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 16px;
+  padding: 12px;
+  background: var(--gray-50);
+  border-radius: var(--radius-md);
+}
+
+.backup-meta-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.backup-meta-label {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.backup-meta-value {
+  font-family: 'SF Mono', 'Menlo', monospace;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.backup-card-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* 备份进度 */
+.backup-progress {
+  margin: 20px 0;
+  padding: 20px;
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: saturate(180%) blur(20px);
+  border-radius: var(--radius-xl);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+}
+
+.backup-progress-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.backup-progress-title {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.backup-progress-percent {
+  font-family: 'SF Mono', 'Menlo', monospace;
+  font-weight: 600;
+  color: var(--apple-blue);
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .backup-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  
+  .backup-list {
+    grid-template-columns: 1fr;
+  }
+}
