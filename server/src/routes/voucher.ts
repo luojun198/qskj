@@ -18,6 +18,7 @@ import { yuanToCents } from '../utils/amountUtils.js'
 import { syncCashierFromVoucher, syncCashierCounterFromVoucher } from '../services/cashierQuery.js'
 import {
   attachVoucherEntries,
+  buildReversedEntries,
   buildVoucherEntryPayloads,
   buildVoucherEntriesMap,
   calculateVoucherTotals,
@@ -792,6 +793,215 @@ router.post(
   }
 )
 
+// ===================== 凭证冲红 =====================
+
+/**
+ * 冲红：对已审核/已记账凭证生成一张红字凭证。
+ *
+ * 口径：分录**方向保持不变**，金额取负（红字），科目/辅助核算/数量单价/现金流量原样复制。
+ * 新凭证以 draft 状态生成，由用户在录入页确认后再审核记账。
+ * 通过 vouchers.reversal_of_voucher_id / reversed_by_voucher_id 双向记录关联，防止重复冲红。
+ */
+router.post(
+  '/vouchers/:id/reverse',
+  requirePermission('voucher:entry'),
+  operationLog('凭证冲红', '凭证管理'),
+  (req: AuthRequest, res) => {
+    const { id } = req.params
+    const db = getDb()
+    const accountSetId = req.accountSetId || ''
+
+    const origin = getVoucherById({ db, voucherId: id, accountSetId })
+    if (!origin) {
+      return res.status(404).json({ code: 404, message: '凭证不存在' })
+    }
+    if (req.accountScope && !isVoucherVisibleInAccountScope(db, req.accountScope, id, accountSetId)) {
+      return res.status(404).json({ code: 404, message: '凭证不存在' })
+    }
+    if (origin.status !== 'audited' && origin.status !== 'posted') {
+      return res
+        .status(400)
+        .json({ code: 400, message: '仅已审核或已记账的凭证可以冲红，草稿凭证请直接修改或删除' })
+    }
+    if (origin.reversal_of_voucher_id) {
+      return res.status(400).json({ code: 400, message: '红字凭证本身不能再次冲红' })
+    }
+    if (origin.reversed_by_voucher_id) {
+      const existed = db
+        .prepare('SELECT voucher_no FROM vouchers WHERE id=?')
+        .get(origin.reversed_by_voucher_id) as { voucher_no?: string } | undefined
+      return res.status(400).json({
+        code: 400,
+        message: existed
+          ? `该凭证已被 ${existed.voucher_no} 号红字凭证冲红，不能重复冲红`
+          : '该凭证已冲红，不能重复冲红',
+      })
+    }
+
+    const originEntries = db
+      .prepare('SELECT * FROM voucher_entries WHERE voucher_id=? ORDER BY seq ASC')
+      .all(id) as any[]
+    if (originEntries.length === 0) {
+      return res.status(400).json({ code: 400, message: '原凭证没有分录，无法冲红' })
+    }
+
+    // 冲红凭证日期：默认取原凭证日期，允许调用方指定（跨期冲红）
+    const voucherDate: string = req.body?.voucher_date || origin.voucher_date
+    const dateError = validateVoucherDate({ voucherDate, accountSetId, db })
+    if (dateError) {
+      return res.status(400).json({ code: 400, message: dateError })
+    }
+
+    const year = dayjs(voucherDate).year()
+    const period = dayjs(voucherDate).month() + 1
+    const closed = db
+      .prepare(
+        `SELECT 1 FROM period_closing WHERE account_set_id=? AND year=? AND period=? AND status='closed'`
+      )
+      .get(accountSetId, year, period)
+    if (closed) {
+      return res.status(400).json({
+        code: 400,
+        message: `${year}年${period}期已结账，无法生成冲红凭证，请先反结账`,
+      })
+    }
+
+    // 红字分录：方向不变、金额取负
+    const reversedEntries = buildReversedEntries<VoucherEntryInput>(originEntries)
+
+    // 防御性断言：原凭证平衡则取负后必然平衡，不平衡说明原数据有问题
+    const balanceError = getVoucherBalanceError(reversedEntries)
+    if (balanceError) {
+      return res
+        .status(400)
+        .json({ code: 400, message: `原凭证借贷不平衡，无法冲红（${balanceError}）` })
+    }
+
+    const originLabel = `${origin.voucher_no} 号`
+    const { debitTotal } = calculateVoucherTotals(reversedEntries)
+
+    const MAX_RETRIES = 3
+    let lastError: any = null
+
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      try {
+        db.exec('BEGIN IMMEDIATE')
+        try {
+          // 冲红后原凭证状态可能已被并发改动，锁内复查一次防重复冲红
+          const fresh = db
+            .prepare('SELECT reversed_by_voucher_id FROM vouchers WHERE id=?')
+            .get(id) as { reversed_by_voucher_id?: string | null } | undefined
+          if (fresh?.reversed_by_voucher_id) {
+            db.exec('ROLLBACK')
+            return res.status(400).json({ code: 400, message: '该凭证已冲红，不能重复冲红' })
+          }
+
+          const { effectiveTypeId, voucherNo } = getNextVoucherNo({
+            db,
+            accountSetId,
+            year,
+            period,
+            voucherTypeId: origin.voucher_type_id,
+          })
+
+          const newVoucherId = uuidv4()
+          db.prepare(
+            `INSERT INTO vouchers (
+               id, account_set_id, voucher_no, voucher_type_id, voucher_date, year, period,
+               total_amount, maker_id, maker_name, remark, attachments, reversal_of_voucher_id
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).run(
+            newVoucherId,
+            accountSetId,
+            voucherNo,
+            effectiveTypeId,
+            voucherDate,
+            year,
+            period,
+            debitTotal,
+            req.userId,
+            req.userName,
+            `冲红：原凭证 ${originLabel}${origin.remark ? `（${origin.remark}）` : ''}`,
+            0,
+            id
+          )
+
+          const insertEntry = db.prepare(VOUCHER_ENTRY_INSERT_SQL)
+          reversedEntries.forEach((e: any, idx) => {
+            insertEntry.run(
+              uuidv4(),
+              accountSetId,
+              newVoucherId,
+              idx + 1,
+              e.account_id,
+              e.account_code,
+              e.account_name,
+              e.direction,
+              e.amount,
+              e.amount_cents,
+              e.summary ? `冲红：${e.summary}` : `冲红：原凭证 ${originLabel}`,
+              e.dept_id ?? null,
+              e.dept_name ?? null,
+              e.project_id ?? null,
+              e.project_name ?? null,
+              e.supplier_id ?? null,
+              e.supplier_name ?? null,
+              e.person_id ?? null,
+              e.person_name ?? null,
+              e.func_class_id ?? null,
+              e.func_class_name ?? null,
+              e.aux_data ?? null,
+              e.cash_flow_code ?? null,
+              e.cash_flow_name ?? null
+            )
+          })
+
+          db.prepare('UPDATE vouchers SET reversed_by_voucher_id=?, updated_at=? WHERE id=?').run(
+            newVoucherId,
+            dayjs().format('YYYY-MM-DD HH:mm:ss'),
+            id
+          )
+
+          db.exec('COMMIT')
+
+          return res.json({
+            code: 0,
+            message: `已生成红字凭证 ${voucherNo} 号（草稿），请核对后审核记账`,
+            data: {
+              id: newVoucherId,
+              voucher_no: voucherNo,
+              voucher_type_id: effectiveTypeId,
+              voucher_date: voucherDate,
+              year,
+              period,
+              reversal_of_voucher_id: id,
+            },
+          })
+        } catch (innerError: any) {
+          try {
+            db.exec('ROLLBACK')
+          } catch {
+            // 事务可能已结束，忽略
+          }
+          throw innerError
+        }
+      } catch (error: any) {
+        lastError = error
+        if (error?.code === 'SQLITE_CONSTRAINT' && String(error.message).includes('UNIQUE')) {
+          continue
+        }
+        throw error
+      }
+    }
+
+    return res.status(500).json({
+      code: 500,
+      message: `凭证号冲突，已重试${MAX_RETRIES}次仍失败，请稍后再试`,
+      error: lastError?.message,
+    })
+  }
+)
+
 // ===================== 凭证查询 =====================
 
 router.get('/vouchers', (req: AuthRequest, res) => {
@@ -1465,6 +1675,16 @@ router.delete(
       })
     }
     deleteVoucherRecords(db, id)
+    // 清理冲红关联的对端引用，避免悬空导致原凭证永远显示「已冲红」而无法再次冲红
+    db.prepare(
+      'UPDATE vouchers SET reversed_by_voucher_id=NULL WHERE account_set_id=? AND reversed_by_voucher_id=?'
+    ).run(req.accountSetId, id)
+    db.prepare(
+      'UPDATE vouchers SET reversal_of_voucher_id=NULL WHERE account_set_id=? AND reversal_of_voucher_id=?'
+    ).run(req.accountSetId, id)
+    // 若该凭证由供应链单据生成（scm_doc.voucher_id 回写），删除后清掉单据上的回写，
+    // 否则单据既不能重新生成凭证、也无法反审核（死锁）。按 voucher_id 匹配即为确定关联，无需判断 source。
+    db.prepare('UPDATE scm_doc SET voucher_id=NULL WHERE account_set_id=? AND voucher_id=?').run(req.accountSetId, id)
     res.json({ code: 0, message: '删除成功' })
   }
 )

@@ -2,6 +2,13 @@ import { getBalance, getPeriodSum, getPeriodRangeSum, getPeriodRangeSumExcludeTr
 import { getCashFlowAmount } from './cashFlowAmount.js'
 import type { AccountScopeContext } from './accountAuthorization.js'
 import type { Database } from 'better-sqlite3'
+import {
+  evaluateFormula,
+  collectCellRefs,
+  isAnchorFunction,
+  FormulaError,
+  type FormulaValue,
+} from './reportFormula.js'
 
 type ExecuteContext = {
   db: BalanceQueryDb | Database
@@ -96,75 +103,11 @@ function splitArguments(value: string) {
   return result
 }
 
-function columnNameToIndex(value: string) {
-  let result = 0
-  for (const char of value.toUpperCase()) {
-    result = result * 26 + (char.charCodeAt(0) - 64)
-  }
-  return result - 1
-}
 
-function parseCellRef(value: string) {
-  const match = value.trim().match(/^\$?([A-Z]+)\$?(\d+)$/i)
-  if (!match) return null
-  return {
-    rowIndex: Number(match[2]) - 1,
-    colIndex: columnNameToIndex(match[1]),
-    address: `${match[1].toUpperCase()}${match[2]}`,
-  }
-}
 
-function expandCellRange(value: string) {
-  const match = value.trim().match(/^\$?([A-Z]+)\$?(\d+):\$?([A-Z]+)\$?(\d+)$/i)
-  if (!match) return null
 
-  const start = parseCellRef(`${match[1]}${match[2]}`)
-  const end = parseCellRef(`${match[3]}${match[4]}`)
-  if (!start || !end) return null
 
-  const rowStart = Math.min(start.rowIndex, end.rowIndex)
-  const rowEnd = Math.max(start.rowIndex, end.rowIndex)
-  const colStart = Math.min(start.colIndex, end.colIndex)
-  const colEnd = Math.max(start.colIndex, end.colIndex)
-  const refs: string[] = []
 
-  for (let rowIndex = rowStart; rowIndex <= rowEnd; rowIndex += 1) {
-    for (let colIndex = colStart; colIndex <= colEnd; colIndex += 1) {
-      refs.push(getCellAddress(rowIndex, colIndex))
-    }
-  }
-
-  return refs
-}
-
-function getCellNumericValue(ref: string, cellValues: Map<string, number>) {
-  const parsed = parseCellRef(ref)
-  if (!parsed) return 0
-  return cellValues.get(parsed.address) || 0
-}
-
-function evaluateSumArgument(value: string, cellValues: Map<string, number>) {
-  const trimmed = value.trim()
-  if (!trimmed) return 0
-
-  const rangeRefs = expandCellRange(trimmed)
-  if (rangeRefs) {
-    return rangeRefs.reduce((sum, ref) => sum + (cellValues.get(ref) || 0), 0)
-  }
-
-  if (parseCellRef(trimmed)) {
-    return getCellNumericValue(trimmed, cellValues)
-  }
-
-  const numeric = Number(trimmed)
-  if (Number.isFinite(numeric)) return numeric
-
-  return safeEvaluateExpression(replaceCellReferences(trimmed, cellValues))
-}
-
-function getSumValue(rawArgs: string, cellValues: Map<string, number>) {
-  return splitArguments(rawArgs).reduce((sum, arg) => sum + evaluateSumArgument(arg, cellValues), 0)
-}
 
 function getAccountDirection(db: BalanceQueryDb | Database, accountSetId: string, accountCode: string): 'debit' | 'credit' {
   const exact = db
@@ -328,18 +271,14 @@ function getBudgetSurplusAdjustmentAmount(
   return Number(row?.amount || 0)
 }
 
-function applyFormulaFunctions(expression: string, context: ExecuteContext, cellValues: Map<string, number>) {
-  return expression.replace(/(^|[^\w])@?([a-z_][\w]*)\(([^()]*)\)/gi, (match, prefix: string, rawName: string, rawArgs: string) => {
+function callAnchorFunction(rawName: string, rawArgs: string[], context: ExecuteContext): number {
+  {
     const name = rawName.toLowerCase()
-    const args = splitArguments(rawArgs)
+    const args = rawArgs
     const accountCode = String(args[0] || '').trim()
     // 99 表示当前期间（ACD 报表公式惯例），100+ 表示上年同期
     const periodRaw = args[1] === undefined || args[1] === '' ? '99' : String(args[1]).trim()
     const resolvedPeriod = resolveAcdSinglePeriod(context, periodRaw)
-
-    if (name === 'sum') {
-      return `${prefix}${getSumValue(rawArgs, cellValues)}`
-    }
 
     if (!accountCode) {
       throw new Error(`函数 @${name} 缺少科目编码参数`)
@@ -493,138 +432,40 @@ function applyFormulaFunctions(expression: string, context: ExecuteContext, cell
         throw new Error(`暂不支持公式函数 @${name}`)
     }
 
-    return `${prefix}${result}`
-  })
+    return result
+  }
 }
 
-function replaceCellReferences(expression: string, cellValues: Map<string, number>) {
-  return expression.replace(/\$?([A-Z]+)\$?(\d+)/gi, (_, col: string, row: string) => {
-    const ref = `${col.toUpperCase()}${row}`
-    const value = cellValues.get(ref)
-    if (value === undefined) {
-      return '0'
-    }
-    return String(value)
-  })
-}
 
-function safeEvaluateExpression(expression: string) {
-  const sanitized = expression.replace(/\s+/g, '')
-  if (!sanitized) return 0
-  if (!/^[0-9+\-*/().]+$/.test(sanitized)) {
-    throw new Error('公式包含非法字符')
-  }
-
-  const tokens = sanitized.match(/\d*\.\d+|\d+|[()+\-*/]/g) || []
-  if (tokens.join('') !== sanitized) {
-    throw new Error('公式无法解析')
-  }
-
-  let index = 0
-
-  function parseExpression(): number {
-    let value = parseTerm()
-    while (index < tokens.length) {
-      const token = tokens[index]
-      if (token !== '+' && token !== '-') break
-      index += 1
-      const right = parseTerm()
-      value = token === '+' ? value + right : value - right
-    }
-    return value
-  }
-
-  function parseTerm(): number {
-    let value = parseFactor()
-    while (index < tokens.length) {
-      const token = tokens[index]
-      if (token !== '*' && token !== '/') break
-      index += 1
-      const right = parseFactor()
-      if (token === '/' && right === 0) {
-        throw new Error('公式除数不能为 0')
-      }
-      value = token === '*' ? value * right : value / right
-    }
-    return value
-  }
-
-  function parseFactor(): number {
-    const token = tokens[index]
-    if (token === undefined) {
-      throw new Error('公式不完整')
-    }
-    if (token === '+') {
-      index += 1
-      return parseFactor()
-    }
-    if (token === '-') {
-      index += 1
-      return -parseFactor()
-    }
-    if (token === '(') {
-      index += 1
-      const value = parseExpression()
-      if (tokens[index] !== ')') {
-        throw new Error('公式括号未闭合')
-      }
-      index += 1
-      return value
-    }
-    if (isNumericValue(token)) {
-      index += 1
-      return Number(token)
-    }
-    throw new Error(`无法识别公式片段 ${token}`)
-  }
-
-  const result = parseExpression()
-  if (index !== tokens.length) {
-    throw new Error('公式存在多余内容')
-  }
-  return Object.is(result, -0) ? 0 : result
-}
 
 function isFormulaLike(value: string | null) {
   const normalized = String(value || '').trim()
   return normalized.startsWith('=') || normalized.startsWith('@') || normalized.startsWith('＝')
 }
 
-function executeFormula(formulaText: string, context: ExecuteContext, cellValues: Map<string, number>) {
-  let expression = formulaText.trim()
-  if (expression.startsWith('＝')) {
-    expression = '=' + expression.slice(1)
-  }
-  if (expression.startsWith('=')) {
-    expression = expression.slice(1)
-  }
-  expression = expression.replace(/@([+-])\s*([a-z_][\w]*)\(/gi, '$1@$2(')
-  expression = applyFormulaFunctions(expression, context, cellValues)
-  expression = replaceCellReferences(expression, cellValues)
-  return safeEvaluateExpression(expression)
+function executeFormula(
+  formulaText: string,
+  context: ExecuteContext,
+  cellValues: Map<string, FormulaValue>
+): FormulaValue {
+  // `@-ye(...)` 这类把负号写在 @ 后面的历史写法，先归一成 `-@ye(...)`
+  const expression = formulaText.replace(/@([+-])\s*([a-z_][\w]*)\(/gi, '$1@$2(')
+
+  return evaluateFormula(
+    expression,
+    {
+      getCell: address => cellValues.get(address),
+      callAnchor: (name, rawArgs) => callAnchorFunction(name, rawArgs, context),
+    },
+    isAnchorFunction
+  )
 }
 
-function extractCellRefs(expression: string): string[] {
-  const refs = new Set<string>()
-  const rangeRe = /\$?([A-Z]+)\$?(\d+):\$?([A-Z]+)\$?(\d+)/gi
-  let rangeMatch: RegExpExecArray | null
-  while ((rangeMatch = rangeRe.exec(expression)) !== null) {
-    const rangeRefs = expandCellRange(rangeMatch[0])
-    if (!rangeRefs) continue
-    for (const ref of rangeRefs) {
-      refs.add(ref)
-    }
-  }
 
-  const re = /\$?([A-Z]+)\$?(\d+)/gi
-  let m: RegExpExecArray | null
-  while ((m = re.exec(expression)) !== null) {
-    refs.add(`${m[1].toUpperCase()}${m[2]}`)
-  }
-  return Array.from(refs)
-}
-
-function topoSortCells(cells: TemplateCellInput[]): TemplateCellInput[] {
+function topoSortCells(cells: TemplateCellInput[]): {
+  ordered: TemplateCellInput[]
+  circular: Set<string>
+} {
   // 建立 address -> cell 映射
   const addrMap = new Map<string, TemplateCellInput>()
   for (const cell of cells) {
@@ -633,22 +474,34 @@ function topoSortCells(cells: TemplateCellInput[]): TemplateCellInput[] {
 
   const visited = new Set<string>()
   const result: TemplateCellInput[] = []
+  /** 处在循环引用链上的单元格地址；这些格子不能参与求值，否则会算出一个看似正常的错数 */
+  const circular = new Set<string>()
 
-  function visit(cell: TemplateCellInput, stack: Set<string>) {
+  function visit(cell: TemplateCellInput, stack: Set<string>, path: string[]) {
     const addr = getCellAddress(cell.row_index, cell.col_index)
     if (visited.has(addr)) return
-    if (stack.has(addr)) return // 循环引用，跳过
+    if (stack.has(addr)) {
+      // 检测到环：把 path 中自 addr 起的这一段全部标记出来
+      const start = path.indexOf(addr)
+      if (start >= 0) {
+        for (let i = start; i < path.length; i += 1) circular.add(path[i])
+      }
+      circular.add(addr)
+      return
+    }
     stack.add(addr)
+    path.push(addr)
 
     const formulaSource = cell.formula_text || cell.text_value || ''
     if (cell.cell_type === 'formula' || isFormulaLike(formulaSource)) {
-      for (const ref of extractCellRefs(formulaSource)) {
+      for (const ref of collectCellRefs(formulaSource, isAnchorFunction)) {
         const dep = addrMap.get(ref)
-        if (dep) visit(dep, stack)
+        if (dep) visit(dep, stack, path)
       }
     }
 
     stack.delete(addr)
+    path.pop()
     visited.add(addr)
     result.push(cell)
   }
@@ -656,9 +509,9 @@ function topoSortCells(cells: TemplateCellInput[]): TemplateCellInput[] {
   // 先按行列顺序遍历，保证稳定性
   const sorted = cells.slice().sort((a, b) => a.row_index - b.row_index || a.col_index - b.col_index)
   for (const cell of sorted) {
-    visit(cell, new Set())
+    visit(cell, new Set(), [])
   }
-  return result
+  return { ordered: result, circular }
 }
 
 function applyTextPlaceholders(text: string, context: ExecuteContext): string {
@@ -679,7 +532,8 @@ function applyTextPlaceholders(text: string, context: ExecuteContext): string {
 function executeCell(
   cell: TemplateCellInput,
   context: ExecuteContext,
-  cellValues: Map<string, number>
+  cellValues: Map<string, FormulaValue>,
+  circular?: Set<string>
 ) {
   const address = getCellAddress(cell.row_index, cell.col_index)
   const formulaSource = cell.formula_text || cell.text_value || ''
@@ -687,15 +541,43 @@ function executeCell(
   const rawValue = shouldTreatAsFormula ? formulaSource : cell.text_value || ''
 
   try {
-    if (shouldTreatAsFormula && formulaSource) {
-      const numericValue = executeFormula(formulaSource, context, cellValues)
-      cellValues.set(address, numericValue)
+    if (shouldTreatAsFormula && formulaSource && circular?.has(address)) {
+      // 循环引用不能求值：继续算下去只会得到一个看起来正常的错数，必须显式报错
       return {
         ...cell,
         address,
         raw_value: rawValue,
-        display_value: formatNumber(numericValue, cell.format_text),
-        numeric_value: numericValue,
+        display_value: '#CIRCULAR!',
+        numeric_value: null,
+        status: 'error' as const,
+        error: '公式存在循环引用',
+      }
+    }
+
+    if (shouldTreatAsFormula && formulaSource) {
+      const value = executeFormula(formulaSource, context, cellValues)
+      cellValues.set(address, value)
+
+      // IF(...) 之类可能返回文本或布尔，此时没有数值可言，只出显示值
+      if (typeof value !== 'number') {
+        const display = typeof value === 'boolean' ? (value ? 'TRUE' : 'FALSE') : value
+        return {
+          ...cell,
+          address,
+          raw_value: rawValue,
+          display_value: display,
+          numeric_value: null,
+          status: 'ok' as const,
+          error: null,
+        }
+      }
+
+      return {
+        ...cell,
+        address,
+        raw_value: rawValue,
+        display_value: formatNumber(value, cell.format_text),
+        numeric_value: value,
         status: 'ok' as const,
         error: null,
       }
@@ -730,7 +612,8 @@ function executeCell(
       ...cell,
       address,
       raw_value: rawValue,
-      display_value: '#ERROR',
+      // 能给出 Excel 错误码就给（#DIV/0! / #NAME? / #VALUE! ...），比笼统的 #ERROR 好定位
+      display_value: error instanceof FormulaError ? error.code : '#ERROR',
       numeric_value: null,
       status: 'error' as const,
       error: error instanceof Error ? error.message : '公式执行失败',
@@ -743,13 +626,13 @@ export function executeTemplateSheets(sheets: TemplateSheetInput[], context: Exe
     .slice()
     .sort((a, b) => a.sheet_index - b.sheet_index)
     .map(sheet => {
-      const cellValues = new Map<string, number>()
+      const cellValues = new Map<string, FormulaValue>()
       // 拓扑排序：被依赖的单元格先执行，解决 =B6+B8 引用下方单元格的问题
-      const orderedCells = topoSortCells(sheet.cells)
+      const { ordered: orderedCells, circular } = topoSortCells(sheet.cells)
       // 按拓扑顺序执行，结果 Map 保持原始行列顺序输出
       const resultMap = new Map<string, ReturnType<typeof executeCell>>()
       for (const cell of orderedCells) {
-        const executed = executeCell(cell, context, cellValues)
+        const executed = executeCell(cell, context, cellValues, circular)
         resultMap.set(executed.address, executed)
       }
       // 按原始行列顺序输出

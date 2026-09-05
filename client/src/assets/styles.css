@@ -5,6 +5,7 @@
 @import url('../styles/design-tokens/colors.css');
 @import url('../styles/design-tokens/typography.css');
 @import url('../styles/design-tokens/spacing.css');
+@import url('../styles/design-tokens/workbench.css');
 
 * {
   margin: 0;
@@ -18,7 +19,7 @@ body,
   width: 100%;
   height: 100%;
   font-family: var(--cw-font-body, var(--font-sans));
-  font-size: var(--cw-text-base, 14px);
+  font-size: var(--cw-text-base, 13px);
   color: var(--cw-text-primary, var(--text-strong));
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -70,6 +71,55 @@ html.cw-light-mode .aside {
 
 html.cw-light-mode .header {
   background: rgba(255, 255, 255, 0.98) !important;
+}
+
+
+/* ── 路由切换期间的临时降级 ──────────────────────────────────────────────
+   第一次进某个模块要现拉组件，这段等待没法完全消掉。切换时先把最耗 GPU 的
+   毛玻璃与动画停掉，让新页面尽快画出来，切完（afterEach 后一帧）立刻恢复。 */
+html.cw-route-switching *,
+html.cw-route-switching *::before,
+html.cw-route-switching *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* 顶部进度条：给等待一个反馈，避免界面看起来僵住 */
+html.cw-route-switching body::after {
+  content: '';
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  z-index: 9999;
+  background: linear-gradient(90deg, var(--cw-brand, #409eff), transparent);
+  background-size: 40% 100%;
+  background-repeat: no-repeat;
+  animation: cw-route-progress 0.9s ease-in-out infinite !important;
+  animation-duration: 0.9s !important;
+  pointer-events: none;
+}
+
+@keyframes cw-route-progress {
+  0% {
+    background-position: -40% 0;
+  }
+  100% {
+    background-position: 140% 0;
+  }
+}
+
+/* 减少动态效果偏好：不放进度条动画，只保留静态提示条 */
+@media (prefers-reduced-motion: reduce) {
+  html.cw-route-switching body::after {
+    animation: none !important;
+    background-size: 100% 100%;
+    opacity: 0.5;
+  }
 }
 
 
@@ -184,19 +234,24 @@ a {
   --cw-font-number: 'DIN Alternate', 'DIN', 'Helvetica Neue', 'Arial', sans-serif;
   --cw-font-accent: 'FZShuSong-Z01S', 'STSong', 'SimSun', serif;
 
-  /* 字号系统 */
-  --cw-text-xs: 12px;
-  --cw-text-sm: 13px;
-  --cw-text-base: 14px;
-  --cw-text-lg: 16px;
-  --cw-text-xl: 18px;
+  /* 字号系统：与左侧导航同一档
+     应用栏 11px / 二级导航与页签 13px / 页标题 15px
+     正文与列表跟二级导航走 13px，不再比导航大一号 */
+  --cw-text-xs: 11px;
+  --cw-text-sm: 12px;
+  --cw-text-base: 13px;
+  --cw-text-lg: 15px;
+  --cw-text-xl: 16px;
   --cw-text-2xl: 22px;
   --cw-text-3xl: 28px;
+  --el-font-size-base: 13px;
+  --el-font-size-small: 12px;
+  --el-font-size-extra-small: 11px;
 
-  /* 列表表头 */
+  /* 列表表头与表体同字号，字重略重即可，不要 700 黑体抢导航 */
   --cw-table-header-font-family: 'Noto Sans SC', 'Source Han Sans CN', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  --cw-table-header-font-size: 14px;
-  --cw-table-header-font-weight: 700;
+  --cw-table-header-font-size: 13px;
+  --cw-table-header-font-weight: 600;
 
   /* 字重系统 */
   --cw-font-normal: 400;
@@ -365,7 +420,7 @@ a {
   background: linear-gradient(180deg, var(--mint-500, #12C7AE) 0%, var(--mint-700, #0A8576) 100%) !important;
   color: var(--cw-text-inverse) !important;
   font-family: var(--cw-font-heading) !important;
-  font-weight: var(--cw-font-bold) !important;
+  font-weight: var(--cw-table-header-font-weight) !important;
   font-size: var(--cw-table-header-font-size) !important;
   border-bottom: 2px solid var(--mint-300, #66E0CB) !important;
   position: relative;
@@ -479,53 +534,54 @@ a {
   scrollbar-width: thin;
 }
 
+/* 页面头部基座统一在 styles/common.css 的 .page-header 定义（后导入，同名规则以其为准），
+   此处不再重复定义，避免多头维护。 */
+
 /* 按钮样式已由 apple-element-override.css 统一接管 */
 
 /* ============================================================
    深度 UX/UI 优化 - 弹窗、表格、表单与主页面 (Mint-dashboard)
    ============================================================ */
 
-/* ========== 1. 模态框 (Dialog) 玻璃态与圆角升级 ========== */
+/* ========== 1. 模态框 (Dialog)：实体白卡 + 紧凑圆角，对齐星辰风 ========== */
 .el-dialog {
-  background: rgba(255, 255, 255, 0.85) !important;
-  backdrop-filter: blur(24px) !important;
-  -webkit-backdrop-filter: blur(24px) !important;
-  border-radius: 20px !important;
-  box-shadow: 0 16px 48px rgba(18, 199, 174, 0.08), 0 0 0 1px rgba(255, 255, 255, 0.5) inset !important;
-  border: 1px solid rgba(0, 0, 0, 0.04) !important;
+  background: #ffffff !important;
+  border-radius: 12px !important;
+  box-shadow: 0 8px 30px rgba(15, 35, 40, 0.12) !important;
+  border: 1px solid rgba(0, 0, 0, 0.05) !important;
   overflow: hidden;
 }
 
 .el-dialog__header {
-  padding: 24px 24px 16px !important;
+  padding: 16px 20px 12px !important;
   margin-right: 0 !important;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.03);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
 }
 
 .el-dialog__title {
-  font-size: 18px !important;
-  font-weight: 700 !important;
-  color: var(--mint-700, #0A8576) !important;
-  letter-spacing: 0.5px;
+  font-size: 15px !important;
+  font-weight: 600 !important;
+  color: #1f2d33 !important;
+  letter-spacing: 0;
 }
 
 .el-dialog__body {
-  padding: 24px !important;
+  padding: 20px !important;
 }
 
 .el-dialog__footer {
-  padding: 16px 24px 24px !important;
+  padding: 12px 20px 16px !important;
   border-top: none !important;
 }
 
-/* ========== 2. 数据表格 (Table) 网格线与呼吸感 ========== */
+/* ========== 2. 数据表格 (Table)：中性灰表头（金蝶/用友风），薄荷留给交互态 ========== */
 .el-table {
   --el-table-border-color: rgba(0, 0, 0, 0.06);
-  --el-table-header-bg-color: var(--mint-50, #E8FBF7);
-  --el-table-header-text-color: var(--mint-700, #0A8576);
+  --el-table-header-bg-color: #f7f8fa;
+  --el-table-header-text-color: #4d6068;
   border: 1px solid var(--el-table-border-color) !important;
-  border-radius: 12px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.02) !important;
+  border-radius: 10px;
+  box-shadow: none !important;
 }
 
 .el-table__inner-wrapper::before {
@@ -534,7 +590,7 @@ a {
 
 .el-table th.el-table__cell {
   background: var(--el-table-header-bg-color) !important;
-  font-weight: 700 !important;
+  font-weight: 600 !important;
   border-bottom: 1px solid var(--el-table-border-color) !important;
   border-right: 1px solid var(--el-table-border-color) !important;
 }
@@ -544,9 +600,9 @@ a {
   border-right: 1px solid var(--el-table-border-color) !important;
 }
 
-/* 统一全局斑马线底色 (与 /voucher/entry 保持一致) */
+/* 统一全局斑马线底色：中性极浅灰 */
 .el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell {
-  background-color: #f0f5ff !important;
+  background-color: #fafbfc !important;
 }
 
 /* 悬停薄荷青 */
@@ -554,13 +610,13 @@ a {
   background-color: rgba(18, 199, 174, 0.06) !important;
 }
 
-/* ========== 3. 表单与输入控件 (Input / Select) 精致化 ========== */
+/* ========== 3. 表单与输入控件 (Input / Select)：白底细边，聚焦薄荷 ========== */
 .el-input__wrapper,
 .el-select__wrapper,
 .el-textarea__inner {
-  border-radius: 8px !important;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.06) inset !important;
-  background-color: #f8fafc !important;
+  border-radius: 6px !important;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.1) inset !important;
+  background-color: #ffffff !important;
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
 }
 
@@ -577,32 +633,32 @@ a {
   box-shadow: 0 0 0 1px rgba(18, 199, 174, 0.4) inset !important;
 }
 
-/* ========== 4. 主操作页面容器的悬浮感 (Page Container) ========== */
-.main > .page,
-.main > .main-view,
-.main .voucher-list-page {
-  background: rgba(255, 255, 255, 0.9);
-  backdrop-filter: blur(20px);
-  border-radius: 16px;
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.02), 0 1px 0 rgba(255,255,255,0.6) inset;
-  border: 1px solid rgba(0, 0, 0, 0.04);
-  padding: 20px;
-  margin: 12px;
-  height: calc(100% - 24px) !important;
+/* ========== 4. 主操作页面容器 (Page Container) ==========
+   灰画布上的一张白卡：只挂在页面本身。.main-view 是透明 flex 出口，
+   不再套白底 / 12px margin / 20px padding，避免和 .page 叠成双层边距。 */
+.main-view .page,
+.main-view .print-template-page {
+  background: #ffffff;
+  border-radius: 10px;
+  box-shadow: 0 1px 2px rgba(15, 35, 40, 0.04), 0 1px 6px rgba(15, 35, 40, 0.04);
+  border: 1px solid #e6ebee;
   box-sizing: border-box;
 }
 
 /* 暗色模式适配扩展 */
 [data-theme='dark'] .el-dialog {
-  background: rgba(30, 30, 30, 0.85) !important;
+  background: #232323 !important;
   border: 1px solid rgba(255, 255, 255, 0.08) !important;
 }
 
-[data-theme='dark'] .main > .page,
-[data-theme='dark'] .main > .main-view,
-[data-theme='dark'] .main .voucher-list-page {
-  background: rgba(30, 30, 30, 0.9);
-  border: 1px solid rgba(255, 255, 255, 0.05);
+[data-theme='dark'] .el-dialog__title {
+  color: rgba(255, 255, 255, 0.88) !important;
+}
+
+[data-theme='dark'] .main-view .page,
+[data-theme='dark'] .main-view .print-template-page {
+  background: #232323;
+  border: 1px solid rgba(255, 255, 255, 0.06);
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
 }
 

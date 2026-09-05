@@ -332,7 +332,7 @@ onUnmounted(() => { window.removeEventListener('resize', resizeChart); chart?.di
 <style scoped>
 .sales-workbench { height: 100%; padding: 14px 18px 18px; overflow: auto; background: #f4f7fb; }
 .workbench-header { display:flex; justify-content:space-between; align-items:center; gap:20px; padding:16px 18px; background:linear-gradient(120deg,#f5fbff,#f8fff9); border:1px solid #dce8f5; border-radius:10px; }
-.title-row { display:flex; align-items:center; gap:10px; } h2 { margin:0; font-size:20px; } .workbench-header p { margin:5px 0 0; color:var(--el-text-color-secondary); font-size:13px; }
+.title-row { display:flex; align-items:center; gap:10px; } h2 { margin:0; font-size:15px; font-weight:600; } .workbench-header p { margin:5px 0 0; color:var(--el-text-color-secondary); font-size:13px; }
 .header-actions,.scheme-bar,.result-head,.result-switch { display:flex; align-items:center; gap:8px; }
 .scheme-bar { margin-top:10px; padding:10px 12px; background:#fff; border:1px solid var(--el-border-color-lighter); border-radius:8px; }
 .bar-divider { width:1px; height:24px; background:var(--el-border-color); margin:0 4px; }.bar-label { font-size:13px; font-weight:600; }.scheme-tip { margin-left:auto; color:var(--el-text-color-secondary); font-size:12px; }.default-tag { margin-left:8px; }

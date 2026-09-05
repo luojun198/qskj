@@ -23,7 +23,9 @@ async function importExcelReportsFromTemplate(...args: any[]) {
 import { listImportableExcelFiles } from '../utils/reportTemplateFiles.js'
 import { syncAcdReportFormulasToAccountSet } from '../services/acdReportFormulaSync.js'
 import systemReinitializeRoutes from './systemReinitialize.js'
-import { PERMISSIONS, PERMISSION_MODULES } from '../db/permissions.js'
+import { PERMISSIONS, PERMISSION_MODULES, CW_TO_ACD } from '../db/permissions.js'
+import { getLicensedModules } from '../services/licenseService.js'
+import { hasLicensedModule, permissionToModules } from '../services/licenseModules.js'
 import {
   getRoleAccountScopePayload,
   getUserAccountScopePayload,
@@ -986,7 +988,7 @@ router.get('/permissions', (req: AuthRequest, res) => {
     permissions: PERMISSIONS.filter(p => p.module === mod.key).map(p => ({
       code: p.code,
       name: p.name,
-      acdCode: p.acdCode,
+      acdCodes: CW_TO_ACD[p.code] || [],
     })),
   })).filter(g => g.permissions.length > 0)
   res.json({ code: 0, data: grouped })
@@ -1003,12 +1005,21 @@ router.get('/permissions/available', (req: AuthRequest, res) => {
 
   let availablePermissions = PERMISSIONS
 
-  // ACD 导入的账套：除有 acdCode 的权限外，CW 原生模块（出纳/资产）的权限也应可授予，
-  // 否则新增的出纳/资产权限（无 acdCode）会被隐藏、无法授权。
+  // ACD 导入的账套：除能对应上 ACD 功能码的权限外，CW 原生模块的权限也应可授予，
+  // 否则这些模块的权限会被隐藏、无法授权。出纳/固定资产/供应链三个模块的数据
+  // 本来就随 ACD 一起导入，供应链此前漏在名单外，导致 scm:* 在 ACD 账套里根本授不了权。
   if (accountSet?.import_source === 'acd') {
-    const CW_NATIVE_MODULES = new Set(['cashier', 'asset'])
-    availablePermissions = PERMISSIONS.filter(p => p.acdCode || CW_NATIVE_MODULES.has(p.module))
+    const CW_NATIVE_MODULES = new Set(['cashier', 'asset', 'scm'])
+    availablePermissions = PERMISSIONS.filter(
+      p => (CW_TO_ACD[p.code] || []).length > 0 || CW_NATIVE_MODULES.has(p.module)
+    )
   }
+
+  // 注册码未包含的模块，其权限不再出现在角色/用户授权界面（授了也用不了）
+  const licensedModules = getLicensedModules(db)
+  availablePermissions = availablePermissions.filter(p =>
+    hasLicensedModule(licensedModules, permissionToModules(p.code))
+  )
 
   // 按模块分组返回
   const grouped = PERMISSION_MODULES.map(mod => ({
@@ -1019,7 +1030,7 @@ router.get('/permissions/available', (req: AuthRequest, res) => {
       .map(p => ({
         code: p.code,
         name: p.name,
-        acdCode: p.acdCode,
+        acdCodes: CW_TO_ACD[p.code] || [],
       })),
   })).filter(g => g.permissions.length > 0)
 

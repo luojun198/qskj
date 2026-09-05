@@ -8,10 +8,18 @@ import {
   formatDateOnly,
   isExpired,
   isValidDateOnly,
+  LICENSE_PAYLOAD_VERSIONS,
   normalizeLicenseCode,
   parseLicenseCode,
   verifyLicenseSignature,
 } from './licenseCodec.js'
+import {
+  ALL_MODULE_KEYS,
+  expandLicenseModules,
+  getLicenseModuleName,
+  hasLicensedModule,
+  type LicenseModuleKey,
+} from './licenseModules.js'
 
 export const LICENSE_ERROR = {
   NOT_ACTIVATED: 40201,
@@ -19,6 +27,7 @@ export const LICENSE_ERROR = {
   INVALID: 40203,
   FORMAT: 40204,
   MACHINE_MISMATCH: 40205,
+  MODULE_NOT_LICENSED: 40206,
 } as const
 
 export interface LicenseStatus {
@@ -28,6 +37,8 @@ export interface LicenseStatus {
   daysRemaining: number
   machineId: string
   machineMismatch: boolean
+  /** 已授权模块（已展开，不含 '*'）；未激活时为空 */
+  modules: LicenseModuleKey[]
 }
 
 interface LicenseRow {
@@ -59,6 +70,17 @@ function readActivationRow(db: Database.Database): LicenseRow | undefined {
     .get() as LicenseRow | undefined
 }
 
+/** 从已激活的注册码 token 里解出模块列表；解码失败时视为 v1（全部模块），由验签环节兜底 */
+function readModulesFromToken(token: string | undefined): LicenseModuleKey[] {
+  if (!token) return []
+  try {
+    const { payloadEncoded } = parseLicenseCode(token)
+    return expandLicenseModules(decodeLicensePayload(payloadEncoded).mods)
+  } catch {
+    return [...ALL_MODULE_KEYS]
+  }
+}
+
 export function getLicenseStatus(db: Database.Database = getDb()): LicenseStatus {
   const machineId = getMachineId()
   if (isLicenseCheckSkipped()) {
@@ -69,6 +91,7 @@ export function getLicenseStatus(db: Database.Database = getDb()): LicenseStatus
       daysRemaining: 9999,
       machineId,
       machineMismatch: false,
+      modules: [...ALL_MODULE_KEYS],
     }
   }
 
@@ -81,6 +104,7 @@ export function getLicenseStatus(db: Database.Database = getDb()): LicenseStatus
       daysRemaining: 0,
       machineId,
       machineMismatch: false,
+      modules: [],
     }
   }
 
@@ -96,12 +120,18 @@ export function getLicenseStatus(db: Database.Database = getDb()): LicenseStatus
     daysRemaining: expired ? 0 : daysRemaining(row.expires_at),
     machineId,
     machineMismatch,
+    modules: readModulesFromToken(row.license_token),
   }
+}
+
+/** 当前已授权模块（LICENSE_SKIP 时为全部） */
+export function getLicensedModules(db: Database.Database = getDb()): LicenseModuleKey[] {
+  return getLicenseStatus(db).modules
 }
 
 export interface VerifyLicenseResult {
   ok: true
-  payload: { mid: string; exp: string; iat: string }
+  payload: { mid: string; exp: string; iat: string; modules: LicenseModuleKey[] }
 }
 
 export interface VerifyLicenseError {
@@ -134,12 +164,17 @@ export function verifyLicenseCode(
     return { ok: false, code: LICENSE_ERROR.FORMAT, message: '注册码内容无效' }
   }
 
-  if (payload.v !== 1) {
+  if (!(LICENSE_PAYLOAD_VERSIONS as readonly number[]).includes(payload.v)) {
     return { ok: false, code: LICENSE_ERROR.INVALID, message: '注册码版本不支持' }
   }
 
   if (!isValidDateOnly(payload.exp)) {
     return { ok: false, code: LICENSE_ERROR.INVALID, message: '注册码有效期无效' }
+  }
+
+  const modules = expandLicenseModules(payload.mods)
+  if (modules.length === 0) {
+    return { ok: false, code: LICENSE_ERROR.INVALID, message: '注册码未包含任何可用模块' }
   }
 
   const allowedMachineIds = machineId ? [machineId.toUpperCase()] : getMachineIdCandidates()
@@ -153,14 +188,14 @@ export function verifyLicenseCode(
 
   return {
     ok: true,
-    payload: { mid: payload.mid.toUpperCase(), exp: payload.exp, iat: payload.iat },
+    payload: { mid: payload.mid.toUpperCase(), exp: payload.exp, iat: payload.iat, modules },
   }
 }
 
 export function activateLicense(
   code: string,
   db: Database.Database = getDb()
-): { expiresAt: string } | VerifyLicenseError {
+): { expiresAt: string; modules: LicenseModuleKey[] } | VerifyLicenseError {
   const verified = verifyLicenseCode(code)
   if (!verified.ok) return verified
 
@@ -176,12 +211,31 @@ export function activateLicense(
        updated_at = excluded.updated_at`
   ).run(verified.payload.mid, verified.payload.exp, now, normalizedCode, now)
 
-  return { expiresAt: verified.payload.exp }
+  return { expiresAt: verified.payload.exp, modules: verified.payload.modules }
 }
 
 export interface LicenseAssertError {
   code: number
   message: string
+}
+
+/**
+ * 校验所需模块（任一满足即可）是否在授权范围内。
+ * 调用方应先通过 assertLicenseValid，这里只关心模块；LICENSE_SKIP 时直接放行。
+ */
+export function assertModuleLicensed(
+  required: LicenseModuleKey | readonly LicenseModuleKey[],
+  db: Database.Database = getDb()
+): LicenseAssertError | null {
+  if (isLicenseCheckSkipped()) return null
+  const list = Array.isArray(required) ? required : [required as LicenseModuleKey]
+  if (list.length === 0) return null
+  if (hasLicensedModule(getLicensedModules(db), list)) return null
+  const names = list.map(getLicenseModuleName).join(' / ')
+  return {
+    code: LICENSE_ERROR.MODULE_NOT_LICENSED,
+    message: `当前授权未包含「${names}」模块，请联系供应商升级注册码`,
+  }
 }
 
 export function assertLicenseValid(db: Database.Database = getDb()): LicenseAssertError | null {

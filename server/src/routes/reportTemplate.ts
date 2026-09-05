@@ -7,6 +7,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { authMiddleware, AuthRequest, requirePermission } from '../middleware/index.js'
 import { getDb } from '../db/index.js'
 import { executeTemplateSheets } from '../services/reportTemplateExecutor.js'
+import { resolveReportUnitName } from '../services/reportUnitName.js'
 import { saveReportTemplateExcelSource } from '../services/reportTemplatePersistence.js'
 import {
   createReportTask,
@@ -1389,7 +1390,7 @@ router.post('/templates/:code/execute', (req: AuthRequest, res) => {
           accountSetId: resolvedAccountSetId,
           year,
           period,
-          unitName: (db.prepare('SELECT name FROM account_sets WHERE id = ?').get(resolvedAccountSetId) as any)?.name || '',
+          unitName: resolveReportUnitName(db, resolvedAccountSetId),
           accountScope,
         }
       )

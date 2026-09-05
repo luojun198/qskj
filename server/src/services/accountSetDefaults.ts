@@ -249,10 +249,19 @@ export function readAccountSetStartDate(
   return resolved
 }
 
-/** 预设固定资产字典的基础默认值（资产状态、增减方式等） */
+function hasTable(db: Database.Database, table: string): boolean {
+  return !!db
+    .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`)
+    .get(table)
+}
+
+/**
+ * 预设固定资产字典的基础默认值（资产状态、增减方式等）。
+ * 资产模块的表由迁移创建；迁移尚未执行或库里没有该模块时跳过对应字典，不阻断建账。
+ */
 export function ensureDefaultAssetDicts(db: Database.Database, accountSetId: string, specificType?: string) {
   // 1. 预设资产状态
-  if (!specificType || specificType === 'status') {
+  if ((!specificType || specificType === 'status') && hasTable(db, 'fixed_asset_status')) {
     const statusCount = (db.prepare('SELECT COUNT(*) as c FROM fixed_asset_status WHERE account_set_id=?').get(accountSetId) as any).c
     if (statusCount === 0) {
       const insStatus = db.prepare('INSERT INTO fixed_asset_status (id, account_set_id, code, name, depreciable) VALUES (?, ?, ?, ?, ?)')
@@ -264,29 +273,25 @@ export function ensureDefaultAssetDicts(db: Database.Database, accountSetId: str
   }
 
   // 2. 预设增减方式
-  if (!specificType || specificType === 'change_type') {
-    try {
-      const ctCount = (db.prepare('SELECT COUNT(*) as c FROM fixed_asset_change_type WHERE account_set_id=?').get(accountSetId) as any).c
-      if (ctCount === 0) {
-        const insCT = db.prepare('INSERT INTO fixed_asset_change_type (id, account_set_id, code, name, direction) VALUES (?, ?, ?, ?, ?)')
-        // 增加方式
-        insCT.run(uuidv4(), accountSetId, '01', '直接购入', 'increase')
-        insCT.run(uuidv4(), accountSetId, '02', '投资者投入', 'increase')
-        insCT.run(uuidv4(), accountSetId, '03', '接受捐赠', 'increase')
-        insCT.run(uuidv4(), accountSetId, '04', '盘盈', 'increase')
-        // 减少方式
-        insCT.run(uuidv4(), accountSetId, '11', '报废', 'decrease')
-        insCT.run(uuidv4(), accountSetId, '12', '出售', 'decrease')
-        insCT.run(uuidv4(), accountSetId, '13', '盘亏', 'decrease')
-        insCT.run(uuidv4(), accountSetId, '14', '毁损', 'decrease')
-      }
-    } catch (e) {
-      // 忽略表可能不存在的情况
+  if ((!specificType || specificType === 'change_type') && hasTable(db, 'fixed_asset_change_type')) {
+    const ctCount = (db.prepare('SELECT COUNT(*) as c FROM fixed_asset_change_type WHERE account_set_id=?').get(accountSetId) as any).c
+    if (ctCount === 0) {
+      const insCT = db.prepare('INSERT INTO fixed_asset_change_type (id, account_set_id, code, name, direction) VALUES (?, ?, ?, ?, ?)')
+      // 增加方式
+      insCT.run(uuidv4(), accountSetId, '01', '直接购入', 'increase')
+      insCT.run(uuidv4(), accountSetId, '02', '投资者投入', 'increase')
+      insCT.run(uuidv4(), accountSetId, '03', '接受捐赠', 'increase')
+      insCT.run(uuidv4(), accountSetId, '04', '盘盈', 'increase')
+      // 减少方式
+      insCT.run(uuidv4(), accountSetId, '11', '报废', 'decrease')
+      insCT.run(uuidv4(), accountSetId, '12', '出售', 'decrease')
+      insCT.run(uuidv4(), accountSetId, '13', '盘亏', 'decrease')
+      insCT.run(uuidv4(), accountSetId, '14', '毁损', 'decrease')
     }
   }
 
   // 3. 预设资产类别
-  if (!specificType || specificType === 'category') {
+  if ((!specificType || specificType === 'category') && hasTable(db, 'fixed_asset_category')) {
     const catCount = (db.prepare('SELECT COUNT(*) as c FROM fixed_asset_category WHERE account_set_id=?').get(accountSetId) as any).c
     if (catCount === 0) {
       const insCat = db.prepare('INSERT INTO fixed_asset_category (id, account_set_id, code, name, salvage_rate, account_code, depr_account_code, clearing_account_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
@@ -299,7 +304,7 @@ export function ensureDefaultAssetDicts(db: Database.Database, accountSetId: str
   }
 
   // 4. 预设资产用途
-  if (!specificType || specificType === 'purpose') {
+  if ((!specificType || specificType === 'purpose') && hasTable(db, 'fixed_asset_purpose')) {
     const purpCount = (db.prepare('SELECT COUNT(*) as c FROM fixed_asset_purpose WHERE account_set_id=?').get(accountSetId) as any).c
     if (purpCount === 0) {
       const insPurp = db.prepare('INSERT INTO fixed_asset_purpose (id, account_set_id, code, name, expense_account) VALUES (?, ?, ?, ?, ?)')
@@ -309,7 +314,7 @@ export function ensureDefaultAssetDicts(db: Database.Database, accountSetId: str
     }
   }
   // 5. 预设使用部门
-  if (!specificType || specificType === 'dept') {
+  if ((!specificType || specificType === 'dept') && hasTable(db, 'fixed_asset_dept')) {
     const deptCount = (db.prepare('SELECT COUNT(*) as c FROM fixed_asset_dept WHERE account_set_id=?').get(accountSetId) as any).c
     if (deptCount === 0) {
       const insDept = db.prepare('INSERT INTO fixed_asset_dept (id, account_set_id, code, name) VALUES (?, ?, ?, ?)')

@@ -94,6 +94,14 @@ instance.interceptors.response.use(
       return Promise.reject(error)
     }
 
+    // 402 + 40206：授权有效但未包含该模块，只提示，不当作授权失效跳去激活页
+    if (code === 40206) {
+      if (!skipErrorToast) {
+        ElMessage.warning(responseMessage || '当前授权未包含该模块')
+      }
+      return Promise.reject(error)
+    }
+
     // 402 软件授权失效（排除后端重启等瞬时 5xx/网络错误）
     if (status === 402 || code === 40201 || code === 40202 || code === 40205) {
       if (!skipLicenseRedirect && !isLicenseRedirecting) {
@@ -176,12 +184,18 @@ instance.interceptors.response.use(
             /* 刷新失败（网络抖动等）则沿用现有权限判断，不阻断跳转逻辑 */
           }
           await systemParamsStore.load()
+          const { useLicenseStore } = await import('@/stores/license')
+          const licensedModules = useLicenseStore().modules
           const landing = getDefaultLandingPath(
             userStore.permissions,
-            systemParamsStore.enableCashFlow
+            systemParamsStore.enableCashFlow,
+            licensedModules
           )
           const current = router.currentRoute.value.path
-          if (!canAccessRoute(current, userStore.permissions) && current !== landing) {
+          if (
+            !canAccessRoute(router.currentRoute.value.fullPath, userStore.permissions, licensedModules) &&
+            current !== landing
+          ) {
             await router.replace(landing)
           }
         } finally {

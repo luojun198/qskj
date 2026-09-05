@@ -26,12 +26,12 @@
   --fs-h1: 36px;
   --fs-h2: 28px;
   --fs-h3: 22px;
-  --fs-title: 18px;
-  --fs-body-lg: 18px;
-  --fs-body: 16px;
-  --fs-body-sm: 14px;
-  --fs-caption: 13px;
-  --fs-overline: 12px;
+  --fs-title: 15px;
+  --fs-body-lg: 15px;
+  --fs-body: 13px;
+  --fs-body-sm: 13px;
+  --fs-caption: 12px;
+  --fs-overline: 11px;
 
   /* line-heights */
   --lh-tight: 1.08;   /* @kind font */

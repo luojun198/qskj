@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3'
 import { applyLegacySchemaEnsures, getDb } from './index.js'
 import { repairDatabaseReferentialIntegrity } from '../services/databaseIntegrityRepair.js'
-import { getCurrentVersion, runMigrations } from './migrations.js'
+import { getCurrentVersion, runMigrations, repairStampedSchema } from './migrations.js'
 import { migrations } from './migrationList.js'
 
 /** 当前程序期望的数据库迁移版本 */
@@ -54,6 +54,8 @@ export interface CompatibilityUpgradeResult {
   migrationVersionBefore: number
   migrationVersionAfter: number
   migrationsApplied: number
+  /** 版本号已标记为已应用、但表其实缺失而被补建的迁移 */
+  repairedMigrations: string[]
   fixedIssues: CompatibilityIssue[]
   schemaRepairsApplied: boolean
 }
@@ -152,9 +154,13 @@ export function upgradeDatabaseCompatibility(
   repairDatabaseReferentialIntegrity(database)
 
   let migrationVersionAfter = migrationVersionBefore
+  let repairedMigrations: string[] = []
   if (!options?.skipMigrations) {
     runMigrations(migrations)
     migrationVersionAfter = getCurrentVersion(database)
+    // 版本号可能已经是最新，但历史上迁移中途失败导致模块表并未真正建出来，
+    // 此时 runMigrations 会把它们当作已应用而永久跳过，需要按实际表结构补建。
+    repairedMigrations = repairStampedSchema(migrations, database)
   }
 
   const after = inspectDatabaseCompatibility(database)
@@ -165,17 +171,29 @@ export function upgradeDatabaseCompatibility(
     migrationVersionBefore,
     migrationVersionAfter,
     migrationsApplied: Math.max(0, migrationVersionAfter - migrationVersionBefore),
+    repairedMigrations,
     fixedIssues: diffFixedIssues(before, after),
-    schemaRepairsApplied: before.issues.length > after.issues.length || migrationVersionAfter > migrationVersionBefore,
+    schemaRepairsApplied:
+      before.issues.length > after.issues.length ||
+      migrationVersionAfter > migrationVersionBefore ||
+      repairedMigrations.length > 0,
   }
 }
 
 export function formatCompatibilityUpgradeSummary(result: CompatibilityUpgradeResult): string {
-  if (result.before.isCompatible && result.after.isCompatible && result.migrationsApplied === 0) {
+  if (
+    result.before.isCompatible &&
+    result.after.isCompatible &&
+    result.migrationsApplied === 0 &&
+    result.repairedMigrations.length === 0
+  ) {
     return '数据库结构已兼容当前版本，无需升级'
   }
 
   const parts: string[] = []
+  if (result.repairedMigrations.length > 0) {
+    parts.push(`已补建 ${result.repairedMigrations.length} 项缺失的迁移表（${result.repairedMigrations.join('、')}）`)
+  }
   if (result.migrationsApplied > 0) {
     parts.push(`已执行 ${result.migrationsApplied} 项数据库迁移（v${result.migrationVersionBefore} → v${result.migrationVersionAfter}）`)
   }

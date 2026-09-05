@@ -8,6 +8,8 @@ import {
   normalizePath,
   resolveAccessiblePath,
 } from '@/config/navigation'
+import { REMEMBER_ME_KEY, clearRememberedLogin } from '@/utils/rememberedLogin'
+import { setupRouteSwitchingIndicator } from '@/composables/useRouteSwitching'
 
 const routes: RouteRecordRaw[] = [
   {
@@ -327,6 +329,30 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/cashier/Reset.vue'),
         meta: { title: '出纳初始化', icon: 'RefreshLeft', parent: '出纳管理' },
       },
+      {
+        path: 'cashier/reconcile',
+        name: 'CashierReconcile',
+        component: () => import('@/views/cashier/Reconcile.vue'),
+        meta: { title: '银行勾对', icon: 'Connection', parent: '出纳管理' },
+      },
+      {
+        path: 'cashier/reconciliation',
+        name: 'CashierBankReconciliation',
+        component: () => import('@/views/cashier/BankReconciliation.vue'),
+        meta: { title: '余额调节表', icon: 'ScaleToOriginal', parent: '出纳管理' },
+      },
+      {
+        path: 'cashier/bank-import',
+        name: 'CashierBankImport',
+        component: () => import('@/views/cashier/BankImport.vue'),
+        meta: { title: '银行对账单导入', icon: 'Upload', parent: '出纳管理' },
+      },
+      {
+        path: 'base/keyboard-shortcuts',
+        name: 'KeyboardShortcuts',
+        component: () => import('@/views/base/KeyboardShortcuts.vue'),
+        meta: { title: '快捷键维护', icon: 'Operation', parent: '系统管理' },
+      },
       // 固定资产
       {
         path: 'asset/list',
@@ -473,6 +499,42 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '质检管理', icon: 'SetUp', parent: '生产管理' },
       },
       {
+        path: 'scm/routings/new',
+        name: 'ScmRoutingNew',
+        component: () => import('@/views/scm/RoutingForm.vue'),
+        meta: { title: '新增工艺路线', icon: 'SetUp', parent: '生产管理' },
+      },
+      {
+        path: 'scm/routings/:id/edit',
+        name: 'ScmRoutingEdit',
+        component: () => import('@/views/scm/RoutingForm.vue'),
+        meta: { title: '编辑工艺路线', icon: 'SetUp', parent: '生产管理' },
+      },
+      {
+        path: 'scm/work-reports/new',
+        name: 'ScmWorkReportNew',
+        component: () => import('@/views/scm/WorkReportForm.vue'),
+        meta: { title: '新增报工', icon: 'SetUp', parent: '生产管理' },
+      },
+      {
+        path: 'scm/work-reports/:id/edit',
+        name: 'ScmWorkReportEdit',
+        component: () => import('@/views/scm/WorkReportForm.vue'),
+        meta: { title: '编辑报工', icon: 'SetUp', parent: '生产管理' },
+      },
+      {
+        path: 'scm/qc-docs/new',
+        name: 'ScmQcNew',
+        component: () => import('@/views/scm/QcForm.vue'),
+        meta: { title: '新增质检单', icon: 'SetUp', parent: '生产管理' },
+      },
+      {
+        path: 'scm/qc-docs/:id/edit',
+        name: 'ScmQcEdit',
+        component: () => import('@/views/scm/QcForm.vue'),
+        meta: { title: '编辑质检单', icon: 'SetUp', parent: '生产管理' },
+      },
+      {
         path: 'scm/production-plans/new',
         name: 'ScmProductionPlanNew',
         component: () => import('@/views/scm/ProductionPlanForm.vue'),
@@ -513,6 +575,12 @@ const routes: RouteRecordRaw[] = [
         name: 'ScmOutsourceExecutionReport',
         component: () => import('@/views/scm/OutsourceExecutionReport.vue'),
         meta: { title: '委外执行及结存表', icon: 'DataAnalysis', parent: '委外管理' },
+      },
+      {
+        path: 'scm/report/production/execution',
+        name: 'ScmProductionExecutionReport',
+        component: () => import('@/views/scm/ProductionExecutionReport.vue'),
+        meta: { title: '生产执行及在制结存表', icon: 'DataAnalysis', parent: '生产制造' },
       },
       {
         path: 'scm/report/stock-alert',
@@ -789,6 +857,30 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '资产明细账', parent: '固定资产' },
       },
       {
+        path: 'asset/change',
+        name: 'AssetChange',
+        component: () => import('@/views/asset/AssetChange.vue'),
+        meta: { title: '资产变动', icon: 'Switch', parent: '固定资产' },
+      },
+      {
+        path: 'asset/change/list',
+        name: 'AssetChangeList',
+        component: () => import('@/views/asset/AssetChangeList.vue'),
+        meta: { title: '资产变动记录', parent: '固定资产' },
+      },
+      {
+        path: 'asset/import',
+        name: 'AssetImport',
+        component: () => import('@/views/asset/AssetImport.vue'),
+        meta: { title: '资产批量导入', parent: '固定资产' },
+      },
+      {
+        path: 'asset/requisition',
+        name: 'AssetRequisition',
+        component: () => import('@/views/asset/AssetRequisition.vue'),
+        meta: { title: '领用归还', icon: 'User', parent: '固定资产' },
+      },
+      {
         path: 'asset/depreciation',
         name: 'AssetDepreciation',
         component: () => import('@/views/asset/Depreciation.vue'),
@@ -846,6 +938,9 @@ const router = createRouter({
   routes,
 })
 
+// 切换过程中的进度条与特效降级，注册在业务守卫之前，重定向也能覆盖到
+setupRouteSwitchingIndicator(router)
+
 router.beforeEach(async (to, _from, next) => {
   const userStore = useUserStore()
   const systemParamsStore = useSystemParamsStore()
@@ -861,6 +956,8 @@ router.beforeEach(async (to, _from, next) => {
     next('/login')
     return
   }
+  // 注册码里授权的模块：菜单、路由都按它裁剪，未授权模块的页面落回可访问首页
+  const licensedModules = licenseStore.modules
 
   await userStore.bootstrapAuth()
   // 带 targetAccountSetId 参数的登录请求，跳转前先清除 token
@@ -877,24 +974,25 @@ router.beforeEach(async (to, _from, next) => {
     systemParamsStore.reset()
     next()
   } else if (to.meta.requiresAuth !== false && !userStore.token) {
-    // 如果不记住密码，清除保存的登录信息
-    if (localStorage.getItem('rememberMe') !== 'true') {
-      localStorage.removeItem('rememberedUsername')
+    // 未勾选「记住账号密码」时清掉已保存的账号，但不影响上次账套
+    if (localStorage.getItem(REMEMBER_ME_KEY) !== 'true') {
+      clearRememberedLogin()
       userStore.rememberMe = false
     }
     next('/login')
   } else if (to.path === '/login' && userStore.token) {
     await systemParamsStore.load()
-    next(getDefaultLandingPath(userStore.permissions, systemParamsStore.enableCashFlow))
+    next(getDefaultLandingPath(userStore.permissions, systemParamsStore.enableCashFlow, licensedModules))
   } else if (to.meta.requiresCashFlow) {
     await systemParamsStore.load()
     if (!systemParamsStore.enableCashFlow) {
       next('/system/param')
-    } else if (!canAccessRoute(to.path, userStore.permissions)) {
+    } else if (!canAccessRoute(to.fullPath, userStore.permissions, licensedModules)) {
       const landing = resolveAccessiblePath(
-        to.path,
+        to.fullPath,
         userStore.permissions,
-        systemParamsStore.enableCashFlow
+        systemParamsStore.enableCashFlow,
+        licensedModules
       )
       next(landing === normalizePath(to.path) ? '/forbidden' : { path: landing, replace: true })
     } else {
@@ -904,13 +1002,14 @@ router.beforeEach(async (to, _from, next) => {
     to.meta.requiresAuth !== false &&
     userStore.token &&
     to.path !== '/forbidden' &&
-    !canAccessRoute(to.path, userStore.permissions)
+    !canAccessRoute(to.fullPath, userStore.permissions, licensedModules)
   ) {
     await systemParamsStore.load()
     const landing = resolveAccessiblePath(
-      to.path,
+      to.fullPath,
       userStore.permissions,
-      systemParamsStore.enableCashFlow
+      systemParamsStore.enableCashFlow,
+      licensedModules
     )
     next(landing === normalizePath(to.path) ? '/forbidden' : { path: landing, replace: true })
   } else {

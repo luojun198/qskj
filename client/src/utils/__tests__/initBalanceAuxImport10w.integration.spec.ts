@@ -17,6 +17,21 @@ const XLSX_PATH = 'C:\\Users\\Administrator\\Desktop\\1\\辅助期初模板 10W�
 const ACCOUNT_ID = '7eb5c991-f651-4b80-b0aa-9baf82e9fa14'
 const DB_PATH = resolve(__dirname, '../../../../data/finance.db')
 
+/** 这是依赖本机样本文件与特定科目的实测用例；样本或科目不在时整组跳过，而不是报失败 */
+function hasFixtureAccount(): boolean {
+  if (!existsSync(DB_PATH)) return false
+  try {
+    const db = new Database(DB_PATH, { readonly: true })
+    try {
+      return !!db.prepare('SELECT 1 FROM accounts WHERE id = ?').get(ACCOUNT_ID)
+    } finally {
+      db.close()
+    }
+  } catch {
+    return false
+  }
+}
+
 function loadAccountContext() {
   const db = new Database(DB_PATH, { readonly: true })
   const account = db
@@ -45,7 +60,7 @@ function loadAccountContext() {
   return { categories, itemsByCategory }
 }
 
-describe.skipIf(!existsSync(XLSX_PATH))('10W 辅助期初模板实测', () => {
+describe.skipIf(!existsSync(XLSX_PATH) || !hasFixtureAccount())('10W 辅助期初模板实测', () => {
   it('可解析 Excel 并完成分块校验', async () => {
     const buffer = readFileSync(XLSX_PATH)
     const workbook = XLSX.read(buffer, { type: 'buffer' })

@@ -1,108 +1,49 @@
 <template>
-  <el-container class="layout-container apple-layout">
-    <!-- 侧边栏 - 苹果风格 -->
-    <el-aside :width="isCollapsed ? '72px' : '240px'" class="aside">
-      <!-- Logo -->
-      <div
-        class="logo"
-        :class="{ 'logo--collapsed': isCollapsed }"
-        title="回到首页"
-        @click="goToHome"
-      >
-        <div class="logo-brand">
-          <div class="logo-icon">
-            <img :src="brandingStore.logoSrc" :alt="brandingStore.title" class="logo-img" />
-          </div>
-          <div v-show="!isCollapsed" class="logo-text-wrap">
-            <span class="logo-text">{{ brandingStore.title }}</span>
-            <span class="logo-sub">
-              {{ brandingStore.subtitle }}
-              <span v-if="appVersion" class="logo-version">v{{ appVersion }}</span>
-            </span>
-          </div>
-        </div>
-      </div>
+  <el-container class="layout-container apple-layout" :class="{ 'nav-panel-floating': !panelPinned }">
+    <!-- 侧边栏：应用栏 + 二级导航面板 -->
+    <aside
+      class="aside app-shell-aside"
+      :style="{ width: asideWidth }"
+    >
+      <AppRail
+        :apps="navApps"
+        :active-app-key="activeAppKey"
+        :pinned="panelPinned"
+        :logo-src="brandingStore.logoSrc"
+        :brand-title="brandingStore.title"
+        :version="appVersion || undefined"
+        @home="goToHome"
+        @select="handleAppSelect"
+        @preload="preloadNavApp"
+        @toggle-pin="togglePanelPinned"
+      />
+      <transition name="nav-panel">
+        <AppNavPanel
+          v-if="panelVisible"
+          ref="navPanelRef"
+          class="app-shell-panel"
+          :app="panelApp"
+          :apps="navApps"
+          :active-menu="activeMenu"
+          :pinned="panelPinned"
+          @navigate="handlePanelNavigate"
+          @open-home="openAppPanel"
+          @preload="preloadMenuPath"
+          @preload-app="preloadNavApp"
+        />
+      </transition>
+    </aside>
 
-      <!-- 菜单 -->
-      <el-menu
-        :default-active="activeMenu"
-        :collapse="isCollapsed"
-        background-color="transparent"
-        text-color="#4a4a4a"
-        active-text-color="#12C7AE"
-        popper-class="apple-menu-popper"
-        popper-effect="light"
-        router
-        unique-opened
-        class="apple-menu"
-      >
-        <el-sub-menu
-          v-for="group in menuGroups"
-          :key="group.title === '报表管理' ? `report-${reportMenuRevision}` : group.title"
-          :index="group.title"
-          :class="{ 'sub-menu-current': currentGroupTitle === group.title }"
-        >
-          <template #title>
-            <div
-              class="menu-title-inner"
-              style="width: 100%; height: 100%; display: flex; align-items: center;"
-              @mouseenter="preloadMenuGroup(group)"
-              @click="handleGroupTitleClick(group)"
-            >
-              <div class="menu-icon-wrap">
-                <component :is="group.icon" />
-              </div>
-              <span class="menu-title-label">{{ group.title }}</span>
-            </div>
-          </template>
-          <template v-if="group.subGroups">
-            <el-menu-item v-for="item in group.children" :key="item.path" :index="item.path" @mouseenter="preloadMenuPath(item.path)" @focus="preloadMenuPath(item.path)">
-              <span class="menu-item-content"><span class="menu-item-label">{{ item.title }}</span></span>
-            </el-menu-item>
-            <el-sub-menu v-for="sg in group.subGroups" :key="sg.label" :index="`${group.title}__${sg.label}`">
-              <template #title><span>{{ sg.label }}</span></template>
-              <el-menu-item v-for="item in sg.items" :key="item.path" :index="item.path" @mouseenter="preloadMenuPath(item.path)" @focus="preloadMenuPath(item.path)">
-                <span class="menu-item-content"><span class="menu-item-label">{{ item.title }}</span></span>
-              </el-menu-item>
-            </el-sub-menu>
-          </template>
-          <el-menu-item-group v-else class="menu-popup-group">
-            <template #title>
-              <span class="menu-popup-group-title">{{ group.title }}</span>
-            </template>
-            <el-menu-item v-for="item in group.children" :key="item.path" :index="item.path" @mouseenter="preloadMenuPath(item.path)" @focus="preloadMenuPath(item.path)">
-              <span class="menu-item-content">
-                <span class="menu-item-label">{{ item.title }}</span>
-              </span>
-            </el-menu-item>
-          </el-menu-item-group>
-        </el-sub-menu>
-      </el-menu>
-
-      <!-- 底部折叠按钮 -->
-      <div class="aside-footer">
-        <button
-          class="collapse-btn"
-          :title="isCollapsed ? '展开菜单' : '收起菜单'"
-          @click="isCollapsed = !isCollapsed"
-        >
-          <svg v-if="isCollapsed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M9 18l6-6-6-6"/>
-          </svg>
-          <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M15 18l-6-6 6-6"/>
-          </svg>
-        </button>
-      </div>
-    </el-aside>
-
-    <el-container>
+    <el-container @pointerdown="onMainPointerDown">
       <!-- 顶栏 - 苹果风格 -->
       <el-header class="header">
         <div class="header-left">
           <el-breadcrumb separator="/" class="apple-breadcrumb">
             <el-breadcrumb-item v-if="currentParent">
               <a class="breadcrumb-link" @click="navigateToModuleHome">{{ currentParent }}</a>
+            </el-breadcrumb-item>
+            <el-breadcrumb-item v-if="currentSectionLabel">
+              <span class="breadcrumb-section">{{ currentSectionLabel }}</span>
             </el-breadcrumb-item>
             <el-breadcrumb-item>
               <a v-if="currentListItem" class="breadcrumb-link" title="回到列表" @click="navigateToList">{{ currentTitle }}</a>
@@ -304,7 +245,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, watch, provide } from 'vue'
+import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch, provide } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { getUsersByAccountSet, logout, switchOperator } from '@/api/auth'
@@ -318,15 +259,29 @@ import { useGlobalPageTableHeight } from '@/composables/useGlobalPageTableHeight
 import { useSystemParamsStore } from '@/stores/systemParams'
 import { useNavigationReturnStore } from '@/stores/navigationReturn'
 import { useVoucherModalReturnStore } from '@/stores/voucherModalReturn'
-import { buildMenuGroups, canAccessRoute, getDefaultLandingPath, type NavGroup } from '@/config/navigation'
+import {
+  buildNavApps,
+  canAccessRoute,
+  flattenNavApp,
+  flattenNavApps,
+  getDefaultLandingPath,
+  locateNavItem,
+  navAppToGroup,
+  WORKBENCH_APP_KEY,
+  type NavApp,
+} from '@/config/navigation'
 import { useBrandingStore } from '@/stores/branding'
+import { useLicenseStore } from '@/stores/license'
 import { useAppBuildInfo } from '@/composables/useAppBuildInfo'
 import TabsBar from '@/components/layout/TabsBar.vue'
+import AppRail from '@/components/layout/AppRail.vue'
+import AppNavPanel from '@/components/layout/AppNavPanel.vue'
 import { useTabsStore } from '@/stores/tabs'
 import { getTabPolicy, getViewKey as getViewKeyUtil } from '@/utils/viewKey'
 import { DOC_TITLE } from '@/utils/scmDoc'
 import { shouldUseLightMode, setPerformanceMode } from '@/utils/performanceMode'
-import { getGroupNavigationPath } from '@/utils/groupNavigation'
+import { getGroupNavigationPath, resolveNavAppTitle } from '@/utils/groupNavigation'
+import { preloadRoutePath, preloadRoutePathsWhenIdle } from '@/utils/routePreload'
 
 const keepAliveMax = shouldUseLightMode() ? 6 : 14
 
@@ -362,6 +317,7 @@ useGlobalPageTableHeight()
 const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
+const licenseStore = useLicenseStore()
 const navigationReturnStore = useNavigationReturnStore()
 const voucherModalReturnStore = useVoucherModalReturnStore()
 const tabsStore = useTabsStore()
@@ -375,7 +331,7 @@ let scmDocFormPreloadScheduled = false
  * 避免第一次点击销售订单时才让 Vite/浏览器解析整棵列表组件依赖。
  */
 function preloadScmDocList() {
-  if (!canAccessRoute('/scm/docs', userStore.permissions)) return null
+  if (!canAccessRoute('/scm/docs', userStore.permissions, licenseStore.modules)) return null
   if (scmDocListPreload) return scmDocListPreload
   scmDocListPreload = import('@/views/scm/DocList.vue').catch(error => {
     scmDocListPreload = null
@@ -385,7 +341,7 @@ function preloadScmDocList() {
 }
 
 function preloadScmDocForm() {
-  if (!canAccessRoute('/scm/docs', userStore.permissions)) return null
+  if (!canAccessRoute('/scm/docs', userStore.permissions, licenseStore.modules)) return null
   if (scmDocFormPreload) return scmDocFormPreload
   scmDocFormPreload = import('@/views/scm/DocForm.vue').catch(error => {
     scmDocFormPreload = null
@@ -411,19 +367,21 @@ function preloadScmEntryChain() {
   if (listTask) void listTask.finally(scheduleScmDocFormPreload)
 }
 
+/** 鼠标移到菜单项上就把对应视图拉好，点下去时组件已经在手里 */
 function preloadMenuPath(path: string) {
-  if (path.split('?')[0] !== '/scm/docs') return
-  // 用户已经移到具体单据入口时，同时预取新增/编辑表单，消除第一次点“新增单据”的组件解析等待。
-  preloadScmDocList()
-  preloadScmDocForm()
+  preloadRoutePath(router, path)
+  // 供应链单据列表进去多半要开单据，顺带把表单也备上
+  if (path.split('?')[0] === '/scm/docs') preloadScmDocForm()
 }
 
-function preloadMenuGroup(group: NavGroup) {
-  const items = [
-    ...group.children,
-    ...(group.subGroups?.flatMap(subGroup => subGroup.items) || []),
-  ]
-  if (items.some(item => item.path.split('?')[0] === '/scm/docs')) preloadScmDocList()
+/** 移到应用图标上：整个应用低优先级排队预取 */
+function preloadNavApp(app: NavApp) {
+  preloadRoutePathsWhenIdle(router, flattenNavApp(app).map(item => item.path))
+}
+
+/** 登录后空闲时按应用顺序把各模块铺开预取，不与首屏抢资源 */
+function preloadMenusWhenIdle() {
+  preloadRoutePathsWhenIdle(router, flattenNavApps(navApps.value).map(item => item.path))
 }
 
 onMounted(() => {
@@ -431,15 +389,18 @@ onMounted(() => {
   void systemParamsStore.load()
   void brandingStore.load()
   const requestIdle = (window as any).requestIdleCallback as typeof window.requestIdleCallback | undefined
+  const warmUp = () => {
+    preloadScmEntryChain()
+    preloadMenusWhenIdle()
+  }
   if (typeof requestIdle === 'function') {
-    requestIdle(preloadScmEntryChain, { timeout: 2000 })
+    requestIdle(warmUp, { timeout: 2000 })
   } else {
-    globalThis.setTimeout(preloadScmEntryChain, 800)
+    globalThis.setTimeout(warmUp, 800)
   }
 })
 
 const dynamicReportMenuItems = ref<{ path: string; title: string }[]>([])
-const reportMenuRevision = ref(0)
 
 function isReportEnabledFlag(value: unknown) {
   return value === true || value === 1 || value === '1'
@@ -464,7 +425,6 @@ function syncDynamicReportMenuItems(nextItems: { path: string; title: string }[]
   const next = JSON.stringify(nextItems)
   if (prev === next) return
   dynamicReportMenuItems.value = nextItems
-  reportMenuRevision.value += 1
 }
 
 async function fetchReportTemplates() {
@@ -501,7 +461,6 @@ onBeforeUnmount(() => {
   window.removeEventListener('report-templates-changed', handleReportTemplatesChanged)
 })
 
-const isCollapsed = ref(false)
 const switchOperatorVisible = ref(false)
 const switchOperatorLoading = ref(false)
 const operatorLoading = ref(false)
@@ -535,6 +494,14 @@ useKeyboardShortcuts([
     description: 'Ctrl+Shift+L 打开品牌设置',
   },
   {
+    key: 'k',
+    ctrl: true,
+    handler: () => {
+      focusNavSearch()
+    },
+    description: 'Ctrl+K 搜索功能菜单',
+  },
+  {
     key: 'F12',
     shift: true,
     handler: () => {
@@ -545,11 +512,15 @@ useKeyboardShortcuts([
 ])
 
 function goToHome() {
-  router.push(getDefaultLandingPath(userStore.permissions, systemParamsStore.enableCashFlow))
+  selectedAppKey.value = null
+  closeFloatingPanel()
+  router.push(
+    getDefaultLandingPath(userStore.permissions, systemParamsStore.enableCashFlow, licenseStore.modules)
+  )
 }
 
 const landingPath = computed(() =>
-  getDefaultLandingPath(userStore.permissions, systemParamsStore.enableCashFlow)
+  getDefaultLandingPath(userStore.permissions, systemParamsStore.enableCashFlow, licenseStore.modules)
 )
 
 const canGoBack = computed(() => {
@@ -606,38 +577,152 @@ async function handleChangeAccount() {
   await router.push('/login')
 }
 
-function handleGroupTitleClick(group: NavGroup) {
-  preloadMenuGroup(group)
-  const target = getGroupNavigationPath(group.title)
-  if (route.path !== target) {
-    void router.push(target)
+// ── 应用栏 / 导航面板 ───────────────────────────────────────────────────────
+const NAV_PANEL_PINNED_KEY = 'cw-nav-panel-pinned-v2'
+const APP_RAIL_WIDTH = 64
+const APP_NAV_PANEL_WIDTH = 220
+
+function readPanelPinned(): boolean {
+  try {
+    return localStorage.getItem(NAV_PANEL_PINNED_KEY) === '1'
+  } catch {
+    return false
   }
 }
 
-function navigateToModuleHome() {
-  if (currentParent.value) {
-    router.push(getGroupNavigationPath(currentParent.value))
-  }
-}
+const panelPinned = ref(readPanelPinned())
+/** 用户在应用栏上点选（而非按路由推导）的应用键；路由切到别的应用时自动清空 */
+const selectedAppKey = ref<string | null>(null)
+/** 悬浮模式下面板是否打开 */
+const floatingOpen = ref(false)
+const navPanelRef = ref<InstanceType<typeof AppNavPanel> | null>(null)
 
-const menuGroups = computed(() =>
-  buildMenuGroups(
+const navApps = computed(() =>
+  buildNavApps(
     userStore.permissions,
     systemParamsStore.enableCashFlow,
     dynamicReportMenuItems.value.map(t => ({
       path: t.path,
       title: t.title,
       permission: 'report:view',
-    }))
+    })),
+    licenseStore.modules
   )
 )
 
+/** 兼容旧消费方（GroupNav / BentoGrid 等）的分组结构 */
+const menuGroups = computed(() => navApps.value.map(navAppToGroup))
+
+provide('layoutNavApps', navApps)
 provide('layoutMenuGroups', menuGroups)
 
-/** 当前所在的分组导航页（/group/:groupTitle），用于让对应分组标题高亮为金色 + 👉 */
-const currentGroupTitle = computed(() =>
-  route.name === 'GroupNav' ? String(route.params.groupTitle || '') : ''
+/** 当前路由归属（应用 › 分组 › 页面） */
+const currentLocation = computed(() => {
+  if (route.name === 'GroupNav') {
+    const title = resolveNavAppTitle(String(route.params.groupTitle || ''))
+    const app = navApps.value.find(a => a.title === title)
+    return app ? { app, section: null, item: null } : null
+  }
+  const located = locateNavItem(navApps.value, route.fullPath)
+  return located ? { app: located.app, section: located.section, item: located.item } : null
+})
+
+/** 应用栏高亮：优先用户点选，其次按路由归属；工作台落到 workbench */
+const activeAppKey = computed(() => {
+  if (selectedAppKey.value) return selectedAppKey.value
+  if (currentLocation.value) return currentLocation.value.app.key
+  return route.path === HOME_PATH ? WORKBENCH_APP_KEY : ''
+})
+
+/** 面板展示的应用：点选 > 路由归属；工作台或无归属时为 null（展示全部应用） */
+const panelApp = computed<NavApp | null>(() => {
+  const key = activeAppKey.value
+  if (!key || key === WORKBENCH_APP_KEY) return null
+  return navApps.value.find(a => a.key === key) || null
+})
+
+const panelVisible = computed(() => (panelPinned.value ? true : floatingOpen.value))
+
+const asideWidth = computed(() =>
+  `${APP_RAIL_WIDTH + (panelPinned.value ? APP_NAV_PANEL_WIDTH : 0)}px`
 )
+
+function closeFloatingPanel() {
+  if (panelPinned.value) return
+  floatingOpen.value = false
+}
+
+function onEscapeClosePanel(event: KeyboardEvent) {
+  if (event.key !== 'Escape') return
+  if (panelPinned.value || !floatingOpen.value) return
+  closeFloatingPanel()
+}
+
+onMounted(() => window.addEventListener('keydown', onEscapeClosePanel))
+onBeforeUnmount(() => window.removeEventListener('keydown', onEscapeClosePanel))
+
+function togglePanelPinned() {
+  panelPinned.value = !panelPinned.value
+  floatingOpen.value = false
+  try {
+    localStorage.setItem(NAV_PANEL_PINNED_KEY, panelPinned.value ? '1' : '0')
+  } catch { /* 忽略 */ }
+}
+
+function openAppPanel(app: NavApp) {
+  selectedAppKey.value = app.key
+  if (!panelPinned.value) floatingOpen.value = true
+  preloadNavApp(app)
+  const target = getGroupNavigationPath(app.title)
+  if (route.path !== target) {
+    void router.push(target)
+  }
+}
+
+/** 点击应用图标：未固定时再点同一模块则收起，否则弹出该应用面板 */
+function handleAppSelect(app: NavApp) {
+  if (!panelPinned.value && floatingOpen.value && panelApp.value?.key === app.key) {
+    selectedAppKey.value = null
+    closeFloatingPanel()
+    return
+  }
+  openAppPanel(app)
+}
+
+function handlePanelNavigate(path: string) {
+  selectedAppKey.value = null
+  closeFloatingPanel()
+  if (route.fullPath !== path) {
+    void router.push(path)
+  }
+}
+
+function onMainPointerDown() {
+  closeFloatingPanel()
+}
+
+function focusNavSearch() {
+  if (!panelPinned.value) floatingOpen.value = true
+  nextTick(() => navPanelRef.value?.focusSearch())
+}
+
+// 路由切换到其它应用（或工作台）时，放弃手动点选状态，让高亮跟随路由
+watch(
+  () => route.fullPath,
+  () => {
+    const located = currentLocation.value
+    if (!located || located.app.key !== selectedAppKey.value) {
+      selectedAppKey.value = null
+    }
+  }
+)
+
+function navigateToModuleHome() {
+  const app = currentLocation.value?.app
+  if (app) {
+    router.push(getGroupNavigationPath(app.title))
+  }
+}
 /** 仅在成功登录/切换账套后更新，logout 清空 accountSetId 时不变化，避免 keep-alive 重挂载当前页触发无效请求 */
 const viewCacheKey = ref(userStore.accountSetId || 'no-account-set')
 
@@ -675,7 +760,7 @@ function resolveTabTitle(r: { path: string; name?: any; meta?: any; query?: any;
   else if (r.name === 'ScmDocNew' && dt) base = '新增' + (DOC_TITLE[dt] || '单据')
   else if (r.name === 'GroupNav') {
     // 模块导航页按所属分组命名，避免多个「模块导航」标签无法区分（采购管理→采购导航）
-    const g = String(r.params?.groupTitle || '').trim()
+    const g = resolveNavAppTitle(String(r.params?.groupTitle || '').trim())
     if (g) base = g.endsWith('管理') ? g.slice(0, -2) + '导航' : g + '导航'
   }
   return base || '页面'
@@ -734,10 +819,11 @@ function matchesRoute(menuPath: string, routePath: string, routeQuery: any): boo
  *    无完全一致时退化为最长前缀匹配（如工单详情无 plan_type，回到生产计划列表）。
  */
 const currentListItem = computed(() => {
-  const all = menuGroups.value.flatMap(g => [
-    ...g.children,
-    ...(g.subGroups?.flatMap(sg => sg.items) ?? []),
-  ].map(c => ({ ...c, group: g.title })))
+  const all = navApps.value.flatMap(app =>
+    app.sections.flatMap(section =>
+      section.items.map(c => ({ ...c, group: app.title, section: section.label }))
+    )
+  )
   const exact = all.find(c => matchesRoute(c.path, route.path, route.query))
   if (exact) return exact
   const byPrefix = all.filter(c => {
@@ -762,7 +848,16 @@ const currentListItem = computed(() => {
 // 高亮必须使用匹配到的完整菜单地址，不能只使用 route.path。
 const activeMenu = computed(() => currentListItem.value?.path || route.path)
 const currentTitle = computed(() => currentListItem.value?.title || (route.meta?.title as string) || '')
-const currentParent = computed(() => currentListItem.value?.group || '')
+/** 面包屑一级：应用名（模块导航页本身只显示应用名） */
+const currentParent = computed(() => {
+  if (route.name === 'GroupNav') return ''
+  return currentListItem.value?.group || currentLocation.value?.app.title || ''
+})
+/** 面包屑二级：分组名 */
+const currentSectionLabel = computed(() => {
+  if (route.name === 'GroupNav') return ''
+  return currentListItem.value?.section || currentLocation.value?.section?.label || ''
+})
 
 /** 点击面包屑标题：回到该模块列表页 */
 function navigateToList() {
@@ -851,8 +946,14 @@ async function confirmSwitchOperator() {
 async function reloadCurrentView() {
   await systemParamsStore.load()
   await fetchReportTemplates()
-  const home = getDefaultLandingPath(userStore.permissions, systemParamsStore.enableCashFlow)
-  const target = canAccessRoute(route.path, userStore.permissions) ? route.fullPath : home
+  const home = getDefaultLandingPath(
+    userStore.permissions,
+    systemParamsStore.enableCashFlow,
+    licenseStore.modules
+  )
+  const target = canAccessRoute(route.fullPath, userStore.permissions, licenseStore.modules)
+    ? route.fullPath
+    : home
   await router.replace(target)
 }
 </script>

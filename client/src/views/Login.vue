@@ -38,6 +38,7 @@
             style="width: 100%"
             filterable
             clearable
+            autocomplete="username"
             :disabled="!form.accountSetId"
             @keyup.enter="handleLogin"
           >
@@ -55,10 +56,13 @@
         <el-form-item prop="password">
           <el-input
             v-model="form.password"
+            name="password"
             type="password"
             placeholder="密码"
             prefix-icon="Lock"
             show-password
+            autocomplete="current-password"
+            @input="syncPasswordFromNativeInput"
             @keyup.enter="handleLogin"
           />
         </el-form-item>
@@ -331,18 +335,26 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, reactive, onMounted, watch } from 'vue'
+import { computed, ref, reactive, onMounted, nextTick, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { getDefaultLandingPath } from '@/config/navigation'
 import { useUserStore } from '@/stores/user'
 import { useSystemParamsStore } from '@/stores/systemParams'
+import { useLicenseStore } from '@/stores/license'
 import { useBrandingStore } from '@/stores/branding'
 import { getAccountSets, getUsersByAccountSet, backupImport, acdImport, type AccountSetItem, type UserItem } from '@/api/auth'
+import { parseAccountSetName } from '@/utils/accountSetName'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { UploadFilled, Upload, CircleCheck, CircleClose, Plus } from '@element-plus/icons-vue'
 import request from '@/api/request'
 import { getAccountSetDefaultStartDate } from '@/utils/format'
 import { useAppBuildInfo } from '@/composables/useAppBuildInfo'
+import {
+  clearRememberedLogin,
+  loadRememberedLogin,
+  readNativePassword,
+  saveRememberedLogin,
+} from '@/utils/rememberedLogin'
 
 const router = useRouter()
 const { label: buildVersionLabel, mismatch: buildVersionMismatch } = useAppBuildInfo()
@@ -430,7 +442,20 @@ const rememberMe = ref(userStore.rememberMe)
 const rules = {
   accountSetId: [{ required: true, message: '请选择账套', trigger: 'change' }],
   username: [{ required: true, message: '请选择操作员', trigger: 'change' }],
-  password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
+  // 密码不设必填：从 ACD 导入的账套里可能存在原本就没设密码的操作员，
+  // 这类账号密码留空登录，密码对不对由后端判定。
+  password: [],
+}
+
+function loginFormRoot(): HTMLElement | null {
+  return (formRef.value?.$el as HTMLElement | undefined) || null
+}
+
+function syncPasswordFromNativeInput() {
+  const native = readNativePassword(loginFormRoot())
+  if (native && native !== form.password) {
+    form.password = native
+  }
 }
 
 async function fetchAccountSets(options?: {
@@ -538,6 +563,7 @@ watch(() => form.accountSetId, (newAccountSetId) => {
 })
 
 async function handleLogin() {
+  syncPasswordFromNativeInput()
   const valid = await formRef.value?.validate().catch(() => false)
   if (!valid) return
   loading.value = true
@@ -590,13 +616,15 @@ async function afterLoginSuccess(res: any, forcedLogin = false) {
 
   // 处理记住账号密码逻辑
   if (rememberMe.value) {
-    localStorage.setItem('rememberedUsername', form.username)
+    saveRememberedLogin({
+      username: form.username,
+      password: form.password,
+      accountSetId: form.accountSetId,
+    })
     userStore.rememberMe = true
-    localStorage.setItem('rememberMe', 'true')
   } else {
-    localStorage.removeItem('rememberedUsername')
+    clearRememberedLogin()
     userStore.rememberMe = false
-    localStorage.removeItem('rememberMe')
   }
 
   if ((forcedLogin || res.forcedLogin) && res.forcedOldLoginIp) {
@@ -616,7 +644,13 @@ async function afterLoginSuccess(res: any, forcedLogin = false) {
 
   queueLastLoginNotice(res.lastLoginTime, res.lastLoginIp)
   await systemParamsStore.load()
-  await router.push(getDefaultLandingPath(userStore.permissions, systemParamsStore.enableCashFlow))
+  await router.push(
+    getDefaultLandingPath(
+      userStore.permissions,
+      systemParamsStore.enableCashFlow,
+      useLicenseStore().modules
+    )
+  )
 }
 
 function formatLoginIp(ip?: string | null) {
@@ -663,33 +697,6 @@ function resetImportForm() {
   importFormRef.value?.resetFields()
   importForm.file = null
   if (fileInputRef.value) fileInputRef.value.value = ''
-}
-
-// 从文件名中智能提取账套名称
-function parseAccountSetName(fileName: string): string {
-  // 去除文件扩展名
-  let name = fileName.replace(/\.(db|acd|sqlite|sqlite3)$/i, '')
-
-  // 去除常见的前缀
-  name = name.replace(/^(备份_|backup_|账套_|导出_|export_)/i, '')
-
-  // 去除常见的后缀（日期时间戳等）
-  name = name.replace(/[_-]\d{4}[-_]\d{2}[-_]\d{2}.*$/i, '') // 2025-01-01 或 2025_01_01
-  name = name.replace(/[_-]\d{8,}$/i, '') // 时间戳 20250101 或更长
-  name = name.replace(/[_-](backup|bak|copy|副本)$/i, '')
-
-  // 去除首尾的特殊字符和空格
-  name = name.replace(/^[_\-\s]+|[_\-\s]+$/g, '')
-
-  // 将下划线和连字符替换为空格（可选）
-  name = name.replace(/[_-]/g, ' ')
-
-  // 限制长度
-  if (name.length > 50) {
-    name = name.substring(0, 50)
-  }
-
-  return name.trim()
 }
 
 // 创建账套
@@ -909,13 +916,23 @@ onMounted(async () => {
   }).catch(() => {})
   fetchStandardTemplates()
 
-  // 如果有保存的用户名，自动填充（需在用户列表加载完成后再设置，
+  // 回填记住的账号密码（用户名需在用户列表加载后再设，
   // 否则 el-select 找不到 option 不会显示已选项的 label）
-  const savedUsername = localStorage.getItem('rememberedUsername')
-  if (savedUsername) {
-    form.username = savedUsername
-    rememberMe.value = userStore.rememberMe
+  const remembered = loadRememberedLogin()
+  rememberMe.value = remembered.rememberMe
+  userStore.rememberMe = remembered.rememberMe
+  if (remembered.username) {
+    form.username = remembered.username
   }
+  if (remembered.password) {
+    form.password = remembered.password
+    await nextTick()
+    formRef.value?.clearValidate('password')
+  }
+
+  // 浏览器可能稍后才把密码填进原生 input，Vue v-model 感知不到
+  window.setTimeout(syncPasswordFromNativeInput, 80)
+  window.setTimeout(syncPasswordFromNativeInput, 400)
 })
 </script>
 

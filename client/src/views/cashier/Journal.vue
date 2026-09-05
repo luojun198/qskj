@@ -251,7 +251,7 @@
         <el-button size="small" @click="showAddStatement = !showAddStatement">
           <el-icon><Plus /></el-icon>录入对账单
         </el-button>
-        <el-button size="small" plain @click="$router.push('/cashier/bank-reconciliation')">余额调节表</el-button>
+        <el-button size="small" plain @click="$router.push('/cashier/reconciliation')">余额调节表</el-button>
         <el-button size="small" plain @click="loadReconDialog" :loading="reconLoading">刷新</el-button>
       </div>
 

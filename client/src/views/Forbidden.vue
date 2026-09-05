@@ -13,13 +13,17 @@ import { useRouter } from 'vue-router'
 import { getDefaultLandingPath } from '@/config/navigation'
 import { useUserStore } from '@/stores/user'
 import { useSystemParamsStore } from '@/stores/systemParams'
+import { useLicenseStore } from '@/stores/license'
 
 const router = useRouter()
 const userStore = useUserStore()
 const systemParamsStore = useSystemParamsStore()
+const licenseStore = useLicenseStore()
 
 function goBack() {
-  router.push(getDefaultLandingPath(userStore.permissions, systemParamsStore.enableCashFlow))
+  router.push(
+    getDefaultLandingPath(userStore.permissions, systemParamsStore.enableCashFlow, licenseStore.modules)
+  )
 }
 </script>
 

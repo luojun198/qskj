@@ -40,6 +40,15 @@
           :title="`当前授权有效期至 ${status.expiresAt}（剩余 ${status.daysRemaining} 天）`"
           class="activate-alert"
         />
+
+        <div v-if="status?.activated && licensedModuleNames.length" class="activate-modules">
+          <span class="activate-label">已授权模块</span>
+          <div class="activate-module-tags">
+            <el-tag v-for="name in licensedModuleNames" :key="name" size="small" type="success" effect="plain">
+              {{ name }}
+            </el-tag>
+          </div>
+        </div>
       </div>
 
       <el-form class="login-form" @submit.prevent="handleActivate">
@@ -68,6 +77,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useBrandingStore } from '@/stores/branding'
 import { useLicenseStore } from '@/stores/license'
+import { getLicenseModuleName } from '@/config/licenseModules'
 import './Login.styles.css'
 
 const router = useRouter()
@@ -79,6 +89,7 @@ const loading = ref(false)
 
 const status = computed(() => licenseStore.status)
 const machineId = computed(() => licenseStore.status.machineId || '加载中…')
+const licensedModuleNames = computed(() => licenseStore.modules.map(getLicenseModuleName))
 
 onMounted(async () => {
   void brandingStore.load()
@@ -108,7 +119,10 @@ async function handleActivate() {
   loading.value = true
   try {
     const data = await licenseStore.activate(code)
-    ElMessage.success(`激活成功，授权有效期至 ${data?.expiresAt || ''}`)
+    const moduleText = (data?.modules || []).map(getLicenseModuleName).join('、')
+    ElMessage.success(
+      `激活成功，授权有效期至 ${data?.expiresAt || ''}${moduleText ? `，授权模块：${moduleText}` : ''}`
+    )
     await router.replace('/login')
   } catch (error: any) {
     const msg = error?.response?.data?.message || '激活失败，请检查注册码'
@@ -159,5 +173,15 @@ async function handleActivate() {
 
 .activate-alert {
   margin-bottom: 12px;
+}
+
+.activate-modules {
+  margin-bottom: 12px;
+}
+
+.activate-module-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 </style>

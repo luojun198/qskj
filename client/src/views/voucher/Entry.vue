@@ -140,8 +140,10 @@
       :voucher-types="voucherTypes"
       :accounts="accounts"
       :pagination="draftPagination"
+      :loading-more="draftLoadingMore"
+      :has-more="draftHasMore"
       :selected-voucher-id="selectedDraftId"
-      @refresh="fetchDraftVouchers"
+      @refresh="() => fetchDraftVouchers()"
       @edit="handleEdit"
       @delete="handleDeleteDraft"
       @sort-change="handleSortChange"
@@ -401,6 +403,7 @@ import dayjs from 'dayjs'
 import request from '@/api/request'
 import { getCashFlowItems } from '@/api/cashFlow'
 import VoucherDraftList from '@/components/voucher/VoucherDraftList.vue'
+import { useTableInfiniteScroll } from '@/composables/useTableInfiniteScroll'
 import VoucherBatchDelete from '@/components/voucher/VoucherBatchDelete.vue'
 import VoucherEntryForm from '@/components/voucher/VoucherEntryForm.vue'
 import DrillDownReturnButton from '@/components/common/DrillDownReturnButton.vue'
@@ -444,11 +447,16 @@ const attachments = ref<any[]>([])
 const queuedUploads = ref<Record<string, File>>({})
 const draftVouchers = ref<any[]>([])
 const draftLoading = ref(false)
+// 滚动追加加载中
+const draftLoadingMore = ref(false)
 const draftPagination = ref({
   page: 1,
   pageSize: 50,
   total: 0,
 })
+const draftHasMore = computed(
+  () => draftVouchers.value.length < draftPagination.value.total
+)
 const pageLoading = ref(false)
 const submitLoading = ref(false)
 const batchDeleteVisible = ref(false)
@@ -535,6 +543,16 @@ async function exportDraftData() {
   }
 }
 const draftListRef = ref<any>(null)
+
+// 滚轮下拉自动加载下一页（追加式无限滚动）
+const { scrollToTop: scrollDraftListToTop } = useTableInfiniteScroll({
+  getScrollEl: () => draftListRef.value?.containerRef ?? null,
+  hasMore: draftHasMore,
+  loading: draftLoading,
+  loadingMore: draftLoadingMore,
+  onLoadMore: () => loadMoreDrafts(),
+  watchSource: () => draftVouchers.value.length,
+})
 const selectedDraftId = ref<string>('')
 
 function handleDraftRowClick(row: any) {
@@ -787,13 +805,13 @@ async function handleTemplateConfirm() {
       // 从对话框内转模版（未保存的凭证）
       // 过滤有效分录
       const validEntries = form.value.entries.filter(
-        (e: any) => e.account_id && (e.debit_amount > 0 || e.credit_amount > 0)
+        (e: any) => e.account_id && (Number(e.debit_amount) !== 0 || Number(e.credit_amount) !== 0)
       )
 
       // 转换分录格式
       const entries = validEntries.map((e: any) => {
-        const direction = e.debit_amount > 0 ? 'debit' : 'credit'
-        const amount = e.debit_amount > 0 ? e.debit_amount : e.credit_amount
+        const direction = Number(e.debit_amount) !== 0 ? 'debit' : 'credit'
+        const amount = Number(e.debit_amount) !== 0 ? e.debit_amount : e.credit_amount
 
         // 构建辅助核算数据
         const auxData: Record<string, any> = {}
@@ -895,7 +913,7 @@ function formatDateTime(dateStr: string) {
 function handleTurnTemplateInDialog() {
   // 验证当前表单数据
   const validEntries = form.value.entries.filter(
-    (e: any) => e.account_id && (e.debit_amount > 0 || e.credit_amount > 0)
+    (e: any) => e.account_id && (Number(e.debit_amount) !== 0 || Number(e.credit_amount) !== 0)
   )
 
   if (validEntries.length === 0) {
@@ -1622,8 +1640,14 @@ const duplicateWarnings = computed(() => {
   return warnings
 })
 
-async function fetchDraftVouchers() {
-  draftLoading.value = true
+async function fetchDraftVouchers(opts: { append?: boolean } = {}) {
+  const append = opts.append === true
+  if (draftLoading.value || draftLoadingMore.value) return
+  if (append) {
+    draftLoadingMore.value = true
+  } else {
+    draftLoading.value = true
+  }
   try {
     await performanceMonitor.measure('fetchDraftVouchers', async () => {
       const params: any = {
@@ -1656,11 +1680,20 @@ async function fetchDraftVouchers() {
       }
 
       const res = await request.get<any>('/voucher/vouchers', { params })
-      const nextList = res.data?.list || res.data || []
-      const nextTotal = res.data?.total || 0
+      // 后端返回 { code, data, total }，total 在顶层而不是 data 里
+      const nextList = res.data || []
+      const nextTotal = res.total ?? 0
+
+      if (append) {
+        draftVouchers.value = draftVouchers.value.concat(nextList)
+        draftPagination.value.total = nextTotal
+        return
+      }
+
       const maxPage = Math.max(1, Math.ceil(nextTotal / Math.max(1, draftPagination.value.pageSize)))
       if (nextList.length === 0 && nextTotal > 0 && draftPagination.value.page > maxPage) {
         draftPagination.value.page = maxPage
+        draftLoading.value = false
         await fetchDraftVouchers()
         return
       }
@@ -1668,24 +1701,37 @@ async function fetchDraftVouchers() {
       draftPagination.value.total = nextTotal
     })
   } finally {
-    draftLoading.value = false
+    if (append) {
+      draftLoadingMore.value = false
+    } else {
+      draftLoading.value = false
+    }
   }
 }
 
-function handleFilterChange(filters: any) {
+/** 滚到底部时加载下一页并追加 */
+async function loadMoreDrafts() {
+  if (!draftHasMore.value || draftLoading.value || draftLoadingMore.value) return
+  draftPagination.value.page += 1
+  await fetchDraftVouchers({ append: true })
+}
+
+async function handleFilterChange(filters: any) {
   draftFilters.value = filters
   draftPagination.value.page = 1
-  fetchDraftVouchers()
+  await fetchDraftVouchers()
+  await scrollDraftListToTop()
 }
 
 async function loadAccounts() {
   await baseDataStore.loadAccounts()
 }
 
-function handlePageChange(page: number, pageSize: number) {
+async function handlePageChange(page: number, pageSize: number) {
   draftPagination.value.page = page
   draftPagination.value.pageSize = pageSize
-  fetchDraftVouchers()
+  await fetchDraftVouchers()
+  await scrollDraftListToTop()
 }
 
 async function handleDeleteDraft(row: any) {

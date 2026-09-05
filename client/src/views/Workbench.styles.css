@@ -1,0 +1,823 @@
+/* ============================================================
+   工作台（金蝶星辰风格）
+   浅灰画布 + 白色组件卡；小圆角、轻阴影、紧凑密度；
+   薄荷 --mint-500 仍作主色，只用于强调与图标。
+   仅 Dashboard.vue 引用；卡片/宫格/页签等共用基元在 design-tokens/workbench.css。
+   ============================================================ */
+
+.workbench {
+  min-height: 100%;
+  padding-bottom: 8px;
+  color: var(--wb-text);
+  font-family: 'PingFang SC', 'Microsoft YaHei', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ========== 安全提示卡片 ========== */
+.security-notice {
+  position: fixed;
+  top: 68px;
+  right: 24px;
+  z-index: 3000;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 420px;
+  padding: 12px 14px;
+  background: var(--wb-card);
+  border: 1px solid var(--wb-line);
+  border-radius: var(--wb-radius);
+  box-shadow: 0 8px 24px rgba(15, 35, 40, 0.12);
+}
+
+.security-notice__icon {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--wb-radius-sm);
+  background: var(--surface-brand-soft);
+  color: var(--mint-600);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.security-notice__icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.security-notice__content {
+  flex: 1;
+  min-width: 0;
+}
+
+.security-notice__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--wb-text);
+  margin-bottom: 3px;
+}
+
+.security-notice__info {
+  display: flex;
+  gap: 14px;
+  font-size: 12px;
+  color: var(--wb-text-3);
+}
+
+.security-notice__close {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border: none;
+  background: transparent;
+  border-radius: var(--wb-radius-sm);
+  color: var(--wb-text-3);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.security-notice__close:hover {
+  background: var(--wb-canvas);
+  color: var(--wb-text);
+}
+
+.security-notice__close svg {
+  width: 14px;
+  height: 14px;
+}
+
+.security-notice-leave-active {
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.security-notice-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+
+/* ========== 问候条 ========== */
+.wb-greet {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 4px 4px 12px;
+}
+
+.wb-greet__main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.wb-greet__avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 700;
+  color: #fff;
+  background: linear-gradient(135deg, var(--mint-500), var(--mint-700));
+  flex-shrink: 0;
+}
+
+.wb-greet__text {
+  min-width: 0;
+}
+
+.wb-greet__title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--wb-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wb-greet__sub {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--wb-text-3);
+}
+
+.wb-greet__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* ========== 通用组件卡（基元见 design-tokens/workbench.css） ========== */
+.wb-card + .wb-card,
+.wb-card + .wb-row,
+.wb-row + .wb-widgets {
+  margin-top: var(--wb-gap);
+}
+
+/* ========== 两列：待办 + 经营数据 ========== */
+.wb-row {
+  display: grid;
+  grid-template-columns: minmax(300px, 5fr) minmax(0, 7fr);
+  gap: var(--wb-gap);
+  align-items: stretch;
+}
+
+/* 待办列表 */
+.todo-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.todo-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 4px;
+  border-top: 1px solid var(--wb-line);
+  cursor: pointer;
+  transition: background 0.14s ease;
+}
+
+.todo-row:first-child {
+  border-top: none;
+}
+
+.todo-row:hover {
+  background: var(--wb-canvas);
+}
+
+.todo-row__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--mint-500);
+  flex-shrink: 0;
+}
+
+.todo-row.is-warning .todo-row__dot {
+  background: var(--warning);
+}
+
+.todo-row.is-danger .todo-row__dot {
+  background: var(--danger);
+}
+
+.todo-row.is-empty .todo-row__dot {
+  background: var(--wb-line-strong);
+}
+
+.todo-row__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.todo-row__title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--wb-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.todo-row.is-empty .todo-row__title {
+  color: var(--wb-text-2);
+  font-weight: 400;
+}
+
+.todo-row__hint {
+  font-size: 11.5px;
+  color: var(--wb-text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.todo-row__count {
+  min-width: 26px;
+  text-align: right;
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--mint-700);
+}
+
+.todo-row.is-warning .todo-row__count {
+  color: #b26a05;
+}
+
+.todo-row.is-danger .todo-row__count {
+  color: var(--danger);
+}
+
+.todo-row.is-empty .todo-row__count {
+  color: var(--wb-text-3);
+  font-weight: 500;
+}
+
+.todo-row__go {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--wb-text-3);
+  flex-shrink: 0;
+  transition: color 0.14s ease;
+}
+
+.todo-row:hover .todo-row__go {
+  color: var(--mint-700);
+}
+
+.todo-row__go .el-icon {
+  font-size: 13px;
+}
+
+/* 指标卡：灰底瓷贴嵌在白卡内，悬停浮白，形成「卡 > 贴 > 图标」三级 */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.kpi-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--wb-radius);
+  background: var(--wb-canvas);
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+  transition: border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+}
+
+.kpi-card:hover {
+  background: var(--wb-card);
+  border-color: var(--border-brand);
+  box-shadow: var(--wb-shadow-hover);
+  transform: translateY(-1px);
+}
+
+/* 主数据卡（经营数据）再抬一级：数值更醒目 */
+.wb-card--raised .kpi-card__value {
+  font-size: 17px;
+}
+
+.kpi-card__icon {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--wb-radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  flex-shrink: 0;
+}
+
+.kpi-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.kpi-card__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--wb-text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.kpi-card__badge {
+  display: inline-flex;
+  align-items: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.kpi-card__value {
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--wb-text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.kpi-card__hint {
+  font-size: 11.5px;
+  color: var(--wb-text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ========== 财务数据组件 ========== */
+.wb-widgets {
+  display: grid;
+  grid-template-columns: minmax(0, 8fr) minmax(280px, 4fr);
+  gap: var(--wb-gap);
+}
+
+.wb-trend,
+.wb-recent {
+  grid-column: 1;
+}
+
+.wb-activity,
+.wb-cash {
+  grid-column: 2;
+}
+
+.chart-legend {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--wb-text-2);
+}
+
+.legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.legend-dot.income { background: #12c7ae; }
+.legend-dot.expense { background: #f4a52e; }
+.legend-dot.fee { background: #f2545b; }
+.legend-dot.cost { background: #9c8ff5; }
+.legend-dot.surplus { background: #2e84f5; }
+
+.chart-container {
+  width: 100%;
+  height: 260px;
+}
+
+/* 科目活跃度 */
+.activity-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.activity-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.activity-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.activity-name {
+  color: var(--wb-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.activity-amount {
+  color: var(--wb-text-2);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.activity-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--wb-canvas);
+  overflow: hidden;
+}
+
+.activity-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--mint-400), var(--mint-600));
+  transition: width 0.4s ease;
+}
+
+/* 近期凭证 */
+.voucher-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.voucher-table-head,
+.voucher-item {
+  display: grid;
+  grid-template-columns: 56px 92px minmax(0, 1fr) 68px 120px;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 6px;
+}
+
+.voucher-table-head {
+  font-size: 12px;
+  color: var(--wb-text-3);
+  border-bottom: 1px solid var(--wb-line);
+}
+
+.voucher-table-head span:last-child,
+.voucher-amount {
+  text-align: right;
+}
+
+.voucher-item {
+  border: none;
+  border-bottom: 1px solid var(--wb-line);
+  background: transparent;
+  text-align: left;
+  font-size: 13px;
+  color: var(--wb-text);
+  cursor: pointer;
+  transition: background 0.14s ease;
+}
+
+.voucher-item:last-of-type {
+  border-bottom: none;
+}
+
+.voucher-item:hover {
+  background: var(--wb-canvas);
+}
+
+.voucher-date {
+  color: var(--wb-text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.voucher-no {
+  font-weight: 600;
+  color: var(--wb-text);
+}
+
+.voucher-abstract {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--wb-text-2);
+}
+
+.voucher-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 4px;
+  font-size: 11.5px;
+  background: var(--wb-canvas);
+  color: var(--wb-text-2);
+}
+
+.voucher-status.draft {
+  background: var(--warning-soft);
+  color: #b26a05;
+}
+
+.voucher-status.audited {
+  background: var(--info-soft);
+  color: var(--blue-700);
+}
+
+.voucher-status.posted {
+  background: var(--success-soft);
+  color: var(--mint-700);
+}
+
+.voucher-amount {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 现金银行结构 */
+.cash-structure {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.cash-group {
+  border: 1px solid var(--wb-line);
+  border-radius: var(--wb-radius);
+  padding: 10px 12px 12px;
+}
+
+.cash-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 8px;
+}
+
+.cash-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--wb-text);
+}
+
+.cash-total {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--mint-700);
+  font-variant-numeric: tabular-nums;
+}
+
+.cash-body {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+}
+
+.cash-pie-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cash-pie {
+  width: 120px;
+  height: 120px;
+}
+
+.cash-children {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 132px;
+  overflow-y: auto;
+  padding-right: 2px;
+  scrollbar-width: thin;
+}
+
+.cash-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.cash-row-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--wb-text-2);
+}
+
+.cash-row-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.cash-row-name span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cash-row-value {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.cash-row-value strong {
+  color: var(--wb-text);
+  font-weight: 600;
+}
+
+.cash-row-value em {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--wb-text-3);
+}
+
+.cash-row-value.negative strong,
+.cash-row-value.negative em {
+  color: var(--danger);
+}
+
+.cash-empty {
+  font-size: 12px;
+  color: var(--wb-text-3);
+}
+
+/* ========== 自定义常用功能对话框 ========== */
+.fav-editor__hint {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--wb-text-3);
+}
+
+.fav-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: 56vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.fav-editor__app-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--wb-text);
+  margin-bottom: 6px;
+}
+
+.fav-editor__items {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 2px 12px;
+}
+
+.fav-editor__items .el-checkbox {
+  margin-right: 0;
+  min-width: 0;
+}
+
+/* ========== 页脚 ========== */
+.wb-footer {
+  margin-top: 24px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--wb-text-3);
+}
+
+/* ========== 响应式 ========== */
+@media (max-width: 1440px) {
+  .kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1200px) {
+  .wb-row,
+  .wb-widgets {
+    grid-template-columns: 1fr;
+  }
+
+  .wb-trend,
+  .wb-recent,
+  .wb-activity,
+  .wb-cash {
+    grid-column: auto;
+  }
+
+  .kpi-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .fav-editor__items {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 900px) {
+  .wb-greet {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .wb-card__head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .chart-legend {
+    justify-content: flex-start;
+  }
+
+  .kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .voucher-table-head,
+  .voucher-item {
+    grid-template-columns: 52px 80px minmax(0, 1fr) 100px;
+  }
+
+  .voucher-status {
+    display: none;
+  }
+
+  .fav-editor__items {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .kpi-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .cash-body {
+    grid-template-columns: 1fr;
+  }
+
+  .security-notice {
+    top: 56px;
+    right: 12px;
+    left: 12px;
+    width: auto;
+  }
+}

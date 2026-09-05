@@ -100,6 +100,42 @@ import {
   down as addScmItemDefaultWarehouseDown,
 } from './migrations/20260722_add_scm_item_default_warehouse.js'
 import {
+  up as extendRhStandardReportEditableUp,
+  down as extendRhStandardReportEditableDown,
+} from './migrations/20260901_extend_rh_standard_report_editable.js'
+import {
+  up as fixStandardReportTitleMergeUp,
+  down as fixStandardReportTitleMergeDown,
+} from './migrations/20260901_fix_standard_report_title_merge.js'
+import {
+  up as backfillUnitNameFromAcdUp,
+  down as backfillUnitNameFromAcdDown,
+} from './migrations/20260901_backfill_unit_name_from_acd.js'
+import {
+  up as addAssetPurchaseVoucherIdUp,
+  down as addAssetPurchaseVoucherIdDown,
+} from './migrations/20260610_add_asset_purchase_voucher_id.js'
+import {
+  up as backfillAssetChangePermissionsUp,
+  down as backfillAssetChangePermissionsDown,
+} from './migrations/20260610_backfill_asset_change_permissions.js'
+import {
+  up as extendAssetChangeUp,
+  down as extendAssetChangeDown,
+} from './migrations/20260611_extend_asset_change.js'
+import {
+  up as addAssetImpairmentUp,
+  down as addAssetImpairmentDown,
+} from './migrations/20260612_add_asset_impairment.js'
+import {
+  up as addAssetRequisitionUp,
+  down as addAssetRequisitionDown,
+} from './migrations/20260613_add_asset_requisition.js'
+import {
+  up as addVoucherReversalUp,
+  down as addVoucherReversalDown,
+} from './migrations/20260904_add_voucher_reversal.js'
+import {
   up as fixBalanceSheetTemplateFormulasUp,
   down as fixBalanceSheetTemplateFormulasDown,
 } from './migrations/20260531_fix_balance_sheet_template_formulas.js'
@@ -1882,5 +1918,59 @@ export const migrations: Migration[] = [
     name: 'add_scm_item_default_warehouse',
     up: addScmItemDefaultWarehouseUp,
     down: addScmItemDefaultWarehouseDown,
+  },
+  {
+    version: 105,
+    name: 'extend_rh_standard_report_editable',
+    up: extendRhStandardReportEditableUp,
+    down: extendRhStandardReportEditableDown,
+  },
+  {
+    version: 106,
+    name: 'fix_standard_report_title_merge',
+    up: fixStandardReportTitleMergeUp,
+    down: fixStandardReportTitleMergeDown,
+  },
+  {
+    version: 107,
+    name: 'backfill_unit_name_from_acd',
+    up: backfillUnitNameFromAcdUp,
+    down: backfillUnitNameFromAcdDown,
+  },
+  {
+    version: 108,
+    name: 'add_asset_purchase_voucher_id',
+    up: addAssetPurchaseVoucherIdUp,
+    down: addAssetPurchaseVoucherIdDown,
+  },
+  {
+    version: 109,
+    name: 'backfill_asset_change_permissions',
+    up: backfillAssetChangePermissionsUp,
+    down: backfillAssetChangePermissionsDown,
+  },
+  {
+    version: 110,
+    name: 'extend_asset_change',
+    up: extendAssetChangeUp,
+    down: extendAssetChangeDown,
+  },
+  {
+    version: 111,
+    name: 'add_asset_impairment',
+    up: addAssetImpairmentUp,
+    down: addAssetImpairmentDown,
+  },
+  {
+    version: 112,
+    name: 'add_asset_requisition',
+    up: addAssetRequisitionUp,
+    down: addAssetRequisitionDown,
+  },
+  {
+    version: 113,
+    name: 'add_voucher_reversal',
+    up: addVoucherReversalUp,
+    down: addVoucherReversalDown,
   },
 ]

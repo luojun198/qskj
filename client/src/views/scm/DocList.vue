@@ -61,7 +61,7 @@
     </div>
 
     <div class="page-body">
-      <el-table ref="tableRef" :data="tableData" v-loading="loading" border stripe size="small" max-height="calc(100vh - 230px)" :row-class-name="rowClass" @row-dblclick="handleView" @header-dragend="onDragEnd" @selection-change="handleSelectionChange">
+      <el-table ref="tableRef" :data="tableData" v-loading="loading" border stripe size="small" class="compact-data-table" max-height="calc(100vh - 230px)" :row-class-name="rowClass" @row-dblclick="handleView" @header-dragend="onDragEnd" @selection-change="handleSelectionChange">
         <el-table-column type="selection" width="44" fixed="left" :selectable="isSelectableScmDoc" />
         <el-table-column v-for="column in orderedVisibleColumns" :key="column.key" :label="column.label" :column-key="column.key"
           :prop="docColumnProp(column.key)" :width="docColumnWidth(column.key)" :min-width="docColumnMinWidth(column.key)"

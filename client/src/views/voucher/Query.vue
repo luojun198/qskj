@@ -59,15 +59,36 @@
             >
               转模版
             </el-button>
+            <el-tooltip
+              :content="reverseTooltip"
+              :disabled="!reverseTooltip"
+              placement="bottom"
+            >
+              <span>
+                <el-button
+                  class="voucher-toolbar-btn"
+                  type="danger"
+                  plain
+                  size="small"
+                  :disabled="!canReverseSelected"
+                  @click="handleReverse"
+                >
+                  冲红
+                </el-button>
+              </span>
+            </el-tooltip>
           </template>
         </VoucherFilterBar>
       </div>
     </div>
 
     <VoucherAuditTable
+      ref="voucherTableRef"
       class="voucher-audit-table-host"
       mode="query"
       :loading="loading"
+      :loading-more="loadingMore"
+      :has-more="hasMore"
       :flat-list="flatList"
       :is-selectable-row="() => false"
       :get-row-class="getRowClass"
@@ -86,7 +107,7 @@
 
     <div v-if="flatList.length > 0" class="voucher-batch-bar voucher-query-summary-bar">
       <span class="summary-item">
-        <span class="summary-label">凭证数量：</span>
+        <span class="summary-label">已加载凭证：</span>
         <span class="summary-value">{{ voucherCount }} 张</span>
       </span>
       <span class="summary-item">
@@ -106,21 +127,16 @@
     </div>
 
     <div class="pagination-bar">
-      <span class="pagination-text">共 {{ pagination.total }} 条</span>
-      <el-select v-model="pagination.pageSize" style="width: 95px" @change="onPageSizeChange">
-        <el-option label="10条" :value="10" />
+      <span class="pagination-text">
+        共 {{ pagination.total }} 条 · 已加载 {{ list.length }} 条
+      </span>
+      <span class="pagination-text">每次加载</span>
+      <el-select v-model="pagination.pageSize" style="width: 95px" @change="handlePageSizeChange">
         <el-option label="20条" :value="20" />
         <el-option label="50条" :value="50" />
         <el-option label="100条" :value="100" />
+        <el-option label="200条" :value="200" />
       </el-select>
-      <el-pagination
-        v-model:current-page="pagination.page"
-        :total="pagination.total"
-        :page-size="pagination.pageSize"
-        layout="prev, pager, next, jumper"
-        :pager-count="5"
-        @current-change="onPageChange"
-      />
     </div>
 
     <VoucherEntryDialogHost ref="entryDialogHostRef" @saved="fetchData" />
@@ -180,7 +196,9 @@ import { useDeleteConfirm } from '@/composables/useConfirm'
 import { showSuccess, showOperationError } from '@/composables/useMessage'
 import { useVoucherQuery, applyVoucherFilters, type VoucherFilters } from '@/composables/useVoucherQuery'
 import { useVoucherModalRestore } from '@/composables/useVoucherModalRestore'
+import { useTableInfiniteScroll } from '@/composables/useTableInfiniteScroll'
 import { useOperationHistory } from '@/composables/useOperationHistory'
+import { useVoucherReverse, canReverseVoucher, reverseDisabledReason } from '@/composables/useVoucherReverse'
 import { useColumnWidthMemory } from '@/composables/useColumnWidthMemory'
 import { useTableSearch } from '@/composables/useTableSearch'
 import { usePageToolbarTeleport } from '@/composables/usePageToolbarTeleport'
@@ -249,14 +267,16 @@ const {
   pagination,
   list,
   loading,
+  loadingMore,
+  hasMore,
   auxCategories,
   voucherTypes,
   accounts,
   auxItemsMap,
   flatList,
   fetchData,
+  loadMore,
   buildQueryParams,
-  onPageChange,
   onPageSizeChange,
   onSortChange,
   loadAuxCategories,
@@ -363,6 +383,17 @@ function formatAmount(value: number): string {
   })
 }
 
+// 滚轮下拉自动加载下一页（追加式无限滚动）
+const voucherTableRef = ref<InstanceType<typeof VoucherAuditTable> | null>(null)
+const { scrollToTop } = useTableInfiniteScroll({
+  getScrollEl: () => (voucherTableRef.value as any)?.containerRef ?? null,
+  hasMore,
+  loading,
+  loadingMore,
+  onLoadMore: loadMore,
+  watchSource: () => flatList.value.length,
+})
+
 const entryDialogHostRef = ref<InstanceType<typeof VoucherEntryDialogHost> | null>(null)
 const { tryRestoreVoucherModal } = useVoucherModalRestore(entryDialogHostRef)
 const exporting = ref(false)
@@ -382,15 +413,23 @@ function getCellClassName({ row }: { row: { _voucherId?: string } }) {
     : ''
 }
 
-function handleApplyScheme(schemeFilters: Partial<VoucherFilters>) {
+async function handleApplyScheme(schemeFilters: Partial<VoucherFilters>) {
   applyVoucherFilters(filters.value, schemeFilters)
   pagination.page = 1
-  fetchData()
+  await fetchData()
+  await scrollToTop()
 }
 
-function handleSearch() {
+async function handleSearch() {
   pagination.page = 1
-  fetchData()
+  await fetchData()
+  await scrollToTop()
+}
+
+/** 切换每次加载条数：重新从第一页加载并回到顶部 */
+async function handlePageSizeChange(size: number) {
+  onPageSizeChange(size)
+  await scrollToTop()
 }
 
 function applyRouteFilters() {
@@ -468,6 +507,25 @@ const templateForm = ref({
   template_name: '',
 })
 const templateSaving = ref(false)
+
+// ========== 凭证冲红 ==========
+
+const { reverseVoucher } = useVoucherReverse({ onSuccess: () => fetchData() })
+
+/** 当前选中的凭证原始记录（list 为 v.* 全字段，含冲红关联列） */
+const selectedVoucher = computed(() =>
+  selectedVoucherId.value ? list.value.find((v: any) => v.id === selectedVoucherId.value) : null
+)
+
+const canReverseSelected = computed(() => canReverseVoucher(selectedVoucher.value))
+
+const reverseTooltip = computed(() =>
+  canReverseSelected.value ? '' : reverseDisabledReason(selectedVoucher.value)
+)
+
+function handleReverse() {
+  void reverseVoucher(selectedVoucher.value)
+}
 
 function handleTurnTemplate() {
   if (!selectedVoucherId.value) return

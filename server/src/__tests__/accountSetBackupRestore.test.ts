@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import Database from 'better-sqlite3'
-import { existsSync } from 'fs'
-import { getDb } from '../db/index.js'
+import { existsSync, rmSync } from 'fs'
+import { closeAndResetDb, getDb } from '../db/index.js'
 import {
   BACKUP_ATTACHMENT_TABLE,
   detectBackupScope,
@@ -14,7 +14,65 @@ import {
 import { doAccountSetBackup, formatAccountSetBackupStatsSummary } from '../routes/backup.js'
 import { cleanupAccountSetCascade } from '../services/accountSetCleanup.js'
 
-const TEST_ACCOUNT_SET_ID = '5945a5a8-e9f2-4145-968f-86862ce54aa3' // 行政（无凭证，仅测科目）
+/**
+ * 备份/恢复会真实改写目标账套（合并恢复会替换目标账套的科目），绝不能跑在开发库上。
+ * 这里在任何模块导入之前，把开发库 VACUUM INTO 一份临时副本并指向它；
+ * db/index.ts 里的 dotenv 不会覆盖已存在的 DB_PATH。
+ * 测试账套按「凭证最少、且有科目」动态选择，不再依赖某个特定库里的固定 ID。
+ */
+const { TEST_ACCOUNT_SET_ID, TEMP_DB_PATH, SKIP_REASON } = await vi.hoisted(async () => {
+  const fs = await import('fs')
+  const path = await import('path')
+  const os = await import('os')
+  const { default: Sqlite } = await import('better-sqlite3')
+
+  function resolveSourceDbPath(): string {
+    if (process.env.DB_PATH) return path.resolve(process.env.DB_PATH)
+    const envFile = path.resolve(process.cwd(), '.env')
+    if (fs.existsSync(envFile)) {
+      const match = fs.readFileSync(envFile, 'utf8').match(/^\s*DB_PATH\s*=\s*(.+?)\s*$/m)
+      if (match?.[1]) return path.resolve(process.cwd(), match[1].trim())
+    }
+    return path.resolve(process.cwd(), '..', 'data', 'finance.db')
+  }
+
+  const sourcePath = resolveSourceDbPath()
+  if (!fs.existsSync(sourcePath)) {
+    return { TEST_ACCOUNT_SET_ID: '', TEMP_DB_PATH: '', SKIP_REASON: `开发库不存在: ${sourcePath}` }
+  }
+
+  const tempPath = path.join(os.tmpdir(), `cw-backup-restore-test-${process.pid}-${Date.now()}.db`)
+  const source = new Sqlite(sourcePath, { readonly: true })
+  try {
+    source.exec(`VACUUM INTO '${tempPath.replace(/'/g, "''")}'`)
+  } finally {
+    source.close()
+  }
+
+  const copy = new Sqlite(tempPath)
+  let accountSetId = ''
+  try {
+    const row = copy
+      .prepare(
+        `SELECT a.id FROM account_sets a
+         WHERE (SELECT COUNT(*) FROM accounts c WHERE c.account_set_id = a.id) > 0
+         ORDER BY (SELECT COUNT(*) FROM vouchers v WHERE v.account_set_id = a.id) ASC
+         LIMIT 1`
+      )
+      .get() as { id: string } | undefined
+    accountSetId = row?.id || ''
+  } finally {
+    copy.close()
+  }
+
+  if (!accountSetId) {
+    fs.rmSync(tempPath, { force: true })
+    return { TEST_ACCOUNT_SET_ID: '', TEMP_DB_PATH: '', SKIP_REASON: '开发库中没有可用于测试的账套' }
+  }
+
+  process.env.DB_PATH = tempPath
+  return { TEST_ACCOUNT_SET_ID: accountSetId, TEMP_DB_PATH: tempPath, SKIP_REASON: '' }
+})
 
 describe('formatAccountSetBackupStatsSummary', () => {
   it('包含动态报表与附件打包说明', () => {
@@ -66,7 +124,7 @@ describe('accountSetBackupRestore remap helpers', () => {
   })
 })
 
-describe('accountSetBackupRestore', () => {
+describe.skipIf(!!SKIP_REASON)(`accountSetBackupRestore${SKIP_REASON ? `（跳过：${SKIP_REASON}）` : ''}`, () => {
   let backupPath = ''
 
   beforeAll(async () => {
@@ -75,6 +133,14 @@ describe('accountSetBackupRestore', () => {
       throw new Error('无法生成测试备份文件')
     }
     backupPath = result.filepath
+  })
+
+  afterAll(() => {
+    closeAndResetDb()
+    if (backupPath) rmSync(backupPath, { force: true })
+    if (TEMP_DB_PATH) {
+      for (const suffix of ['', '-wal', '-shm']) rmSync(`${TEMP_DB_PATH}${suffix}`, { force: true })
+    }
   })
 
   it('detectBackupScope 识别单账套备份', () => {

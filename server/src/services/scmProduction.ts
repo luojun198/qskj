@@ -169,19 +169,20 @@ export function computeProductionPlanActionState(
   }
 
   const products = db.prepare(`
-    SELECT id,item_code,plan_qty,finished_qty FROM scm_production_plan_product
+    SELECT id,item_code,plan_qty,finished_qty,COALESCE(scrap_qty,0) AS scrap_qty FROM scm_production_plan_product
     WHERE plan_id=? AND account_set_id=? ORDER BY seq
   `).all(plan.id, aid) as any[]
+  // 报废也吃掉了计划份额：计划 10 件做出 8 好 2 废就是做完了，剩余可完工数须扣掉报废
   const finishRemaining = products.map(product => ({
     ...product,
-    remain: r6(Math.max(0, (Number(product.plan_qty) || 0) - (Number(product.finished_qty) || 0))),
+    remain: r6(Math.max(0, (Number(product.plan_qty) || 0) - (Number(product.finished_qty) || 0) - (Number(product.scrap_qty) || 0))),
   })).filter(product => product.remain > 0.000001)
   const finishRemainingQty = r6(finishRemaining.reduce((sum, product) => sum + product.remain, 0))
   const finishDemandQty = r6(products.reduce((sum, product) => sum + (Number(product.plan_qty) || 0), 0))
   const finishMaxAllowedQty = r6(products.reduce((sum, product) => sum + getScmMaxAllowedQty(Number(product.plan_qty) || 0, overrunPolicy), 0))
   const finishOverrunRemaining = products.map(product => ({
     ...product,
-    remain: r6(Math.max(0, getScmMaxAllowedQty(Number(product.plan_qty) || 0, overrunPolicy) - (Number(product.finished_qty) || 0))),
+    remain: r6(Math.max(0, getScmMaxAllowedQty(Number(product.plan_qty) || 0, overrunPolicy) - (Number(product.finished_qty) || 0) - (Number(product.scrap_qty) || 0))),
   })).filter(product => product.remain > 0.000001)
   const finishOverrunRemainingQty = r6(finishOverrunRemaining.reduce((sum, product) => sum + product.remain, 0))
   const finishMeta = { base_remaining: finishRemainingQty, max_allowed_qty: finishMaxAllowedQty, overrun_remaining: finishOverrunRemainingQty }

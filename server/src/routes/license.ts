@@ -31,7 +31,7 @@ router.post('/activate', (req, res) => {
   return res.json({
     code: 0,
     message: '激活成功',
-    data: { expiresAt: result.expiresAt },
+    data: { expiresAt: result.expiresAt, modules: result.modules },
   })
 })
 

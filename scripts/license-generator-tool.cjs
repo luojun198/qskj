@@ -17,17 +17,29 @@ function getAppDir() {
 
 const DEFAULT_PRIVATE_KEY = join(getAppDir(), 'license-private.pem')
 
+/** 与 server/src/services/licenseModules.ts 保持一致 */
+const LICENSE_MODULES = [
+  { key: 'gl', name: '总账' },
+  { key: 'cashier', name: '出纳管理' },
+  { key: 'asset', name: '固定资产' },
+  { key: 'scm', name: '进销存' },
+  { key: 'production', name: '生产管理' },
+  { key: 'outsource', name: '委外管理' },
+]
+const MODULE_KEYS = LICENSE_MODULES.map(m => m.key)
+
 function toBase64Url(input) {
   return Buffer.from(input, 'utf8').toString('base64url')
 }
 
 function parseArgs(argv) {
-  const args = { machineId: '', expires: '', privateKey: DEFAULT_PRIVATE_KEY }
+  const args = { machineId: '', expires: '', modules: '', privateKey: DEFAULT_PRIVATE_KEY }
   for (let i = 2; i < argv.length; i++) {
     const arg = argv[i]
     if (arg === '--machine-id' || arg === '-m')
       args.machineId = (argv[++i] || '').trim().toUpperCase()
     else if (arg === '--expires' || arg === '-e') args.expires = (argv[++i] || '').trim()
+    else if (arg === '--modules' || arg === '-M') args.modules = (argv[++i] || '').trim()
     else if (arg === '--private-key' || arg === '-k') args.privateKey = resolve(argv[++i] || '')
     else if (arg === '--help' || arg === '-h') args.help = true
   }
@@ -46,6 +58,40 @@ function formatDateOnly(date) {
   const m = String(date.getMonth() + 1).padStart(2, '0')
   const d = String(date.getDate()).padStart(2, '0')
   return `${y}-${m}-${d}`
+}
+
+/**
+ * 解析模块输入：支持 key（gl,scm）、编号（1,4）、中文名、all/* / 空（全部）。
+ * 返回 { mods, names }；mods 为写入注册码的数组（全部时为 ['*']）。
+ */
+function parseModules(input) {
+  const raw = String(input || '').trim()
+  if (!raw || raw.toLowerCase() === 'all' || raw === '*') {
+    return { mods: ['*'], names: LICENSE_MODULES.map(m => m.name) }
+  }
+  const tokens = raw.split(/[\s,，、;]+/).filter(Boolean)
+  const keys = []
+  for (const token of tokens) {
+    const lower = token.toLowerCase()
+    let key = null
+    if (MODULE_KEYS.includes(lower)) key = lower
+    else if (/^\d+$/.test(token)) key = MODULE_KEYS[Number(token) - 1] || null
+    else {
+      const byName = LICENSE_MODULES.find(m => m.name === token)
+      key = byName ? byName.key : null
+    }
+    if (!key) throw new Error(`未知模块: ${token}`)
+    if (!keys.includes(key)) keys.push(key)
+  }
+  if (keys.length === 0) throw new Error('至少选择一个模块')
+  // 生产 / 委外依赖进销存的物料、仓库、单据体系，自动补上进销存
+  let note = ''
+  if ((keys.includes('production') || keys.includes('outsource')) && !keys.includes('scm')) {
+    keys.push('scm')
+    note = '生产/委外依赖进销存，已自动包含「进销存」模块'
+  }
+  const ordered = MODULE_KEYS.filter(k => keys.includes(k))
+  return { mods: ordered, names: ordered.map(k => LICENSE_MODULES.find(m => m.key === k).name), note }
 }
 
 function buildLicenseCode(payload, privateKeyPem) {
@@ -77,6 +123,13 @@ function prompt(question) {
   })
 }
 
+function printModuleMenu() {
+  console.log('可授权模块：')
+  LICENSE_MODULES.forEach((m, i) => {
+    console.log(`  ${i + 1}. ${m.name} (${m.key})`)
+  })
+}
+
 async function main() {
   const args = parseArgs(process.argv)
   if (args.help) {
@@ -89,23 +142,31 @@ async function main() {
 选项:
   -m, --machine-id <code>    用户机器码（12 位十六进制）
   -e, --expires <YYYY-MM-DD> 授权截止日期（含当天）
+  -M, --modules <list>       授权模块，逗号分隔 key 或编号；all 表示全部（默认）
+                             可选：${MODULE_KEYS.join(', ')}
   -k, --private-key <path>   私钥路径（默认同目录 license-private.pem）
   -h, --help                 显示帮助
 
 示例:
-  generate-license.exe -m A1B2C3D4E5F6 -e 2027-12-31
+  generate-license.exe -m A1B2C3D4E5F6 -e 2027-12-31 -M gl,cashier
+  generate-license.exe -m A1B2C3D4E5F6 -e 2027-12-31 -M all
 `)
     process.exit(0)
   }
 
   let machineId = args.machineId
   let expires = args.expires
+  let modulesInput = args.modules
 
   if (!machineId) {
     machineId = (await prompt('请输入用户机器码: ')).toUpperCase()
   }
   if (!expires) {
     expires = await prompt('请输入授权截止日期 (YYYY-MM-DD): ')
+  }
+  if (!modulesInput) {
+    printModuleMenu()
+    modulesInput = await prompt('请输入授权模块编号或 key（逗号分隔，回车 = 全部）: ')
   }
 
   if (!/^[0-9A-F]{12}$/.test(machineId)) {
@@ -114,6 +175,14 @@ async function main() {
   }
   if (!isValidDateOnly(expires)) {
     console.error('错误: 截止日期格式无效，请使用 YYYY-MM-DD')
+    process.exit(1)
+  }
+
+  let modules
+  try {
+    modules = parseModules(modulesInput)
+  } catch (err) {
+    console.error(`错误: ${err.message}（可选：${MODULE_KEYS.join(', ')} 或 all）`)
     process.exit(1)
   }
 
@@ -134,10 +203,11 @@ async function main() {
 
   const privateKeyPem = readFileSync(args.privateKey, 'utf8')
   const payload = {
-    v: 1,
+    v: 2,
     mid: machineId,
     exp: expires,
     iat: formatDateOnly(new Date()),
+    mods: modules.mods,
   }
   const code = buildLicenseCode(payload, privateKeyPem)
 
@@ -147,6 +217,8 @@ async function main() {
   console.log('============================')
   console.log(`机器码:   ${machineId}`)
   console.log(`有效期至: ${expires}（含当天）`)
+  console.log(`授权模块: ${modules.names.join('、')}${modules.mods[0] === '*' ? '（全部）' : ''}`)
+  if (modules.note) console.log(`提示:     ${modules.note}`)
   console.log(`签发日期: ${payload.iat}`)
   console.log(
     copyToClipboard(code)

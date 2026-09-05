@@ -4,18 +4,13 @@
  * 覆盖：卡片列表页面 / 字典维护 / 折旧计提页面 /
  *       卡片 CRUD API / 折旧计算逻辑 / ACD 导出
  */
-import { test, expect, waitForTable, navTo } from './fixtures'
+import { test, expect, waitForTable, navTo, apiHeaders, API_BASE } from './fixtures'
 
-const API = 'http://127.0.0.1:3105'
-const ASID = '5945a5a8-e9f2-4145-968f-86862ce54aa3'
+const API = API_BASE
 
-/** 获取 API token */
+/** 获取 API token（账套 id 运行时解析，见 fixtures.resolveAccountSetId） */
 async function getHeaders(request: any) {
-  const lr = await request.post(`${API}/api/auth/login`, {
-    data: { username: 'admin', password: 'admin123', targetAccountSetId: ASID },
-  })
-  const { token } = await lr.json()
-  return { Authorization: `Bearer ${token}`, 'x-account-set-id': ASID }
+  return apiHeaders(request)
 }
 
 test.describe('固定资产', () => {
@@ -23,27 +18,27 @@ test.describe('固定资产', () => {
 
   test('资产卡片列表页面能正常渲染', async ({ loggedInPage: page }) => {
     await navTo(page, '固定资产', '资产卡片')
-    await expect(page.locator('h3')).toContainText('固定资产卡片')
+    // 页面标题由布局层的面包屑承载（导航改版后各页面不再自带 h3）
+    await expect(page.locator('.apple-breadcrumb')).toContainText('资产卡片')
     await waitForTable(page)
     await expect(page.locator('.el-table')).toBeVisible()
-    // 筛选栏存在
-    await expect(page.locator('input[placeholder*="编号"]').or(page.locator('input[placeholder*="名称"]'))).toBeVisible()
+    await expect(page.locator('button', { hasText: '新增固定资产' })).toBeVisible()
   })
 
-  test('字典维护页面渲染并显示四个 Tab', async ({ loggedInPage: page }) => {
-    await navTo(page, '固定资产', '字典维护')
-    await expect(page.locator('h3')).toContainText('固定资产字典维护')
-    // Tab 页签
-    for (const label of ['资产类别', '资产状态', '资产用途', '使用部门']) {
-      await expect(page.locator('.el-tabs__item', { hasText: label })).toBeVisible()
+  test('资产档案页面渲染并显示各类字典 Tab', async ({ loggedInPage: page }) => {
+    await navTo(page, '固定资产', '资产档案')
+    await expect(page.locator('.apple-breadcrumb')).toContainText('资产档案')
+    // 该页是左侧分类导航（.dict-nav__item），不是 el-tabs
+    for (const label of ['资产类别', '资产状态', '资产用途', '使用部门', '增减方式']) {
+      await expect(page.locator('.dict-nav__item', { hasText: label })).toBeVisible()
     }
   })
 
   test('折旧计提页面能正常渲染', async ({ loggedInPage: page }) => {
     await navTo(page, '固定资产', '折旧计提')
-    await expect(page.locator('h3')).toContainText('固定资产折旧')
-    await expect(page.locator('button', { hasText: '预览折旧' })).toBeVisible()
-    await expect(page.locator('button', { hasText: '历史记录' })).toBeVisible()
+    await expect(page.locator('.apple-breadcrumb')).toContainText('折旧计提')
+    await expect(page.locator('.el-tabs__item', { hasText: '折旧预览' })).toBeVisible()
+    await expect(page.locator('.el-tabs__item', { hasText: '历史记录' })).toBeVisible()
   })
 
   // ── 卡片 CRUD API ──────────────────────────────────────
@@ -77,7 +72,8 @@ test.describe('固定资产', () => {
     expect(getBody.code).toBe(0)
     expect(getBody.data.asset_name).toBe('E2E测试资产')
     expect(getBody.data.original_value).toBe(5000)
-    expect(getBody.data.net_value).toBe(5000 - 250)  // 原值 - 净残值（无折旧时）
+    // 净值 = 原值 − 累计折旧 − 累计减值，残值不参与（见 routes/fixedAsset.ts 建卡处注释）
+    expect(getBody.data.net_value).toBe(5000)
 
     // 修改
     const updateRes = await request.put(`${API}/api/asset/cards/${id}`, {
@@ -232,5 +228,304 @@ test.describe('固定资产', () => {
     const buf = await res.body()
     // .acd 文件开头应为文件名（ASCII 字节，以 0x00 结尾）
     expect(buf.length).toBeGreaterThan(44)  // 32(name)+12(meta)+≥1(data)
+  })
+
+  // ── 资产变动 API（P1）──────────────────────────────────
+
+  /** 建一张测试卡片，返回 { id, assetNo } */
+  async function createCard(request: any, H: any, over: Record<string, unknown> = {}) {
+    const assetNo = 'E2E_' + Date.now().toString().slice(-6) + Math.floor(Math.random() * 100)
+    const res = await request.post(`${API}/api/asset/cards`, {
+      headers: H,
+      data: {
+        asset_no: assetNo,
+        asset_name: '变动测试资产',
+        start_depr_date: '2026-01-15',
+        original_value: 12000,
+        salvage_rate: 0.1,
+        salvage_value: 1200,
+        depr_method: '1',
+        use_months: 12,
+        ...over,
+      },
+    })
+    const { data } = await res.json()
+    return { id: data.id as string, assetNo }
+  }
+
+  test('登记原值变动后变动记录可查、撤销后消失', async ({ request }) => {
+    const H = await getHeaders(request)
+    const { id, assetNo } = await createCard(request, H)
+
+    // 登记原值变动 +3000
+    const applyRes = await request.post(`${API}/api/asset/cards/${id}/change`, {
+      headers: H,
+      data: {
+        kind: 'original_value',
+        change_date: '2026-06-15',
+        payload: { amount: 3000 },
+      },
+    })
+    const applyData = await applyRes.json()
+    expect(applyData.code).toBe(0)
+    const changeId = applyData.data.changeId
+    expect(changeId).toBeTruthy()
+
+    // 资产原值与残值已更新
+    const cardRes = await request.get(`${API}/api/asset/cards/${id}`, { headers: H })
+    const card = (await cardRes.json()).data
+    expect(card.original_value).toBeCloseTo(15000, 2)
+    expect(card.salvage_value).toBeCloseTo(1500, 2)
+
+    // 变动记录可查（此前该表无人写入，报表恒为空）
+    const listRes = await request.get(`${API}/api/asset/changes?asset_no=${assetNo}`, { headers: H })
+    const listData = await listRes.json()
+    expect(listData.code).toBe(0)
+    expect(listData.data.total).toBe(1)
+    expect(listData.data.list[0].change_kind).toBe('original_value')
+
+    // 撤销后还原
+    const revokeRes = await request.post(`${API}/api/asset/changes/${changeId}/revoke`, {
+      headers: H,
+      data: {},
+    })
+    expect((await revokeRes.json()).code).toBe(0)
+
+    const afterRes = await request.get(`${API}/api/asset/cards/${id}`, { headers: H })
+    expect((await afterRes.json()).data.original_value).toBeCloseTo(12000, 2)
+
+    const emptyRes = await request.get(`${API}/api/asset/changes?asset_no=${assetNo}`, { headers: H })
+    expect((await emptyRes.json()).data.total).toBe(0)
+
+    await request.delete(`${API}/api/asset/cards/${id}`, { headers: H })
+  })
+
+  test('变动后折旧改按剩余期间摊余（未来适用法）', async ({ request }) => {
+    const H = await getHeaders(request)
+    const { id, assetNo } = await createCard(request, H)
+
+    // 变动前：(12000-1200)/12 = 900
+    const before = await request.get(`${API}/api/asset/depr/preview?year=2026&month=7`, { headers: H })
+    const beforeLine = (await before.json()).data.lines.find((l: any) => l.asset_no === assetNo)
+    expect(beforeLine.month_depr).toBeCloseTo(900, 2)
+
+    await request.post(`${API}/api/asset/cards/${id}/change`, {
+      headers: H,
+      data: { kind: 'original_value', change_date: '2026-06-15', payload: { amount: 3000 } },
+    })
+
+    // 变动后：净值 15000、残值 1500、剩余 12 个月 → (15000-1500)/12 = 1125
+    const after = await request.get(`${API}/api/asset/depr/preview?year=2026&month=7`, { headers: H })
+    const afterLine = (await after.json()).data.lines.find((l: any) => l.asset_no === assetNo)
+    expect(afterLine.month_depr).toBeCloseTo(1125, 2)
+
+    await request.delete(`${API}/api/asset/cards/${id}`, { headers: H })
+  })
+
+  test('变动类型枚举返回中文名与折旧要素字段', async ({ request }) => {
+    const H = await getHeaders(request)
+    const res = await request.get(`${API}/api/asset/change-kinds`, { headers: H })
+    const data = await res.json()
+    expect(data.code).toBe(0)
+    const codes = data.data.kinds.map((k: any) => k.code)
+    expect(codes).toContain('original_value')
+    expect(codes).toContain('dept')
+    expect(codes).toContain('impairment')
+    expect(data.data.deprFactorFields.map((f: any) => f.code)).toContain('use_months')
+  })
+
+  // ── 领用归还 API（P3）──────────────────────────────────
+
+  test('领用后不可重复领用，归还后可再次领用', async ({ request }) => {
+    const H = await getHeaders(request)
+    const { id, assetNo } = await createCard(request, H)
+
+    const out = await request.post(`${API}/api/asset/requisitions`, {
+      headers: H,
+      data: { asset_id: id, action: 'out', action_date: '2026-06-01', user_name: '张三' },
+    })
+    expect((await out.json()).code).toBe(0)
+
+    // 卡片上的使用人已回写
+    const card = await request.get(`${API}/api/asset/cards/${id}`, { headers: H })
+    expect((await card.json()).data.user_name).toBe('张三')
+
+    // 重复领用被拒
+    const dup = await request.post(`${API}/api/asset/requisitions`, {
+      headers: H,
+      data: { asset_id: id, action: 'out', action_date: '2026-06-10', user_name: '李四' },
+    })
+    expect(dup.status()).toBe(400)
+    expect((await dup.json()).message).toContain('尚未归还')
+
+    // 未归还筛选能查到
+    const outstanding = await request.get(
+      `${API}/api/asset/requisitions?asset_no=${assetNo}&outstanding_only=true`,
+      { headers: H }
+    )
+    expect((await outstanding.json()).data.total).toBe(1)
+
+    // 归还后使用人清空
+    const back = await request.post(`${API}/api/asset/requisitions`, {
+      headers: H,
+      data: { asset_id: id, action: 'in', action_date: '2026-07-01' },
+    })
+    expect((await back.json()).code).toBe(0)
+    const card2 = await request.get(`${API}/api/asset/cards/${id}`, { headers: H })
+    expect((await card2.json()).data.user_name).toBeFalsy()
+
+    // 可再次领用
+    const again = await request.post(`${API}/api/asset/requisitions`, {
+      headers: H,
+      data: { asset_id: id, action: 'out', action_date: '2026-08-01', user_name: '王五' },
+    })
+    expect((await again.json()).code).toBe(0)
+
+    await request.delete(`${API}/api/asset/cards/${id}`, { headers: H })
+  })
+
+  test('资产卡片附件列表接口可用', async ({ request }) => {
+    const H = await getHeaders(request)
+    const { id } = await createCard(request, H)
+    const res = await request.get(`${API}/api/asset/cards/${id}/attachments`, { headers: H })
+    const data = await res.json()
+    expect(data.code).toBe(0)
+    expect(Array.isArray(data.data)).toBe(true)
+    await request.delete(`${API}/api/asset/cards/${id}`, { headers: H })
+  })
+
+  // ── 批量导入与批量变动（P4）────────────────────────────
+
+  test('导入模板列定义包含必填标记', async ({ request }) => {
+    const H = await getHeaders(request)
+    const res = await request.get(`${API}/api/asset/import/columns`, { headers: H })
+    const data = await res.json()
+    expect(data.code).toBe(0)
+    const required = data.data.filter((c: any) => c.required).map((c: any) => c.key)
+    expect(required).toEqual(['asset_no', 'asset_name', 'original_value'])
+  })
+
+  test('批量导入：校验不通过时整批不写入', async ({ request }) => {
+    const H = await getHeaders(request)
+    const stamp = Date.now().toString().slice(-6)
+    const rows = [
+      { asset_no: `BI${stamp}A`, asset_name: '批量一', original_value: 10000 },
+      { asset_no: `BI${stamp}B`, asset_name: '批量二', original_value: -1 }, // 非法
+    ]
+
+    // 预校验能报出问题
+    const vres = await request.post(`${API}/api/asset/cards/batch/validate`, {
+      headers: H,
+      data: { rows },
+    })
+    const vdata = await vres.json()
+    expect(vdata.code).toBe(0)
+    expect(vdata.data.errors.length).toBeGreaterThan(0)
+
+    // 实际导入被拒绝
+    const ires = await request.post(`${API}/api/asset/cards/batch`, { headers: H, data: { rows } })
+    expect(ires.status()).toBe(400)
+
+    // 合法那一行也没有被写入
+    const check = await request.get(`${API}/api/asset/cards?keyword=BI${stamp}A`, { headers: H })
+    expect((await check.json()).data.total).toBe(0)
+  })
+
+  test('批量导入成功后可查到卡片', async ({ request }) => {
+    const H = await getHeaders(request)
+    const stamp = Date.now().toString().slice(-6)
+    const rows = [
+      { asset_no: `BOK${stamp}A`, asset_name: '批量导入A', original_value: 10000, salvage_rate: 0.1 },
+      { asset_no: `BOK${stamp}B`, asset_name: '批量导入B', original_value: 20000, salvage_rate: 0.1 },
+    ]
+    const res = await request.post(`${API}/api/asset/cards/batch`, { headers: H, data: { rows } })
+    const data = await res.json()
+    expect(data.code).toBe(0)
+    expect(data.data.successCount).toBe(2)
+
+    const listRes = await request.get(`${API}/api/asset/cards?keyword=BOK${stamp}`, { headers: H })
+    const list = (await listRes.json()).data
+    expect(list.total).toBe(2)
+    // 残值按残值率算出
+    const a = list.list.find((x: any) => x.asset_no === `BOK${stamp}A`)
+    expect(a.salvage_value).toBeCloseTo(1000, 2)
+
+    for (const item of list.list) {
+      await request.delete(`${API}/api/asset/cards/${item.id}`, { headers: H })
+    }
+  })
+
+  test('批量变动：原值变动不支持批量', async ({ request }) => {
+    const H = await getHeaders(request)
+    const { id } = await createCard(request, H)
+    const res = await request.post(`${API}/api/asset/changes/batch`, {
+      headers: H,
+      data: {
+        asset_ids: [id],
+        kind: 'original_value',
+        change_date: '2026-06-15',
+        payload: { amount: 100 },
+      },
+    })
+    expect(res.status()).toBe(400)
+    expect((await res.json()).message).toContain('不支持批量')
+    await request.delete(`${API}/api/asset/cards/${id}`, { headers: H })
+  })
+
+  test('批量变动类型枚举只含无金额的三类', async ({ request }) => {
+    const H = await getHeaders(request)
+    const res = await request.get(`${API}/api/asset/changes/batch-kinds`, { headers: H })
+    const data = await res.json()
+    expect(data.code).toBe(0)
+    expect(data.data.sort()).toEqual(['depr_factor', 'dept', 'status'])
+  })
+
+  // ── 卡片更新语义 ───────────────────────────────────────
+
+  test('更新卡片时传 null 能真正清空字段', async ({ request }) => {
+    const H = await getHeaders(request)
+    const { id } = await createCard(request, H, { user_name: '张三', install_place: '一号车间' })
+
+    await request.put(`${API}/api/asset/cards/${id}`, {
+      headers: H,
+      data: { user_name: null, install_place: '' },
+    })
+
+    const res = await request.get(`${API}/api/asset/cards/${id}`, { headers: H })
+    const card = (await res.json()).data
+    expect(card.user_name).toBeNull()
+    expect(card.install_place).toBeNull()
+    // 未传的字段保持不变
+    expect(card.asset_name).toBe('变动测试资产')
+
+    await request.delete(`${API}/api/asset/cards/${id}`, { headers: H })
+  })
+
+  // ── 字典删除引用检查 ───────────────────────────────────
+
+  test('删除被卡片引用的字典项时被拦截', async ({ request }) => {
+    const H = await getHeaders(request)
+
+    // 建一个专用类别并挂到卡片上
+    const code = 'E2E' + Date.now().toString().slice(-4)
+    const dictRes = await request.post(`${API}/api/asset/dict/category`, {
+      headers: H,
+      data: { code, name: 'E2E 测试类别', salvage_rate: 0.1, account_code: '1601' },
+    })
+    const dictData = await dictRes.json()
+    expect(dictData.code).toBe(0)
+    const dictId = dictData.data?.id ?? dictData.data
+
+    const { id } = await createCard(request, H, { category_code: code })
+
+    // 被引用时删除应被拒绝
+    const del = await request.delete(`${API}/api/asset/dict/category/${dictId}`, { headers: H })
+    expect(del.status()).toBe(400)
+    expect((await del.json()).message).toContain('不能删除')
+
+    // 卡片删掉后可以删字典
+    await request.delete(`${API}/api/asset/cards/${id}`, { headers: H })
+    const del2 = await request.delete(`${API}/api/asset/dict/category/${dictId}`, { headers: H })
+    expect((await del2.json()).code).toBe(0)
   })
 })

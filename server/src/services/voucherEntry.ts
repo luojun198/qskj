@@ -70,14 +70,16 @@ export function validateVoucherEntryCount(entries: unknown) {
 /**
  * FIX-010 / P1-14：分录金额合法性校验
  *
- * 规则：
+ * 规则（自「凭证冲红」功能起放开负数）：
  *   1) 金额必须是有限数（拒绝 NaN / Infinity）
- *   2) 金额必须严格大于 0（拒绝 0 元和负数分录；负向金额应通过反方向表达）
- *   3) 单笔金额不得超过 MAX_ENTRY_AMOUNT（默认 1e12 元 = 1 万亿，防止误输入 1e15+ 的明显错误）
+ *   2) 金额不得为 0（0 元分录没有业务含义）
+ *   3) 金额**允许为负**——红字（冲红）凭证保持原方向、金额取负，
+ *      借贷平衡由整数分域的 calculateVoucherTotalsCents 判定，负数天然可平
+ *   4) 金额绝对值不得超过 MAX_ENTRY_AMOUNT（默认 1e12 元 = 1 万亿，防止误输入 1e15+ 的明显错误）
  *
  * ⚠️ 适用范围：**仅手工录入/修改凭证的 API**（routes/voucher.ts 里带 voucher:entry 权限的
- * 4 个端点）。数据导入（ACD 导入等）走的是「按原始数据落库」口径，**不得**调用本函数——
- * 源账套里的红字（负数金额）分录必须原样保留，否则发生额和余额会与原软件对不上。
+ * 4 个端点）。数据导入（ACD 导入等）走的是「按原始数据落库」口径，仍**不得**调用本函数——
+ * 源账套里可能存在 0 元分录，必须原样保留，否则发生额和余额会与原软件对不上。
  * 详见 FIX-072 / importAcdToCurrentAccountSet.ts 的 mapAcdEntryAmount。
  *
  * 返回错误消息字符串，无问题返回 null。
@@ -94,14 +96,35 @@ export function validateVoucherEntryAmounts(entries: VoucherEntryInput[]): strin
     if (!Number.isFinite(amount)) {
       return `第${seq}行【${accName}】金额无效（非有限数）`
     }
-    if (amount <= 0) {
-      return `第${seq}行【${accName}】金额必须大于 0（当前 ${amount}）。请通过调整借贷方向表达减少，不要使用负数金额`
+    if (yuanToCents(amount) === 0) {
+      return `第${seq}行【${accName}】金额不能为 0`
     }
-    if (amount > MAX_ENTRY_AMOUNT) {
-      return `第${seq}行【${accName}】金额 ${amount} 超过单笔上限（${MAX_ENTRY_AMOUNT}），请确认是否输入错误`
+    if (Math.abs(amount) > MAX_ENTRY_AMOUNT) {
+      return `第${seq}行【${accName}】金额 ${amount} 超过单笔上限（±${MAX_ENTRY_AMOUNT}），请确认是否输入错误`
     }
   }
   return null
+}
+
+/**
+ * 构造冲红（红字）分录：**方向保持不变**，金额与 amount_cents 取负，其余字段原样保留。
+ *
+ * 会计口径说明：红字冲销不是"反方向蓝字"，而是同方向负数金额。这样明细账上能直接
+ * 看到一笔红字发生额与原分录对冲，科目发生额、辅助核算余额都能正确抵减。
+ * 原凭证平衡 ⇒ 整体取负后必然平衡（整数分域取负是线性的）。
+ */
+export function buildReversedEntries<T extends VoucherEntryInput>(entries: T[]): T[] {
+  return entries.map(e => {
+    const cents = (e as any).amount_cents
+    return {
+      ...e,
+      amount: -Number(e.amount || 0),
+      amount_cents:
+        typeof cents === 'number' && Number.isFinite(cents)
+          ? -cents
+          : -yuanToCents(Number(e.amount) || 0),
+    }
+  })
 }
 
 export function validateVoucherDate(params: {

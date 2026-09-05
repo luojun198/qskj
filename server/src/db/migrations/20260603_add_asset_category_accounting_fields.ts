@@ -9,11 +9,15 @@ import type Database from 'better-sqlite3'
  * 3. clearing_account_code: 固定资产清理科目
  */
 export function up(db: Database.Database) {
-  db.exec(`
-    ALTER TABLE fixed_asset_category ADD COLUMN depr_account_code TEXT;
-    ALTER TABLE fixed_asset_category ADD COLUMN impairment_account_code TEXT;
-    ALTER TABLE fixed_asset_category ADD COLUMN clearing_account_code TEXT;
-  `)
+  // 幂等：裸 ALTER TABLE 在列已存在时会抛错，与同批次其他资产迁移统一为 PRAGMA 预检
+  const cols = (db.prepare('PRAGMA table_info(fixed_asset_category)').all() as any[]).map(
+    (c: any) => c.name
+  )
+  for (const col of ['depr_account_code', 'impairment_account_code', 'clearing_account_code']) {
+    if (!cols.includes(col)) {
+      db.exec(`ALTER TABLE fixed_asset_category ADD COLUMN ${col} TEXT;`)
+    }
+  }
   console.log('✓ fixed_asset_category 表已增加科目勾稽字段')
 }
 

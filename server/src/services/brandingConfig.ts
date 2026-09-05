@@ -5,8 +5,8 @@ export const BRAND_TITLE_KEY = 'brand_title'
 export const BRAND_SUBTITLE_KEY = 'brand_subtitle'
 export const BRAND_LOGO_URL_KEY = 'brand_logo_url'
 
-export const DEFAULT_BRAND_TITLE = '盛于智'
-export const DEFAULT_BRAND_SUBTITLE = '行政事业单位财务专业版'
+export const DEFAULT_BRAND_TITLE = '润衡云'
+export const DEFAULT_BRAND_SUBTITLE = '迷你版'
 
 export type BrandingConfig = {
   title: string

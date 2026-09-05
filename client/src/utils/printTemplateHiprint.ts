@@ -61,6 +61,8 @@ export interface BuildHtmlPanelOptions {
   background?: string | null
   /** 页边距（mm） */
   marginMm?: number
+  /** 四向页边距（mm）；给了就按各边分别处理，未给则沿用 marginMm */
+  marginsMm?: { top: number; bottom: number; left: number; right: number }
 }
 
 /** hiprint 模板（PrintTemplate 的 template 选项）：含 panels 数组 */
@@ -81,6 +83,7 @@ export function buildSingleHtmlPanel(options: BuildHtmlPanelOptions): HiprintTem
     orientation = 'portrait',
     background,
     marginMm = 8,
+    marginsMm,
   } = options
 
   // A4: 210x297mm；A5: 148x210mm；自定义用传入 mm
@@ -95,7 +98,12 @@ export function buildSingleHtmlPanel(options: BuildHtmlPanelOptions): HiprintTem
   // 元素坐标/尺寸单位为 pt（hiprint 内部坐标单位）；panel 的 width/height 单位为 mm
   const widthPt = mmToPt(wMm)
   const heightPt = mmToPt(hMm)
-  const marginPt = mmToPt(marginMm)
+  const edgePt = {
+    top: mmToPt(marginsMm?.top ?? marginMm),
+    bottom: mmToPt(marginsMm?.bottom ?? marginMm),
+    left: mmToPt(marginsMm?.left ?? marginMm),
+    right: mmToPt(marginsMm?.right ?? marginMm),
+  }
 
   const printElements: unknown[] = []
 
@@ -116,10 +124,10 @@ export function buildSingleHtmlPanel(options: BuildHtmlPanelOptions): HiprintTem
 
   printElements.push({
     options: {
-      left: marginPt,
-      top: marginPt,
-      width: widthPt - marginPt * 2,
-      height: heightPt - marginPt * 2,
+      left: edgePt.left,
+      top: edgePt.top,
+      width: widthPt - edgePt.left - edgePt.right,
+      height: heightPt - edgePt.top - edgePt.bottom,
       field: 'content',
       content: html,
       fit: 'auto',
@@ -132,8 +140,8 @@ export function buildSingleHtmlPanel(options: BuildHtmlPanelOptions): HiprintTem
     paperType,
     width: wMm,
     height: hMm,
-    paperHeader: marginPt,
-    paperFooter: heightPt - marginPt,
+    paperHeader: edgePt.top,
+    paperFooter: heightPt - edgePt.bottom,
     printElements,
     ...(background ? { background } : {}),
   }
@@ -173,6 +181,114 @@ export async function renderHiprintPdfBlob(
   if (!(blob instanceof Blob) || blob.size === 0) {
     throw new Error('PDF 文件生成失败')
   }
+  return blob
+}
+
+const PAPER_MM: Record<string, [number, number]> = {
+  A4: [210, 297],
+  A5: [148, 210],
+  A3: [297, 420],
+}
+
+export function paperDimensionsMm(
+  paperType = 'A4',
+  orientation: 'portrait' | 'landscape' = 'portrait'
+) {
+  const pair = PAPER_MM[paperType] || PAPER_MM.A4
+  const landscape = orientation === 'landscape'
+  return {
+    width: landscape ? pair[1] : pair[0],
+    height: landscape ? pair[0] : pair[1],
+  }
+}
+
+export function wrapRawPrintPaper(
+  html: string,
+  options: {
+    paperType?: string
+    orientation?: 'portrait' | 'landscape'
+    marginsMm?: { top: number; bottom: number; left: number; right: number }
+  } = {}
+) {
+  const dim = paperDimensionsMm(options.paperType, options.orientation)
+  const margin = options.marginsMm || { top: 8, bottom: 8, left: 8, right: 8 }
+  return (
+    `<div class="cw-raw-paper" style="width:${dim.width}mm;min-height:${dim.height}mm;` +
+    `padding:${margin.top}mm ${margin.right}mm ${margin.bottom}mm ${margin.left}mm;` +
+    `background:#fff;box-sizing:border-box;">${html}</div>`
+  )
+}
+
+/** 不经 hiprint 拆表，直接把 HTML 送给浏览器打印 */
+export function printRawHtml(
+  html: string,
+  options: {
+    paperType?: string
+    orientation?: 'portrait' | 'landscape'
+    marginsMm?: { top: number; bottom: number; left: number; right: number }
+    title?: string
+  } = {}
+) {
+  const dim = paperDimensionsMm(options.paperType, options.orientation)
+  const margin = options.marginsMm || { top: 8, bottom: 8, left: 8, right: 8 }
+  const iframe = document.createElement('iframe')
+  iframe.setAttribute('aria-hidden', 'true')
+  iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;'
+  document.body.appendChild(iframe)
+  const doc = iframe.contentDocument
+  if (!doc) {
+    iframe.remove()
+    throw new Error('无法创建打印窗口')
+  }
+  doc.open()
+  doc.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${options.title || '打印'}</title>
+<style>
+@page { size: ${dim.width}mm ${dim.height}mm; margin: ${margin.top}mm ${margin.right}mm ${margin.bottom}mm ${margin.left}mm; }
+html, body { margin: 0; padding: 0; background: #fff; }
+</style></head><body>${html}</body></html>`)
+  doc.close()
+  const win = iframe.contentWindow
+  if (!win) {
+    iframe.remove()
+    throw new Error('无法创建打印窗口')
+  }
+  const cleanup = () => iframe.remove()
+  win.addEventListener('afterprint', cleanup)
+  window.setTimeout(() => {
+    win.focus()
+    win.print()
+    window.setTimeout(cleanup, 3000)
+  }, 50)
+}
+
+/** 把预览纸面截成 PDF，避免 hiprint 再解析表格把网格拆掉 */
+export async function renderElementToPdfBlob(
+  element: HTMLElement,
+  dim: { width: number; height: number }
+): Promise<Blob> {
+  const html2canvasMod = await import('@wtto00/html2canvas')
+  const html2canvas =
+    (html2canvasMod as { default?: (el: HTMLElement, opts: Record<string, unknown>) => Promise<HTMLCanvasElement> })
+      .default || (html2canvasMod as unknown as (el: HTMLElement, opts: Record<string, unknown>) => Promise<HTMLCanvasElement>)
+  const jspdfMod = (await import('jspdf')) as { jsPDF?: new (opts: Record<string, unknown>) => any; default?: { jsPDF?: new (opts: Record<string, unknown>) => any } }
+  const JsPDF = jspdfMod.jsPDF || jspdfMod.default?.jsPDF
+  if (!html2canvas || !JsPDF) throw new Error('当前环境不支持导出 PDF')
+
+  const canvas = await html2canvas(element, {
+    scale: 2,
+    backgroundColor: '#ffffff',
+    useCORS: true,
+  })
+  const pdf = new JsPDF({
+    orientation: dim.width > dim.height ? 'l' : 'p',
+    unit: 'mm',
+    format: [dim.width, dim.height],
+  })
+  const pageW = pdf.internal.pageSize.getWidth()
+  const pageH = pdf.internal.pageSize.getHeight()
+  pdf.addImage(canvas.toDataURL('image/jpeg', 0.92), 'JPEG', 0, 0, pageW, pageH)
+  const blob = pdf.output('blob')
+  if (!(blob instanceof Blob) || blob.size === 0) throw new Error('PDF 文件生成失败')
   return blob
 }
 

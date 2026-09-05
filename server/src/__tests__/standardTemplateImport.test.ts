@@ -76,6 +76,9 @@ function createReportImportDb() {
       name TEXT NOT NULL
     );
   `)
+  // ensureDynamicReportSchema 会把 report_definitions 重建为带 REFERENCES account_sets(id) 的表，
+  // better-sqlite3 默认开启外键约束，因此被导入的账套必须真实存在
+  db.prepare(`INSERT INTO account_sets (id, name) VALUES ('account-set-1', '测试账套')`).run()
   return db
 }
 
@@ -352,8 +355,6 @@ describe('standardTemplateImport', () => {
 
     const db = createReportImportDb()
     try {
-      db.prepare('INSERT INTO account_sets (id, name) VALUES (?, ?)').run('account-set-1', '测试账套')
-
       const stats = await importExcelReportsFromTemplate(db, 'account-set-1', [
         { name: '资产负债表', path: templatePath },
       ])

@@ -53,7 +53,7 @@ defineProps<{
 }
 
 .page-header__left { display: flex; align-items: center; gap: 12px; }
-.page-header h3 { margin: 0; font-size: 20px; font-weight: 700; color: var(--text-strong); }
+.page-header h3 { margin: 0; font-size: 15px; font-weight: 600; color: var(--text-strong); }
 .page-header__right { display: flex; gap: 8px; }
 
 .filter-row {

@@ -10,7 +10,7 @@
       </div>
     </div>
     <div ref="tableContainerRef" class="table-container">
-      <el-table ref="tableRef" :data="rows" :height="tableHeight" border size="small" @header-dragend="onDragEnd">
+      <el-table ref="tableRef" :data="rows" :height="tableHeight" border size="small" class="compact-data-table" @header-dragend="onDragEnd">
         <el-table-column label="科目编码" prop="account_code" :width="cw('account_code', 120)" />
         <el-table-column label="科目名称" prop="account_name" min-width="160" :width="widths.account_name" />
         <el-table-column label="币别" prop="currency" :width="cw('currency', 80)" />

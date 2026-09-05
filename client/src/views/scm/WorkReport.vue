@@ -36,46 +36,22 @@
       </el-table-column>
     </el-table>
 
-    <el-dialog v-model="dlg" :title="form.id ? '编辑报工' : '新增报工'" width="480px">
-      <el-form :model="form" label-width="90px" size="small">
-        <el-form-item label="成品">
-          <el-select v-model="form.product_id" placeholder="选择成品" style="width:100%" @change="onProduct">
-            <el-option v-for="p in products" :key="p.id" :label="`${p.item_code} ${p.item_name || ''} (计划${p.plan_qty})`" :value="p.id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="工序"><el-input v-model="form.process_name" placeholder="如 总装/焊接" /></el-form-item>
-        <el-form-item label="工作中心">
-          <el-select v-model="form.work_center_code" placeholder="选择工作中心" style="width:100%" @change="calcPreview">
-            <el-option v-for="w in workCenters" :key="w.code" :label="`${w.name}（人工${w.labor_rate}/制费${w.overhead_rate}）`" :value="w.code" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="工时"><el-input-number v-model="form.work_hours" :min="0" :controls="false" style="width:140px" @change="calcPreview" /> 工时</el-form-item>
-        <el-form-item label="合格数"><el-input-number v-model="form.qty" :min="0" :controls="false" style="width:140px" /></el-form-item>
-        <el-form-item label="不良数"><el-input-number v-model="form.scrap_qty" :min="0" :controls="false" style="width:140px" /></el-form-item>
-        <el-form-item label="日期"><el-date-picker v-model="form.report_date" type="date" value-format="YYYY-MM-DD" style="width:160px" /></el-form-item>
-        <el-form-item label="预览"><span class="preview">人工 {{ fmt(preview.labor) }}　制费 {{ fmt(preview.overhead) }}</span></el-form-item>
-      </el-form>
-      <template #footer><el-button @click="dlg = false">取消</el-button><el-button type="primary" :loading="saving" @click="save">保存</el-button></template>
-    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { onActivated, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { Plus } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { scmApi } from '@/api/scm'
 
+const route = useRoute()
+const router = useRouter()
 const plans = ref<any[]>([])
-const planId = ref('')
+const planId = ref(String(route.query.plan_id || ''))
 const rows = ref<any[]>([])
-const products = ref<any[]>([])
-const workCenters = ref<any[]>([])
 const loading = ref(false)
-const dlg = ref(false)
-const saving = ref(false)
-const form = reactive<any>({ id: '', product_id: '', item_code: '', process_name: '', work_center_code: '', work_hours: 0, qty: 0, scrap_qty: 0, report_date: '' })
-const preview = reactive({ labor: 0, overhead: 0 })
 
 const fmt = (v: any) => (Number(v) || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const statusName = (s: string) => ({ draft: '草稿', released: '已审核', closed: '已关闭' } as any)[s] || s
@@ -85,40 +61,21 @@ const sumAmt = (k: string) => Math.round(rows.value.reduce((s, r) => s + (Number
 async function loadPlans() {
   const r = await scmApi.getProductionPlans(); if (r.code === 0) plans.value = r.data
 }
-async function loadWorkCenters() {
-  const r = await scmApi.getWorkCenters(); if (r.code === 0) workCenters.value = r.data.filter((w: any) => w.enabled !== 0)
-}
 async function onPlan() {
-  if (!planId.value) return
+  if (!planId.value) { rows.value = []; return }
+  // 记在地址栏里，从报工表单返回时能回到同一张工单
+  router.replace({ name: 'ScmWorkReport', query: { plan_id: planId.value } })
   loading.value = true
   try {
     const r = await scmApi.getWorkReports({ plan_id: planId.value }); if (r.code === 0) rows.value = r.data
-    const pd = await scmApi.getProductionPlan(planId.value); if (pd.code === 0) products.value = (pd.data as any).products || []
   } finally { loading.value = false }
 }
-function calcPreview() {
-  const wc = workCenters.value.find(w => w.code === form.work_center_code)
-  const h = Number(form.work_hours) || 0
-  preview.labor = Math.round(h * (Number(wc?.labor_rate) || 0) * 100) / 100
-  preview.overhead = Math.round(h * (Number(wc?.overhead_rate) || 0) * 100) / 100
+function openAdd() { router.push({ name: 'ScmWorkReportNew', query: { plan_id: planId.value } }) }
+function openEdit(row: any) { router.push({ name: 'ScmWorkReportEdit', params: { id: row.id } }) }
+async function audit(row: any) {
+  const r = await scmApi.auditWorkReport(row.id) as any
+  if (r.code === 0) { ElMessage.success('已审核'); onPlan() } else ElMessage.error(r.message || '审核失败')
 }
-function onProduct() { const p = products.value.find(x => x.id === form.product_id); form.item_code = p?.item_code || '' }
-function openAdd() {
-  Object.assign(form, { id: '', product_id: products.value[0]?.id || '', item_code: products.value[0]?.item_code || '', process_name: '', work_center_code: '', work_hours: 0, qty: 0, scrap_qty: 0, report_date: new Date().toISOString().slice(0, 10) })
-  calcPreview(); dlg.value = true
-}
-function openEdit(row: any) { Object.assign(form, { ...row }); calcPreview(); dlg.value = true }
-async function save() {
-  if (!form.work_center_code) return ElMessage.warning('请选择工作中心')
-  saving.value = true
-  try {
-    const payload = { ...form, plan_id: planId.value }
-    if (form.id) await scmApi.updateWorkReport(form.id, payload)
-    else await scmApi.createWorkReport(payload)
-    ElMessage.success('已保存'); dlg.value = false; onPlan()
-  } finally { saving.value = false }
-}
-async function audit(row: any) { await scmApi.auditWorkReport(row.id); ElMessage.success('已审核'); onPlan() }
 async function unaudit(row: any) {
   const r = await scmApi.unauditWorkReport(row.id) as any
   if (r.code === 0) { ElMessage.success('已反审核'); onPlan() } else ElMessage.error(r.message || '反审核失败')
@@ -127,7 +84,9 @@ async function del(row: any) {
   await ElMessageBox.confirm(`确认删除报工单「${row.report_no}」？`, '提示', { type: 'warning' })
   await scmApi.deleteWorkReport(row.id); ElMessage.success('已删除'); onPlan()
 }
-onMounted(() => { loadPlans(); loadWorkCenters() })
+onMounted(async () => { await loadPlans(); if (planId.value) onPlan() })
+// 从报工表单返回时刷新（keep-alive 下 onMounted 不会重跑）
+onActivated(() => { if (planId.value) onPlan() })
 </script>
 
 <style scoped>
@@ -135,5 +94,4 @@ onMounted(() => { loadPlans(); loadWorkCenters() })
 .filter-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .filter-row .title { font-weight: 600; }
 .filter-row .hint { margin-left: auto; font-size: 13px; color: var(--el-text-color-secondary); }
-.preview { color: var(--el-color-success); font-weight: 600; }
 </style>

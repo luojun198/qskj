@@ -4,7 +4,8 @@ import request from '@/api/request'
 export interface PermissionItem {
   code: string
   name: string
-  acdCode?: string
+  /** 该权限对应的润衡 ACD 功能代码，可能有多个；仅供参考展示 */
+  acdCodes?: string[]
 }
 
 export interface PermissionGroup {

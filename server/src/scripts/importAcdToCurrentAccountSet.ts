@@ -1,10 +1,16 @@
 import { getDb } from '../db/index.js'
+import { isPlaceholderUnitName } from '../services/reportUnitName.js'
 import { v4 as uuidv4 } from 'uuid'
 import iconv from 'iconv-lite'
 import * as fs from 'fs'
 import * as zlib from 'zlib'
 import bcrypt from 'bcryptjs'
-import { ACD_TO_CW } from '../db/permissions.js'
+import {
+  ACD_TO_CW,
+  ACD_UNSUPPORTED,
+  ACD_SILENT_CODES,
+  ACD_IMPORT_BASE_PERMISSIONS,
+} from '../db/permissions.js'
 import { mapAcdCashFlowJd } from '../utils/acdCashFlow.js'
 import { parseKmbmRow } from '../utils/acdKmbmParse.js'
 import { buildVoucherNo, getMaxVoucherNoSeqInPeriod } from '../services/voucherEntry.js'
@@ -516,11 +522,15 @@ function parseAcdTables(acdFilePathOrBuffer: string | Buffer, acdBuffer?: Buffer
   if (rightsContent) {
     const rows = splitTableRows(rightsContent)
     for (const row of rows) {
-      if (row.length >= 3 && row[0] && row[1]) {
+      // 只要有「用户代码 + 权限代码」就算数：权限名称（第 3 列）在 ACD 里可能为空，
+      // 而 splitTableRows 会把整行 trim 掉行尾的制表符，这类行拆出来只有 2 段。
+      // 早先要求 length >= 3，等于把「权限名称为空」的授权整条丢掉——某个用户
+      // 若全部授权都没写名称，就会被导成零权限，进而被登录门禁拦下。
+      if (row.length >= 2 && row[0] && row[1]) {
         parsedRights.push({
           userCode: row[0].trim(),
           rightCode: row[1].trim(),
-          rightName: row[2].trim(),
+          rightName: (row[2] || '').trim(),
           status: (row[3] || '').trim(),
         })
       }
@@ -2052,6 +2062,23 @@ function importSystemParams(
   for (const item of candidates) {
     upsert.run(uuidv4(), accountSetId, item.key, item.value, 'ACD 导入元数据')
   }
+
+  // 顺带把使用单位落到系统真正读取的 unit_name 上。
+  // 早先只写进 import_acd:unit_name，而那个 key 全库没有任何地方读，
+  // 结果报表抬头只能退回账套名（形如「zw06广州东汇食品有限公司20260827」）。
+  const acdUnitName = (xt.get('xt_dwmc') || '').trim()
+  if (acdUnitName && !isPlaceholderUnitName(acdUnitName)) {
+    const existing = db
+      .prepare(
+        `SELECT param_value FROM system_params WHERE account_set_id = ? AND param_key = 'unit_name' LIMIT 1`
+      )
+      .get(accountSetId) as { param_value: string | null } | undefined
+    // 用户已经自己填过就不覆盖，只补空缺
+    if (!existing?.param_value?.trim()) {
+      upsert.run(uuidv4(), accountSetId, 'unit_name', acdUnitName, '使用单位（ACD 导入）')
+      stats.systemParams.upserted += 1
+    }
+  }
 }
 
 /**
@@ -2387,11 +2414,6 @@ function importInitBalances(
     .all(accountSetId) as Array<{ id: string; code: string; direction: 'debit' | 'credit' }>
   const accountByCode = new Map(accounts.map(item => [String(item.code || '').trim(), item]))
 
-  const yearCandidates = rows
-    .map(row => Number.parseInt((row[14] || '').trim(), 10))
-    .filter(value => Number.isInteger(value) && value > 1900)
-  const importYear = yearCandidates[0] || new Date().getFullYear()
-
   const deleteStmt = db.prepare('DELETE FROM init_balances WHERE account_set_id = ? AND year = ?')
   const insertStmt = db.prepare(`
     INSERT INTO init_balances (id, account_set_id, account_id, direction, year, period, init_balance, init_debit, init_credit, aux_item_id, created_at)
@@ -2406,7 +2428,12 @@ function importInitBalances(
     balance: number
   }
 
-  const preparedByAccount = new Map<string, PreparedRow>()
+  // FIX-2026-09-04：nc.txt 是「每年一套年初余额」的多年表（row[14]=年份），
+  // 旧实现取首行年份当作唯一 importYear，再把所有年份的行合并累加写进那一年，
+  // 结果是：其余年份（例如本例的 2016）一条期初都没有，科目余额表年初列全空；
+  // 被选中的那一年金额还被叠加成了多年之和。这里改为按年份分组，各年独立写入。
+  const preparedByYear = new Map<number, Map<string, PreparedRow>>()
+  const fallbackYear = new Date().getFullYear()
 
   for (const row of rows) {
     const code = (row[0] || '').trim()
@@ -2416,11 +2443,20 @@ function importInitBalances(
       continue
     }
 
-    // nc.txt 列映射：row[2]=年初借方, row[3]=年初贷方
+    const parsedYear = Number.parseInt((row[14] || '').trim(), 10)
+    const year = Number.isInteger(parsedYear) && parsedYear > 1900 ? parsedYear : fallbackYear
+
+    // nc.txt 列映射：row[2]=年初借方, row[3]=年初贷方, row[14]=年份
     const debit = parseFloat((row[2] || '0').replace(/,/g, '')) || 0
     const credit = parseFloat((row[3] || '0').replace(/,/g, '')) || 0
     const direction = account.direction
     const balance = direction === 'debit' ? debit - credit : credit - debit
+
+    let preparedByAccount = preparedByYear.get(year)
+    if (!preparedByAccount) {
+      preparedByAccount = new Map<string, PreparedRow>()
+      preparedByYear.set(year, preparedByAccount)
+    }
 
     const existing = preparedByAccount.get(account.id)
     if (existing) {
@@ -2439,28 +2475,33 @@ function importInitBalances(
     }
   }
 
-  const preparedRows = Array.from(preparedByAccount.values())
-  stats.initBalances.inserted += preparedRows.length
+  let totalPrepared = 0
+  for (const preparedByAccount of preparedByYear.values()) {
+    totalPrepared += preparedByAccount.size
+  }
+  stats.initBalances.inserted += totalPrepared
 
-  if (preparedRows.length === 0) {
+  if (totalPrepared === 0) {
     stats.warnings.push('nc.txt 未匹配到当前账套科目，未生成期初余额')
     return
   }
 
   if (dryRun) return
 
-  deleteStmt.run(accountSetId, importYear)
-  for (const row of preparedRows) {
-    insertStmt.run(
-      uuidv4(),
-      accountSetId,
-      row.accountId,
-      row.direction,
-      importYear,
-      row.balance,
-      row.debit,
-      row.credit
-    )
+  for (const [year, preparedByAccount] of preparedByYear) {
+    deleteStmt.run(accountSetId, year)
+    for (const row of preparedByAccount.values()) {
+      insertStmt.run(
+        uuidv4(),
+        accountSetId,
+        row.accountId,
+        row.direction,
+        year,
+        row.balance,
+        row.debit,
+        row.credit
+      )
+    }
   }
 }
 
@@ -2823,7 +2864,19 @@ function importAcdUsers(
 
   let imported = 0
   let skipped = 0
-  const defaultPasswordHash = dryRun ? '' : bcrypt.hashSync('admin123', 10)
+  const noPasswordUsers: string[] = []
+  const noPermissionUsers: string[] = []
+
+  /**
+   * 沿用 ACD 里的密码：b_user.txt 第 4 列是明文密码。
+   * 有密码的按原密码 bcrypt 存；ACD 里本来就没设密码的保持空密码
+   * （空串表示「免密码登录」，登录接口对空密码用户单独放行）。
+   */
+  const resolvePasswordHash = (plain: string) => {
+    if (dryRun) return ''
+    const value = (plain || '').trim()
+    return value ? bcrypt.hashSync(value, 10) : ''
+  }
 
   const persistUser = db.transaction(
     (
@@ -2835,7 +2888,8 @@ function importAcdUsers(
       userId: string,
       username: string,
       nickname: string,
-      roleIdForUser: string
+      roleIdForUser: string,
+      passwordHash: string
     ) => {
       db.prepare(
         `INSERT INTO roles (id, name, code, permissions, account_set_id, is_system, created_at)
@@ -2846,7 +2900,7 @@ function importAcdUsers(
       INSERT INTO users (id, account_set_id, username, password, nickname, role_id, status, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, 'active', datetime('now'), datetime('now'))
     `
-      ).run(userId, accountSetId, username, defaultPasswordHash, nickname, roleIdForUser)
+      ).run(userId, accountSetId, username, passwordHash, nickname, roleIdForUser)
       db.prepare(
         `INSERT OR IGNORE INTO user_roles (id, user_id, role_id, account_set_id)
          VALUES (?, ?, ?, ?)`
@@ -2867,30 +2921,64 @@ function importAcdUsers(
 
     // 转换为 CW 权限代码
     const cwPermissions = new Set<string>()
+    /** 本系统确无对应模块的，按分组计数，最后汇总成一条提示 */
+    const unsupportedCounts = new Map<string, number>()
+    /** 既没映射、也不在已知不支持名单里的，属于对照表漏了，逐条列出 */
+    const unknownRights: string[] = []
+
     for (const right of userRights) {
       const mapped = ACD_TO_CW[right.rightCode]
       if (mapped && mapped.length > 0) {
         mapped.forEach(p => cwPermissions.add(p))
+        continue
+      }
+      if (ACD_SILENT_CODES.has(right.rightCode)) continue
+      const group = ACD_UNSUPPORTED[right.rightCode]
+      if (group) {
+        unsupportedCounts.set(group, (unsupportedCounts.get(group) || 0) + 1)
       } else {
-        // 记录无法映射的权限
-        stats.warnings.push(
-          `用户 ${user.username} 的 ACD 权限 ${right.rightCode}(${right.rightName}) 无法映射到 CW 权限`
-        )
+        unknownRights.push(`${right.rightCode}(${right.rightName || '未命名'})`)
       }
     }
 
-    // 为该用户创建自定义角色
+    // ACD 没有「主页」概念，给真正拿到授权的用户垫上基础权限，
+    // 否则他们能登录却进不了首页。ACD 里本就一条授权都没有的用户
+    // 保持零权限，仍需管理员手工授权，不靠这里凭空放行。
+    if (cwPermissions.size > 0) {
+      ACD_IMPORT_BASE_PERMISSIONS.forEach(p => cwPermissions.add(p))
+    }
+
+    if (unsupportedCounts.size > 0) {
+      const summary = [...unsupportedCounts.entries()]
+        .map(([group, count]) => `${group}(${count}项)`)
+        .join('、')
+      stats.warnings.push(
+        `用户 ${user.username}：ACD 中的 ${summary} 权限本系统暂无对应模块，已跳过`
+      )
+    }
+    if (unknownRights.length > 0) {
+      stats.warnings.push(
+        `用户 ${user.username}：以下 ACD 权限不在对照表中，未能授权：${unknownRights.join('、')}`
+      )
+    }
+
+    // 为该用户创建自定义角色。ACD 是按人授权、没有角色概念，
+    // 强行归并到预设角色会错授权，因此保持一人一角色。
     const roleId = uuidv4()
-    const roleName = `${user.username}_导入角色`
-    const permissions = Array.from(cwPermissions)
     const userId = uuidv4()
     const nickname = user.fullName || user.username
+    const roleName = `${nickname}（导入）`
+    const permissions = Array.from(cwPermissions)
 
     // 如果用户是 MANAGER，给予所有权限
     if (user.username.toUpperCase() === 'MANAGER') {
       permissions.length = 0
       permissions.push('*')
     }
+
+    const passwordHash = resolvePasswordHash(user.password)
+    if (!passwordHash) noPasswordUsers.push(user.username)
+    if (permissions.length === 0) noPermissionUsers.push(user.username)
 
     if (!dryRun) {
       persistUser(
@@ -2902,19 +2990,30 @@ function importAcdUsers(
         userId,
         user.username,
         nickname,
-        roleId
+        roleId,
+        passwordHash
       )
     }
 
     existingUsers.add(user.username.toLowerCase())
     imported++
     console.log(
-      `[ACD] 导入用户: ${user.username} (${nickname}), 权限数: ${permissions.length}, ACD权限数: ${userRights.length}`
+      `[ACD] 导入用户: ${user.username} (${nickname}), 权限数: ${permissions.length}, ACD权限数: ${userRights.length}, 密码: ${passwordHash ? '沿用ACD原密码' : '空(免密码登录)'}`
     )
   }
 
   stats.users = imported
   stats.warnings.push(`ACD用户: 导入${imported}个, 跳过${skipped}个(已存在)`)
+  if (noPasswordUsers.length > 0) {
+    stats.warnings.push(
+      `以下用户在 ACD 里未设密码，导入后同样是空密码，登录时密码留空即可，建议尽快设置：${noPasswordUsers.join('、')}`
+    )
+  }
+  if (noPermissionUsers.length > 0) {
+    stats.warnings.push(
+      `以下用户在 ACD 里没有任何可用的功能授权，导入后无权限、暂时无法登录，请在「系统管理 → 用户管理」中分配权限：${noPermissionUsers.join('、')}`
+    )
+  }
 }
 
 /**
@@ -3251,6 +3350,25 @@ export async function importAcdToAccountSet(
 
   const tables = parseAcdTables(acdBuffer)
   const stats = buildStats(accountSet.id, accountSet.name)
+
+  // FIX-2026-09-04：完整导入过去从不写 account_code_lengths / account_levels，
+  // 只有模板导入（importAcdTemplateToAccountSet）写。于是账簿侧的 getCodeLengths()
+  // 读不到配置、退回默认 [4,2,2,2,2,2]，与导入科目时实际用的分段规则（本例 [4,3,3,...]）
+  // 不一致：7 位科目 1002001 被切出「1002 / 100200」两级父编码，
+  // 科目余额表里就凭空多出 100200、224100 这类查不到名称、显示为「-」的幽灵父科目行。
+  // 这里与模板导入走同一套推断并落库，保证建账与账簿用的是同一份编码规则。
+  {
+    let codeLengths = extractAccountCodeLengthsFromXt(tables.xt)
+    if (!codeLengths) {
+      console.log('[ACD] xt.txt 中未找到科目编码长度配置，使用推断算法')
+      codeLengths = inferAccountCodeLengths(tables.accounts)
+    }
+    const inferredLevels = inferAccountLevelsFromAccounts(tables.accounts)
+    const codeConfig = applyAccountCodeConfigToDb(db, accountSet.id, inferredLevels, codeLengths)
+    console.log(
+      `[ACD] 科目级数 ${codeConfig.accountLevels}，编码长度 [${codeConfig.accountCodeLengths.slice(0, codeConfig.accountLevels).join(',')}]`
+    )
+  }
 
   updateAccountSetStartDateFromXt(db, accountSet.id, tables.xt)
 

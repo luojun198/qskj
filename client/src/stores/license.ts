@@ -6,6 +6,7 @@ import {
   getLicenseStatus,
   type LicenseStatus,
 } from '@/api/license'
+import { hasLicensedModule, type LicenseModuleKey } from '@/config/licenseModules'
 
 const EMPTY_STATUS: LicenseStatus = {
   activated: false,
@@ -14,18 +15,23 @@ const EMPTY_STATUS: LicenseStatus = {
   daysRemaining: 0,
   machineId: '',
   machineMismatch: false,
+  modules: [],
 }
 
-const LICENSE_STATUS_CACHE_KEY = 'cw_license_status_v1'
+const LICENSE_STATUS_CACHE_KEY = 'cw_license_status_v2'
 const LICENSE_FETCH_RETRIES = 3
 const LICENSE_FETCH_RETRY_DELAY_MS = 400
+/** 已激活时后台刷新授权状态的最小间隔，避免每次路由切换都打一次接口 */
+const BACKGROUND_REFRESH_INTERVAL_MS = 5 * 60 * 1000
+
+let lastBackgroundRefreshAt = 0
 
 function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
 function isValidStatus(data: LicenseStatus) {
-  return data.activated && !data.expired && !data.machineMismatch
+  return data.activated && !data.expired && !data.machineMismatch && Array.isArray(data.modules)
 }
 
 /** 后端重启/网络抖动等瞬时故障，不应误判为未激活 */
@@ -75,8 +81,15 @@ export const useLicenseStore = defineStore('license', () => {
     () => !status.value.activated || status.value.expired || status.value.machineMismatch
   )
 
+  /** 已授权模块列表（未激活时为空） */
+  const modules = computed<LicenseModuleKey[]>(() => status.value.modules || [])
+
+  function hasModule(required: LicenseModuleKey | LicenseModuleKey[]): boolean {
+    return hasLicensedModule(modules.value, required)
+  }
+
   function apply(data: LicenseStatus) {
-    status.value = { ...EMPTY_STATUS, ...data }
+    status.value = { ...EMPTY_STATUS, ...data, modules: Array.isArray(data.modules) ? data.modules : [] }
     loaded.value = true
     transientLoadError.value = false
     if (isValidStatus(status.value)) {
@@ -141,10 +154,17 @@ export const useLicenseStore = defineStore('license', () => {
   /** 路由守卫：已激活时不阻塞导航；仅在未加载或授权无效时强制拉取 */
   async function ensureStatus(options?: { force?: boolean }) {
     if (options?.force || !loaded.value) {
+      lastBackgroundRefreshAt = Date.now()
       return loadStatus(true)
     }
     if (isValid.value) {
-      void loadStatus(true).catch(() => {})
+      // 后台刷新做节流：这个守卫每次导航都会跑，原来等于每切一个页面
+      // 就打一次 /license/status，白白占着切换时最忙的那一段。
+      const now = Date.now()
+      if (now - lastBackgroundRefreshAt >= BACKGROUND_REFRESH_INTERVAL_MS) {
+        lastBackgroundRefreshAt = now
+        void loadStatus(true).catch(() => {})
+      }
       return status.value
     }
     return loadStatus(true)
@@ -162,6 +182,8 @@ export const useLicenseStore = defineStore('license', () => {
     status,
     isValid,
     needsActivation,
+    modules,
+    hasModule,
     loadStatus,
     ensureStatus,
     activate,

@@ -21,7 +21,7 @@
         <el-switch v-model="splitBatch" size="small" @change="onSplitBatchChange" />
       </span>
     </div>
-    <el-table ref="tableRef" :data="tableData" v-loading="loading" border stripe size="small" max-height="calc(100vh - 240px)"
+    <el-table ref="tableRef" :data="tableData" v-loading="loading" border stripe size="small" class="compact-data-table" max-height="calc(100vh - 240px)"
       :row-class-name="rowClass" empty-text="暂无库存（可通过采购入库/期初库存产生）"
       @row-dblclick="openStockLedger" @header-dragend="onDragEnd">
       <template v-for="column in orderedVisibleColumns" :key="column.key">

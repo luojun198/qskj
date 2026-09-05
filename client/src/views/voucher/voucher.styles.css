@@ -1,6 +1,6 @@
 /* 凭证列表页（录入 / 审核 / 查询）紧凑布局 */
 .voucher-list-page {
-  padding: 14px 18px !important;
+  padding: 8px 12px !important;
   height: 100%;
   min-height: 0;
   overflow: hidden;
@@ -10,14 +10,42 @@
 }
 
 .voucher-list-page .page-header {
-  margin-bottom: 12px;
-  gap: 12px;
+  margin-bottom: 8px;
+  gap: 8px;
 }
 
-.voucher-list-page .page-header h3 {
-  font-size: 20px;
-  font-weight: 700;
+.voucher-list-page .page-header h3,
+.voucher-page-top-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
   color: var(--text-strong);
+  position: relative;
+  padding-left: 10px;
+  flex-shrink: 0;
+}
+
+.voucher-page-top-title::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 3px;
+  bottom: 3px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--mint-500, #12c7ae);
+}
+
+.voucher-page-top {
+  margin-bottom: 6px;
+}
+
+.voucher-page-top-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 12px;
+  min-width: 0;
 }
 
 /* ========== 分组彩色工具栏 ========== */
@@ -55,15 +83,43 @@
   border-color: var(--mint-200);
 }
 
-.voucher-list-page .voucher-toolbar-btn.el-button {
+/* 工具栏按钮：扁平化（金蝶式）——默认无框无底，避免一排「选中态」灰块；
+   hover 才显示薄荷浅底；disabled 只淡化文字，不给灰底盒子。 */
+.voucher-list-page .voucher-toolbar-btn.el-button:not(.voucher-toolbar-btn--hero) {
   height: 28px !important;
   border-radius: var(--radius-sm) !important;
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  color: var(--ink-700, #2b4c51) !important;
+  font-weight: 500 !important;
 }
 
-/* 筛选区 */
+.voucher-list-page .voucher-toolbar-btn.el-button:not(.voucher-toolbar-btn--hero):hover:not(.is-disabled) {
+  background: var(--surface-brand-soft) !important;
+  color: var(--mint-700) !important;
+  transform: none !important;
+}
+
+.voucher-list-page .voucher-toolbar-btn.el-button:not(.voucher-toolbar-btn--hero).is-disabled,
+.voucher-list-page .voucher-toolbar-btn.el-button:not(.voucher-toolbar-btn--hero).is-disabled:hover {
+  background: transparent !important;
+  border-color: transparent !important;
+  color: var(--ink-400, #8aa8ac) !important;
+  opacity: 0.65 !important;
+  filter: none !important;
+}
+
+/* 筛选区：单行紧凑，避免 24px 卡片内边距把工具栏撑高 */
 .voucher-list-page .voucher-filter-card {
-  border-radius: var(--radius-lg) !important;
-  margin-bottom: 12px;
+  flex: 1;
+  min-width: 0;
+  border-radius: var(--radius-md) !important;
+  margin-bottom: 0;
+}
+
+.voucher-list-page .voucher-filter-card .el-card__body {
+  padding: 4px 8px !important;
 }
 
 /* 录入列表卡片 */
@@ -74,7 +130,16 @@
 
 .voucher-list-page .draft-card .el-card__header {
   background: var(--grad-foam) !important;
-  padding: 10px 16px !important;
+  padding: 6px 12px !important;
+}
+
+.voucher-list-page .draft-card .el-card__body {
+  padding: 4px 8px !important;
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 /* 表格行高 */

@@ -21,7 +21,7 @@ type HealthVersionPayload = {
 
 function formatLabel(info: AppBuildInfoPayload | null): string {
   if (!info?.version) return '版本信息加载中…'
-  const parts = [`v${info.version}`]
+  const parts = [`Ver:${info.version}`]
   if (info.mode === 'development' || info.build === 'dev') {
     parts.push('开发模式')
   } else if (info.build) {

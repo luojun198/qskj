@@ -170,7 +170,7 @@ async function handleSave() {
   width: 40px;
   height: 40px;
   border-radius: 50%;
-  background: #fff;
+  background: transparent;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -179,9 +179,11 @@ async function handleSave() {
 }
 
 .brand-preview-logo__img {
-  width: 90%;
-  height: 90%;
+  width: 100%;
+  height: 100%;
   object-fit: contain;
+  object-position: center;
+  display: block;
 }
 
 .brand-preview-text {

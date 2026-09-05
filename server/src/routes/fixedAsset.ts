@@ -12,6 +12,32 @@ import {
 import { disposeAsset, cancelDisposal } from '../services/assetDisposal.js'
 import { generatePurchaseVoucher } from '../services/assetAcquisition.js'
 import { deleteVoucherRecords } from '../services/voucherEntry.js'
+import { assertPeriodOpen } from '../services/assetVoucherBuilder.js'
+import { getDictDeleteBlockReason, buildAssetCardUpdate } from '../services/assetCard.js'
+import {
+  applyAssetChange,
+  revokeAssetChange,
+  listAssetChanges,
+  getAssetChange,
+  ASSET_CHANGE_KIND_LABELS,
+  DEPR_FACTOR_FIELDS,
+} from '../services/assetChange.js'
+import {
+  createRequisition,
+  deleteRequisition,
+  listRequisitions,
+  getAssetRequisitions,
+} from '../services/assetRequisition.js'
+import { batchApplyAssetChange, BATCH_CHANGE_KINDS } from '../services/assetChange.js'
+import {
+  batchImportAssets,
+  loadImportDicts,
+  validateImportRow,
+  ASSET_IMPORT_COLUMNS,
+} from '../services/assetBatchImport.js'
+import fsp from 'fs/promises'
+import path from 'path'
+import multer from 'multer'
 import { assertVoucherEntriesInScopeById } from '../services/accountAuthorization.js'
 import {
   createInventory,
@@ -39,6 +65,42 @@ import {
 import { ensureDefaultAssetDicts } from '../services/accountSetDefaults.js'
 import { createPreReinitializeBackup } from '../services/systemReinitialize.js'
 
+// ── 资产卡片附件上传配置（与出纳附件同口径：30MB / 10 个 / 图片·PDF·Office）──
+const ALLOWED_ASSET_ATTACHMENT_MIMES = [
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+]
+
+const assetAttachmentUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 30 * 1024 * 1024, files: 10 },
+  fileFilter: (_req, file, cb) => {
+    if (!ALLOWED_ASSET_ATTACHMENT_MIMES.includes(file.mimetype)) {
+      return cb(new Error(`不支持的文件类型: ${file.mimetype}，仅允许图片、PDF 和 Office 文档`))
+    }
+    cb(null, true)
+  },
+})
+
+/** 部分浏览器把 UTF-8 文件名按 latin1 发过来，这里还原（与出纳附件一致） */
+function fixAssetGarbledFilename(str: string): string {
+  if (!str || typeof str !== 'string') return str
+  const latin1Buf = Buffer.from(str, 'latin1')
+  const fixed = new TextDecoder('utf-8', { fatal: false }).decode(latin1Buf)
+  if (fixed && fixed !== str) {
+    const reencoded = Buffer.from(fixed, 'utf-8')
+    if (reencoded.equals(latin1Buf)) return fixed
+  }
+  return str
+}
+
 const router = Router()
 router.use(authMiddleware)
 
@@ -52,6 +114,20 @@ const ASSET_PERMISSION_RULES: Array<{ re: RegExp; perm: string; methods?: string
   { re: /^\/asset\/inventory/,              perm: 'asset:inventory' },
   { re: /^\/asset\/report/,                 perm: 'asset:report' },
   { re: /^\/asset\/cards\/[^/]+\/dispose/,  perm: 'asset:dispose' },
+  // 变动/拆分规则须排在下方 /asset/cards 通配规则之前（数组按序匹配）
+  { re: /^\/asset\/cards\/[^/]+\/(change|split)/, perm: 'asset:change' },
+  { re: /^\/asset\/cards\/[^/]+\/requisitions/, perm: 'asset:view', methods: ['GET'] },
+  { re: /^\/asset\/cards\/[^/]+\/attachments/, perm: 'asset:view', methods: ['GET'] },
+  { re: /^\/asset\/cards\/[^/]+\/attachments/, perm: 'asset:edit' },
+  { re: /^\/asset\/changes\/[^/]+\/revoke/, perm: 'asset:change' },
+  { re: /^\/asset\/import\/columns/,        perm: 'asset:view', methods: ['GET'] },
+  { re: /^\/asset\/changes\/batch-kinds/,  perm: 'asset:view', methods: ['GET'] },
+  { re: /^\/asset\/changes\/batch/,        perm: 'asset:change' },
+  { re: /^\/asset\/change-kinds/,           perm: 'asset:view', methods: ['GET'] },
+  { re: /^\/asset\/changes/,                perm: 'asset:view', methods: ['GET'] },
+  { re: /^\/asset\/changes/,                perm: 'asset:change' },
+  { re: /^\/asset\/requisition/,            perm: 'asset:view', methods: ['GET'] },
+  { re: /^\/asset\/requisition/,            perm: 'asset:requisition' },
   { re: /^\/asset\/cards/,                  perm: 'asset:view', methods: ['GET'] }, // 读卡片/明细/台账/编号
   { re: /^\/asset\/cards/,                  perm: 'asset:edit' },     // 增删改卡片
 ]
@@ -68,7 +144,24 @@ router.use((req: AuthRequest, res, next) => {
 })
 
 // ── 资产参数读写（折旧起始期间等，轻量、限定 key，无需 system:account 权限） ──
-const ASSET_PARAM_KEYS = ['asset:depr_start_period', 'asset:depr_voucher_type_id', 'asset:purchase_voucher_type_id', 'asset:inventory_surplus_account', 'asset:inventory_deficit_account']
+const ASSET_PARAM_KEYS = [
+  'asset:depr_start_period',
+  'asset:depr_voucher_type_id',
+  'asset:purchase_voucher_type_id',
+  'asset:inventory_surplus_account',
+  'asset:inventory_deficit_account',
+  // P0-2：处置凭证科目改为可配置（原硬编码 1001/6301/6711）
+  'asset:disposal_voucher_type_id',
+  'asset:disposal_bank_account',
+  'asset:disposal_gain_account',
+  'asset:disposal_loss_account',
+  // P0-1：资产部门/使用人对应的辅助核算类别编码
+  'asset:aux_dept_category_code',
+  'asset:aux_person_category_code',
+  // P1：资产变动（原值变动/减值/改良）凭证类型
+  'asset:change_voucher_type_id',
+  'asset:impairment_loss_account',
+]
 
 // GET /asset/params — 读取资产参数
 router.get('/asset/params', (req: AuthRequest, res) => {
@@ -253,11 +346,22 @@ router.put('/asset/dict/:type/:id', operationLog('固定资产字典修改', '�
 
 // DELETE /asset/dict/:type/:id
 router.delete('/asset/dict/:type/:id', operationLog('固定资产字典删除', '固定资产'), (req: AuthRequest, res) => {
-  const table = DICT_TABLES[req.params.type]
+  const type = req.params.type
+  const table = DICT_TABLES[type]
   if (!table) return res.status(400).json({ code: 400, message: '未知字典类型' })
   const db = getDb()
-  const row = db.prepare(`SELECT id FROM ${table} WHERE id=? AND account_set_id=?`).get(req.params.id, req.accountSetId)
+  const row = db.prepare(`SELECT id, code, name FROM ${table} WHERE id=? AND account_set_id=?`)
+    .get(req.params.id, req.accountSetId) as any
   if (!row) return res.status(404).json({ code: 404, message: '记录不存在' })
+
+  const blockReason = getDictDeleteBlockReason({
+    db,
+    accountSetId: req.accountSetId || '',
+    type,
+    row,
+  })
+  if (blockReason) return res.status(400).json({ code: 400, message: blockReason })
+
   db.prepare(`DELETE FROM ${table} WHERE id=?`).run(req.params.id)
   res.json({ code: 0, data: { ok: true } })
 })
@@ -387,6 +491,11 @@ router.post('/asset/cards', operationLog('固定资产新增', '固定资产'), 
         voucherResult = null
         throw new Error(scopeErr)
       }
+      // P0-3：外键关联购置凭证，删除资产时据此精确定位（替代 remark LIKE 反查）
+      db.prepare('UPDATE fixed_asset SET purchase_voucher_id=? WHERE id=?').run(
+        voucherResult.voucherId,
+        id
+      )
     } catch (e: any) {
       voucherWarning = e.message
     }
@@ -400,41 +509,17 @@ router.put('/asset/cards/:id', operationLog('固定资产修改', '固定资产'
   const db = getDb()
   const existing = db.prepare('SELECT id FROM fixed_asset WHERE id=? AND account_set_id=?').get(req.params.id, req.accountSetId)
   if (!existing) return res.status(404).json({ code: 404, message: '资产不存在' })
-  const {
-    asset_name, category_code, status_code, dept_code, purpose_code,
-    acquire_date, start_depr_date, original_value, salvage_rate, salvage_value,
-    depr_method, use_months, use_years, total_workload, card_no, qty, unit,
-    user_name, keeper, source, install_place, remark, scrap_reason, scrap_date,
-    accum_depr, depr_months_done
-  } = req.body
-  // 若修改了原值/累计折旧，重算净值
-  const cur = db.prepare('SELECT original_value, salvage_value, accum_depr, depr_months_done FROM fixed_asset WHERE id=?').get(req.params.id) as any
-  const ov = original_value !== undefined ? Number(original_value) : cur.original_value
-  const ad = accum_depr !== undefined ? Number(accum_depr) : cur.accum_depr
-  const net = ov - ad
-  db.prepare(
-    `UPDATE fixed_asset SET
-      asset_name=COALESCE(?,asset_name), category_code=COALESCE(?,category_code),
-      status_code=COALESCE(?,status_code), dept_code=COALESCE(?,dept_code),
-      purpose_code=COALESCE(?,purpose_code), acquire_date=COALESCE(?,acquire_date),
-      start_depr_date=COALESCE(?,start_depr_date), original_value=?,
-      salvage_rate=COALESCE(?,salvage_rate), salvage_value=?,
-      depr_method=COALESCE(?,depr_method), use_months=COALESCE(?,use_months),
-      use_years=COALESCE(?,use_years), total_workload=COALESCE(?,total_workload),
-      accum_depr=?, depr_months_done=COALESCE(?,depr_months_done),
-      net_value=?, card_no=COALESCE(?,card_no), qty=COALESCE(?,qty),
-      unit=COALESCE(?,unit), user_name=COALESCE(?,user_name), keeper=COALESCE(?,keeper),
-      source=COALESCE(?,source), install_place=COALESCE(?,install_place),
-      remark=COALESCE(?,remark), scrap_reason=COALESCE(?,scrap_reason),
-      scrap_date=COALESCE(?,scrap_date), updated_at=datetime('now')
-     WHERE id=?`
-  ).run(
-    asset_name, category_code, status_code, dept_code, purpose_code,
-    acquire_date, start_depr_date, ov, salvage_rate, salvage_value,
-    depr_method, use_months, use_years, total_workload,
-    ad, depr_months_done, net,
-    card_no, qty, unit, user_name, keeper, source, install_place, remark,
-    scrap_reason, scrap_date, req.params.id
+  const cur = db.prepare(
+    'SELECT original_value, salvage_rate, salvage_value, accum_depr, impairment_amount FROM fixed_asset WHERE id=?'
+  ).get(req.params.id) as any
+
+  const fields = buildAssetCardUpdate(req.body ?? {}, cur)
+  const cols = Object.keys(fields)
+  const sets = cols.map(c => `${c}=?`).concat("updated_at=datetime('now')")
+
+  db.prepare(`UPDATE fixed_asset SET ${sets.join(', ')} WHERE id=?`).run(
+    ...cols.map(c => fields[c]),
+    req.params.id
   )
   res.json({ code: 0, data: { ok: true } })
 })
@@ -442,13 +527,18 @@ router.put('/asset/cards/:id', operationLog('固定资产修改', '固定资产'
 // DELETE /asset/cards/:id
 router.delete('/asset/cards/:id', operationLog('固定资产删除', '固定资产'), (req: AuthRequest, res) => {
   const db = getDb()
-  const row = db.prepare('SELECT id, asset_no FROM fixed_asset WHERE id=? AND account_set_id=?').get(req.params.id, req.accountSetId) as any
+  const row = db.prepare('SELECT id, asset_no, purchase_voucher_id FROM fixed_asset WHERE id=? AND account_set_id=?').get(req.params.id, req.accountSetId) as any
   if (!row) return res.status(404).json({ code: 404, message: '资产不存在' })
 
-  // 该资产的购置凭证（asset_purchase，按 remark 中「（编号 X）」匹配）：连带删除；已记账则拦截
-  const purchaseVouchers = db.prepare(
-    "SELECT id, status FROM vouchers WHERE account_set_id=? AND source='asset_purchase' AND remark LIKE ?"
-  ).all(req.accountSetId, `%（编号 ${row.asset_no}）%`) as Array<{ id: string; status: string }>
+  // P0-3：该资产的购置凭证按外键精确定位（原按 remark 中「（编号 X）」LIKE 反查，
+  // 备注被改或编号含特殊字符时会漏删/误删）；连带删除，已记账则拦截
+  const purchaseVouchers = (
+    row.purchase_voucher_id
+      ? db
+          .prepare("SELECT id, status FROM vouchers WHERE id=? AND account_set_id=?")
+          .all(row.purchase_voucher_id, req.accountSetId)
+      : []
+  ) as Array<{ id: string; status: string }>
   if (purchaseVouchers.some(v => v.status === 'posted')) {
     return res.status(400).json({ code: 400, message: '该资产的购置凭证已记账，请先取消记账后再删除资产' })
   }
@@ -490,8 +580,9 @@ router.post(
   operationLog('固定资产处置', '固定资产'),
   (req: AuthRequest, res) => {
     try {
+      const db = getDb()
       const result = disposeAsset({
-        db: getDb(),
+        db,
         accountSetId: req.accountSetId || '',
         assetId: req.params.id,
         changeTypeCode: req.body.change_type_code ?? null,
@@ -503,6 +594,7 @@ router.post(
         clearingAccount: req.body.clearing_account ?? '1606',
         generateVoucher: req.body.generate_voucher ?? false,
         operatorName: (req as any).userName || '系统',
+        voucherTypeId: getAssetParamValue(db, req.accountSetId || '', 'asset:disposal_voucher_type_id'),
       })
       res.json({ code: 0, data: result })
     } catch (e: any) {
@@ -525,6 +617,453 @@ router.post(
       res.json({ code: 0, data: result })
     } catch (e: any) {
       res.status(400).json({ code: 400, message: e.message })
+    }
+  }
+)
+
+// ── 资产变动（原值变动 / 部门调拨 / 状态变更 / 折旧要素调整 / 拆分 / 减值 / 改良）────
+
+// GET /asset/changes — 变动记录分页查询
+router.get('/asset/changes', (req: AuthRequest, res) => {
+  const { asset_no, kind, year, period, dept_code, keyword, page, page_size } = req.query as any
+  const { total, rows } = listAssetChanges({
+    db: getDb(),
+    accountSetId: req.accountSetId || '',
+    filters: {
+      assetNo: asset_no || undefined,
+      kind: kind || undefined,
+      year: year ? parseInt(year) : undefined,
+      period: period ? parseInt(period) : undefined,
+      deptCode: dept_code || undefined,
+      keyword: keyword || undefined,
+      page: page ? parseInt(page) : 1,
+      pageSize: page_size ? parseInt(page_size) : 20,
+    },
+  })
+  res.json({ code: 0, data: { total, list: rows } })
+})
+
+// GET /asset/changes/batch-kinds — 支持批量的变动类型
+router.get('/asset/changes/batch-kinds', (_req: AuthRequest, res) => {
+  res.json({ code: 0, data: BATCH_CHANGE_KINDS })
+})
+
+// GET /asset/changes/:id — 变动详情
+router.get('/asset/changes/:id', (req: AuthRequest, res) => {
+  const row = getAssetChange({
+    db: getDb(),
+    accountSetId: req.accountSetId || '',
+    changeId: req.params.id,
+  })
+  if (!row) return res.status(404).json({ code: 404, message: '变动记录不存在' })
+  res.json({ code: 0, data: row })
+})
+
+// POST /asset/cards/:id/change — 登记变动（body.kind 分派）
+router.post(
+  '/asset/cards/:id/change',
+  operationLog('固定资产变动', '固定资产'),
+  (req: AuthRequest, res) => {
+    const { kind, change_date, change_type_code, payload, generate_voucher, counter_account, remark } =
+      req.body || {}
+    if (!kind) return res.status(400).json({ code: 400, message: '变动类型不能为空' })
+    if (!change_date) return res.status(400).json({ code: 400, message: '变动日期不能为空' })
+
+    try {
+      const db = getDb()
+      const result = applyAssetChange({
+        db,
+        accountSetId: req.accountSetId || '',
+        assetId: req.params.id,
+        kind,
+        changeDate: change_date,
+        changeTypeCode: change_type_code ?? null,
+        payload: payload || {},
+        generateVoucher: generate_voucher ?? false,
+        counterAccount: counter_account ?? null,
+        remark: remark ?? null,
+        operatorName: req.userName || '系统',
+        operatorId: req.userId ?? null,
+        voucherTypeId: getAssetParamValue(db, req.accountSetId || '', 'asset:change_voucher_type_id'),
+      })
+
+      // 科目授权：变动凭证分录科目须在授权范围内，否则整笔撤销
+      if (result.voucherId) {
+        const scopeErr = assertVoucherEntriesInScopeById(
+          db,
+          req.accountScope,
+          result.voucherId,
+          req.accountSetId || ''
+        )
+        if (scopeErr) {
+          revokeAssetChange({ db, accountSetId: req.accountSetId || '', changeId: result.changeId })
+          return res.status(403).json({ code: 403, message: scopeErr })
+        }
+      }
+
+      res.json({ code: 0, data: result })
+    } catch (e: any) {
+      res.status(400).json({ code: 400, message: e.message || '登记变动失败' })
+    }
+  }
+)
+
+// POST /asset/cards/:id/split — 资产拆分（独立端点，返回新建卡片）
+router.post(
+  '/asset/cards/:id/split',
+  operationLog('固定资产拆分', '固定资产'),
+  (req: AuthRequest, res) => {
+    const { change_date, children, remark } = req.body || {}
+    if (!change_date) return res.status(400).json({ code: 400, message: '拆分日期不能为空' })
+
+    try {
+      const result = applyAssetChange({
+        db: getDb(),
+        accountSetId: req.accountSetId || '',
+        assetId: req.params.id,
+        kind: 'split',
+        changeDate: change_date,
+        payload: { children: children || [] },
+        remark: remark ?? null,
+        operatorName: req.userName || '系统',
+        operatorId: req.userId ?? null,
+      })
+      res.json({ code: 0, data: result })
+    } catch (e: any) {
+      res.status(400).json({ code: 400, message: e.message || '资产拆分失败' })
+    }
+  }
+)
+
+// POST /asset/changes/:id/revoke — 撤销变动（回滚字段 + 删凭证）
+router.post(
+  '/asset/changes/:id/revoke',
+  operationLog('固定资产撤销变动', '固定资产'),
+  (req: AuthRequest, res) => {
+    try {
+      const result = revokeAssetChange({
+        db: getDb(),
+        accountSetId: req.accountSetId || '',
+        changeId: req.params.id,
+      })
+      res.json({ code: 0, data: result })
+    } catch (e: any) {
+      res.status(400).json({ code: 400, message: e.message || '撤销变动失败' })
+    }
+  }
+)
+
+// GET /asset/change-kinds — 变动类型枚举（含中文名与可调整的折旧要素字段）
+router.get('/asset/change-kinds', (_req: AuthRequest, res) => {
+  res.json({
+    code: 0,
+    data: {
+      kinds: Object.entries(ASSET_CHANGE_KIND_LABELS).map(([code, name]) => ({ code, name })),
+      deprFactorFields: Object.entries(DEPR_FACTOR_FIELDS).map(([code, name]) => ({ code, name })),
+    },
+  })
+})
+
+// ── 资产领用归还（P3-1）─────────────────────────────────────
+
+// GET /asset/requisitions — 领用记录分页查询
+router.get('/asset/requisitions', (req: AuthRequest, res) => {
+  const {
+    asset_no, action, dept_code, user_name, keyword,
+    outstanding_only, overdue_only, date_from, date_to, page, page_size,
+  } = req.query as any
+  const { total, rows } = listRequisitions({
+    db: getDb(),
+    accountSetId: req.accountSetId || '',
+    filters: {
+      assetNo: asset_no || undefined,
+      action: action || undefined,
+      deptCode: dept_code || undefined,
+      userName: user_name || undefined,
+      keyword: keyword || undefined,
+      outstandingOnly: outstanding_only === 'true' || outstanding_only === '1',
+      overdueOnly: overdue_only === 'true' || overdue_only === '1',
+      dateFrom: date_from || undefined,
+      dateTo: date_to || undefined,
+      page: page ? parseInt(page) : 1,
+      pageSize: page_size ? parseInt(page_size) : 20,
+    },
+  })
+  res.json({ code: 0, data: { total, list: rows } })
+})
+
+// GET /asset/cards/:id/requisitions — 某张卡片的领用归还历史
+router.get('/asset/cards/:id/requisitions', (req: AuthRequest, res) => {
+  try {
+    const rows = getAssetRequisitions({
+      db: getDb(),
+      accountSetId: req.accountSetId || '',
+      assetId: req.params.id,
+    })
+    res.json({ code: 0, data: rows })
+  } catch (e: any) {
+    res.status(404).json({ code: 404, message: e.message })
+  }
+})
+
+// POST /asset/requisitions — 登记领用或归还
+router.post(
+  '/asset/requisitions',
+  operationLog('固定资产领用归还', '固定资产'),
+  (req: AuthRequest, res) => {
+    const {
+      asset_id, action, action_date, user_name, user_aux_id, dept_code,
+      keeper, install_place, expect_return_date, condition_note, remark,
+    } = req.body || {}
+    if (!asset_id) return res.status(400).json({ code: 400, message: '请选择资产' })
+    if (!action_date) return res.status(400).json({ code: 400, message: '日期不能为空' })
+
+    try {
+      const result = createRequisition({
+        db: getDb(),
+        accountSetId: req.accountSetId || '',
+        assetId: asset_id,
+        action,
+        actionDate: action_date,
+        userName: user_name ?? null,
+        userAuxId: user_aux_id ?? null,
+        deptCode: dept_code ?? null,
+        keeper: keeper ?? null,
+        installPlace: install_place ?? null,
+        expectReturnDate: expect_return_date ?? null,
+        conditionNote: condition_note ?? null,
+        remark: remark ?? null,
+        operatorName: req.userName || '系统',
+        operatorId: req.userId ?? null,
+      })
+      res.json({ code: 0, data: result })
+    } catch (e: any) {
+      res.status(400).json({ code: 400, message: e.message || '登记失败' })
+    }
+  }
+)
+
+// DELETE /asset/requisitions/:id — 删除最后一条领用/归还记录
+router.delete(
+  '/asset/requisitions/:id',
+  operationLog('固定资产删除领用记录', '固定资产'),
+  (req: AuthRequest, res) => {
+    try {
+      const result = deleteRequisition({
+        db: getDb(),
+        accountSetId: req.accountSetId || '',
+        requisitionId: req.params.id,
+      })
+      res.json({ code: 0, data: result })
+    } catch (e: any) {
+      res.status(400).json({ code: 400, message: e.message || '删除失败' })
+    }
+  }
+)
+
+// ── 资产卡片附件（P3-2）─────────────────────────────────────
+
+// POST /asset/cards/:id/attachments — 上传附件（发票、合同、照片等）
+router.post(
+  '/asset/cards/:id/attachments',
+  assetAttachmentUpload.array('file'),
+  operationLog('上传资产附件', '固定资产'),
+  async (req: AuthRequest, res) => {
+    const assetId = req.params.id
+    const accountSetId = req.accountSetId || ''
+
+    const files = (req.files as Express.Multer.File[]) || []
+    if (files.length === 0) {
+      return res.status(400).json({ code: 400, message: '请选择要上传的文件' })
+    }
+
+    const db = getDb()
+    const asset = db
+      .prepare('SELECT id FROM fixed_asset WHERE id=? AND account_set_id=?')
+      .get(assetId, accountSetId)
+    if (!asset) return res.status(404).json({ code: 404, message: '资产不存在' })
+
+    const uploadDir = path.join(process.cwd(), 'uploads', 'attachments')
+    await fsp.mkdir(uploadDir, { recursive: true })
+
+    const writtenPaths: string[] = []
+    const attachments: any[] = []
+
+    try {
+      for (const file of files) {
+        const ext = path.extname(file.originalname)
+        const filename = `${uuidv4()}${ext}`
+        const filePath = path.join(uploadDir, filename)
+        await fsp.writeFile(filePath, file.buffer)
+        writtenPaths.push(filePath)
+
+        attachments.push({
+          id: uuidv4(),
+          account_set_id: accountSetId,
+          asset_id: assetId,
+          filename,
+          original_name: fixAssetGarbledFilename(file.originalname),
+          file_path: `/uploads/attachments/${filename}`,
+          file_size: file.size,
+          mime_type: file.mimetype,
+          created_by: req.userId ?? null,
+        })
+      }
+
+      const ins = db.prepare(
+        `INSERT INTO fixed_asset_attachments
+           (id, account_set_id, asset_id, filename, original_name, file_path, file_size, mime_type, created_by)
+         VALUES (?,?,?,?,?,?,?,?,?)`
+      )
+      db.transaction(() => {
+        for (const a of attachments) {
+          ins.run(
+            a.id, a.account_set_id, a.asset_id, a.filename, a.original_name,
+            a.file_path, a.file_size, a.mime_type, a.created_by
+          )
+        }
+      })()
+
+      res.json({ code: 0, data: attachments, message: `成功上传 ${attachments.length} 个文件` })
+    } catch (error: any) {
+      // 落库失败时清理已写入的物理文件，避免产生孤儿文件
+      for (const p of writtenPaths) {
+        await fsp.unlink(p).catch(() => {})
+      }
+      res.status(500).json({ code: 500, message: `文件写入失败: ${error.message}` })
+    }
+  }
+)
+
+// GET /asset/cards/:id/attachments — 附件列表
+router.get('/asset/cards/:id/attachments', (req: AuthRequest, res) => {
+  const rows = getDb()
+    .prepare(
+      `SELECT id, filename, original_name, file_path, file_size, mime_type, created_at, created_by
+         FROM fixed_asset_attachments
+        WHERE asset_id = ? AND account_set_id = ?
+        ORDER BY created_at`
+    )
+    .all(req.params.id, req.accountSetId)
+  res.json({ code: 0, data: rows })
+})
+
+// DELETE /asset/cards/:id/attachments/:attachmentId — 删除附件
+router.delete(
+  '/asset/cards/:id/attachments/:attachmentId',
+  operationLog('删除资产附件', '固定资产'),
+  async (req: AuthRequest, res) => {
+    const { id: assetId, attachmentId } = req.params
+    const db = getDb()
+    try {
+      const attachment = db
+        .prepare(
+          'SELECT * FROM fixed_asset_attachments WHERE id=? AND asset_id=? AND account_set_id=?'
+        )
+        .get(attachmentId, assetId, req.accountSetId) as any
+      if (!attachment) return res.status(404).json({ code: 404, message: '附件不存在' })
+
+      // basename 防目录穿越
+      const filePath = path.join(
+        process.cwd(),
+        'uploads',
+        'attachments',
+        path.basename(attachment.filename)
+      )
+      await fsp.unlink(filePath).catch(err => {
+        console.warn(`物理文件删除失败: ${filePath}`, err)
+      })
+
+      db.prepare(
+        'DELETE FROM fixed_asset_attachments WHERE id=? AND asset_id=? AND account_set_id=?'
+      ).run(attachmentId, assetId, req.accountSetId)
+
+      res.json({ code: 0, message: '附件已删除' })
+    } catch (error: any) {
+      res.status(500).json({ code: 500, message: error.message })
+    }
+  }
+)
+
+// ── 批量操作与数据交换（P4）─────────────────────────────────
+
+// GET /asset/import/columns — 导入模板列定义（前端据此生成 Excel 模板与解析）
+router.get('/asset/import/columns', (_req: AuthRequest, res) => {
+  res.json({ code: 0, data: ASSET_IMPORT_COLUMNS })
+})
+
+// POST /asset/cards/batch/validate — 仅校验不写库，供导入前预览标红
+router.post('/asset/cards/batch/validate', (req: AuthRequest, res) => {
+  const rows = (req.body?.rows || []) as Array<Record<string, unknown>>
+  const startRow = Number(req.body?.start_row ?? 2)
+  const db = getDb()
+  const dicts = loadImportDicts(db, req.accountSetId || '')
+  const seenNos = new Set<string>()
+  const errors: any[] = []
+
+  rows.forEach((row, index) => {
+    errors.push(
+      ...validateImportRow({ row, rowNumber: startRow + index, dicts, seenNos })
+    )
+    const no = String(row.asset_no ?? '').trim()
+    if (no) seenNos.add(no)
+  })
+
+  res.json({ code: 0, data: { rowCount: rows.length, errors } })
+})
+
+// POST /asset/cards/batch — 批量导入卡片（整批事务，全有或全无）
+router.post(
+  '/asset/cards/batch',
+  operationLog('固定资产批量导入', '固定资产'),
+  (req: AuthRequest, res) => {
+    try {
+      const result = batchImportAssets({
+        db: getDb(),
+        accountSetId: req.accountSetId || '',
+        rows: (req.body?.rows || []) as Array<Record<string, unknown>>,
+        startRowNumber: Number(req.body?.start_row ?? 2),
+      })
+      if (result.errors.length > 0) {
+        return res.status(400).json({ code: 400, message: '导入数据校验未通过', data: result })
+      }
+      res.json({ code: 0, data: result })
+    } catch (e: any) {
+      res.status(400).json({ code: 400, message: e.message || '批量导入失败' })
+    }
+  }
+)
+
+// POST /asset/changes/batch — 批量变动（部门调拨 / 状态变更 / 折旧要素）
+router.post(
+  '/asset/changes/batch',
+  operationLog('固定资产批量变动', '固定资产'),
+  (req: AuthRequest, res) => {
+    const { asset_ids, kind, change_date, change_type_code, payload, remark } = req.body || {}
+    if (!kind) return res.status(400).json({ code: 400, message: '变动类型不能为空' })
+    if (!change_date) return res.status(400).json({ code: 400, message: '变动日期不能为空' })
+
+    try {
+      const result = batchApplyAssetChange({
+        db: getDb(),
+        accountSetId: req.accountSetId || '',
+        assetIds: asset_ids || [],
+        kind,
+        changeDate: change_date,
+        changeTypeCode: change_type_code ?? null,
+        payload: payload || {},
+        remark: remark ?? null,
+        operatorName: req.userName || '系统',
+        operatorId: req.userId ?? null,
+      })
+      if (result.errors.length > 0) {
+        return res
+          .status(400)
+          .json({ code: 400, message: '部分资产变动失败，整批已回滚', data: result })
+      }
+      res.json({ code: 0, data: result })
+    } catch (e: any) {
+      res.status(400).json({ code: 400, message: e.message || '批量变动失败' })
     }
   }
 )
@@ -593,6 +1132,13 @@ router.post(
     if (!year || !month) return res.status(400).json({ code: 400, message: '年份和月份不能为空' })
     const db = getDb()
     const asid = req.accountSetId || ''
+
+    // P0-5：目标期间已结账则拒绝计提
+    try {
+      assertPeriodOpen(db, asid, Number(year), Number(month))
+    } catch (e: any) {
+      return res.status(400).json({ code: 400, message: e.message })
+    }
 
     // 顺序校验（参数驱动 + 逐月严格）：设置了折旧起始期间后，
     // 从起始期间起到本期之前的每个月都必须已生成折旧凭证，任一月缺凭证即拦截。
@@ -752,6 +1298,8 @@ router.post(
     if (!year || !month) return res.status(400).json({ code: 400, message: '年份和月份不能为空' })
     const db = getDb()
     try {
+      // P0-5：已结账期间不允许反折旧（会改动已结账期间的账面数据）
+      assertPeriodOpen(db, req.accountSetId || '', Number(year), Number(month))
       const result = reverseDepreciation({ db, accountSetId: req.accountSetId || '', year, month })
       res.json({ code: 0, data: result })
     } catch (e: any) {

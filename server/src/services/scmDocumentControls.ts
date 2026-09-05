@@ -235,18 +235,22 @@ export function validatePlanFinishQuantities(
   lines: any[],
   excludeDocId?: string,
 ): string | null {
-  if (!['PF', 'WI'].includes(docType)) return null
+  // 自制：完工(PF) 与不良品(PS) 共用同一份计划数——计划 10 件做出 8 好 2 废就是做完了，
+  // 分开各自计数会让「完工 10 + 不良 5」通过校验，凭空多耗一份料。委外(WI) 单独计数。
+  if (!['PF', 'WI', 'PS'].includes(docType)) return null
+  const countedTypes = docType === 'WI' ? ['WI'] : ['PF', 'PS']
   const products = db.prepare(`SELECT item_code,COALESCE(SUM(plan_qty),0) AS plan_qty
     FROM scm_production_plan_product WHERE account_set_id=? AND plan_id=? GROUP BY item_code`).all(accountSetId, planId) as any[]
   const planMap = new Map(products.map(row => [row.item_code, Number(row.plan_qty) || 0]))
   const scope = resolvePlanOverrunScope(docType)
   const policy = scope ? getScmOverrunPolicy(db, accountSetId, scope) : { enabled: false, rate: 0 }
-  const params: any[] = [accountSetId, planId, docType]
+  const params: any[] = [accountSetId, planId, ...countedTypes]
   let exclude = ''
   if (excludeDocId) { exclude = ' AND d.id<>?'; params.push(excludeDocId) }
+  const typePh = countedTypes.map(() => '?').join(',')
   const occupied = db.prepare(`SELECT l.item_code,COALESCE(SUM(l.qty),0) AS qty
     FROM scm_doc_line l JOIN scm_doc d ON d.id=l.doc_id
-    WHERE d.account_set_id=? AND d.plan_id=? AND d.doc_type=? AND d.status<>'voided'${exclude}
+    WHERE d.account_set_id=? AND d.plan_id=? AND d.doc_type IN (${typePh}) AND d.status<>'voided'${exclude}
     GROUP BY l.item_code`).all(...params) as any[]
   const usedMap = new Map(occupied.map(row => [row.item_code, Number(row.qty) || 0]))
   const incoming = new Map<string, number>()
@@ -259,7 +263,7 @@ export function validatePlanFinishQuantities(
     if (planQty === undefined) return `成品 ${itemCode} 不在关联工单中，不能完工入库`
     const used = r6(usedMap.get(itemCode) || 0)
     const maxQty = getScmMaxAllowedQty(planQty, policy)
-    if (used + qty > maxQty + EPS) return `成品 ${itemCode} 计划 ${r6(planQty)}，允许上限 ${maxQty}，已完工/占用 ${used}，本次 ${qty}，禁止超完工`
+    if (used + qty > maxQty + EPS) return `成品 ${itemCode} 计划 ${r6(planQty)}，允许上限 ${maxQty}，已完工/报废/占用 ${used}，本次 ${qty}，禁止超完工`
   }
   return null
 }

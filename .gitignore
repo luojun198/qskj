@@ -154,6 +154,11 @@ tmp_xlsx_bak/
 # 其他临时脚本
 start-openclaw-gateway.ps1
 buildSheetRows_new.ts
+# 下划线开头的一次性测量/调试脚本与截图
+_*.mjs
+_*.cjs
+_*.js
+client/_*.png
 
 # 清理补充（2026-08-31）
 logs/

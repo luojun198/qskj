@@ -9,8 +9,8 @@ export type BrandingData = {
   logoUrl: string | null
 }
 
-const DEFAULT_TITLE = '盛于智'
-const DEFAULT_SUBTITLE = '行政事业单位财务专业版'
+const DEFAULT_TITLE = '润衡云'
+const DEFAULT_SUBTITLE = '迷你版'
 
 function resolveLogoSrc(logoUrl: string | null | undefined, version = 0): string {
   if (!logoUrl) return defaultLogoAsset

@@ -2,10 +2,25 @@
   <div class="page page-asset-list">
     <div class="list-toolbar" style="margin-bottom:8px">
       <el-button type="primary" size="small" @click="openAdd"><el-icon><Plus /></el-icon>新增固定资产</el-button>
+      <el-button size="small" :disabled="!selection.length" @click="openPrint('card')">
+        打印卡片{{ selection.length ? `（${selection.length}）` : '' }}
+      </el-button>
+      <el-button size="small" :disabled="!selection.length" @click="openPrint('label')">
+        打印标签{{ selection.length ? `（${selection.length}）` : '' }}
+      </el-button>
+      <el-button size="small" :disabled="!selection.length" @click="openBatchChange('dept')">
+        批量调拨{{ selection.length ? `（${selection.length}）` : '' }}
+      </el-button>
+      <el-button size="small" :disabled="!selection.length" @click="openBatchChange('status')">
+        批量停启用
+      </el-button>
+      <el-button size="small" @click="$router.push('/asset/import')">批量导入</el-button>
     </div>
     <div ref="tableContainerRef" class="table-container">
       <el-table ref="tableRef" :data="list" :height="tableHeight" border stripe size="small" class="compact-data-table"
-        highlight-current-row @row-dblclick="openEdit" @header-dragend="onDragEnd">
+        highlight-current-row @row-dblclick="openEdit" @header-dragend="onDragEnd"
+        @selection-change="rows => (selection = rows)">
+        <el-table-column type="selection" width="42" />
         <el-table-column label="资产编号" prop="asset_no" :width="cw('asset_no', 120)" />
         <el-table-column label="资产名称" prop="asset_name" :width="cw('asset_name', 150)" show-overflow-tooltip />
         <el-table-column label="类别" prop="category_name" :width="cw('category_name', 100)" />
@@ -30,10 +45,11 @@
         </el-table-column>
         <el-table-column label="已提月数" prop="depr_months_done" :width="cw('depr_months_done', 80)" align="center" />
         <el-table-column label="使用人" prop="user_name" :width="cw('user_name', 90)" />
-        <el-table-column label="操作" :width="cw('actions', 190)" align="center" fixed="right">
+        <el-table-column label="操作" :width="cw('actions', 240)" align="center" fixed="right">
           <template #default="{ row }">
             <el-button link type="success" size="small" @click.stop="$router.push(`/asset/detail/${row.id}`)">明细</el-button>
             <el-button link type="primary" size="small" @click.stop="openEdit(row)">编辑</el-button>
+            <el-button v-if="!row.scrap_date" link type="primary" size="small" @click.stop="$router.push(`/asset/change?assetId=${row.id}`)">变动</el-button>
             <el-button v-if="!row.scrap_date" link type="warning" size="small" @click.stop="openDispose(row)">处置</el-button>
             <el-button v-if="row.scrap_date" link type="success" size="small" @click.stop="handleCancelDispose(row)">撤销处置</el-button>
             <el-button link type="danger" size="small" @click.stop="handleDelete(row)">删除</el-button>
@@ -279,6 +295,73 @@
         <el-button type="warning" :loading="disposing" @click="handleDispose">确认处置</el-button>
       </template>
     </el-dialog>
+
+    <!-- 批量变动：只支持不涉及逐条金额的类型（部门调拨 / 使用状态） -->
+    <el-dialog
+      v-model="batchVisible"
+      :title="batchKind === 'dept' ? '批量部门调拨' : '批量变更使用状态'"
+      width="520px"
+      draggable
+    >
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        :title="`将对已勾选的 ${selection.length} 张卡片执行同一变动；任一张失败则整批回滚。`"
+        style="margin-bottom: 12px"
+      />
+      <el-form :model="batchForm" label-width="100px" size="small">
+        <el-form-item label="变动日期" required>
+          <el-date-picker
+            v-model="batchForm.change_date"
+            type="date"
+            value-format="YYYY-MM-DD"
+            style="width: 100%"
+          />
+        </el-form-item>
+        <el-form-item v-if="batchKind === 'dept'" label="调入部门" required>
+          <el-select v-model="batchForm.dept_code" style="width: 100%" placeholder="选择调入部门">
+            <el-option
+              v-for="d in dicts.dept"
+              :key="d.code"
+              :label="`${d.code} ${d.name}`"
+              :value="d.code"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-else label="变更为" required>
+          <el-select v-model="batchForm.status_code" style="width: 100%" placeholder="选择使用状态">
+            <el-option
+              v-for="st in dicts.status.filter(x => x.code !== '04')"
+              :key="st.code"
+              :label="`${st.name}${st.depreciable ? '' : '（不计提折旧）'}`"
+              :value="st.code"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="batchForm.remark" type="textarea" :rows="2" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="batchVisible = false">取消</el-button>
+        <el-button type="primary" :loading="batchSubmitting" @click="submitBatchChange">
+          确定
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 资产卡片 / 标签打印 -->
+    <HiprintDialog
+      v-model="printVisible"
+      template-type="report"
+      :template-key="printMode === 'card' ? 'asset:card' : 'asset:label'"
+      :title="printMode === 'card' ? '打印资产卡片' : '打印资产标签'"
+      :get-print-html="() => printHtml"
+      :raw-html-preview="true"
+      default-paper="A4"
+      :default-orientation="printMode === 'card' ? 'portrait' : 'portrait'"
+    />
   </div>
 </template>
 
@@ -289,6 +372,8 @@ import { Search, Plus, Setting } from '@element-plus/icons-vue'
 import { fixedAssetApi, type AssetCard, type AssetDicts, DEPR_METHODS } from '@/api/fixedAsset'
 import { useFillHeightTable } from '@/composables/useFillHeightTable'
 import { useListColumnWidth } from '@/composables/useColumnWidthMemory'
+import HiprintDialog from '@/components/print/HiprintDialog.vue'
+import { buildQrMap, buildAssetCardHtml, buildAssetLabelHtml } from '@/utils/assetCardPrint'
 import AccountSelect from '@/components/base/AccountSelect.vue'
 import DialogNavigation from '@/components/common/DialogNavigation.vue'
 
@@ -298,6 +383,74 @@ const tableRef = colWidthTableRef
 function cw(key: string, fallback: number) { return colWidth(key, fallback) }
 
 const list = ref<AssetCard[]>([])
+const selection = ref<AssetCard[]>([])
+
+// ── 卡片 / 标签打印 ──────────────────────────────────────
+const printVisible = ref(false)
+const printMode = ref<'card' | 'label'>('card')
+const printHtml = ref('')
+
+/**
+ * 二维码需要异步渲染成 data URI，因此先把 HTML 备好再打开打印对话框，
+ * HiprintDialog 的 getPrintHtml 是同步接口，直接返回已备好的字符串。
+ */
+// ── 批量变动 ──────────────────────────────────────────────
+const batchVisible = ref(false)
+const batchSubmitting = ref(false)
+const batchKind = ref<'dept' | 'status'>('dept')
+const batchForm = reactive({
+  change_date: new Date().toISOString().slice(0, 10),
+  dept_code: '',
+  status_code: '',
+  remark: '',
+})
+
+function openBatchChange(kind: 'dept' | 'status') {
+  if (!selection.value.length) return ElMessage.warning('请先勾选要变动的资产')
+  batchKind.value = kind
+  batchForm.change_date = new Date().toISOString().slice(0, 10)
+  batchForm.dept_code = ''
+  batchForm.status_code = ''
+  batchForm.remark = ''
+  batchVisible.value = true
+}
+
+async function submitBatchChange() {
+  if (!batchForm.change_date) return ElMessage.warning('请选择变动日期')
+  const payload =
+    batchKind.value === 'dept'
+      ? { dept_code: batchForm.dept_code }
+      : { status_code: batchForm.status_code }
+  if (!Object.values(payload)[0]) {
+    return ElMessage.warning(batchKind.value === 'dept' ? '请选择调入部门' : '请选择使用状态')
+  }
+
+  batchSubmitting.value = true
+  try {
+    const res = await fixedAssetApi.batchChange({
+      asset_ids: selection.value.map(a => a.id),
+      kind: batchKind.value,
+      change_date: batchForm.change_date,
+      payload,
+      remark: batchForm.remark || null,
+    })
+    ElMessage.success(`批量变动成功，共 ${res.data.successCount} 张卡片`)
+    batchVisible.value = false
+    handleQuery()
+  } finally {
+    batchSubmitting.value = false
+  }
+}
+
+async function openPrint(mode: 'card' | 'label') {
+  if (!selection.value.length) return ElMessage.warning('请先勾选要打印的资产')
+  printMode.value = mode
+  const assets = selection.value
+  const qrMap = await buildQrMap(assets, mode === 'card' ? 180 : 140)
+  printHtml.value =
+    mode === 'card' ? buildAssetCardHtml(assets, qrMap) : buildAssetLabelHtml(assets, qrMap)
+  printVisible.value = true
+}
 const dicts = ref<AssetDicts>({ category: [], status: [], purpose: [], dept: [] })
 const filters = reactive({ keyword: '', category_code: '', status_code: '', dept_code: '' })
 const pagination = reactive({ page: 1, page_size: 20, total: 0 })

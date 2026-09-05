@@ -417,7 +417,8 @@ router.get('/captcha', (req, res) => {
 // 登录
 router.post('/login', async (req, res) => {
   const { username, password, targetAccountSetId, forceLogin, rememberMe } = req.body
-  if (!username || !password) {
+  // 密码允许是空串（ACD 里未设密码的用户），但必须是字符串，不能整个字段缺失
+  if (!username || typeof password !== 'string') {
     return res.status(400).json({ code: 400, message: '用户名和密码不能为空' })
   }
   if (!targetAccountSetId) {
@@ -455,8 +456,10 @@ router.post('/login', async (req, res) => {
     return res.status(403).json({ code: 403, message: '账号已被禁用' })
   }
 
-  // 验证密码
-  const valid = bcrypt.compareSync(password, user.password)
+  // 验证密码。ACD 导入的用户可能本来就没设密码（users.password 为空串），
+  // 这类账号密码留空即可登录；但只接受空密码，不能被任意密码蒙混过去。
+  const storedPassword = String(user.password ?? '')
+  const valid = storedPassword === '' ? password === '' : bcrypt.compareSync(password, storedPassword)
   if (!valid) {
     const attempts = (user.failed_attempts || 0) + 1
     if (attempts >= 5) {
@@ -994,6 +997,18 @@ router.post('/acd-import', upload.single('file'), async (req: AuthRequest, res) 
     }
     console.error('ACD import error:', err)
     const message = String(err?.message || err)
+
+    // 缺表/缺列说明本地库结构落后于程序，这类英文原文会被 humanizeError 统一
+    // 兜底成「数据处理失败」，前台看不出所以然；这里换成纯中文提示，
+    // 让它原样透传，并指明具体缺的是什么、怎么修。
+    const schemaGap = message.match(/no such (?:table|column):\s*([\w.]+)/i)
+    if (schemaGap) {
+      return res.status(500).json({
+        code: 500,
+        message: `ACD导入失败：当前数据库缺少「${schemaGap[1]}」，结构版本落后于程序。请重启服务让系统自动补建缺失结构后重试；若仍失败请联系管理员`,
+      })
+    }
+
     const hint =
       message.includes('malformed') || message.includes('损坏')
         ? '。若数据库已损坏，请停止服务并删除 data 目录下的 finance.db、finance.db-wal、finance.db-shm 后重新启动'

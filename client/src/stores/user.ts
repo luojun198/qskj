@@ -152,7 +152,6 @@ export const useUserStore = defineStore('user', () => {
     userInfo.value = null
     accountSetId.value = ''
     accountSetName.value = ''
-    rememberMe.value = false
     permissions.value = []
     accountScopeRestricted.value = false
     allowedAccountIds.value = []
@@ -160,7 +159,6 @@ export const useUserStore = defineStore('user', () => {
     localStorage.removeItem('token')
     localStorage.removeItem('accountSetId')
     localStorage.removeItem('accountSetName')
-    localStorage.removeItem('rememberMe')
     localStorage.removeItem('permissions')
     localStorage.removeItem('accountScopeRestricted')
     localStorage.removeItem('allowedAccountIds')

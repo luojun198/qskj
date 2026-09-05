@@ -23,7 +23,7 @@
 
     <div class="page-body">
       <!-- 余额表：按往来单位汇总 -->
-      <el-table v-if="isSummaryView" :data="summary" v-loading="loading" border stripe size="small" height="100%"
+      <el-table v-if="isSummaryView" :data="summary" v-loading="loading" border stripe size="small" class="compact-data-table" height="100%"
         show-summary :summary-method="summaryMethod" row-class-name="drill-row" @row-dblclick="drillPartner">
         <el-table-column type="index" label="序号" width="50" align="center" />
         <el-table-column label="往来单位" min-width="180" show-overflow-tooltip>
@@ -56,7 +56,7 @@
       <template v-else>
       <el-empty v-if="isDetailPage && !partnerCode && !arapType && !detail.length"
         description="请先选择往来单位，或点「应收/应付」按类型查询" />
-      <el-table v-else :data="detail" v-loading="loading" border stripe size="small" height="100%"
+      <el-table v-else :data="detail" v-loading="loading" border stripe size="small" class="compact-data-table" height="100%"
         :row-class-name="() => (isAll ? 'drill-row' : '')" @row-dblclick="drillPartner">
         <el-table-column type="index" label="序号" width="50" align="center" />
         <el-table-column v-if="isAll" label="往来单位" min-width="160" show-overflow-tooltip>

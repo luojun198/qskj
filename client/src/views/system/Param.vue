@@ -120,8 +120,8 @@
         </div>
       </el-tab-pane>
 
-      <!-- ── 出纳 ── -->
-      <el-tab-pane label="出纳" name="cashier">
+      <!-- ── 出纳（按注册模块显示） ── -->
+      <el-tab-pane v-if="licenseStore.hasModule('cashier')" label="出纳" name="cashier">
         <div class="param-sections">
           <section class="param-section param-section--basic">
             <header class="param-section__head">
@@ -162,8 +162,8 @@
         </div>
       </el-tab-pane>
 
-      <!-- ── 资产 ── -->
-      <el-tab-pane label="资产" name="asset">
+      <!-- ── 资产（按注册模块显示） ── -->
+      <el-tab-pane v-if="licenseStore.hasModule('asset')" label="资产" name="asset">
         <div class="param-sections">
           <section class="param-section param-section--basic">
             <header class="param-section__head">
@@ -181,6 +181,11 @@
                 </el-form-item>
                 <el-form-item label="购买资产凭证类型">
                   <el-select v-model="assetForm.purchase_voucher_type_id" style="width:220px" clearable placeholder="未设置则不带类型">
+                    <el-option v-for="vt in voucherTypes" :key="vt.id" :label="vt.name" :value="vt.id" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="处置凭证类型">
+                  <el-select v-model="assetForm.disposal_voucher_type_id" style="width:220px" clearable placeholder="未设置则不带类型">
                     <el-option v-for="vt in voucherTypes" :key="vt.id" :label="vt.name" :value="vt.id" />
                   </el-select>
                 </el-form-item>
@@ -239,6 +244,64 @@
             </div>
           </section>
 
+          <section class="param-section param-section--basic">
+            <header class="param-section__head">
+              <span class="param-section__marker" aria-hidden="true"></span>
+              <h4 class="param-section__title">处置科目
+                <span class="param-section__sub">处置凭证的资金与损益科目（未配置时回退 1001 / 6301 / 6711）</span>
+              </h4>
+            </header>
+            <div class="param-section__body">
+              <el-form label-width="130px" size="small">
+                <el-form-item label="处置收付款科目">
+                  <div style="width:280px">
+                    <AccountSelect v-model="assetForm.disposal_bank_account" placeholder="收取处置价款的科目" />
+                  </div>
+                </el-form-item>
+                <el-form-item label="处置净收益科目">
+                  <div style="width:280px">
+                    <AccountSelect v-model="assetForm.disposal_gain_account" placeholder="结转处置净收益" />
+                  </div>
+                </el-form-item>
+                <el-form-item label="处置净损失科目">
+                  <div style="width:280px">
+                    <AccountSelect v-model="assetForm.disposal_loss_account" placeholder="结转处置净损失" />
+                  </div>
+                </el-form-item>
+                <el-form-item label=" ">
+                  <span style="font-size:12px;color:var(--el-text-color-secondary);line-height:1.7">
+                    处置时若所需科目在账套中不存在，将直接报错而不会生成借贷不平的凭证。
+                  </span>
+                </el-form-item>
+              </el-form>
+            </div>
+          </section>
+
+          <section class="param-section param-section--basic">
+            <header class="param-section__head">
+              <span class="param-section__marker" aria-hidden="true"></span>
+              <h4 class="param-section__title">辅助核算对接
+                <span class="param-section__sub">资产凭证按资产的部门/使用人自动带出辅助核算项</span>
+              </h4>
+            </header>
+            <div class="param-section__body">
+              <el-form label-width="130px" size="small">
+                <el-form-item label="部门核算类别编码">
+                  <el-input v-model="assetForm.aux_dept_category_code" style="width:220px" clearable placeholder="默认 dept" />
+                </el-form-item>
+                <el-form-item label="人员核算类别编码">
+                  <el-input v-model="assetForm.aux_person_category_code" style="width:220px" clearable placeholder="默认 person" />
+                </el-form-item>
+                <el-form-item label=" ">
+                  <span style="font-size:12px;color:var(--el-text-color-secondary);line-height:1.7">
+                    资产部门字典（资产档案）与系统辅助核算档案按「编码优先、名称兜底」自动匹配；
+                    仅当目标科目已启用对应辅助核算时才写入，匹配不上则该分录不带辅助项。
+                  </span>
+                </el-form-item>
+              </el-form>
+            </div>
+          </section>
+
           <section class="param-section param-section--danger">
             <header class="param-section__head">
               <span class="param-section__marker" aria-hidden="true"></span>
@@ -262,8 +325,12 @@
         </div>
       </el-tab-pane>
 
-      <!-- ── 供应链 ── -->
-      <el-tab-pane label="供应链" name="supply">
+      <!-- ── 供应链（按注册模块显示：进销存 / 生产 / 委外任一） ── -->
+      <el-tab-pane
+        v-if="licenseStore.hasModule(['scm', 'production', 'outsource'])"
+        label="供应链"
+        name="supply"
+      >
         <div class="param-sections param-sections--supply">
           <section class="param-section param-section--overrun param-section--span-full">
             <header class="param-section__head">
@@ -332,6 +399,12 @@
                     目前仅「移动加权平均」已实现；全月平均/先进先出/后进先出/指定成本开发中（选用未实现方式将无法过账）。
                   </span>
                 </el-form-item>
+                <el-form-item label="完工入库须质检">
+                  <el-switch v-model="scmForm.qc_required_for_finish" inline-prompt active-text="开" inactive-text="关" />
+                  <span style="margin-left:12px;font-size:12px;color:var(--el-text-color-secondary)">
+                    开启后，完工入库(PF)/委外入库(WI) 审核前必须有一张判定合格的已审核完工检验单(FQC)
+                  </span>
+                </el-form-item>
                 <el-form-item label="可选币别">
                   <el-input v-model="scmForm.currencies" style="width:420px" placeholder="逗号分隔，如 CNY,USD,EUR；留空用默认" />
                 </el-form-item>
@@ -394,7 +467,7 @@
             <header class="param-section__head">
               <span class="param-section__marker" aria-hidden="true"></span>
               <h4 class="param-section__title">单据生成凭证对方科目
-                <span class="param-section__sub">未填则使用标准科目兜底；往来单位配置了应收/应付科目时优先取单位科目</span>
+                <span class="param-section__sub">未填时系统按「默认编码 → 科目名称」自动匹配本账套科目；往来单位配了应收/应付科目时优先取单位科目</span>
               </h4>
             </header>
             <div class="param-section__body">
@@ -403,41 +476,61 @@
                   <el-col :span="12">
                     <el-form-item label="应付账款（采购）">
                       <AccountSelect v-model="scmForm.acc_ap" :accounts="accountOptions" placeholder="默认 2202" style="width:100%" />
+                      <ScmAccountHint :info="resolvedAcc['scm:acc_ap']" :configured="!!scmForm.acc_ap" />
                     </el-form-item>
                   </el-col>
                   <el-col :span="12">
                     <el-form-item label="应收账款（销售）">
                       <AccountSelect v-model="scmForm.acc_ar" :accounts="accountOptions" placeholder="默认 1122" style="width:100%" />
+                      <ScmAccountHint :info="resolvedAcc['scm:acc_ar']" :configured="!!scmForm.acc_ar" />
                     </el-form-item>
                   </el-col>
                   <el-col :span="12">
                     <el-form-item label="主营业务收入">
                       <AccountSelect v-model="scmForm.acc_revenue" :accounts="accountOptions" placeholder="默认 6001" style="width:100%" />
+                      <ScmAccountHint :info="resolvedAcc['scm:acc_revenue']" :configured="!!scmForm.acc_revenue" />
                     </el-form-item>
                   </el-col>
                   <el-col :span="12">
                     <el-form-item label="主营业务成本">
                       <AccountSelect v-model="scmForm.acc_cost" :accounts="accountOptions" placeholder="默认 6401" style="width:100%" />
+                      <ScmAccountHint :info="resolvedAcc['scm:acc_cost']" :configured="!!scmForm.acc_cost" />
                     </el-form-item>
                   </el-col>
                   <el-col :span="12">
                     <el-form-item label="生产成本">
                       <AccountSelect v-model="scmForm.acc_production" :accounts="accountOptions" placeholder="默认 5001" style="width:100%" />
+                      <ScmAccountHint :info="resolvedAcc['scm:acc_production']" :configured="!!scmForm.acc_production" />
                     </el-form-item>
                   </el-col>
                   <el-col :span="12">
                     <el-form-item label="其他出入库对方科目">
                       <AccountSelect v-model="scmForm.acc_other" :accounts="accountOptions" placeholder="默认 1901 待处理财产损溢" style="width:100%" />
+                      <ScmAccountHint :info="resolvedAcc['scm:acc_other']" :configured="!!scmForm.acc_other" />
                     </el-form-item>
                   </el-col>
                   <el-col :span="12">
                     <el-form-item label="进项税（采购发票）">
                       <AccountSelect v-model="scmForm.acc_tax_input" :accounts="accountOptions" placeholder="默认 22210101" style="width:100%" />
+                      <ScmAccountHint :info="resolvedAcc['scm:acc_tax_input']" :configured="!!scmForm.acc_tax_input" />
                     </el-form-item>
                   </el-col>
                   <el-col :span="12">
                     <el-form-item label="销项税（销售发票）">
                       <AccountSelect v-model="scmForm.acc_tax_output" :accounts="accountOptions" placeholder="默认 22210105" style="width:100%" />
+                      <ScmAccountHint :info="resolvedAcc['scm:acc_tax_output']" :configured="!!scmForm.acc_tax_output" />
+                    </el-form-item>
+                  </el-col>
+                  <el-col :span="12">
+                    <el-form-item label="应付职工薪酬（完工人工）">
+                      <AccountSelect v-model="scmForm.acc_labor" :accounts="accountOptions" placeholder="默认 2211" style="width:100%" />
+                      <ScmAccountHint :info="resolvedAcc['scm:acc_labor']" :configured="!!scmForm.acc_labor" />
+                    </el-form-item>
+                  </el-col>
+                  <el-col :span="12">
+                    <el-form-item label="制造费用（完工制费）">
+                      <AccountSelect v-model="scmForm.acc_overhead" :accounts="accountOptions" placeholder="默认 5101" style="width:100%" />
+                      <ScmAccountHint :info="resolvedAcc['scm:acc_overhead']" :configured="!!scmForm.acc_overhead" />
                     </el-form-item>
                   </el-col>
                 </el-row>
@@ -516,10 +609,12 @@ import request from '@/api/request'
 import { showSuccess, showOperationError } from '@/composables/useMessage'
 import { useSystemParamsStore } from '@/stores/systemParams'
 import { useBaseDataStore } from '@/stores/baseData'
+import { useLicenseStore } from '@/stores/license'
 import BrandSettingsPanel from '@/components/system/BrandSettingsPanel.vue'
 import SystemReinitializePanel from '@/components/system/SystemReinitializePanel.vue'
 import ModuleResetPanel from '@/components/system/ModuleResetPanel.vue'
 import AccountSelect from '@/components/base/AccountSelect.vue'
+import ScmAccountHint, { type ScmAccountResolveInfo } from '@/components/system/ScmAccountHint.vue'
 import type { Account } from '@/types/base'
 import { scmApi, type ScmWarehouse } from '@/api/scm'
 import { cashierApi } from '@/api/cashier'
@@ -559,7 +654,19 @@ const activeTab = ref('ledger')
 interface VoucherType { id: string; code: string; name: string }
 const voucherTypes = ref<VoucherType[]>([])
 const cashierForm = ref({ default_voucher_type_id: '' })
-const assetForm = ref({ depr_voucher_type_id: '', purchase_voucher_type_id: '', depr_start_period: '', inventory_surplus_account: '', inventory_deficit_account: '' })
+const assetForm = ref({
+  depr_voucher_type_id: '',
+  purchase_voucher_type_id: '',
+  disposal_voucher_type_id: '',
+  depr_start_period: '',
+  inventory_surplus_account: '',
+  inventory_deficit_account: '',
+  disposal_bank_account: '',
+  disposal_gain_account: '',
+  disposal_loss_account: '',
+  aux_dept_category_code: '',
+  aux_person_category_code: '',
+})
 const scmForm = ref({
   costing_method: '',
   acc_ap: '',
@@ -570,6 +677,8 @@ const scmForm = ref({
   acc_other: '',
   acc_tax_input: '',
   acc_tax_output: '',
+  acc_labor: '',
+  acc_overhead: '',
   item_levels: 4,
   item_code_lengths: [2, 2, 2, 2, 2, 2, 2, 2, 2, 2],
   negative_stock_warehouses: [] as string[],
@@ -581,6 +690,7 @@ const scmForm = ref({
   production_overrun_rate: 0,
   outsource_overrun_enabled: false,
   outsource_overrun_rate: 0,
+  qc_required_for_finish: false,
   currencies: '',
   io_categories: '',
   transport_methods: '',
@@ -590,7 +700,7 @@ const scmWarehouses = ref<ScmWarehouse[]>([])
 const SCM_COSTING: Record<string, string> = { moving_avg: '移动加权平均', month_avg: '全月平均', fifo: '先进先出', lifo: '后进先出', specified: '指定成本' }
 // 已实现的计价方式（其余在参数页禁选、过账时拦截）
 const COSTING_IMPLEMENTED = ['moving_avg']
-const SCM_ACC_KEYS = ['acc_ap','acc_ar','acc_revenue','acc_cost','acc_production','acc_other','acc_tax_input','acc_tax_output'] as const
+const SCM_ACC_KEYS = ['acc_ap','acc_ar','acc_revenue','acc_cost','acc_production','acc_other','acc_tax_input','acc_tax_output','acc_labor','acc_overhead'] as const
 
 async function fetchVoucherTypes() {
   if (voucherTypes.value.length) return
@@ -601,6 +711,17 @@ async function fetchVoucherTypes() {
     if (!cashierForm.value.default_voucher_type_id && voucherTypes.value.length)
       cashierForm.value.default_voucher_type_id = voucherTypes.value[0].id
   } catch { /* ignore */ }
+}
+
+/** 供应链对方科目的自动匹配结果，按 param_key 索引 */
+const resolvedAcc = ref<Record<string, ScmAccountResolveInfo>>({})
+async function fetchResolvedScmAccounts() {
+  try {
+    const res = await request.get<ScmAccountResolveInfo[]>('/scm/params/resolved-accounts')
+    const map: Record<string, ScmAccountResolveInfo> = {}
+    for (const row of res.data || []) map[row.param_key] = row
+    resolvedAcc.value = map
+  } catch { /* 提示性信息，取不到就不显示 */ }
 }
 
 async function fetchScmWarehouses() {
@@ -615,11 +736,12 @@ async function fetchScmWarehouses() {
 
 watch(activeTab, v => {
   if (v === 'cashier' || v === 'asset') fetchVoucherTypes()
-  if (v === 'supply') fetchScmWarehouses()
+  if (v === 'supply') { fetchScmWarehouses(); fetchResolvedScmAccounts() }
 })
 const route = useRoute()
 const router = useRouter()
 const baseDataStore = useBaseDataStore()
+const licenseStore = useLicenseStore()
 
 const accountOptions = computed<Account[]>(() => baseDataStore.accounts)
 
@@ -683,6 +805,18 @@ async function fetchData() {
         assetForm.value.inventory_surplus_account = p.param_value || ''
       } else if (p.param_key === 'asset:inventory_deficit_account') {
         assetForm.value.inventory_deficit_account = p.param_value || ''
+      } else if (p.param_key === 'asset:disposal_voucher_type_id') {
+        assetForm.value.disposal_voucher_type_id = p.param_value || ''
+      } else if (p.param_key === 'asset:disposal_bank_account') {
+        assetForm.value.disposal_bank_account = p.param_value || ''
+      } else if (p.param_key === 'asset:disposal_gain_account') {
+        assetForm.value.disposal_gain_account = p.param_value || ''
+      } else if (p.param_key === 'asset:disposal_loss_account') {
+        assetForm.value.disposal_loss_account = p.param_value || ''
+      } else if (p.param_key === 'asset:aux_dept_category_code') {
+        assetForm.value.aux_dept_category_code = p.param_value || ''
+      } else if (p.param_key === 'asset:aux_person_category_code') {
+        assetForm.value.aux_person_category_code = p.param_value || ''
       } else if (p.param_key === 'scm:costing_method') {
         scmForm.value.costing_method = p.param_value || ''
       } else if (p.param_key === 'scm:item_levels') {
@@ -707,6 +841,8 @@ async function fetchData() {
         scmForm.value.purchase_over_receipt_enabled = p.param_value === '1'
       } else if (p.param_key === 'scm:purchase_over_receipt_rate') {
         scmForm.value.purchase_over_receipt_rate = Math.max(0, Number(p.param_value) || 0)
+      } else if (p.param_key === 'scm:qc_required_for_finish') {
+        scmForm.value.qc_required_for_finish = p.param_value === '1'
       } else if (p.param_key === 'scm:production_overrun_enabled') {
         scmForm.value.production_overrun_enabled = p.param_value === '1'
       } else if (p.param_key === 'scm:production_overrun_rate') {
@@ -787,6 +923,12 @@ async function handleSaveAsset() {
         { param_key: 'asset:depr_start_period', param_value: assetForm.value.depr_start_period || '' },
         { param_key: 'asset:inventory_surplus_account', param_value: assetForm.value.inventory_surplus_account || '' },
         { param_key: 'asset:inventory_deficit_account', param_value: assetForm.value.inventory_deficit_account || '' },
+        { param_key: 'asset:disposal_voucher_type_id', param_value: assetForm.value.disposal_voucher_type_id || '' },
+        { param_key: 'asset:disposal_bank_account', param_value: assetForm.value.disposal_bank_account || '' },
+        { param_key: 'asset:disposal_gain_account', param_value: assetForm.value.disposal_gain_account || '' },
+        { param_key: 'asset:disposal_loss_account', param_value: assetForm.value.disposal_loss_account || '' },
+        { param_key: 'asset:aux_dept_category_code', param_value: assetForm.value.aux_dept_category_code || '' },
+        { param_key: 'asset:aux_person_category_code', param_value: assetForm.value.aux_person_category_code || '' },
       ],
     })
     showSuccess('保存成功')
@@ -807,6 +949,7 @@ async function handleSaveScm() {
       { param_key: 'scm:sales_over_delivery_rate', param_value: String(Math.max(0, Number(scmForm.value.sales_over_delivery_rate) || 0)) },
       { param_key: 'scm:purchase_over_receipt_enabled', param_value: scmForm.value.purchase_over_receipt_enabled ? '1' : '0' },
       { param_key: 'scm:purchase_over_receipt_rate', param_value: String(Math.max(0, Number(scmForm.value.purchase_over_receipt_rate) || 0)) },
+      { param_key: 'scm:qc_required_for_finish', param_value: scmForm.value.qc_required_for_finish ? '1' : '0' },
       { param_key: 'scm:production_overrun_enabled', param_value: scmForm.value.production_overrun_enabled ? '1' : '0' },
       { param_key: 'scm:production_overrun_rate', param_value: String(Math.max(0, Number(scmForm.value.production_overrun_rate) || 0)) },
       { param_key: 'scm:outsource_overrun_enabled', param_value: scmForm.value.outsource_overrun_enabled ? '1' : '0' },
@@ -817,6 +960,7 @@ async function handleSaveScm() {
       { param_key: 'scm:doc_no_rule', param_value: scmForm.value.doc_no_rule || '' },
     ]
     await request.put('/scm/params', { params })
+    fetchResolvedScmAccounts()
     await fetchData()
     showSuccess('保存成功')
   } catch (error) {

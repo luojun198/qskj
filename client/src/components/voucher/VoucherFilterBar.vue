@@ -74,6 +74,11 @@ const queryScheme = props.enableQueryScheme
   ? useQueryScheme({ storageKey: props.querySchemeKey })
   : null
 
+const activeSchemeId = ref<string | null>(null)
+const activeScheme = computed(() =>
+  activeSchemeId.value && queryScheme ? queryScheme.getScheme(activeSchemeId.value) : undefined
+)
+
 const years = computed(() => {
   const currentYear = new Date().getFullYear()
   return Array.from({ length: 5 }, (_, i) => currentYear - i)
@@ -269,6 +274,7 @@ function confirmSaveScheme() {
       const scheme = queryScheme.getScheme(schemeOverwriteId.value)
       if (scheme?.isDefault) queryScheme.clearDefaultScheme()
     }
+    activeSchemeId.value = schemeOverwriteId.value
     ElMessage.success('查询方案已更新')
   } else {
     const duplicate = queryScheme.schemes.value.find(s => s.name === trimmedName)
@@ -280,6 +286,7 @@ function confirmSaveScheme() {
     if (schemeSetAsDefault.value) {
       queryScheme.setDefaultScheme(created.id)
     }
+    activeSchemeId.value = created.id
     ElMessage.success('查询方案保存成功')
   }
 
@@ -292,6 +299,7 @@ function handleLoadScheme(schemeId: string) {
 
   const filters = queryScheme.applyScheme(schemeId)
   if (filters) {
+    activeSchemeId.value = schemeId
     emit('applyScheme', filters as VoucherFilters)
     ElMessage.success('已加载查询方案')
   }
@@ -309,6 +317,7 @@ function handleDeleteScheme(schemeId: string) {
   })
     .then(() => {
       queryScheme.deleteScheme(schemeId)
+      if (activeSchemeId.value === schemeId) activeSchemeId.value = null
       ElMessage.success('删除成功')
     })
     .catch(() => {})
@@ -362,6 +371,18 @@ function handleSetDefault(schemeId: string) {
           {{ collapsedSummary }}
         </span>
         <div class="filter-bar-actions">
+          <el-tag
+            v-if="activeScheme"
+            size="small"
+            type="warning"
+            effect="plain"
+            closable
+            class="filter-active-scheme"
+            :title="activeScheme.name"
+            @close="activeSchemeId = null"
+          >
+            {{ activeScheme.name }}
+          </el-tag>
           <template v-if="enableQueryScheme">
             <el-button size="small" plain @click="handleSaveScheme()">
               <el-icon><FolderOpened /></el-icon>
@@ -382,7 +403,10 @@ function handleSetDefault(schemeId: string) {
                     :key="scheme.id"
                     :command="{ action: 'load', id: scheme.id }"
                   >
-                    <div class="filter-scheme-item">
+                    <div
+                      class="filter-scheme-item"
+                      :class="{ 'is-active-scheme': scheme.id === activeSchemeId }"
+                    >
                       <span class="filter-scheme-item-name">
                         <el-icon v-if="scheme.isDefault" class="filter-scheme-star">
                           <StarFilled />
@@ -667,26 +691,6 @@ function handleSetDefault(schemeId: string) {
         </div>
       </el-collapse-transition>
 
-      <div
-        v-if="
-          !filterExpanded &&
-          enableQueryScheme &&
-          queryScheme &&
-          queryScheme.schemes.value.length > 0
-        "
-        class="filter-quick-tags"
-      >
-        <el-tag
-          v-for="scheme in queryScheme.schemes.value.slice(0, 4)"
-          :key="scheme.id"
-          :type="scheme.isDefault ? 'warning' : 'info'"
-          size="small"
-          class="filter-quick-tag"
-          @click="handleLoadScheme(scheme.id)"
-        >
-          {{ scheme.name }}
-        </el-tag>
-      </div>
     </div>
 
     <!-- 单行布局（兼容旧页） -->
@@ -958,6 +962,7 @@ function handleSetDefault(schemeId: string) {
 .filter-bar-compact {
   display: flex;
   align-items: center;
+  flex-wrap: nowrap;
   gap: 6px;
   min-height: 28px;
 }
@@ -988,8 +993,8 @@ function handleSetDefault(schemeId: string) {
 
 .filter-keyword-inline {
   flex: 1;
-  min-width: 140px;
-  max-width: 360px;
+  min-width: 120px;
+  max-width: 280px;
 }
 
 .filter-keyword-inline :deep(.el-input__wrapper) {
@@ -1096,6 +1101,11 @@ function handleSetDefault(schemeId: string) {
   gap: 8px;
 }
 
+.filter-scheme-item.is-active-scheme .filter-scheme-item-name {
+  color: var(--mint-700, #0d8a7a);
+  font-weight: 600;
+}
+
 .filter-scheme-item-name {
   flex: 1;
   min-width: 0;
@@ -1117,15 +1127,14 @@ function handleSetDefault(schemeId: string) {
   margin-left: 8px;
 }
 
-.filter-quick-tags {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding-top: 4px;
-  flex-wrap: wrap;
+.filter-active-scheme {
+  flex-shrink: 0;
+  max-width: 140px;
 }
 
-.filter-quick-tag {
-  cursor: pointer;
+.filter-active-scheme :deep(.el-tag__content) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

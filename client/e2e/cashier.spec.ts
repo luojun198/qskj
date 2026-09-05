@@ -3,23 +3,24 @@
  *
  * 覆盖：页面渲染 / 科目加载 / 日记账录入与查询 / 余额计算 / 银行对账 / 期初余额
  */
-import { test, expect, waitForTable, navTo } from './fixtures'
+import { test, expect, waitForTable, navTo, resolveAccountSetId, API_BASE } from './fixtures'
 
-const API = 'http://127.0.0.1:3105'
+const API = API_BASE
 
 test.describe('出纳管理', () => {
   // ── 日记账页面 ─────────────────────────────────────────
 
   test('出纳日记账页面能正常渲染', async ({ loggedInPage: page }) => {
-    await navTo(page, '出纳管理', '出纳日记账')
-    await expect(page.locator('h3')).toContainText('出纳日记账')
+    await navTo(page, '出纳管理', '出纳录单')
+    // 页面标题由布局层的面包屑承载（导航改版后各页面不再自带 h3）
+    await expect(page.locator('.apple-breadcrumb')).toContainText('出纳录单')
     await expect(page.locator('.el-table')).toBeVisible()
     // 科目下拉自动加载现金/银行科目
     await expect(page.locator('.el-select').first()).toBeVisible()
   })
 
   test('科目下拉包含现金和银行科目分组', async ({ loggedInPage: page }) => {
-    await navTo(page, '出纳管理', '出纳日记账')
+    await navTo(page, '出纳管理', '出纳录单')
     await page.locator('.el-select').first().click()
     await page.waitForSelector('.el-select-dropdown', { timeout: 5000 })
     // 期望有「现金科目」或「银行存款」分组标题
@@ -30,7 +31,7 @@ test.describe('出纳管理', () => {
   })
 
   test('能录入出纳日记账并在列表显示', async ({ loggedInPage: page, request }) => {
-    const asid = '5945a5a8-e9f2-4145-968f-86862ce54aa3'
+    const asid = await resolveAccountSetId(request)
     // 取 token
     const lr = await request.post(`${API}/api/auth/login`, {
       data: { username: 'admin', password: 'admin123', targetAccountSetId: asid },
@@ -71,7 +72,7 @@ test.describe('出纳管理', () => {
   })
 
   test('日记账余额计算正确（期初 + 借 - 贷）', async ({ request }) => {
-    const asid = '5945a5a8-e9f2-4145-968f-86862ce54aa3'
+    const asid = await resolveAccountSetId(request)
     const lr = await request.post(`${API}/api/auth/login`, {
       data: { username: 'admin', password: 'admin123', targetAccountSetId: asid },
     })
@@ -98,7 +99,7 @@ test.describe('出纳管理', () => {
   })
 
   test('银行对账 API 能自动勾对', async ({ request }) => {
-    const asid = '5945a5a8-e9f2-4145-968f-86862ce54aa3'
+    const asid = await resolveAccountSetId(request)
     const lr = await request.post(`${API}/api/auth/login`, {
       data: { username: 'admin', password: 'admin123', targetAccountSetId: asid },
     })
@@ -139,7 +140,7 @@ test.describe('出纳管理', () => {
   })
 
   test('结算方式字典 API 返回正确格式', async ({ request }) => {
-    const asid = '5945a5a8-e9f2-4145-968f-86862ce54aa3'
+    const asid = await resolveAccountSetId(request)
     const lr = await request.post(`${API}/api/auth/login`, {
       data: { username: 'admin', password: 'admin123', targetAccountSetId: asid },
     })

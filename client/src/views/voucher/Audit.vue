@@ -56,8 +56,11 @@
     </div>
 
     <VoucherAuditTable
+      ref="voucherTableRef"
       class="voucher-audit-table-host"
       :flat-list="flatList"
+      :loading-more="loadingMore"
+      :has-more="hasMore"
       :is-selectable-row="isSelectableRow"
       :get-row-class="getRowClass"
       :aux-categories="auxCategories"
@@ -79,7 +82,7 @@
       <span class="batch-selected-text">
         {{
           selectAllMode
-            ? `已选中全部 ${pagination.total} 条（跨所有分页）`
+            ? `已选中全部 ${pagination.total} 条（含未加载数据）`
             : `已选 ${selected.length} 张`
         }}
       </span>
@@ -122,6 +125,20 @@
           批量反审核
           <span v-if="selectAllMode" class="voucher-batch-btn__hint">（全部 {{ pagination.total }} 条）</span>
         </el-button>
+        <el-tooltip :content="reverseTooltip" :disabled="!reverseTooltip" placement="top">
+          <span>
+            <el-button
+              class="voucher-batch-btn voucher-batch-btn--reverse"
+              type="danger"
+              plain
+              :disabled="!canReverseSelected"
+              @click="handleReverse"
+            >
+              <el-icon><RefreshLeft /></el-icon>
+              冲红
+            </el-button>
+          </span>
+        </el-tooltip>
       </div>
 
       <div class="voucher-batch-bar__group voucher-batch-bar__group--print">
@@ -140,22 +157,17 @@
     </div>
 
     <div class="pagination-bar">
-      <span class="pagination-text">共 {{ pagination.total }} 条</span>
+      <span class="pagination-text">
+        共 {{ pagination.total }} 条 · 已加载 {{ loadedVoucherCount }} 条
+      </span>
+      <span class="pagination-text">每次加载</span>
       <el-select v-model="pagination.pageSize" style="width: 95px" @change="handlePageSizeChange">
-        <el-option label="10条" :value="10" />
         <el-option label="20条" :value="20" />
         <el-option label="50条" :value="50" />
         <el-option label="100条" :value="100" />
+        <el-option label="200条" :value="200" />
         <el-option label="全部" :value="-1" />
       </el-select>
-      <el-pagination
-        v-model:current-page="pagination.page"
-        :total="pagination.total"
-        :page-size="pagination.pageSize"
-        layout="prev, pager, next, jumper"
-        :pager-count="5"
-        @current-change="onPageChange"
-      />
     </div>
 
     <BatchAuditDialog
@@ -211,7 +223,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onActivated, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Printer, CircleCheck, Checked, CircleClose, Download, Setting } from '@element-plus/icons-vue'
+import { Printer, CircleCheck, Checked, CircleClose, Download, Setting, RefreshLeft } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '@/api/request'
 import VoucherAuditTable from '@/components/voucher/VoucherAuditTable.vue'
@@ -222,6 +234,7 @@ import PrintDialog from '@/components/print/PrintDialog.vue'
 import BatchPrintDialog from '@/components/print/BatchPrintDialog.vue'
 import TaskProgressDialog from '@/components/task/TaskProgressDialog.vue'
 import { useVoucherQuery, applyVoucherFilters, type VoucherFilters } from '@/composables/useVoucherQuery'
+import { useTableInfiniteScroll } from '@/composables/useTableInfiniteScroll'
 import { useVoucherAuditActions } from '@/composables/useVoucherAuditActions'
 import { useBatchAuditDialog } from '@/composables/useBatchAuditDialog'
 import { useVoucherModalRestore } from '@/composables/useVoucherModalRestore'
@@ -233,6 +246,7 @@ import { exportVouchersToExcel, fetchAllVouchers } from '@/utils/voucherExport'
 import { useSystemParamsStore } from '@/stores/systemParams'
 import { extractErrorMessage } from '@/composables/useMessage'
 import { useVoucherAuditReturnStore } from '@/stores/voucherAuditReturn'
+import { useVoucherReverse, canReverseVoucher, reverseDisabledReason } from '@/composables/useVoucherReverse'
 import ColumnSettingsDialog from '@/components/common/ColumnSettingsDialog.vue'
 import { loadColumnSettings, saveColumnSettings, type ColumnSetting } from '@/utils/columnSettings'
 
@@ -299,14 +313,19 @@ const voucherAuditReturnStore = useVoucherAuditReturnStore()
 const {
   filters,
   pagination,
+  list,
+  loading,
+  loadingMore,
+  hasMore,
   auxCategories,
   voucherTypes,
   accounts,
   auxItemsMap,
   flatList,
   fetchData,
+  loadMore,
+  loadUpTo,
   buildQueryParams,
-  onPageChange,
   onPageSizeChange,
   onSortChange,
   loadAuxCategories,
@@ -325,15 +344,31 @@ const {
   searchMemoryKey: 'voucher-audit-filters',
 })
 
-function handleApplyScheme(schemeFilters: Partial<VoucherFilters>) {
+// 已加载的凭证张数（flatList 是分录行，不能直接用）
+const loadedVoucherCount = computed(() => list.value.length)
+
+// 滚轮下拉自动加载下一页（追加式无限滚动）
+const voucherTableRef = ref<any>(null)
+const { scrollToTop } = useTableInfiniteScroll({
+  getScrollEl: () => voucherTableRef.value?.containerRef ?? null,
+  hasMore,
+  loading,
+  loadingMore,
+  onLoadMore: loadMore,
+  watchSource: () => flatList.value.length,
+})
+
+async function handleApplyScheme(schemeFilters: Partial<VoucherFilters>) {
   applyVoucherFilters(filters.value, schemeFilters)
   pagination.page = 1
-  fetchData()
+  await fetchData()
+  await scrollToTop()
 }
 
-function handleSearch() {
+async function handleSearch() {
   pagination.page = 1
-  fetchData()
+  await fetchData()
+  await scrollToTop()
 }
 
 /** 从列表数据发现辅助列（computed 缓存，只在数据真正变化时重新计算） */
@@ -384,6 +419,31 @@ watch(discoveredDynamicCols, (dynamic) => {
 
 // 选择相关逻辑
 const selected = ref<any[]>([])
+
+// ========== 凭证冲红 ==========
+
+const { reverseVoucher } = useVoucherReverse({ onSuccess: () => fetchData() })
+
+/** 冲红是单张操作：仅当恰好选中一张凭证（可能勾选多行分录）时可用 */
+const reverseTargetVoucher = computed(() => {
+  if (selectAllMode.value) return null
+  const ids = Array.from(new Set(selected.value.map((row: any) => row._voucherId).filter(Boolean)))
+  if (ids.length !== 1) return null
+  return list.value.find((v: any) => v.id === ids[0]) || null
+})
+
+const canReverseSelected = computed(() => canReverseVoucher(reverseTargetVoucher.value))
+
+const reverseTooltip = computed(() => {
+  if (canReverseSelected.value) return ''
+  if (selectAllMode.value) return '冲红为单张操作，请取消全选后只勾选一张凭证'
+  if (!reverseTargetVoucher.value) return '冲红为单张操作，请只勾选一张凭证'
+  return reverseDisabledReason(reverseTargetVoucher.value)
+})
+
+function handleReverse() {
+  void reverseVoucher(reverseTargetVoucher.value)
+}
 const selectAllMode = ref(false) // 是否全选所有页
 const selectionRestoreActive = ref(false)
 const selectionRestoreIds = ref<string[] | null>(null)
@@ -434,8 +494,8 @@ function onSelect(selection: any[]) {
   const isCurrentPageFullSelected =
     selection.length > 0 && selection.length === selectableRows.length
 
-  // 如果全选了当前页，且有多页数据，且不在全选模式，显示"全选所有页"的提示
-  if (isCurrentPageFullSelected && pagination.total > pagination.pageSize && !selectAllMode.value) {
+  // 如果全选了已加载数据，且还有未加载数据，且不在全选模式，提示是否全选全部
+  if (isCurrentPageFullSelected && list.value.length < pagination.total && !selectAllMode.value) {
     // 显示提示：是否要全选所有页？
     showSelectAllPagesPrompt()
   } else if (selection.length === 0) {
@@ -447,18 +507,18 @@ function onSelect(selection: any[]) {
 // 显示全选所有页的确认提示
 function showSelectAllPagesPrompt() {
   ElMessageBox.confirm(
-    `当前页已全选，是否要全选所有 ${pagination.total} 条凭证（跨所有分页）？`,
+    `已加载部分已全选，是否要全选所有 ${pagination.total} 条凭证（含未加载数据）？`,
     '全选确认',
     {
       confirmButtonText: '全选所有',
-      cancelButtonText: '仅当前页',
+      cancelButtonText: '仅已加载',
       type: 'info',
     }
   )
     .then(() => {
       // 用户确认全选所有
       selectAllMode.value = true
-      ElMessage.success(`已选中全部 ${pagination.total} 条凭证（跨所有分页）`)
+      ElMessage.success(`已选中全部 ${pagination.total} 条凭证（含未加载数据）`)
     })
     .catch(() => {
       // 用户取消，保持当前页全选
@@ -852,6 +912,7 @@ async function handlePageSizeChange(size: number) {
     }
   }
   onPageSizeChange(size)
+  await scrollToTop()
 }
 
 async function tryRestoreVoucherAuditContext() {
@@ -864,14 +925,13 @@ async function tryRestoreVoucherAuditContext() {
   }
 
   Object.assign(filters.value, state.filters)
-  pagination.page = state.pagination.page
-  pagination.pageSize = state.pagination.pageSize
   selectAllMode.value = state.selectAllMode
   selectionRestoreActive.value = true
   selectionRestoreIds.value = state.selectAllMode ? null : [...state.selectedVoucherIds]
 
   await router.replace({ name: 'VoucherAudit' })
-  await fetchData()
+  // 滚动加载下，一次性把离开前已加载的所有行还原回来
+  await loadUpTo(state.pagination.page, state.pagination.pageSize)
   applySelectionRestore()
 }
 

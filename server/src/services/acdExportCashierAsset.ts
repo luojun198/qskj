@@ -196,8 +196,26 @@ export function exportZcYzjb(db: Database, accountSetId: string): Buffer {
   return Buffer.concat(bufs)
 }
 
+/**
+ * zc_yzzj = 原值增减流水。
+ *
+ * 分流口径按 change_kind，而非早期的 change_item 字符串匹配：
+ * 资产变动业务上线后 change_item 有「原值增减」「大修改良」「计提减值准备」等多种文案，
+ * 只认字符串会把改良与减值漏到 zc_sbbd 里。
+ * ACD 导入的历史行 change_kind='legacy'，仍按其原有的 change_item 归属。
+ */
+// 注意：change_kind 可能为 NULL（v110 迁移前的历史行）。SQL 三值逻辑下
+// `NULL IN (...)` 求值为 NULL，会让 NOT(...) 也变成 NULL，该行将从两张表里
+// 同时消失。因此一律先 COALESCE 成 'legacy' 再比较，保证两表严格互补。
+const YZZJ_KINDS_SQL = `(
+  COALESCE(change_kind, 'legacy') IN ('original_value', 'improvement', 'impairment')
+  OR (COALESCE(change_kind, 'legacy') = 'legacy' AND COALESCE(change_item, '') = '原值增减')
+)`
+
 export function exportZcYzzj(db: Database, accountSetId: string): Buffer {
-  const rows = db.prepare("SELECT * FROM fixed_asset_change WHERE account_set_id=? AND change_item='原值增减' ORDER BY change_date,id").all(accountSetId) as any[]
+  const rows = db.prepare(
+    `SELECT * FROM fixed_asset_change WHERE account_set_id=? AND ${YZZJ_KINDS_SQL} ORDER BY change_date,id`
+  ).all(accountSetId) as any[]
   let xh = 1
   const bufs = rows.map(r => rowToGbkLine([
     String(xh++), s(r.asset_no), '', d(r.change_date),
@@ -209,8 +227,11 @@ export function exportZcYzzj(db: Database, accountSetId: string): Buffer {
   return Buffer.concat(bufs)
 }
 
+/** zc_sbbd = 非原值类变动（部门调拨、状态变更、折旧要素调整、拆分、处置…），与 zc_yzzj 互补 */
 export function exportZcSbbd(db: Database, accountSetId: string): Buffer {
-  const rows = db.prepare("SELECT * FROM fixed_asset_change WHERE account_set_id=? AND (change_item IS NULL OR change_item != '原值增减') ORDER BY change_date,id").all(accountSetId) as any[]
+  const rows = db.prepare(
+    `SELECT * FROM fixed_asset_change WHERE account_set_id=? AND NOT ${YZZJ_KINDS_SQL} ORDER BY change_date,id`
+  ).all(accountSetId) as any[]
   const bufs = rows.map(r => rowToGbkLine([
     s(r.asset_no), s(r.change_item), s(r.old_value), s(r.new_value),
     d(r.change_date), s(r.operator),

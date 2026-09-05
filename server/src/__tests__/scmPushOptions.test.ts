@@ -31,7 +31,7 @@ beforeEach(() => {
     );
     CREATE TABLE scm_production_plan_product (
       id TEXT PRIMARY KEY, account_set_id TEXT, plan_id TEXT, seq INTEGER, item_code TEXT,
-      plan_qty REAL, finished_qty REAL DEFAULT 0, source_line_id TEXT
+      plan_qty REAL, finished_qty REAL DEFAULT 0, scrap_qty REAL DEFAULT 0, source_line_id TEXT
     );
     CREATE TABLE scm_production_plan_line (
       id TEXT PRIMARY KEY, account_set_id TEXT, plan_id TEXT, product_id TEXT, seq INTEGER,

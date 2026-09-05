@@ -87,5 +87,5 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.mrp-list-page{display:flex;flex-direction:column;height:100%;padding:14px 18px;gap:12px}.page-header{display:flex;align-items:center;justify-content:space-between}.page-header h2{margin:0;font-size:20px}.sub{margin-top:4px;color:var(--el-text-color-secondary);font-size:13px}.filters{display:flex;gap:8px}
+.mrp-list-page{display:flex;flex-direction:column;height:100%;padding:14px 18px;gap:12px}.page-header{display:flex;align-items:center;justify-content:space-between}.page-header h2{margin:0;font-size:15px;font-weight:600}.sub{margin-top:4px;color:var(--el-text-color-secondary);font-size:13px}.filters{display:flex;gap:8px}
 </style>

@@ -14,7 +14,7 @@ const entry = (amount: number, account_name = 'X'): VoucherEntryInput =>
     amount,
   }) as any
 
-describe('FIX-010 / P1-14 分录金额合法性校验', () => {
+describe('FIX-010 / P1-14 分录金额合法性校验（已放开负数，见凭证冲红功能）', () => {
   it('合法金额（小数、整数、接近上限）通过', () => {
     expect(
       validateVoucherEntryAmounts([entry(0.01), entry(100), entry(1234.56), entry(1e11)])
@@ -25,13 +25,24 @@ describe('FIX-010 / P1-14 分录金额合法性校验', () => {
     const err = validateVoucherEntryAmounts([entry(100), entry(0, '银行存款')])
     expect(err).toContain('第2行')
     expect(err).toContain('银行存款')
-    expect(err).toContain('必须大于 0')
+    expect(err).toContain('不能为 0')
   })
 
-  it('负数金额被拒绝', () => {
-    const err = validateVoucherEntryAmounts([entry(-50, '应付账款')])
-    expect(err).toContain('应付账款')
-    expect(err).toContain('必须大于 0')
+  it('不足半分的金额按 0 处理被拒绝', () => {
+    const err = validateVoucherEntryAmounts([entry(0.004, '零头')])
+    expect(err).toContain('零头')
+    expect(err).toContain('不能为 0')
+  })
+
+  it('负数金额通过（红字 / 冲红凭证）', () => {
+    expect(validateVoucherEntryAmounts([entry(-50, '应付账款')])).toBeNull()
+    expect(validateVoucherEntryAmounts([entry(-0.01), entry(-1234.56)])).toBeNull()
+  })
+
+  it('负数超过单笔上限（绝对值）被拒绝', () => {
+    const err = validateVoucherEntryAmounts([entry(-(MAX_ENTRY_AMOUNT + 1), '大红字')])
+    expect(err).toContain('大红字')
+    expect(err).toContain('超过单笔上限')
   })
 
   it('NaN 金额被拒绝', () => {
@@ -53,6 +64,7 @@ describe('FIX-010 / P1-14 分录金额合法性校验', () => {
 
   it('恰好等于上限的金额通过（边界）', () => {
     expect(validateVoucherEntryAmounts([entry(MAX_ENTRY_AMOUNT)])).toBeNull()
+    expect(validateVoucherEntryAmounts([entry(-MAX_ENTRY_AMOUNT)])).toBeNull()
   })
 
   it('空数组直接通过（其他校验函数处理空分录）', () => {

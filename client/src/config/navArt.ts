@@ -55,6 +55,7 @@ export const VARIANT_COUNT = 6
 /** 分组标题 → 主调色板（同模块协调） */
 const GROUP_PALETTE: Record<string, PaletteName> = {
   凭证管理: 'sky',
+  财务总账: 'indigo',
   账簿管理: 'indigo',
   辅助核算: 'lavender',
   报表管理: 'mint',

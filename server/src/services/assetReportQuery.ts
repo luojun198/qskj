@@ -363,9 +363,11 @@ export function queryAssetLedger(params: {
   }
 
   // 3. 变动记录
+  // 处置记录在下方「4. 处置事件」单独渲染，此处排除，避免时间线出现两条处置
   const changes = db.prepare(`
     SELECT * FROM fixed_asset_change
     WHERE account_set_id = ? AND asset_no = ?
+      AND (change_kind IS NULL OR change_kind <> 'dispose')
     ORDER BY change_date
   `).all(accountSetId, asset.asset_no) as any[]
 

@@ -458,4 +458,121 @@ describe('reportTemplateExecutor', () => {
     expect(sheet.cells[0].status).toBe('ok')
     expect(sheet.cells[0].numeric_value).toBe(55)
   })
+
+  describe('ROUND', () => {
+    function cell(id: string, rowIndex: number, colIndex: number, formula: string | null, text: string | null = null) {
+      return {
+        id,
+        report_sheet_id: 'sheet-1',
+        row_index: rowIndex,
+        col_index: colIndex,
+        cell_type: formula ? 'formula' : 'number',
+        text_value: text,
+        formula_text: formula,
+        format_text: null,
+        style_key: null,
+        side: null,
+      }
+    }
+
+    function run(cells: any[]) {
+      const [sheet] = executeTemplateSheets(
+        [
+          {
+            id: 'sheet-1',
+            report_definition_id: 'report-1',
+            sheet_key: 'sheet1',
+            sheet_name: 'round',
+            sheet_index: 0,
+            cells,
+          },
+        ] as any,
+        { db: createMockDb(0) as any, accountSetId: 'account-set-1', year: 2026, period: 1 }
+      )
+      return new Map(sheet.cells.map(item => [item.address, item]))
+    }
+
+    it('按指定位数四舍五入，参数可以是算式', () => {
+      // ACD 编译公式里的 ROUND(C32*C33, 2)，参数在 applyFormulaFunctions 阶段还没被替换成数值
+      const result = run([
+        cell('a', 0, 0, null, '3.14159'),
+        cell('b', 0, 1, null, '2'),
+        cell('c', 1, 0, '=ROUND(A1*B1,2)'),
+      ])
+
+      expect(result.get('A2')!.status).toBe('ok')
+      expect(result.get('A2')!.numeric_value).toBe(6.28)
+    })
+
+    it('位数为 0 时取整', () => {
+      const result = run([cell('a', 0, 0, null, '2.6'), cell('b', 1, 0, '=ROUND(A1,0)')])
+
+      expect(result.get('A2')!.numeric_value).toBe(3)
+    })
+  })
+
+  describe('循环引用', () => {
+    function cell(id: string, rowIndex: number, colIndex: number, formula: string | null, text: string | null = null) {
+      return {
+        id,
+        report_sheet_id: 'sheet-1',
+        row_index: rowIndex,
+        col_index: colIndex,
+        cell_type: formula ? 'formula' : 'number',
+        text_value: text,
+        formula_text: formula,
+        format_text: null,
+        style_key: null,
+        side: null,
+      }
+    }
+
+    function run(cells: any[]) {
+      const [sheet] = executeTemplateSheets(
+        [
+          {
+            id: 'sheet-1',
+            report_definition_id: 'report-1',
+            sheet_key: 'sheet1',
+            sheet_name: 'circular',
+            sheet_index: 0,
+            cells,
+          },
+        ] as any,
+        { db: createMockDb(0) as any, accountSetId: 'account-set-1', year: 2026, period: 1 }
+      )
+      return new Map(sheet.cells.map(item => [item.address, item]))
+    }
+
+    it('互相引用的两格应报 #CIRCULAR! 而不是算出一个错数', () => {
+      // 旧行为：环上的格子读不到依赖值，replaceCellReferences 回退成 '0'，
+      // 于是得到一个看起来完全正常、status 仍为 ok 的错误数字。
+      const result = run([cell('a', 0, 0, '=B1+1'), cell('b', 0, 1, '=A1+1')])
+
+      expect(result.get('A1')!.status).toBe('error')
+      expect(result.get('A1')!.display_value).toBe('#CIRCULAR!')
+      expect(result.get('B1')!.status).toBe('error')
+      expect(result.get('B1')!.display_value).toBe('#CIRCULAR!')
+    })
+
+    it('自引用应报 #CIRCULAR!', () => {
+      const result = run([cell('a', 0, 0, '=A1+1')])
+
+      expect(result.get('A1')!.status).toBe('error')
+      expect(result.get('A1')!.display_value).toBe('#CIRCULAR!')
+    })
+
+    it('环外的正常公式不受影响，仍照常求值', () => {
+      const result = run([
+        cell('a', 0, 0, '=B1+1'),
+        cell('b', 0, 1, '=A1+1'),
+        cell('c', 1, 0, null, '10'),
+        cell('d', 1, 1, '=A2*2'),
+      ])
+
+      expect(result.get('A1')!.status).toBe('error')
+      expect(result.get('B2')!.status).toBe('ok')
+      expect(result.get('B2')!.numeric_value).toBe(20)
+    })
+  })
 })

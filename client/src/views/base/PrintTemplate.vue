@@ -300,8 +300,8 @@ onMounted(() => {
 
 .page-header h2 {
   margin: 0;
-  font-size: 20px;
-  font-weight: 500;
+  font-size: 15px;
+  font-weight: 600;
 }
 
 .header-actions {

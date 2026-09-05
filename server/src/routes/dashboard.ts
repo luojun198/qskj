@@ -12,6 +12,7 @@ import {
   buildVoucherAllEntriesInScopeSql,
   type AccountScopeContext,
 } from '../services/accountAuthorization.js'
+import { getLicensedModules } from '../services/licenseService.js'
 
 const router = Router()
 router.use(authMiddleware)
@@ -916,6 +917,311 @@ router.get('/stats', dashboardStatsHandler)
 router.get('/trend', dashboardTrendHandler)
 router.get('/insights', dashboardInsightsHandler)
 router.get('/recent-vouchers', dashboardRecentVouchersHandler)
+
+// ── 工作台待办与分模块汇总 ────────────────────────────────────────────────
+
+type TodoLevel = 'normal' | 'warning' | 'danger'
+
+interface WorkbenchTodo {
+  key: string
+  title: string
+  count: number
+  level: TodoLevel
+  actionPath: string
+  /** 所属注册模块，前端按授权过滤 */
+  module: 'gl' | 'cashier' | 'asset' | 'scm' | 'production' | 'outsource'
+  /** 任一权限满足即展示 */
+  permission: string[]
+  hint?: string
+}
+
+function tableExists(db: ReturnType<typeof getDb>, name: string): boolean {
+  const row = db
+    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`)
+    .get(name) as { name: string } | undefined
+  return !!row
+}
+
+/** 查询失败（如旧库缺表/缺列）时返回 fallback，不让整个工作台报错 */
+function safeQuery<T>(fn: () => T, fallback: T): T {
+  try {
+    return fn()
+  } catch (error) {
+    console.warn('[dashboard/todos] 查询失败，已跳过:', (error as Error)?.message)
+    return fallback
+  }
+}
+
+function levelByCount(count: number, dangerFrom = Infinity): TodoLevel {
+  if (count <= 0) return 'normal'
+  return count >= dangerFrom ? 'danger' : 'warning'
+}
+
+const dashboardTodosHandler = (req: AuthRequest, res: any) => {
+  const db = getDb()
+  const accountSetId = req.accountSetId!
+  const { year, period } = getDashboardPeriodForRequest(req, db)
+  const licensed = new Set(getLicensedModules(db))
+  const hasScm = licensed.has('scm') || licensed.has('production') || licensed.has('outsource')
+  const todos: WorkbenchTodo[] = []
+
+  // ── 总账 ──
+  if (licensed.has('gl')) {
+    const voucherScope = getVoucherScopeSql(req)
+    const statusRow = safeQuery(
+      () =>
+        db
+          .prepare(
+            `SELECT
+               SUM(CASE WHEN v.status='draft' THEN 1 ELSE 0 END) AS draftCount,
+               SUM(CASE WHEN v.status='audited' THEN 1 ELSE 0 END) AS auditedCount
+             FROM vouchers v
+             WHERE v.account_set_id=? AND ${voucherScope.sql}`
+          )
+          .get(accountSetId, ...voucherScope.params) as any,
+      null
+    )
+    const draft = Number(statusRow?.draftCount || 0)
+    const audited = Number(statusRow?.auditedCount || 0)
+    todos.push(
+      {
+        key: 'voucher-draft',
+        title: '待审核凭证',
+        count: draft,
+        level: levelByCount(draft),
+        actionPath: '/voucher/audit',
+        module: 'gl',
+        permission: ['voucher:audit'],
+        hint: '草稿状态，等待审核',
+      },
+      {
+        key: 'voucher-audited',
+        title: '待记账凭证',
+        count: audited,
+        level: levelByCount(audited),
+        actionPath: '/voucher/audit',
+        module: 'gl',
+        permission: ['voucher:post'],
+        hint: '已审核，等待记账',
+      }
+    )
+  }
+
+  // ── 出纳 ──
+  let cashier: { accountCount: number; totalBalance: number; unreconciledCount: number } | null = null
+  if (licensed.has('cashier') && tableExists(db, 'cashier_journal')) {
+    cashier = safeQuery(() => {
+      const init = db
+        .prepare(
+          `SELECT COUNT(DISTINCT account_code) AS cnt, COALESCE(SUM(balance),0) AS total
+           FROM cashier_init_balance WHERE account_set_id=?`
+        )
+        .get(accountSetId) as any
+      const flow = db
+        .prepare(
+          `SELECT COUNT(DISTINCT account_code) AS cnt,
+                  COALESCE(SUM(debit),0) - COALESCE(SUM(credit),0) AS net,
+                  SUM(CASE WHEN reconciled=0 THEN 1 ELSE 0 END) AS unreconciled
+           FROM cashier_journal WHERE account_set_id=?`
+        )
+        .get(accountSetId) as any
+      return {
+        accountCount: Math.max(Number(init?.cnt || 0), Number(flow?.cnt || 0)),
+        totalBalance: Number(init?.total || 0) + Number(flow?.net || 0),
+        unreconciledCount: Number(flow?.unreconciled || 0),
+      }
+    }, null)
+  }
+
+  // ── 固定资产 ──
+  let asset: { assetCount: number; undepreciatedCount: number } | null = null
+  if (licensed.has('asset') && tableExists(db, 'fixed_asset')) {
+    asset = safeQuery(() => {
+      const total = db
+        .prepare(`SELECT COUNT(*) AS cnt FROM fixed_asset WHERE account_set_id=?`)
+        .get(accountSetId) as any
+      const done = db
+        .prepare(
+          `SELECT COUNT(DISTINCT asset_no) AS cnt FROM fixed_asset_depr
+           WHERE account_set_id=? AND year=? AND month=?`
+        )
+        .get(accountSetId, year, period) as any
+      const assetCount = Number(total?.cnt || 0)
+      return { assetCount, undepreciatedCount: Math.max(0, assetCount - Number(done?.cnt || 0)) }
+    }, null)
+    if (asset && asset.assetCount > 0) {
+      todos.push({
+        key: 'asset-depreciation',
+        title: '本期未计提折旧',
+        count: asset.undepreciatedCount,
+        level: levelByCount(asset.undepreciatedCount),
+        actionPath: '/asset/depreciation',
+        module: 'asset',
+        permission: ['asset:edit'],
+        hint: `${year} 年第 ${period} 期`,
+      })
+    }
+  }
+
+  // ── 供应链 ──
+  let scm: {
+    draftDocCount: number
+    monthSalesAmount: number
+    monthPurchaseAmount: number
+    stockAlertCount: number
+    openReceivable: number
+    openPayable: number
+    dueSoonCount: number
+  } | null = null
+  if (hasScm && tableExists(db, 'scm_doc')) {
+    const monthStart = dayjs(`${year}-${String(period).padStart(2, '0')}-01`)
+    const monthEnd = monthStart.endOf('month')
+    const startStr = monthStart.format('YYYY-MM-DD')
+    const endStr = monthEnd.format('YYYY-MM-DD')
+
+    const draftByCategory = safeQuery(
+      () =>
+        db
+          .prepare(
+            `SELECT COALESCE(t.category, 'other') AS category, COUNT(*) AS cnt
+             FROM scm_doc d
+             LEFT JOIN scm_doc_type t ON t.account_set_id=d.account_set_id AND t.code=d.doc_type
+             WHERE d.account_set_id=? AND d.status='draft'
+             GROUP BY COALESCE(t.category, 'other')`
+          )
+          .all(accountSetId) as Array<{ category: string; cnt: number }>,
+      []
+    )
+    const draftCount = (category: string) =>
+      Number(draftByCategory.find(row => row.category === category)?.cnt || 0)
+
+    const categoryTodos: Array<{
+      category: string
+      key: string
+      title: string
+      path: string
+      module: WorkbenchTodo['module']
+      permission: string[]
+    }> = [
+      { category: 'purchase', key: 'scm-draft-purchase', title: '待审核采购单据', path: '/scm/docs?doc_type=PO&status=draft', module: 'scm', permission: ['scm:purchase'] },
+      { category: 'sale', key: 'scm-draft-sale', title: '待审核销售单据', path: '/scm/docs?doc_type=SOa&status=draft', module: 'scm', permission: ['scm:sale'] },
+      { category: 'inventory', key: 'scm-draft-inventory', title: '待审核库存单据', path: '/scm/docs?doc_type=OI&status=draft', module: 'scm', permission: ['scm:inventory'] },
+      { category: 'finance', key: 'scm-draft-finance', title: '待审核收付款单', path: '/scm/docs?doc_type=RCV&status=draft', module: 'scm', permission: ['scm:arap'] },
+      { category: 'production', key: 'scm-draft-production', title: '待审核生产单据', path: '/scm/docs?doc_type=PL&status=draft', module: 'production', permission: ['scm:production'] },
+      { category: 'outsource', key: 'scm-draft-outsource', title: '待审核委外单据', path: '/scm/docs?doc_type=WO&status=draft', module: 'outsource', permission: ['scm:outsource'] },
+    ]
+    for (const entry of categoryTodos) {
+      if (!licensed.has(entry.module)) continue
+      const count = draftCount(entry.category)
+      todos.push({
+        key: entry.key,
+        title: entry.title,
+        count,
+        level: levelByCount(count),
+        actionPath: entry.path,
+        module: entry.module,
+        permission: entry.permission,
+      })
+    }
+
+    const stockAlertCount = safeQuery(
+      () =>
+        Number(
+          (
+            db
+              .prepare(
+                `SELECT COUNT(*) AS cnt FROM scm_item i
+                 WHERE i.account_set_id=? AND i.enabled<>0 AND COALESCE(i.safety_stock,0) > 0
+                   AND COALESCE((SELECT SUM(s.qty) FROM scm_stock s
+                                 WHERE s.account_set_id=i.account_set_id AND s.item_code=i.code),0) < i.safety_stock`
+              )
+              .get(accountSetId) as any
+          )?.cnt || 0
+        ),
+      0
+    )
+
+    const monthAmounts = safeQuery(
+      () =>
+        db
+          .prepare(
+            `SELECT
+               COALESCE(SUM(CASE WHEN doc_type='SO' THEN total_amount WHEN doc_type='SR' THEN -total_amount ELSE 0 END),0) AS sales,
+               COALESCE(SUM(CASE WHEN doc_type='PI' THEN total_amount WHEN doc_type='PR' THEN -total_amount ELSE 0 END),0) AS purchase
+             FROM scm_doc
+             WHERE account_set_id=? AND status='audited' AND doc_date>=? AND doc_date<=?`
+          )
+          .get(accountSetId, startStr, endStr) as any,
+      null
+    )
+
+    const arap = tableExists(db, 'scm_ar_ap_log')
+      ? safeQuery(
+          () =>
+            db
+              .prepare(
+                `SELECT
+                   COALESCE(SUM(CASE WHEN direction='in' AND doc_type IN ('SO','SR','RS') THEN amount - COALESCE(verified_amount,0) ELSE 0 END),0) AS receivable,
+                   COALESCE(SUM(CASE WHEN direction='in' AND doc_type IN ('PI','PR','RP','WI') THEN amount - COALESCE(verified_amount,0) ELSE 0 END),0) AS payable,
+                   SUM(CASE WHEN direction='in' AND (amount - COALESCE(verified_amount,0)) > 0.005
+                             AND julianday(COALESCE(due_date, doc_date)) <= julianday('now') + 7 THEN 1 ELSE 0 END) AS dueSoon
+                 FROM scm_ar_ap_log
+                 WHERE account_set_id=?`
+              )
+              .get(accountSetId) as any,
+          null
+        )
+      : null
+
+    scm = {
+      draftDocCount: draftByCategory.reduce((sum, row) => sum + Number(row.cnt || 0), 0),
+      monthSalesAmount: Number(monthAmounts?.sales || 0),
+      monthPurchaseAmount: Number(monthAmounts?.purchase || 0),
+      stockAlertCount,
+      openReceivable: Number(arap?.receivable || 0),
+      openPayable: Number(arap?.payable || 0),
+      dueSoonCount: Number(arap?.dueSoon || 0),
+    }
+
+    if (licensed.has('scm')) {
+      todos.push(
+        {
+          key: 'stock-alert',
+          title: '库存低于安全库存',
+          count: stockAlertCount,
+          level: levelByCount(stockAlertCount, 10),
+          actionPath: '/scm/report/stock-alert',
+          module: 'scm',
+          permission: ['scm:report', 'scm:stock'],
+        },
+        {
+          key: 'arap-due',
+          title: '7 日内到期应收应付',
+          count: scm.dueSoonCount,
+          level: levelByCount(scm.dueSoonCount, 5),
+          actionPath: '/scm/arap-due',
+          module: 'scm',
+          permission: ['scm:arap'],
+          hint: '含已逾期未核销',
+        }
+      )
+    }
+  }
+
+  res.json({
+    code: 0,
+    data: {
+      currentYear: year,
+      currentPeriod: period,
+      todos,
+      cashier,
+      asset,
+      scm,
+    },
+  })
+}
+
+router.get('/todos', dashboardTodosHandler)
 
 router.get('/overview', (req: AuthRequest, res) => {
   try {

@@ -103,6 +103,9 @@ router.post(
     }
 
     deleteBatchVouchers({ db, vouchers })
+    // 清除供应链单据上的 voucher_id 回写（若有），避免单据既不能重新生成凭证也无法反审核
+    const clearScmRef = db.prepare('UPDATE scm_doc SET voucher_id=NULL WHERE account_set_id=? AND voucher_id=?')
+    for (const v of vouchers) clearScmRef.run(req.accountSetId, v.id)
 
     res.json({
       code: 0,

@@ -88,7 +88,7 @@
       :row-style="{ height: '30px' }"
       :cell-style="{ padding: '0' }"
       :header-cell-style="{ padding: '4px 0' }"
-      class="item-table"
+      class="item-table compact-data-table"
       @expand-change="handleExpandChange"
       @current-change="handleCurrentChange"
       @row-dblclick="(row: any) => openEdit(row)"
@@ -133,7 +133,7 @@
       :row-style="{ height: '30px' }"
       :cell-style="{ padding: '0' }"
       :header-cell-style="{ padding: '4px 0' }"
-      class="item-table"
+      class="item-table compact-data-table"
       @current-change="handleCurrentChange"
       @row-dblclick="(row: any) => openEdit(row)"
       @header-dragend="onDragEnd"
@@ -633,7 +633,7 @@ onActivated(() => {
 
 .item-title h3 {
   margin: 0;
-  font-size: 18px;
+  font-size: 15px;
   line-height: 1.2;
 }
 

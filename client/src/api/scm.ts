@@ -428,6 +428,9 @@ export const scmApi = {
   getOutsourceExecution: (params: Record<string, any>) =>
     request.get<{ rows: any[]; total: number; page: number; page_size: number; summary: Record<string, number> }>('/scm/report/outsource/execution', { params }),
   exportOutsourceExecution: (data: Record<string, any>) => request.downloadPost('/scm/report/outsource/execution/export', data, { timeout: 600_000 }),
+  getProductionExecution: (params: Record<string, any>) =>
+    request.get<{ rows: any[]; total: number; page: number; page_size: number; summary: Record<string, number> }>('/scm/report/production/execution', { params }),
+  exportProductionExecution: (data: Record<string, any>) => request.downloadPost('/scm/report/production/execution/export', data, { timeout: 600_000 }),
 
   // 分类
   getCategories: () => request.get<any[]>('/scm/categories'),
@@ -530,6 +533,8 @@ export const scmApi = {
   auditQcDoc: (id: string) => request.post(`/scm/qc-docs/${id}/audit`, {}),
   unauditQcDoc: (id: string) => request.post(`/scm/qc-docs/${id}/unaudit`, {}),
   deleteQcDoc: (id: string) => request.delete(`/scm/qc-docs/${id}`),
+  genQcDefectDoc: (id: string, data: { plan_id?: string; warehouse_code?: string }) =>
+    request.post<{ id: string; doc_no: string }>(`/scm/qc-docs/${id}/gen-defect`, data),
   // 生产报工
   getWorkReports: (params?: { plan_id?: string }) => request.get<any[]>('/scm/work-reports', { params }),
   createWorkReport: (data: any) => request.post<{ id: string; report_no: string }>('/scm/work-reports', data),

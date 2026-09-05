@@ -179,7 +179,6 @@ onMounted(fetchData)
 
 .page-header h3 {
   margin: 0;
-  font-size: 18px;
   line-height: 1.2;
 }
 

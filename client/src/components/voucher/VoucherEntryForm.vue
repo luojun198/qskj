@@ -246,13 +246,18 @@
           <el-table-column label="借方金额" width="148" align="right">
             <template #default="{ row }">
               <div v-if="isReadonly" class="entry-readonly-amount" @click="setCurrentEntry(row)">
-                <span v-if="row.debit_amount">{{ formatMoney(row.debit_amount) }}</span>
+                <span
+                  v-if="row.debit_amount"
+                  :class="{ 'entry-amount-red': Number(row.debit_amount) < 0 }"
+                  >{{ formatMoney(row.debit_amount) }}</span
+                >
               </div>
               <el-input-number
                 v-else
                 v-model="row.debit_amount"
                 :precision="2"
                 :controls="false"
+                :class="{ 'entry-amount-red': Number(row.debit_amount) < 0 }"
                 :disabled="isLockedCashRow(row)"
                 size="small"
                 class="amount-input"
@@ -267,13 +272,18 @@
           <el-table-column label="贷方金额" width="148" align="right">
             <template #default="{ row }">
               <div v-if="isReadonly" class="entry-readonly-amount" @click="setCurrentEntry(row)">
-                <span v-if="row.credit_amount">{{ formatMoney(row.credit_amount) }}</span>
+                <span
+                  v-if="row.credit_amount"
+                  :class="{ 'entry-amount-red': Number(row.credit_amount) < 0 }"
+                  >{{ formatMoney(row.credit_amount) }}</span
+                >
               </div>
               <el-input-number
                 v-else
                 v-model="row.credit_amount"
                 :precision="2"
                 :controls="false"
+                :class="{ 'entry-amount-red': Number(row.credit_amount) < 0 }"
                 :disabled="isLockedCashRow(row)"
                 size="small"
                 class="amount-input"
@@ -2399,15 +2409,28 @@ useKeyboardShortcuts([
 }
 
 .paper-table :deep(.cell) {
-  padding: 0 4px !important;
+  padding: 0 !important;
   line-height: 24px;
   font-size: 12px;
+}
+
+.paper-table :deep(.el-table__header .cell) {
+  padding: 0 6px !important;
+}
+
+.paper-table :deep(.el-input),
+.paper-table :deep(.el-autocomplete),
+.paper-table :deep(.el-input-number) {
+  width: 100%;
 }
 
 .paper-table :deep(.el-input__wrapper) {
   min-height: 26px !important;
   padding: 0 6px !important;
-  box-shadow: 0 0 0 1px var(--el-input-border-color, var(--el-border-color)) inset;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  background: transparent !important;
 }
 
 .paper-table :deep(.el-input__inner) {
@@ -2542,7 +2565,7 @@ useKeyboardShortcuts([
 
 .entry-readonly-text {
   display: block;
-  padding: 4px 0;
+  padding: 4px 8px;
   color: #303133;
   font-size: 13px;
   line-height: 1.5;
@@ -2554,7 +2577,7 @@ useKeyboardShortcuts([
   flex-wrap: wrap;
   align-items: center;
   gap: 4px 8px;
-  padding: 4px 0;
+  padding: 4px 8px;
   cursor: pointer;
 }
 
@@ -2584,6 +2607,18 @@ useKeyboardShortcuts([
   padding: 4px 8px;
   cursor: pointer;
   text-align: right;
+}
+
+/* 红字（负数）金额：会计惯例用红色标示冲红分录 */
+.entry-amount-red {
+  color: #d03050;
+  font-weight: 600;
+}
+
+/* 需 !important：Element Plus 主题覆盖层对 .el-input__inner 的颜色规则优先级更高 */
+.el-input-number.entry-amount-red :deep(.el-input__inner) {
+  color: #d03050 !important;
+  font-weight: 600;
 }
 
 .voucher-table--readonly :deep(.el-table__body tr) {

@@ -14,6 +14,9 @@ import { assertAccountIdsInScope, type AccountScopeContext } from '../services/a
 import { maintainDocBatches, reverseDocBatches } from '../services/scmBatch.js'
 import { maintainDocSerials, reverseDocSerials } from '../services/scmSerial.js'
 import { computeIssueSuggestion, computeProductionPlanActionState, computePushedQty } from '../services/scmProduction.js'
+import { getReportedGoodQtyByProduct, validateWorkReportQty } from '../services/scmWorkReport.js'
+import { getQcDefectLines, validateFinishQc, validateQcDefectPush } from '../services/scmQcControl.js'
+import { buildMissingAccountMessage, resolveScmAccount } from '../services/scmAccountResolver.js'
 import {
   calculateMrpDocument,
   applyMrpAdjustments,
@@ -27,6 +30,8 @@ import {
 } from '../services/scmMrpDocument.js'
 import { getCostVariance } from '../services/scmCostVariance.js'
 import { sendStateError } from '../utils/stateError.js'
+import { assertModuleLicensed } from '../services/licenseService.js'
+import { docTypeToModules, planTypeToModules, type LicenseModuleKey } from '../services/licenseModules.js'
 import { restoreMissingSourceLineIds, restorePlanProductLineage } from '../services/scmDocLineage.js'
 import { buildMrPushPreview, groupMrProductionPlanLines, resolveMrPushNodeSupplier } from '../services/scmMrPush.js'
 import { buildSalesOrderAvailabilityLines, hasBatchDispatchRemaining } from '../services/scmSalesOrderAvailability.js'
@@ -67,16 +72,52 @@ const CATEGORY_PERM: Record<string, string> = {
   inventory: 'scm:inventory', purchase: 'scm:purchase', sale: 'scm:sale',
   production: 'scm:production', outsource: 'scm:outsource', finance: 'scm:arap',
 }
-// 由单据 id 反查业务域（用于 /scm/docs/:id[/op]）
-function docCategoryById(req: AuthRequest): string | undefined {
+// 由单据 id 反查单据类型（用于 /scm/docs/:id[/op]）
+function docTypeById(req: AuthRequest): string | undefined {
   const m = req.path.match(/^\/scm\/docs\/([0-9a-fA-F-]{8,})/)
   if (!m) return undefined
   try {
     const row = getDb().prepare('SELECT doc_type FROM scm_doc WHERE id=? AND account_set_id=?')
       .get(m[1], req.accountSetId || '') as { doc_type?: string } | undefined
-    return row?.doc_type ? CODE_CATEGORY[row.doc_type] : undefined
+    return row?.doc_type || undefined
   } catch { return undefined }
 }
+function docCategoryById(req: AuthRequest): string | undefined {
+  const docType = docTypeById(req)
+  return docType ? CODE_CATEGORY[docType] : undefined
+}
+/** 权限守卫用的单据类型：新增取 body、按 id 的接口反查、列表取筛选参数 */
+function docTypeForPerm(req: AuthRequest): string | undefined {
+  if (req.method === 'POST' && req.path === '/scm/docs') return String(req.body?.doc_type || '') || undefined
+  if (/^\/scm\/docs\/[0-9a-fA-F-]{8,}/.test(req.path)) return docTypeById(req)
+  return String(req.query?.doc_type || '') || undefined
+}
+
+// ── 模块授权守卫：按单据 id 的接口在全局 licenseMiddleware 里拿不到 doc_type，这里补一次 ──
+// 生产 / 委外单据（PL/PF/WO/WI 等）要求对应模块已注册；其余单据类型归进销存，全局中间件已按 /api/scm 前缀校验。
+function planTypeById(req: AuthRequest): string | undefined {
+  const m = req.path.match(/^\/scm\/production-plans\/([0-9a-fA-F-]{8,})/)
+  if (!m) return undefined
+  try {
+    const row = getDb().prepare('SELECT plan_type FROM scm_production_plan WHERE id=? AND account_set_id=?')
+      .get(m[1], req.accountSetId || '') as { plan_type?: string } | undefined
+    return row?.plan_type || undefined
+  } catch { return undefined }
+}
+router.use((req: AuthRequest, res, next) => {
+  let required: LicenseModuleKey[] = []
+  if (/^\/scm\/docs\/[0-9a-fA-F-]{8,}/.test(req.path)) {
+    required = docTypeToModules(docTypeById(req))
+  } else if (/^\/scm\/production-plans\/[0-9a-fA-F-]{8,}/.test(req.path)) {
+    const planType = planTypeById(req)
+    if (planType) required = planTypeToModules(planType)
+  }
+  if (required.length === 0) return next()
+  const error = assertModuleLicensed(required)
+  if (error) return res.status(402).json({ code: error.code, message: error.message })
+  return next()
+})
+
 router.use((req: AuthRequest, res, next) => {
   const p = req.path
   if (!p.startsWith('/scm/')) return next()
@@ -103,6 +144,9 @@ router.use((req: AuthRequest, res, next) => {
       cat = CODE_CATEGORY[String(req.query?.doc_type || '')]  // 列表按筛选域
     }
     needAny = cat ? [CATEGORY_PERM[cat]] : null
+    // 期初入库(IS)是建立库存的唯一入口，生产/委外单独授权时也要能用；
+    // 除进销存的「其他出入库」权限外，额外接受专用的「期初库存」权限（scm:opening 属共享基础层）。
+    if (docTypeForPerm(req) === 'IS') needAny = ['scm:inventory', 'scm:opening']
     if (/\/(audit|unaudit)$/.test(p)) needAction = 'scm:audit'
     else if (req.method === 'DELETE') needAction = 'scm:delete'
   } else if (p.startsWith('/scm/boms') || p.startsWith('/scm/production-plans') || p.startsWith('/scm/work-centers') || p.startsWith('/scm/routings') || p.startsWith('/scm/work-reports') || p.startsWith('/scm/qc-docs') || p.startsWith('/scm/mrp')) {
@@ -1021,8 +1065,53 @@ const deleteDocHandler = (req: AuthRequest, res: Response) => {
 }
 router.delete('/scm/docs/:id', operationLog('供应链单据删除', '供应链'), deleteDocHandler)
 
+/** 工单头 scrap_qty = 各成品行报废数之和（与 finished_qty 的同步方式一致） */
+function syncPlanScrapQty(db: ReturnType<typeof getDb>, aid: string, planId: string) {
+  const total = (db.prepare('SELECT COALESCE(SUM(scrap_qty),0) s FROM scm_production_plan_product WHERE plan_id=?').get(planId) as any)?.s || 0
+  db.prepare('UPDATE scm_production_plan SET scrap_qty=? WHERE id=? AND account_set_id=?').run(round2(total), planId, aid)
+}
+
+/**
+ * 出库前按 (物料, 仓库) 聚合校验库存。
+ *
+ * 逐行独立比对会让「同一物料同仓拆成多行」的单据每行都通过校验，直到写库存时才由
+ * applyMovingAvgOut 抛错；那时报出的「当前库存」已经扣掉了前几行，是个中间值，
+ * 与用户在库存页看到的数字对不上，排查时很容易误判成库存算错。
+ *
+ * @param label 出错文案，收到物料显示名、可用量、本单合计需求量
+ * @returns 错误信息；库存充足时返回 null
+ */
+function checkAggregatedOutStock(
+  db: ReturnType<typeof getDb>,
+  aid: string,
+  rows: Array<{ item_code: string; warehouse_code: string | null | undefined; qty: number }>,
+  label: (itemName: string, onHand: number, need: number) => string,
+): string | null {
+  const needByStock = new Map<string, { item: string; warehouse: string; qty: number }>()
+  for (const r of rows) {
+    const qty = Number(r.qty) || 0
+    if (qty <= 0) continue
+    const warehouse = String(r.warehouse_code || '')
+    const key = `${warehouse}|${r.item_code}`
+    const cur = needByStock.get(key) || { item: r.item_code, warehouse, qty: 0 }
+    cur.qty = r6(cur.qty + qty)
+    needByStock.set(key, cur)
+  }
+  for (const need of needByStock.values()) {
+    const s = db.prepare('SELECT qty FROM scm_stock WHERE account_set_id=? AND warehouse_code=? AND item_code=?')
+      .get(aid, need.warehouse, need.item) as any
+    const onHand = Number(s?.qty) || 0
+    if (onHand < need.qty) {
+      const item = getItem(db, aid, need.item)
+      return label(item?.name || need.item, onHand, need.qty)
+    }
+  }
+  return null
+}
+
 // ── 审核/反审核（触发库存移动） ─────────────────────────
-const auditDocHandler = (req: AuthRequest, res: Response) => {
+// 导出供单元测试直接调用（批量操作也复用此 handler）
+export const auditDocHandler = (req: AuthRequest, res: Response) => {
   const db = getDb(); const aid = asid(req)
   const doc = db.prepare('SELECT * FROM scm_doc WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
   if (!doc) return res.status(404).json({ code: 404, message: '单据不存在' })
@@ -1096,6 +1185,8 @@ const auditDocHandler = (req: AuthRequest, res: Response) => {
     if (doc.doc_type === 'PF' || doc.doc_type === 'WI') {
       const kittingError = validateFinishKitting(db, aid, doc.plan_id, lines)
       if (kittingError) return res.status(400).json({ code: 400, message: kittingError })
+      const qcError = validateFinishQc(db, aid, doc)
+      if (qcError) return res.status(400).json({ code: 400, message: qcError })
     }
   }
 
@@ -1137,15 +1228,12 @@ const auditDocHandler = (req: AuthRequest, res: Response) => {
     }
   }
 
-  // stock check: outbound types need enough qty
+  // stock check: outbound types need enough qty（按 物料+仓库 聚合，避免同料多行各自过关）
   if (docType.direction === 'out' && docType.affects_stock) {
-    for (const l of lines) {
-      const s = db.prepare('SELECT qty FROM scm_stock WHERE account_set_id=? AND warehouse_code=? AND item_code=?').get(aid, l.warehouse_code, l.item_code) as any
-      if (!s || s.qty < l.qty) {
-        const item = getItem(db, aid, l.item_code)
-        return res.status(400).json({ code: 400, message: `${item?.name || l.item_code} 库存不足（当前 ${s?.qty || 0}，需 ${l.qty}）` })
-      }
-    }
+    const err = checkAggregatedOutStock(db, aid,
+      lines.map((l: any) => ({ item_code: l.item_code, warehouse_code: l.warehouse_code, qty: l.qty })),
+      (name, onHand, need) => `${name} 库存不足（当前 ${onHand}，需 ${need}）`)
+    if (err) return res.status(400).json({ code: 400, message: err })
   }
 
   // 组装单「成品行模式」：明细带 line_role='product' 为成品行（入库），其余为子件行（出库）。
@@ -1161,14 +1249,12 @@ const auditDocHandler = (req: AuthRequest, res: Response) => {
     }
     for (const l of compLines) {
       if (!l.qty || l.qty <= 0) continue
-      const wh = l.warehouse_code || doc.warehouse_code
-      if (!wh) return res.status(400).json({ code: 400, message: '组装单子件需指定仓库' })
-      const s = db.prepare('SELECT qty FROM scm_stock WHERE account_set_id=? AND warehouse_code=? AND item_code=?').get(aid, wh, l.item_code) as any
-      if (!s || s.qty < l.qty) {
-        const item = getItem(db, aid, l.item_code)
-        return res.status(400).json({ code: 400, message: `子件「${item?.name || l.item_code}」库存不足（当前 ${s?.qty || 0}，需 ${l.qty}）` })
-      }
+      if (!(l.warehouse_code || doc.warehouse_code)) return res.status(400).json({ code: 400, message: '组装单子件需指定仓库' })
     }
+    const compStockErr = checkAggregatedOutStock(db, aid,
+      compLines.map((l: any) => ({ item_code: l.item_code, warehouse_code: l.warehouse_code || doc.warehouse_code, qty: l.qty })),
+      (name, onHand, need) => `子件「${name}」库存不足（当前 ${onHand}，需 ${need}）`)
+    if (compStockErr) return res.status(400).json({ code: 400, message: compStockErr })
     // 按成品分组模式（每条子件都带 product_group）：每个成品必须有本组子件
     const activeComps = compLines.filter((l: any) => Number(l.qty) > 0)
     const grouped = activeComps.length > 0
@@ -1201,14 +1287,12 @@ const auditDocHandler = (req: AuthRequest, res: Response) => {
       // 组装：校验子件库存
       for (const l of lines) {
         if (!l.qty || l.qty <= 0) continue
-        const wh = l.warehouse_code || doc.warehouse_code
-        if (!wh) return res.status(400).json({ code: 400, message: '组装单需指定仓库' })
-        const s = db.prepare('SELECT qty FROM scm_stock WHERE account_set_id=? AND warehouse_code=? AND item_code=?').get(aid, wh, l.item_code) as any
-        if (!s || s.qty < l.qty) {
-          const item = getItem(db, aid, l.item_code)
-          return res.status(400).json({ code: 400, message: `子件「${item?.name || l.item_code}」库存不足（当前 ${s?.qty || 0}，需 ${l.qty}）` })
-        }
+        if (!(l.warehouse_code || doc.warehouse_code)) return res.status(400).json({ code: 400, message: '组装单需指定仓库' })
       }
+      const bomCompStockErr = checkAggregatedOutStock(db, aid,
+        lines.map((l: any) => ({ item_code: l.item_code, warehouse_code: l.warehouse_code || doc.warehouse_code, qty: l.qty })),
+        (name, onHand, need) => `子件「${name}」库存不足（当前 ${onHand}，需 ${need}）`)
+      if (bomCompStockErr) return res.status(400).json({ code: 400, message: bomCompStockErr })
       if (!doc.warehouse_code) return res.status(400).json({ code: 400, message: '组装单需指定成品入库仓库' })
     } else {
       // 拆卸：校验成品库存
@@ -1229,12 +1313,11 @@ const auditDocHandler = (req: AuthRequest, res: Response) => {
       if (!l.qty || l.qty <= 0) continue
       if (!l.warehouse_code) return res.status(400).json({ code: 400, message: '调拨单每行需指定调入仓' })
       if (l.warehouse_code === srcWh) return res.status(400).json({ code: 400, message: '调入仓与调出仓不能相同' })
-      const s = db.prepare('SELECT qty FROM scm_stock WHERE account_set_id=? AND warehouse_code=? AND item_code=?').get(aid, srcWh, l.item_code) as any
-      if (!s || s.qty < l.qty) {
-        const item = getItem(db, aid, l.item_code)
-        return res.status(400).json({ code: 400, message: `${item?.name || l.item_code} 调出仓库存不足（当前 ${s?.qty || 0}，需 ${l.qty}）` })
-      }
     }
+    const trStockErr = checkAggregatedOutStock(db, aid,
+      lines.map((l: any) => ({ item_code: l.item_code, warehouse_code: srcWh, qty: l.qty })),
+      (name, onHand, need) => `${name} 调出仓库存不足（当前 ${onHand}，需 ${need}）`)
+    if (trStockErr) return res.status(400).json({ code: 400, message: trStockErr })
   }
 
   // 完工入库(PF)/委外入库(WI) 关联工单：审核前校验已归集领料/发料成本（无成本不允许入库）
@@ -1361,7 +1444,7 @@ const auditDocHandler = (req: AuthRequest, res: Response) => {
       // 委外入库另加「加工费」(行 process_fee 单价)：成品成本=料分摊+加工费；加工费生成委外厂应付。
       const sum = getPlanCostSummary(db, aid, doc.plan_id, 0)   // 本次入库尚未过账（finished_qty 未变）
       const issueUnitCost = sum.issueUnitCost
-      const planProducts = db.prepare('SELECT id, item_code, plan_qty, finished_qty, labor_absorbed, overhead_absorbed FROM scm_production_plan_product WHERE plan_id=? AND account_set_id=?').all(doc.plan_id, aid) as any[]
+      const planProducts = db.prepare('SELECT id, item_code, plan_qty, finished_qty, COALESCE(scrap_qty,0) AS scrap_qty, labor_absorbed, overhead_absorbed FROM scm_production_plan_product WHERE plan_id=? AND account_set_id=?').all(doc.plan_id, aid) as any[]
       const prodByItem = new Map<string, any>(planProducts.map(p => [p.item_code, p]))
       // 各完工行的料上卷成本（不含加工费）+ 本批各成品完工数
       const lineRollup: number[] = []
@@ -1375,8 +1458,9 @@ const auditDocHandler = (req: AuthRequest, res: Response) => {
         sumRollup = round2(sumRollup + rollup)
         if (prod && q > 0) batchQtyByProduct.set(prod.id, (batchQtyByProduct.get(prod.id) || 0) + q)
       }
-      // 末批：本批后「所有成品」均达到计划数 → 吸收全部料 WIP
-      const isLastOfOrder = planProducts.every(p => (Number(p.finished_qty) || 0) + (batchQtyByProduct.get(p.id) || 0) >= (Number(p.plan_qty) || 0) - 1e-6)
+      // 末批：本批后「所有成品」均达到计划数 → 吸收全部料 WIP。
+      // 报废数一并计入：计划 10 件做出 8 好 2 废也是做完了，否则在制永远清不干净、工单关不掉。
+      const isLastOfOrder = planProducts.every(p => (Number(p.finished_qty) || 0) + (Number(p.scrap_qty) || 0) + (batchQtyByProduct.get(p.id) || 0) >= (Number(p.plan_qty) || 0) - 1e-6)
       const wipBefore = sum.wip
       const materialBudget = isLastOfOrder ? Math.max(0, wipBefore) : Math.max(0, Math.min(sumRollup, wipBefore))
       const f = sumRollup > 0 ? materialBudget / sumRollup : 0
@@ -1389,7 +1473,7 @@ const auditDocHandler = (req: AuthRequest, res: Response) => {
         const prod = planProducts.find(p => p.id === pid)
         const lo = laborOh.get(pid) || { labor: 0, overhead: 0 }
         const planQ = Number(prod?.plan_qty) || 0
-        const lastForProd = (Number(prod?.finished_qty) || 0) + bq >= planQ - 1e-6
+        const lastForProd = (Number(prod?.finished_qty) || 0) + (Number(prod?.scrap_qty) || 0) + bq >= planQ - 1e-6
         const remL = Math.max(0, round2((lo.labor || 0) - (Number(prod?.labor_absorbed) || 0)))
         const remO = Math.max(0, round2((lo.overhead || 0) - (Number(prod?.overhead_absorbed) || 0)))
         const labor = planQ > 0 ? (lastForProd ? remL : Math.max(0, Math.min(round2(bq * (lo.labor || 0) / planQ), remL))) : 0
@@ -1442,6 +1526,53 @@ const auditDocHandler = (req: AuthRequest, res: Response) => {
       for (const [pid, q] of batchQtyByProduct) { const cur = Number((getF.get(pid) as any)?.f) || 0; setF.run(r6(cur + q), pid) }
       const headFinished = (db.prepare('SELECT COALESCE(SUM(finished_qty),0) s FROM scm_production_plan_product WHERE plan_id=?').get(doc.plan_id) as any)?.s || 0
       db.prepare('UPDATE scm_production_plan SET finished_qty=? WHERE id=? AND account_set_id=?').run(round2(headFinished), doc.plan_id, aid)
+    } else if (doc.doc_type === 'PS' && doc.plan_id) {
+      // 不良品入库(PS)：按工单料成本上卷入不良品仓，回写 scrap_qty 并冲减料在制。
+      // 原先落在通用入库分支按手工价（通常是 0）入库，废品的料成本全部压在合格品头上，
+      // 工单在制也永远清不干净。人工/制费不由废品承担——废品损失只计料，与 PF 的 true-up 口径互补。
+      const sum = getPlanCostSummary(db, aid, doc.plan_id, 0)
+      const planProducts = db.prepare('SELECT id, item_code FROM scm_production_plan_product WHERE plan_id=? AND account_set_id=?').all(doc.plan_id, aid) as any[]
+      const prodByItem = new Map<string, any>(planProducts.map(p => [p.item_code, p]))
+      const lineRollup: number[] = []
+      const batchQtyByProduct = new Map<string, number>()
+      let sumRollup = 0
+      for (const l of lines) {
+        const q = Number(l.qty) || 0
+        const prod = prodByItem.get(l.item_code)
+        const rollup = prod ? round2(productMaterialUnitCost(db, prod.id, sum.issueUnitCost) * q) : 0
+        lineRollup.push(rollup)
+        sumRollup = round2(sumRollup + rollup)
+        if (prod && q > 0) batchQtyByProduct.set(prod.id, (batchQtyByProduct.get(prod.id) || 0) + q)
+      }
+      // 封顶在当前料在制内，避免报废把工单成本冲成负数
+      const budget = Math.max(0, Math.min(sumRollup, Math.max(0, sum.wip)))
+      const f = sumRollup > 0 ? budget / sumRollup : 0
+      let i = 0
+      for (const l of lines) {
+        if (!l.qty || l.qty <= 0) { i++; continue }
+        const q = Number(l.qty)
+        const unit = round2(round2(lineRollup[i] * f) / q)
+        const wh = l.warehouse_code || doc.warehouse_code
+        applyMovingAvgIn(db, aid, wh, l.item_code, q, unit, { type: doc.doc_type, no: doc.doc_no, seq: l.seq, date: doc.doc_date })
+        db.prepare('UPDATE scm_doc_line SET unit_cost=? WHERE id=?').run(unit, l.id)
+        i++
+      }
+      const addScrap = db.prepare('UPDATE scm_production_plan_product SET scrap_qty=ROUND(COALESCE(scrap_qty,0)+?,6) WHERE id=?')
+      for (const [pid, q] of batchQtyByProduct) addScrap.run(q, pid)
+      syncPlanScrapQty(db, aid, doc.plan_id)
+    } else if (doc.doc_type === 'PJ' && doc.plan_id) {
+      // 退料(PJ)：必须按**本工单的领用单价**回冲，不能取行上的 unit_cost/price（生成的退料单这两列通常是 0）。
+      // 否则 5 件料以 0 成本退回原料仓：仓库数量涨了金额没涨，均价被稀释；
+      // 同时 getMaterialIssueUnitCost 的「净领用额 ÷ 净领用量」分母变小而分子不变，工单料单价虚高，
+      // 完工入库上卷的成品成本随之偏高。领用单价须在写入退料流水**之前**取，否则会把本单算进去。
+      const issueUnitCost = getMaterialIssueUnitCost(db, aid, doc.plan_id)
+      for (const l of lines) {
+        if (!l.qty || l.qty <= 0) continue
+        const wh = l.warehouse_code || doc.warehouse_code
+        const cost = issueUnitCost.get(l.item_code) ?? (Number(l.unit_cost) || Number(l.price) || 0)
+        applyMovingAvgIn(db, aid, wh, l.item_code, l.qty, cost, { type: doc.doc_type, no: doc.doc_no, seq: l.seq, date: doc.doc_date })
+        db.prepare('UPDATE scm_doc_line SET unit_cost=? WHERE id=?').run(cost, l.id)
+      }
     } else {
       for (const l of lines) {
         if (!l.qty || l.qty <= 0) continue
@@ -1479,11 +1610,15 @@ const auditDocHandler = (req: AuthRequest, res: Response) => {
 }
 router.post('/scm/docs/:id/audit', operationLog('供应链单据审核', '供应链'), auditDocHandler)
 
-const unauditDocHandler = (req: AuthRequest, res: Response) => {
+// 导出供单元测试直接调用（批量操作也复用此 handler）
+export const unauditDocHandler = (req: AuthRequest, res: Response) => {
   const db = getDb(); const aid = asid(req)
   const doc = db.prepare('SELECT * FROM scm_doc WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
   if (!doc) return res.status(404).json({ code: 404, message: '单据不存在' })
   if (doc.status !== 'audited') return res.status(400).json({ code: 400, message: '仅已审核可反审核' })
+  // 已生成记账凭证的单据禁止反审核：反审核会回滚库存/往来，凭证却留在总账，两套账会脱节。
+  // 需先到「凭证查询」删除关联凭证（scm_* 来源凭证允许删除，与 cashier/asset_* 不同），再反审核。
+  if (doc.voucher_id) return res.status(400).json({ code: 400, message: '该单据已生成记账凭证，请先在凭证查询中删除关联凭证后再反审核' })
 
   const mrpSourceKind = doc.doc_type === 'SOa' ? 'sales_order' : doc.doc_type === 'AS' ? 'assembly' : null
   if (mrpSourceKind) {
@@ -1526,6 +1661,17 @@ const unauditDocHandler = (req: AuthRequest, res: Response) => {
     if (docType?.affects_stock) reverseDocBatches(db, aid, doc.id)
     // 序列号台账回退
     if (docType?.affects_stock) reverseDocSerials(db, aid, doc.id)
+    // 不良品入库(PS) 反审核：回退各成品行报废数（库存与流水已由 reverseDocMoves 回退）
+    if (doc.doc_type === 'PS' && doc.plan_id) {
+      const psLines = db.prepare('SELECT item_code, COALESCE(SUM(qty),0) q FROM scm_doc_line WHERE doc_id=? GROUP BY item_code').all(doc.id) as any[]
+      const findProd = db.prepare('SELECT id, COALESCE(scrap_qty,0) s FROM scm_production_plan_product WHERE plan_id=? AND item_code=? ORDER BY seq LIMIT 1')
+      const setS = db.prepare('UPDATE scm_production_plan_product SET scrap_qty=? WHERE id=?')
+      for (const pl of psLines) {
+        const prod = findProd.get(doc.plan_id, pl.item_code) as any
+        if (prod) setS.run(Math.max(0, r6((Number(prod.s) || 0) - (Number(pl.q) || 0))), prod.id)
+      }
+      syncPlanScrapQty(db, aid, doc.plan_id)
+    }
     // 完工入库(PF)/委外入库(WI) 反审核：按成品逐行回退完工数（回退到对应成品行），并同步头汇总
     if ((doc.doc_type === 'PF' || doc.doc_type === 'WI') && doc.plan_id) {
       const pfLines = db.prepare('SELECT item_code, COALESCE(SUM(qty),0) q, COALESCE(SUM(labor_cost),0) lc, COALESCE(SUM(overhead_cost),0) oc FROM scm_doc_line WHERE doc_id=? GROUP BY item_code').all(doc.id) as any[]
@@ -2729,25 +2875,28 @@ export function getPlanCostSummary(db: ReturnType<typeof getDb>, aid: string, pl
   }
   const issued = sumMove("AND d.doc_type IN ('PL','PB','WO') AND m.direction='out'")
   const returned = sumMove("AND d.doc_type='PJ' AND m.direction='in'")
-  const finished = sumMove("AND d.doc_type IN ('PF','WI') AND m.direction='in'")
+  // 不良品(PS) 与完工(PF/WI) 同样是把料从在制转出，一并计入「已结转」
+  const finished = sumMove("AND d.doc_type IN ('PF','WI','PS') AND m.direction='in'")
   const issuedCost = round2(issued.amt - returned.amt)
   const finishedCost = round2(finished.amt)
   const issueUnitCost = getMaterialIssueUnitCost(db, aid, planId)
   // 各成品：已完工料消耗 = 已完工数 × 每件料成本（BOM 上卷）
-  const products = db.prepare('SELECT id, item_code, plan_qty, finished_qty, labor_absorbed, overhead_absorbed FROM scm_production_plan_product WHERE plan_id=? AND account_set_id=? ORDER BY seq').all(planId, aid) as any[]
+  const products = db.prepare('SELECT id, item_code, plan_qty, finished_qty, COALESCE(scrap_qty,0) AS scrap_qty, labor_absorbed, overhead_absorbed FROM scm_production_plan_product WHERE plan_id=? AND account_set_id=? ORDER BY seq').all(planId, aid) as any[]
   let totalPlanQty = 0
   let consumedCost = 0
   let laborAbsorbed = 0, overheadAbsorbed = 0
   const productCost = products.map(p => {
     const planQ = Number(p.plan_qty) || 0
     const fin = Number(p.finished_qty) || 0
+    const scrapped = Number(p.scrap_qty) || 0
     totalPlanQty += planQ
     const matUnit = round2(productMaterialUnitCost(db, p.id, issueUnitCost))
-    const consumed = round2(fin * matUnit)
+    // 已消耗 = (已完工 + 已报废) × 每件料成本；报废也实实在在吃掉了料
+    const consumed = round2((fin + scrapped) * matUnit)
     consumedCost = round2(consumedCost + consumed)
     laborAbsorbed = round2(laborAbsorbed + (Number(p.labor_absorbed) || 0))
     overheadAbsorbed = round2(overheadAbsorbed + (Number(p.overhead_absorbed) || 0))
-    return { product_id: p.id, item_code: p.item_code, plan_qty: planQ, finished_qty: fin, mat_unit_cost: matUnit, consumed_cost: consumed }
+    return { product_id: p.id, item_code: p.item_code, plan_qty: planQ, finished_qty: fin, scrap_qty: scrapped, mat_unit_cost: matUnit, consumed_cost: consumed }
   })
   if (!totalPlanQty) totalPlanQty = Number(planQtyLegacy) || 0
   const unitCost = totalPlanQty > 0 ? round2(issuedCost / totalPlanQty) : 0
@@ -2983,13 +3132,22 @@ router.post('/scm/production-plans/:id/gen-finish', operationLog('工单生成�
   if (actionState.status === 'not_required') {
     return res.status(400).json({ code: 400, message: '该工单无可完工成品' })
   }
-  const planProducts = db.prepare('SELECT id,item_code,plan_qty,finished_qty,fp_warehouse,process_fee,process_tax_rate FROM scm_production_plan_product WHERE plan_id=? AND account_set_id=? ORDER BY seq').all(plan.id, aid) as any[]
+  const planProducts = db.prepare('SELECT id,item_code,plan_qty,finished_qty,COALESCE(scrap_qty,0) AS scrap_qty,fp_warehouse,process_fee,process_tax_rate FROM scm_production_plan_product WHERE plan_id=? AND account_set_id=? ORDER BY seq').all(plan.id, aid) as any[]
   if (!planProducts.length) return res.status(400).json({ code: 400, message: '工单无成品明细' })
-  // 解析本次完工项：优先 body.products；兼容旧 {qty}（首成品）；都没有则各成品默认「计划数−已完工」
+  // 解析本次完工项：优先 body.products；兼容旧 {qty}（首成品）；都没有则取默认值——
+  //   计划数 − 已完工 − 已报废，再受「已审核报工合格数 − 已完工」约束（没上报工习惯的用户不受影响）。
+  const reportedGood = isOut ? new Map<string, number>() : getReportedGoodQtyByProduct(db, aid, plan.id)
+  const defaultQty = (p: any) => {
+    const planRemain = r6(Math.max(0, (Number(p.plan_qty) || 0) - (Number(p.finished_qty) || 0) - (Number(p.scrap_qty) || 0)))
+    const reported = reportedGood.get(p.id)
+    if (reported === undefined) return planRemain
+    const reportRemain = r6(Math.max(0, reported - (Number(p.finished_qty) || 0)))
+    return Math.min(planRemain, reportRemain)
+  }
   let reqItems: any[]
   if (Array.isArray(req.body?.products)) reqItems = req.body.products
   else if (Number(req.body?.qty) > 0) reqItems = [{ product_id: planProducts[0].id, qty: Number(req.body.qty), process_fee: req.body?.process_fee }]
-  else reqItems = planProducts.map(p => ({ product_id: p.id, qty: r6(Math.max(0, (Number(p.plan_qty) || 0) - (Number(p.finished_qty) || 0))) }))
+  else reqItems = planProducts.map(p => ({ product_id: p.id, qty: defaultQty(p) }))
   const prodById = new Map<string, any>(planProducts.map(p => [p.id, p]))
   const headWh = req.body?.fp_warehouse ? String(req.body.fp_warehouse) : null
   const docLines = [] as any[]
@@ -2999,7 +3157,7 @@ router.post('/scm/production-plans/:id/gen-finish', operationLog('工单生成�
     const q = Number(it.qty) || 0
     if (q <= 0) continue
     const maxAllowed = getScmMaxAllowedQty(Number(prod.plan_qty) || 0, overrunPolicy)
-    const remain = r6(Math.max(0, maxAllowed - (Number(prod.finished_qty) || 0)))
+    const remain = r6(Math.max(0, maxAllowed - (Number(prod.finished_qty) || 0) - (Number(prod.scrap_qty) || 0)))
     if (q > remain + 1e-6) {
       return res.status(400).json({ code: 400, message: `成品 ${prod.item_code} 本次完工数 ${q} 超过剩余可完工数 ${remain}` })
     }
@@ -3294,7 +3452,8 @@ router.get('/scm/boms/:id/tree', (req: AuthRequest, res) => {
 })
 
 // ── 单据生成凭证（P5） ──────────────────────────────────────────────
-const genVoucherHandler = (req: AuthRequest, res: Response) => {
+// 导出供单元测试直接调用（批量操作也复用此 handler）
+export const genVoucherHandler = (req: AuthRequest, res: Response) => {
   const db = getDb(); const aid = asid(req)
   const doc = db.prepare('SELECT * FROM scm_doc WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
   if (!doc || doc.status !== 'audited') return res.status(400).json({ code: 400, message: '单据未审核' })
@@ -3312,11 +3471,10 @@ const genVoucherHandler = (req: AuthRequest, res: Response) => {
     ? db.prepare('SELECT ar_account, ap_account FROM scm_partner WHERE account_set_id=? AND code=?').get(aid, doc.partner_code) as any
     : null
 
-  // 供应链默认对方科目（系统参数可覆盖，否则用标准会计科目兜底）
-  const scmAcc = (key: string, fb: string): string => {
-    const r = db.prepare("SELECT param_value FROM system_params WHERE account_set_id=? AND param_key=?").get(aid, key) as any
-    return (r?.param_value as string) || fb
-  }
+  // 供应链对方科目：系统参数已配 > 默认编码在本账套存在 > 按科目名称探测。
+  // 第三级是必需的——默认编码取自《企业会计准则》科目表，而 ACD 导入的账套用润衡科目表，
+  // 进项税在那边是 2221001001 不是 22210101，不探测的话带税单据永远出不了凭证。
+  const scmAcc = (key: string, fb: string): string => resolveScmAccount(db, aid, key)?.code || fb
   const AP = partner?.ap_account || scmAcc('scm:acc_ap', '2202')          // 应付账款
   const AR = partner?.ar_account || scmAcc('scm:acc_ar', '1122')          // 应收账款
   const REV = scmAcc('scm:acc_revenue', '6001')                          // 主营业务收入
@@ -3382,6 +3540,7 @@ const genVoucherHandler = (req: AuthRequest, res: Response) => {
     } else if (cat === 'production') {
       // 完工入库/生产领用/组装/拆卸
       const v = cost > 0 ? cost : amt
+      const isProductLine = l.line_role === 'product'
       if (dir === 'in') {
         // 完工入库：借存货(全 v) / 贷生产成本(料) / 贷应付职工薪酬(人工) / 贷制造费用(制费)。
         // 逐行裁剪保证 料+人工+制费 恒等于 v（料极小、人工占主导的舍入边界也不会使凭证失衡）。
@@ -3395,11 +3554,15 @@ const genVoucherHandler = (req: AuthRequest, res: Response) => {
       }
       else if (dir === 'out') { addEntry(PROD, 'debit', v, sumr); addEntry(invCode, 'credit', v, sumr) }
       else if (doc.doc_type === 'AS') {
-        // 组装子件消耗：贷存货 / 借生产成本（成品入库在循环外补充）
-        addEntry(invCode, 'credit', v, sumr); addEntry(PROD, 'debit', v, sumr)
+        // 组装：子件消耗 贷存货/借生产成本；「成品行模式」的成品行是入库，方向相反。
+        // 成品行必须在这里按行记账——它没有 BOM 可依（缺料下推生成的组装单 bom_id 为空），
+        // 循环外的 BOM 补充块救不了它，漏判会把成品记成贷方存货，方向与实际库存移动相反。
+        if (isProductLine) { addEntry(invCode, 'debit', v, sumr); addEntry(PROD, 'credit', v, sumr) }
+        else { addEntry(invCode, 'credit', v, sumr); addEntry(PROD, 'debit', v, sumr) }
       } else if (doc.doc_type === 'DS') {
-        // 拆卸子件产生：借存货 / 贷生产成本（成品出库在循环外补充）
-        addEntry(invCode, 'debit', v, sumr); addEntry(PROD, 'credit', v, sumr)
+        // 拆卸：子件产生 借存货/贷生产成本；成品行是出库，方向相反
+        if (isProductLine) { addEntry(PROD, 'debit', v, sumr); addEntry(invCode, 'credit', v, sumr) }
+        else { addEntry(invCode, 'debit', v, sumr); addEntry(PROD, 'credit', v, sumr) }
       }
     } else if (cat === 'outsource') {
       // 委外发货(WO,出)：料投入在制 借生产成本/贷存货；委外入库(WI,入)：成品入库 借存货(全)/贷生产成本(料)/贷应付(加工费)
@@ -3423,10 +3586,12 @@ const genVoucherHandler = (req: AuthRequest, res: Response) => {
     }
   }
 
-  if (missing.size) return res.status(400).json({ code: 400, message: `科目不存在：${[...missing].join('、')}，请在科目表补建或在供应链参数中配置对方科目` })
+  if (missing.size) return res.status(400).json({ code: 400, message: buildMissingAccountMessage(db, aid, [...missing]) })
 
-  // AS/DS 成品分录（循环内处理了子件，此处补充成品）
-  if (doc.doc_type === 'AS' || doc.doc_type === 'DS') {
+  // AS/DS 成品分录：仅「无成品行的旧 BOM 模式」需要在此补充成品；
+  // 成品行模式（line_role='product'）已在循环内逐行按入/出库方向记账，且允许没有 bom_id。
+  const hasProductLine = lines.some((l: any) => l.line_role === 'product')
+  if ((doc.doc_type === 'AS' || doc.doc_type === 'DS') && !hasProductLine) {
     if (!doc.bom_id) return res.status(400).json({ code: 400, message: '组装/拆卸单必须指定BOM才能生成凭证' })
     const bom = db.prepare('SELECT * FROM scm_bom WHERE id=? AND account_set_id=?').get(doc.bom_id, aid) as any
     if (bom) {
@@ -3696,6 +3861,10 @@ function calcReportAmounts(db: ReturnType<typeof getDb>, aid: string, b: any) {
 router.post('/scm/work-reports', operationLog('生产报工新增', '供应链'), (req: AuthRequest, res) => {
   const db = getDb(); const b = req.body; const aid = asid(req)
   if (!b.plan_id) return res.status(400).json({ code: 400, message: '请选择工单' })
+  const qtyError = validateWorkReportQty(db, aid, {
+    planId: b.plan_id, productId: b.product_id, qty: b.qty, scrapQty: b.scrap_qty,
+  })
+  if (qtyError) return res.status(400).json({ code: 400, message: qtyError })
   const { labor, overhead } = calcReportAmounts(db, aid, b)
   const id = uuidv4(); const no = b.report_no || nextSeqNo(db, 'scm_work_report', 'report_no', aid, 'WR')
   db.prepare(`INSERT INTO scm_work_report (id,account_set_id,plan_id,product_id,report_no,report_date,item_code,process_name,work_center_code,qty,scrap_qty,work_hours,labor_amount,overhead_amount,operator,remark,status)
@@ -3706,9 +3875,14 @@ router.post('/scm/work-reports', operationLog('生产报工新增', '供应链')
 })
 router.put('/scm/work-reports/:id', operationLog('生产报工修改', '供应链'), (req: AuthRequest, res) => {
   const db = getDb(); const b = req.body; const aid = asid(req)
-  const ex = db.prepare('SELECT status FROM scm_work_report WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
+  const ex = db.prepare('SELECT status, plan_id FROM scm_work_report WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
   if (!ex) return res.status(404).json({ code: 404, message: '报工单不存在' })
   if (ex.status === 'audited') return res.status(400).json({ code: 400, message: '已审核报工不可修改' })
+  const qtyError = validateWorkReportQty(db, aid, {
+    planId: b.plan_id || ex.plan_id, productId: b.product_id, qty: b.qty, scrapQty: b.scrap_qty,
+    excludeReportId: req.params.id,
+  })
+  if (qtyError) return res.status(400).json({ code: 400, message: qtyError })
   const { labor, overhead } = calcReportAmounts(db, aid, b)
   db.prepare(`UPDATE scm_work_report SET product_id=?,report_date=?,item_code=?,process_name=?,work_center_code=?,qty=?,scrap_qty=?,work_hours=?,labor_amount=?,overhead_amount=?,remark=? WHERE id=? AND account_set_id=?`)
     .run(b.product_id ?? null, b.report_date, b.item_code ?? null, b.process_name ?? null, b.work_center_code ?? null, Number(b.qty) || 0, Number(b.scrap_qty) || 0, Number(b.work_hours) || 0, labor, overhead, b.remark ?? null, req.params.id, aid)
@@ -3815,6 +3989,47 @@ router.post('/scm/qc-docs/:id/unaudit', operationLog('质检单反审核', '供�
   db.prepare("UPDATE scm_qc_doc SET status='draft', auditor=NULL, audited_at=NULL WHERE id=?").run(req.params.id)
   res.json({ code: 0, data: { ok: true } })
 })
+// 质检单不良明细 → 一键生成不良品入库单(PS) 草稿。
+// body: { plan_id?, warehouse_code? }；plan_id 缺省取质检单来源（source_doc_type='production_plan'）。
+router.post('/scm/qc-docs/:id/gen-defect', operationLog('质检单下推不良品入库', '供应链'), (req: AuthRequest, res) => {
+  const db = getDb(); const aid = asid(req)
+  const qc = db.prepare('SELECT * FROM scm_qc_doc WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
+  const planId = req.body?.plan_id || (qc?.source_doc_type === 'production_plan' ? qc.source_doc_id : null)
+  const defectLines = qc ? getQcDefectLines(db, aid, qc.id) : []
+  const err = validateQcDefectPush(qc, planId, defectLines)
+  if (err) return res.status(qc ? 400 : 404).json({ code: qc ? 400 : 404, message: err })
+
+  const plan = db.prepare('SELECT * FROM scm_production_plan WHERE id=? AND account_set_id=?').get(planId, aid) as any
+  if (!plan) return res.status(400).json({ code: 400, message: '关联工单不存在' })
+  if (plan.status !== 'released') return res.status(400).json({ code: 400, message: '请先审核工单再下推不良品入库' })
+
+  const existing = db.prepare("SELECT doc_no FROM scm_doc WHERE account_set_id=? AND source_doc_id=? AND doc_type='PS' AND status<>'voided' LIMIT 1")
+    .get(aid, qc.id) as any
+  if (existing) return res.status(400).json({ code: 400, message: `该质检单已下推不良品入库单 ${existing.doc_no}，请勿重复下推` })
+
+  const wh = req.body?.warehouse_code || plan.fp_warehouse || null
+  if (!wh) return res.status(400).json({ code: 400, message: '请指定不良品入库仓库（工单未设成品仓）' })
+  const docNo = nextDocNo(db, aid, 'PS')
+  const docId = uuidv4()
+  db.transaction(() => {
+    db.prepare(`INSERT INTO scm_doc (id,account_set_id,doc_type,doc_no,doc_date,warehouse_code,operator,maker,status,plan_id,source_doc_id,total_qty,total_amount,remark,field_values)
+      VALUES (?,?,'PS',?,?,?,?,?,'draft',?,?,?,0,?, '{}')`).run(
+      docId, aid, docNo, qc.qc_date || new Date().toISOString().slice(0, 10), wh, userName(req), userName(req),
+      plan.id, qc.id, r6(defectLines.reduce((sum, l) => sum + l.qty, 0)), `质检单 ${qc.qc_no} 不良品入库`,
+    )
+    const ins = prepareDocLineInsert(db)
+    let seq = 0
+    for (const l of defectLines) {
+      seq++
+      ins.run(...buildDocLineRow(aid, docId, seq, {
+        item_code: l.item_code, warehouse_code: wh, qty: l.qty, price: 0,
+        batch_no: l.batch_no, remark: l.remark,
+      }, wh).values)
+    }
+  })()
+  res.json({ code: 0, data: { id: docId, doc_no: docNo } })
+})
+
 router.delete('/scm/qc-docs/:id', operationLog('质检单删除', '供应链'), (req: AuthRequest, res) => {
   const db = getDb(); const aid = asid(req)
   const ex = db.prepare('SELECT status FROM scm_qc_doc WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any

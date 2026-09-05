@@ -1,4 +1,5 @@
 import { shallowMount, flushPromises } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import MrpForm from '../MrpForm.vue'
 
@@ -35,6 +36,8 @@ vi.mock('@/api/scm', () => ({
 describe('MRP 编辑页来源候选', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // MrpForm 在 setup 里读取多标签 store，shallowMount 不经过 app.use(pinia)，需手动激活
+    setActivePinia(createPinia())
     route.name = 'ScmMrpEdit'
     route.params = { id: 'MRP-1' }
     route.query = {}

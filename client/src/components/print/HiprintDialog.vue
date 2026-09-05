@@ -9,7 +9,7 @@
     @opened="handleOpened"
   >
     <div class="hiprint-toolbar">
-      <template v-if="useTemplates">
+      <template v-if="useTemplates && !rawHtmlPreview">
         <span class="label">打印模板</span>
         <el-select
           v-model="selectedTemplateId"
@@ -33,8 +33,8 @@
       <el-button size="small" :loading="exportingPdf" @click="handleExportPdf">
         导出 PDF
       </el-button>
-      <el-button type="primary" size="small" :loading="printing" @click="handlePrint">
-        打印
+      <el-button size="small" :loading="printing" @click="handlePrint">
+        浏览器打印
       </el-button>
     </div>
 
@@ -54,6 +54,10 @@ import {
   buildSingleHtmlPanel,
   buildHtmlPrintData,
   renderHiprintPdfBlob,
+  wrapRawPrintPaper,
+  printRawHtml,
+  renderElementToPdfBlob,
+  paperDimensionsMm,
 } from '@/utils/printTemplateHiprint'
 import type { ApplicableTemplate, PrintTemplateType, PrintTemplate } from '@/types/print'
 
@@ -70,10 +74,17 @@ interface Props {
   defaultPanelBuilder?: () => { panels: unknown[] }
   /** 纸张默认（无模板时），如 'A4' */
   defaultPaper?: string
+  /** 四向页边距（mm）；不传则用内置默认 */
+  margins?: { top: number; bottom: number; left: number; right: number }
   /** 是否允许使用业务打印模板；关闭后固定使用无底图的内置 HTML 排版 */
   useTemplates?: boolean
   /** 无模板时的默认纸张方向 */
   defaultOrientation?: 'portrait' | 'landscape'
+  /**
+   * 标准报表：预览/打印/PDF 直接使用 getPrintHtml，不经 hiprint 拆表。
+   * hiprint 的 html 元素会重排表格，网格会变成孤立方框。
+   */
+  rawHtmlPreview?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -81,6 +92,7 @@ const props = withDefaults(defineProps<Props>(), {
   defaultPaper: 'A4',
   useTemplates: true,
   defaultOrientation: 'portrait',
+  rawHtmlPreview: false,
 })
 
 const emit = defineEmits<{ 'update:modelValue': [value: boolean] }>()
@@ -166,15 +178,37 @@ const resolvePanelAndData = async (): Promise<{ panel: any; data: any } | null> 
     widthMm: detail?.paper_size === 'custom' ? detail?.paper_width : undefined,
     heightMm: detail?.paper_size === 'custom' ? detail?.paper_height : undefined,
     orientation: props.defaultOrientation,
+    marginsMm: props.margins,
     background: props.useTemplates ? detail?.background_image || null : null,
   })
   return { panel, data: buildHtmlPrintData(html) }
+}
+
+function rawPrintOptions() {
+  return {
+    paperType: props.defaultPaper,
+    orientation: props.defaultOrientation,
+    marginsMm: props.margins,
+    title: props.title,
+  }
 }
 
 const renderPreview = async () => {
   rendering.value = true
   previewEmpty.value = false
   try {
+    if (props.rawHtmlPreview && props.getPrintHtml) {
+      const html = props.getPrintHtml()
+      if (!html) {
+        previewEmpty.value = true
+        if (previewRef.value) previewRef.value.innerHTML = ''
+        return
+      }
+      if (previewRef.value) previewRef.value.innerHTML = wrapRawPrintPaper(html, rawPrintOptions())
+      currentTp = null
+      return
+    }
+
     const mod = await loadHiprint()
     const resolved = await resolvePanelAndData()
     if (!resolved) {
@@ -198,9 +232,29 @@ const renderPreview = async () => {
   }
 }
 
+function downloadBlob(blob: Blob, fileName: string) {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = fileName
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
 const handlePrint = async () => {
   printing.value = true
   try {
+    if (props.rawHtmlPreview && props.getPrintHtml) {
+      const html = props.getPrintHtml()
+      if (!html) {
+        ElMessage.warning('无可打印内容')
+        return
+      }
+      printRawHtml(html, rawPrintOptions())
+      return
+    }
     const mod = await loadHiprint()
     const resolved = await resolvePanelAndData()
     if (!resolved) {
@@ -220,6 +274,18 @@ const handleExportPdf = async () => {
   if (exportingPdf.value) return
   exportingPdf.value = true
   try {
+    if (props.rawHtmlPreview && props.getPrintHtml) {
+      const paper = previewRef.value?.querySelector('.cw-raw-paper') as HTMLElement | null
+      if (!paper) {
+        ElMessage.warning('请先刷新预览')
+        return
+      }
+      const dim = paperDimensionsMm(props.defaultPaper, props.defaultOrientation)
+      const blob = await renderElementToPdfBlob(paper, dim)
+      downloadBlob(blob, `${props.title || '打印'}.pdf`)
+      ElMessage.success('PDF 已导出')
+      return
+    }
     const mod = await loadHiprint()
     const resolved = await resolvePanelAndData()
     if (!resolved) {
@@ -298,5 +364,8 @@ watch(
   text-align: left;
   background: #fff;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
+}
+.hiprint-preview :deep(.cw-raw-paper) {
+  margin: 0 auto;
 }
 </style>

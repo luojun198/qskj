@@ -6,7 +6,15 @@
  */
 import type Database from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
-import { deleteVoucherRecords } from './voucherEntry.js'
+import { deleteVoucherRecords, type VoucherEntryInput } from './voucherEntry.js'
+import {
+  insertAssetVoucher,
+  loadAssetAuxContext,
+  resolveAssetAuxRefs,
+  auxRefsForAccount,
+  resolveAccounts,
+  lastDayOfMonth,
+} from './assetVoucherBuilder.js'
 
 export interface DeprAsset {
   id: string
@@ -28,6 +36,8 @@ export interface DeprAsset {
   expense_account: string | null  // 折旧费用科目（来自 purpose）
   asset_account: string | null    // 资产原值科目（来自 category）
   depr_account_code: string | null // 累计折旧科目（来自 category）
+  /** 是否发生过改变折旧基数的变动（原值变动/折旧要素调整/减值/改良），决定是否按剩余期间摊余 */
+  rebased?: boolean
 }
 
 export interface DeprLine {
@@ -48,16 +58,41 @@ export interface DeprLine {
 
 // ── 四种折旧算法 ──────────────────────────────────────────
 
+/**
+ * P1-2：资产发生过原值变动 / 折旧要素调整 / 减值 / 改良后，会计准则要求采用
+ * 「未来适用法」——历史折旧不重算，剩余可折金额在剩余期间内重新摊销。
+ *
+ * `rebased` 由 previewDepreciation 依据 fixed_asset_change 判定；未发生过此类变动的
+ * 资产走原口径（(原值-残值)/使用月数 全期平均），保证历史账套结果不变。
+ */
 function calcMethodAvgYears(a: DeprAsset): number {
   if (!a.use_months || a.use_months <= 0) return 0
+  if (a.depr_months_done >= a.use_months) return 0
+
+  if (a.rebased) {
+    // 剩余期间摊余：(当前净值 - 残值) / 剩余月数
+    const remainingMonths = a.use_months - a.depr_months_done
+    const remainingDepreciable = a.net_value - a.salvage_value
+    if (remainingDepreciable <= 0 || remainingMonths <= 0) return 0
+    return Math.round((remainingDepreciable / remainingMonths) * 100) / 100
+  }
+
   const depreciable = a.original_value - a.salvage_value
   if (depreciable <= 0) return 0
-  if (a.depr_months_done >= a.use_months) return 0
   return Math.round((depreciable / a.use_months) * 100) / 100
 }
 
 function calcMethodWorkload(a: DeprAsset, currentWorkload: number): number {
   if (!a.total_workload || a.total_workload <= 0) return 0
+
+  if (a.rebased) {
+    // 剩余工作量摊余：(当前净值 - 残值) / 剩余工作量 × 当月工作量
+    const remainingWorkload = a.total_workload - (a.workload_done || 0)
+    const remainingDepreciable = a.net_value - a.salvage_value
+    if (remainingWorkload <= 0 || remainingDepreciable <= 0) return 0
+    return Math.round((remainingDepreciable / remainingWorkload) * currentWorkload * 100) / 100
+  }
+
   const depreciable = a.original_value - a.salvage_value
   if (depreciable <= 0) return 0
   return Math.round((depreciable / a.total_workload) * currentWorkload * 100) / 100
@@ -78,13 +113,22 @@ function calcMethodDoubleDeclining(a: DeprAsset): number {
 
 function calcMethodSumOfYears(a: DeprAsset): number {
   if (!a.use_months || a.use_months <= 0) return 0
+  const remaining = a.use_months - a.depr_months_done
+  if (remaining <= 0) return 0
+
+  if (a.rebased) {
+    // 剩余期间重新起算年数总和：分母改为剩余月数的和 remaining(remaining+1)/2
+    const remainingDepreciable = a.net_value - a.salvage_value
+    if (remainingDepreciable <= 0) return 0
+    const sumOfRemaining = (remaining * (remaining + 1)) / 2
+    return Math.round(((remainingDepreciable * remaining) / sumOfRemaining) * 100) / 100
+  }
+
   const depreciable = a.original_value - a.salvage_value
   if (depreciable <= 0) return 0
   const n = a.use_months
   const sumOfNums = (n * (n + 1)) / 2
-  const remaining = n - a.depr_months_done
-  if (remaining <= 0) return 0
-  return Math.round((depreciable * remaining / sumOfNums) * 100) / 100
+  return Math.round(((depreciable * remaining) / sumOfNums) * 100) / 100
 }
 
 // ── 计划明细：预览（不写库） ───────────────────────────────
@@ -103,7 +147,14 @@ export function previewDepreciation(params: {
     SELECT fa.*,
       fp.expense_account,
       fc.account_code AS asset_account,
-      fc.depr_account_code
+      fc.depr_account_code,
+      -- P1-2：发生过改变折旧基数的变动后，改按「剩余期间摊余」计算（未来适用法）
+      EXISTS (
+        SELECT 1 FROM fixed_asset_change ch
+         WHERE ch.account_set_id = fa.account_set_id
+           AND ch.asset_no = fa.asset_no
+           AND ch.change_kind IN ('original_value', 'depr_factor', 'impairment', 'improvement')
+      ) AS rebased
     FROM fixed_asset fa
     LEFT JOIN fixed_asset_purpose  fp ON fp.account_set_id = fa.account_set_id AND fp.code = fa.purpose_code
     LEFT JOIN fixed_asset_category fc ON fc.account_set_id = fa.account_set_id AND fc.code = fa.category_code
@@ -224,96 +275,110 @@ export function generateDeprVoucher(params: {
   const { db, accountSetId, year, month, lines, deprAccumAccount, makerName, voucherTypeId } = params
   if (lines.length === 0) throw new Error('无折旧明细，无法生成凭证')
 
-  // 1. 汇总借方：按「折旧费用科目」合并
-  const expenseMap = new Map<string, number>()
-  for (const ln of lines) {
-    const acc = ln.expense_account || '660201'
-    expenseMap.set(acc, (expenseMap.get(acc) ?? 0) + ln.month_depr)
+  const auxContext = loadAssetAuxContext(db, accountSetId)
+
+  // 资产 → 辅助核算引用（部门/使用人）缓存，避免逐行重复查库
+  const refsCache = new Map<string, Record<string, string>>()
+  const assetInfo = db.prepare(
+    'SELECT dept_code, user_name FROM fixed_asset WHERE account_set_id=? AND asset_no=? LIMIT 1'
+  )
+  const refsOf = (ln: DeprLine): Record<string, string> => {
+    const cached = refsCache.get(ln.asset_no)
+    if (cached) return cached
+    const row = (assetInfo.get(accountSetId, ln.asset_no) as any) || { dept_code: ln.dept_code }
+    const refs = resolveAssetAuxRefs(
+      db,
+      accountSetId,
+      { dept_code: row.dept_code ?? ln.dept_code, user_name: row.user_name },
+      auxContext
+    )
+    refsCache.set(ln.asset_no, refs)
+    return refs
   }
 
-  // 2. 汇总贷方：按「累计折旧科目」合并（优先使用类别中配置的，无则使用传入的默认值）
-  const accumMap = new Map<string, number>()
+  /**
+   * P0-1：借方按「折旧费用科目 + 辅助核算项组合」二元组汇总（原先只按科目汇总）。
+   * 否则启用了部门辅助核算的费用科目，其部门辅助明细账会缺数或串账。
+   */
+  interface DeprGroup {
+    accountCode: string
+    refs: Record<string, string>
+    amount: number
+  }
+  const groupKey = (code: string, refs: Record<string, string>) =>
+    `${code}||${Object.keys(refs).sort().map(k => `${k}=${refs[k]}`).join(',')}`
+
+  const expenseGroups = new Map<string, DeprGroup>()
   for (const ln of lines) {
-    const acc = ln.depr_account_code || deprAccumAccount || '1602'
-    accumMap.set(acc, (accumMap.get(acc) ?? 0) + ln.month_depr)
+    const accountCode = ln.expense_account || '660201'
+    const refs = auxRefsForAccount(db, accountSetId, accountCode, refsOf(ln), auxContext)
+    const key = groupKey(accountCode, refs)
+    const hit = expenseGroups.get(key)
+    if (hit) hit.amount += ln.month_depr
+    else expenseGroups.set(key, { accountCode, refs, amount: ln.month_depr })
+  }
+
+  // 贷方：按「累计折旧科目 + 辅助核算项」汇总（优先类别配置，无则用传入默认值）
+  const accumGroups = new Map<string, DeprGroup>()
+  for (const ln of lines) {
+    const accountCode = ln.depr_account_code || deprAccumAccount || '1602'
+    const refs = auxRefsForAccount(db, accountSetId, accountCode, refsOf(ln), auxContext)
+    const key = groupKey(accountCode, refs)
+    const hit = accumGroups.get(key)
+    if (hit) hit.amount += ln.month_depr
+    else accumGroups.set(key, { accountCode, refs, amount: ln.month_depr })
   }
 
   const totalDepr = lines.reduce((s, l) => s + l.month_depr, 0)
   const totalDeprRounded = Math.round(totalDepr * 100) / 100
 
-  // 查询科目详情工具
-  const lookupAccount = db.prepare('SELECT id, name FROM accounts WHERE account_set_id=? AND code=? LIMIT 1')
-
-  // 预检：所有科目必须在账套内存在
-  const missingCodes: string[] = []
-  for (const [code] of expenseMap) {
-    if (!lookupAccount.get(accountSetId, code)) missingCodes.push(code)
-  }
-  for (const [code] of accumMap) {
-    if (!lookupAccount.get(accountSetId, code)) missingCodes.push(code)
-  }
-  
-  if (missingCodes.length > 0) {
-    const uniqueMissing = [...new Set(missingCodes)]
-    throw new Error(`以下科目在账套中不存在，无法生成凭证：${uniqueMissing.join('、')}。请先在「会计科目」中建立对应科目。`)
-  }
-
-  // 生成凭证号（按现有最大号+1）
-  const lastNo = (db.prepare(`
-    SELECT CAST(
-      CASE WHEN INSTR(voucher_no,'-')>0 THEN SUBSTR(voucher_no,INSTR(voucher_no,'-')+1) ELSE voucher_no END
-      AS INTEGER) no
-    FROM vouchers
-    WHERE account_set_id=? AND year=? AND period=?
-    ORDER BY no DESC LIMIT 1
-  `).get(accountSetId, year, month) as any)?.no ?? 0
-  const voucherNo = String(lastNo + 1).padStart(3, '0')
-
-  const voucherId = uuidv4()
-  const voucherDate = `${year}-${String(month).padStart(2, '0')}-${new Date(year, month, 0).getDate()}`
-
-  db.prepare(`
-    INSERT INTO vouchers
-      (id, account_set_id, voucher_no, voucher_type_id, voucher_date, year, period,
-       total_amount, maker_name, remark, source)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'asset_depr')
-  `).run(
-    voucherId, accountSetId, voucherNo, voucherTypeId ?? null,
-    voucherDate, year, month, totalDeprRounded, makerName,
-    `${year}年${month}月固定资产折旧`
+  // 预检：所有科目必须在账套内存在（缺失时抛出明确提示，不生成半截凭证）
+  const accounts = resolveAccounts(
+    db,
+    accountSetId,
+    [...[...expenseGroups.values()].map(g => g.accountCode), ...[...accumGroups.values()].map(g => g.accountCode)],
+    '折旧'
   )
 
-  const insEntry = db.prepare(`
-    INSERT INTO voucher_entries
-      (id, account_set_id, voucher_id, seq, account_id, account_code, account_name,
-       direction, amount, amount_cents, summary)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `)
-
-  let seq = 1
   const summary = `${year}年${month}月计提折旧`
-
-  // 借：各折旧费用科目
-  for (const [code, amt] of expenseMap) {
-    const acc = lookupAccount.get(accountSetId, code) as { id: string; name: string }
-    insEntry.run(
-      uuidv4(), accountSetId, voucherId, seq++,
-      acc.id, code, acc.name,
-      'debit', Math.round(amt * 100) / 100, Math.round(amt * 100), summary
-    )
+  const toEntry = (g: DeprGroup, direction: 'debit' | 'credit'): VoucherEntryInput => {
+    const acc = accounts.get(g.accountCode)!
+    return {
+      account_id: acc.id,
+      account_code: acc.code,
+      account_name: acc.name,
+      direction,
+      amount: Math.round(g.amount * 100) / 100,
+      summary,
+      ...g.refs,
+    }
   }
 
-  // 贷：累计折旧科目
-  for (const [code, amt] of accumMap) {
-    const acc = lookupAccount.get(accountSetId, code) as { id: string; name: string }
-    insEntry.run(
-      uuidv4(), accountSetId, voucherId, seq++,
-      acc.id, code, acc.name,
-      'credit', Math.round(amt * 100) / 100, Math.round(amt * 100), summary
-    )
-  }
+  const entries: VoucherEntryInput[] = [
+    ...[...expenseGroups.values()].filter(g => g.amount > 0).map(g => toEntry(g, 'debit')),
+    ...[...accumGroups.values()].filter(g => g.amount > 0).map(g => toEntry(g, 'credit')),
+  ]
 
-  return { voucherId, voucherNo, entryCount: seq - 1, totalDepr: totalDeprRounded }
+  const result = insertAssetVoucher({
+    db,
+    accountSetId,
+    source: 'asset_depr',
+    voucherDate: lastDayOfMonth(year, month),
+    year,
+    period: month,
+    remark: `${year}年${month}月固定资产折旧`,
+    makerName,
+    voucherTypeId,
+    entries,
+    auxContext,
+  })
+
+  return {
+    voucherId: result.voucherId,
+    voucherNo: result.voucherNo,
+    entryCount: result.entryCount,
+    totalDepr: totalDeprRounded,
+  }
 }
 
 // ── 从已计提历史重建生成凭证所需的最小 lines（按期间补生成凭证用）──────────

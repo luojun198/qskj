@@ -1,4 +1,5 @@
 import request from './request'
+import type { LicenseModuleKey } from '@/config/licenseModules'
 
 export interface LicenseStatus {
   activated: boolean
@@ -7,6 +8,13 @@ export interface LicenseStatus {
   daysRemaining: number
   machineId: string
   machineMismatch: boolean
+  /** 已授权模块（后端已展开，不含 '*'） */
+  modules: LicenseModuleKey[]
+}
+
+export interface LicenseActivateResult {
+  expiresAt: string
+  modules: LicenseModuleKey[]
 }
 
 export function getLicenseStatus() {
@@ -18,7 +26,7 @@ export function getMachineId() {
 }
 
 export function activateLicense(code: string) {
-  return request.post<{ expiresAt: string }>(
+  return request.post<LicenseActivateResult>(
     '/license/activate',
     { code },
     { skipErrorToast: true, skipLicenseRedirect: true }

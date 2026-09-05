@@ -1,5 +1,5 @@
 <template>
-  <el-card class="draft-card">
+  <el-card ref="containerRef" class="draft-card">
     <template #header>
       <div class="draft-card-header">
         <span class="draft-card-title">未审核凭证</span>
@@ -240,21 +240,26 @@
       </el-table-column>
     </el-table>
 
-    <!-- 分页 -->
-    <div
-      v-if="props.pagination"
-      class="draft-pagination"
-      style="display: flex; justify-content: flex-end"
-    >
-      <el-pagination
-        :current-page="props.pagination.page"
-        :page-size="props.pagination.pageSize"
-        :page-sizes="[20, 50, 100, 200]"
-        :total="props.pagination.total"
-        layout="total, sizes, prev, pager, next, jumper"
-        @size-change="handleSizeChange"
-        @current-change="handleCurrentPageChange"
-      />
+    <!-- 滚动加载状态 -->
+    <div v-if="props.pagination" class="draft-pagination">
+      <span class="draft-pagination__text">
+        共 {{ props.pagination.total }} 条 · 已加载 {{ props.vouchers.length }} 条
+      </span>
+      <span v-if="loadingMore" class="draft-pagination__text">加载中…</span>
+      <span v-else-if="!hasMore && props.vouchers.length > 0" class="draft-pagination__text">
+        已全部加载
+      </span>
+      <span v-else-if="hasMore" class="draft-pagination__text">下拉加载更多</span>
+      <el-select
+        :model-value="props.pagination.pageSize"
+        style="width: 95px"
+        @change="handleSizeChange"
+      >
+        <el-option label="每次 20 条" :value="20" />
+        <el-option label="每次 50 条" :value="50" />
+        <el-option label="每次 100 条" :value="100" />
+        <el-option label="每次 200 条" :value="200" />
+      </el-select>
     </div>
   </el-card>
 </template>
@@ -295,6 +300,10 @@ interface Props {
     total: number
   }
   selectedVoucherId?: string
+  /** 滚动追加加载中 */
+  loadingMore?: boolean
+  /** 是否还有未加载的数据 */
+  hasMore?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -304,6 +313,8 @@ const props = withDefaults(defineProps<Props>(), {
   voucherTypes: () => [],
   accounts: () => [],
   selectedVoucherId: '',
+  loadingMore: false,
+  hasMore: false,
 })
 
 const emit = defineEmits<{
@@ -354,6 +365,7 @@ function handleClearFilters() {
 }
 
 const { tableRef, onDragEnd, colWidth } = useListColumnWidth('voucher_draft_list')
+const containerRef = ref<any>(null)
 
 function handleRowClick(row: any) {
   emit('row-click', row)
@@ -522,12 +534,24 @@ function handleSizeChange(size: number) {
   emit('page-change', 1, size)
 }
 
-function handleCurrentPageChange(page: number) {
-  emit('page-change', page, props.pagination?.pageSize || 50)
-}
+defineExpose({ tableRef, containerRef })
 </script>
 
 <style scoped>
+.draft-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 8px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.draft-pagination__text {
+  white-space: nowrap;
+}
+
 .draft-card {
   margin-bottom: 0;
 }

@@ -138,6 +138,12 @@ export function useVoucherQuery(options: UseVoucherQueryOptions = {}) {
   // 数据列表
   const list = ref<Voucher[]>([])
   const loading = ref(false)
+  // 滚动追加加载中（与首次/重新加载的 loading 区分，避免整表 loading 遮罩闪烁）
+  const loadingMore = ref(false)
+  // 是否还有未加载的数据（pageSize 为 -1 表示「全部」，不参与滚动加载）
+  const hasMore = computed(
+    () => pagination.pageSize !== -1 && list.value.length < pagination.total
+  )
 
   const baseDataStore = useBaseDataStore()
 
@@ -227,18 +233,35 @@ export function useVoucherQuery(options: UseVoucherQueryOptions = {}) {
     return params
   }
 
-  // 查询方法
-  async function fetchData() {
-    loading.value = true
+  // 查询方法（append 为 true 时把结果追加到列表末尾，用于滚动加载）
+  async function fetchData(opts: { append?: boolean } = {}) {
+    const append = opts.append === true
+    if (loading.value || loadingMore.value) return
+    if (append) {
+      loadingMore.value = true
+    } else {
+      loading.value = true
+    }
     try {
       await performanceMonitor.measure('voucherQuery', async () => {
         const params = buildQueryParams()
         const res = await request.get<Voucher[]>('/voucher/vouchers', { params })
         const nextList = res.data || []
         const nextTotal = res.total ?? 0
+
+        if (append) {
+          const prevCount = list.value.length
+          list.value = list.value.concat(nextList)
+          pagination.total = nextTotal
+          // 传入偏移量，保证追加后斑马纹继续交替
+          flatList.value = flatList.value.concat(buildFlatList(nextList, prevCount))
+          return
+        }
+
         const maxPage = Math.max(1, Math.ceil(nextTotal / Math.max(1, pagination.pageSize)))
         if (nextList.length === 0 && nextTotal > 0 && pagination.page > maxPage) {
           pagination.page = maxPage
+          loading.value = false
           await fetchData()
           return
         }
@@ -248,7 +271,46 @@ export function useVoucherQuery(options: UseVoucherQueryOptions = {}) {
         flatList.value = buildFlatList(list.value)
       })
     } finally {
-      loading.value = false
+      if (append) {
+        loadingMore.value = false
+      } else {
+        loading.value = false
+      }
+    }
+  }
+
+  /** 滚动到底部时加载下一页并追加 */
+  async function loadMore() {
+    if (!hasMore.value || loading.value || loadingMore.value) return
+    pagination.page += 1
+    await fetchData({ append: true })
+  }
+
+  /**
+   * 一次性加载到指定页（用于从详情页返回时还原已加载的行）
+   * 以 pageSize = page * pageSize 单次请求，避免逐页串行
+   */
+  async function loadUpTo(page: number, pageSize: number) {
+    const targetPage = Math.max(1, page)
+    const targetSize = pageSize === -1 ? -1 : Math.max(1, pageSize)
+    if (targetPage === 1 || targetSize === -1) {
+      pagination.page = targetPage
+      pagination.pageSize = targetSize
+      await fetchData()
+      return
+    }
+    const originalPage = pagination.page
+    const originalSize = pagination.pageSize
+    pagination.page = 1
+    pagination.pageSize = targetPage * targetSize
+    try {
+      await fetchData()
+    } finally {
+      // 复原分页游标，后续 loadMore 从 targetPage 继续
+      pagination.page = targetPage
+      pagination.pageSize = targetSize
+      void originalPage
+      void originalSize
     }
   }
 
@@ -367,9 +429,10 @@ export function useVoucherQuery(options: UseVoucherQueryOptions = {}) {
   // 扁平化列表（shallowRef 手动更新，避免 computed 在无关响应式变化时重新计算）
   const flatList = shallowRef<any[]>([])
 
-  function buildFlatList(vouchers: any[]): any[] {
+  function buildFlatList(vouchers: any[], indexOffset = 0): any[] {
     const rows: any[] = []
-    for (const [index, v] of vouchers.entries()) {
+    for (const [i, v] of vouchers.entries()) {
+      const index = indexOffset + i
       const seq = getVoucherSeq(v.voucher_no)
       const abbr = getTypeAbbr(v.voucher_type_name || '记')
       const voucherLabel = `${abbr}-${seq}`
@@ -403,6 +466,8 @@ export function useVoucherQuery(options: UseVoucherQueryOptions = {}) {
     pagination,
     list,
     loading,
+    loadingMore,
+    hasMore,
     auxCategories,
     voucherTypes,
     accounts,
@@ -411,6 +476,8 @@ export function useVoucherQuery(options: UseVoucherQueryOptions = {}) {
 
     // 方法
     fetchData,
+    loadMore,
+    loadUpTo,
     buildQueryParams,
     onPageChange,
     onPageSizeChange,

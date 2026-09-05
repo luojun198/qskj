@@ -21,11 +21,13 @@ vi.mock('../services/machineId.js', () => ({
 import {
   activateLicense,
   assertLicenseValid,
+  assertModuleLicensed,
   getLicenseStatus,
   getTodayDateString,
   LICENSE_ERROR,
   verifyLicenseCode,
 } from '../services/licenseService.js'
+import { ALL_MODULE_KEYS, expandLicenseModules, permissionToModules } from '../services/licenseModules.js'
 
 function resolvePrivateKeyPath(): string {
   const candidates = [
@@ -69,6 +71,14 @@ function makeCode(machineId: string, expires: string): string {
   )
 }
 
+function makeCodeV2(machineId: string, expires: string, mods: string[]): string {
+  const privateKey = loadPrivateKey()
+  return buildLicenseCode(
+    { v: 2, mid: machineId, exp: expires, iat: getTodayDateString(), mods },
+    privateKey
+  )
+}
+
 describe('licenseService', () => {
   let db: Database.Database
   const originalSkip = process.env.LICENSE_SKIP
@@ -107,7 +117,7 @@ describe('licenseService', () => {
   it('有效注册码应激活成功', () => {
     const code = makeCode(TEST_MACHINE_ID, futureDate(30))
     const result = activateLicense(code, db)
-    expect(result).toEqual({ expiresAt: expect.any(String) })
+    expect(result).toEqual({ expiresAt: expect.any(String), modules: ALL_MODULE_KEYS })
 
     getMachineIdCandidatesMock.mockClear()
     const status = getLicenseStatus(db)
@@ -123,7 +133,7 @@ describe('licenseService', () => {
     const copiedCode = `${code.slice(0, 40)}\r\n${code.slice(40, 80)}\u200B${code.slice(80)}`
     const result = activateLicense(copiedCode, db)
 
-    expect(result).toEqual({ expiresAt: expect.any(String) })
+    expect(result).toEqual({ expiresAt: expect.any(String), modules: ALL_MODULE_KEYS })
     const row = db
       .prepare(`SELECT license_token FROM license_activation WHERE id = 'default'`)
       .get() as { license_token: string }
@@ -190,6 +200,103 @@ describe('licenseService', () => {
     expect(assertLicenseValid(db)).toBeNull()
     const status = getLicenseStatus(db)
     expect(status.activated).toBe(true)
+    expect(status.modules).toEqual(ALL_MODULE_KEYS)
+  })
+
+  describe('模块授权', () => {
+    it('未激活时模块列表为空', () => {
+      expect(getLicenseStatus(db).modules).toEqual([])
+    })
+
+    it('v1 注册码（无 mods）视为授权全部模块', () => {
+      activateLicense(makeCode(TEST_MACHINE_ID, futureDate(30)), db)
+      expect(getLicenseStatus(db).modules).toEqual(ALL_MODULE_KEYS)
+      expect(assertModuleLicensed('outsource', db)).toBeNull()
+    })
+
+    it('v2 注册码只解锁指定模块，未知 key 忽略', () => {
+      const code = makeCodeV2(TEST_MACHINE_ID, futureDate(30), ['scm', 'gl', 'unknown-module'])
+      const result = activateLicense(code, db)
+      expect(result).toEqual({ expiresAt: expect.any(String), modules: ['gl', 'scm'] })
+      expect(getLicenseStatus(db).modules).toEqual(['gl', 'scm'])
+      expect(assertLicenseValid(db)).toBeNull()
+
+      expect(assertModuleLicensed('gl', db)).toBeNull()
+      expect(assertModuleLicensed(['production', 'outsource'], db)?.code).toBe(
+        LICENSE_ERROR.MODULE_NOT_LICENSED
+      )
+      expect(assertModuleLicensed(['production', 'scm'], db)).toBeNull()
+    })
+
+    it('v2 注册码 mods 含 * 视为全部', () => {
+      activateLicense(makeCodeV2(TEST_MACHINE_ID, futureDate(30), ['*']), db)
+      expect(getLicenseStatus(db).modules).toEqual(ALL_MODULE_KEYS)
+    })
+
+    it('v2 注册码不含任何可用模块应拒绝', () => {
+      const code = makeCodeV2(TEST_MACHINE_ID, futureDate(30), ['nope'])
+      const result = verifyLicenseCode(code, TEST_MACHINE_ID, LICENSE_PUBLIC_KEY_PEM)
+      expect(result.ok).toBe(false)
+      if (!result.ok) expect(result.code).toBe(LICENSE_ERROR.INVALID)
+    })
+
+    it('v2 注册码 mods 为空数组应视为格式错误', () => {
+      const code = makeCodeV2(TEST_MACHINE_ID, futureDate(30), [])
+      const result = verifyLicenseCode(code, TEST_MACHINE_ID, LICENSE_PUBLIC_KEY_PEM)
+      expect(result.ok).toBe(false)
+      if (!result.ok) expect(result.code).toBe(LICENSE_ERROR.FORMAT)
+    })
+
+    it('不支持的版本号应拒绝', () => {
+      const code = buildLicenseCode(
+        { v: 9, mid: TEST_MACHINE_ID, exp: futureDate(30), iat: getTodayDateString(), mods: ['gl'] },
+        loadPrivateKey()
+      )
+      const result = verifyLicenseCode(code, TEST_MACHINE_ID, LICENSE_PUBLIC_KEY_PEM)
+      expect(result.ok).toBe(false)
+      if (!result.ok) expect(result.code).toBe(LICENSE_ERROR.INVALID)
+    })
+
+    it('LICENSE_SKIP 时模块校验直接放行', () => {
+      process.env.LICENSE_SKIP = 'true'
+      expect(assertModuleLicensed('cashier', db)).toBeNull()
+    })
+  })
+})
+
+describe('licenseModules', () => {
+  it('expandLicenseModules 处理 v1 / * / 未知 key', () => {
+    expect(expandLicenseModules(undefined)).toEqual(ALL_MODULE_KEYS)
+    expect(expandLicenseModules(['*'])).toEqual(ALL_MODULE_KEYS)
+    expect(expandLicenseModules(['outsource', 'gl', 'gl', 'x'])).toEqual(['gl', 'outsource'])
+    expect(expandLicenseModules(['x'])).toEqual([])
+  })
+
+  it('permissionToModules 按权限前缀归属模块', () => {
+    expect(permissionToModules('voucher:entry')).toEqual(['gl'])
+    expect(permissionToModules('period:close')).toEqual(['gl'])
+    expect(permissionToModules('cashier:journal')).toEqual(['cashier'])
+    expect(permissionToModules('asset:view')).toEqual(['asset'])
+    expect(permissionToModules('scm:purchase')).toEqual(['scm'])
+    expect(permissionToModules('scm:production')).toEqual(['production'])
+    expect(permissionToModules('scm:outsource')).toEqual(['outsource'])
+    expect(permissionToModules('system:user')).toEqual([])
+    expect(permissionToModules('*')).toEqual([])
+  })
+
+  it('供应链共享基础层权限对生产/委外开放', () => {
+    // 物料/仓库/库存/期初/参数/报表 是三个模块共用的底座，只归进销存会让生产模块无法开工
+    for (const code of ['scm:item', 'scm:category', 'scm:warehouse', 'scm:stock',
+      'scm:opening', 'scm:param', 'scm:colscheme', 'scm:report', 'scm:audit', 'scm:delete']) {
+      expect(permissionToModules(code)).toEqual(['scm', 'production', 'outsource'])
+    }
+    // 往来单位：委外要选委外厂
+    expect(permissionToModules('scm:partner')).toEqual(['scm', 'outsource'])
+    // 进销存专属不放宽
+    expect(permissionToModules('scm:sale')).toEqual(['scm'])
+    expect(permissionToModules('scm:inventory')).toEqual(['scm'])
+    expect(permissionToModules('scm:arap')).toEqual(['scm'])
+    expect(permissionToModules('scm:import')).toEqual(['scm'])
   })
 })
 

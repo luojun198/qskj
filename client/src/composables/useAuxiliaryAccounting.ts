@@ -89,9 +89,11 @@ export function useAuxiliaryAccounting(
   }
 
   function onAmountChange(entry: any, side: 'debit' | 'credit') {
-    if (side === 'debit' && entry.debit_amount > 0) {
+    // 用 !== 0 而非 > 0：红字（冲红）分录金额为负数，同样要清空对方列
+    const filled = (v: unknown) => Number.isFinite(Number(v)) && Number(v) !== 0
+    if (side === 'debit' && filled(entry.debit_amount)) {
       entry.credit_amount = null
-    } else if (side === 'credit' && entry.credit_amount > 0) {
+    } else if (side === 'credit' && filled(entry.credit_amount)) {
       entry.debit_amount = null
     }
   }

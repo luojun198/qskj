@@ -35,11 +35,12 @@
           icon="Delete"
           @click="handleDelete(currentReport)"
         >删除</el-button>
+        <el-button size="small" plain @click="handleCreateReport">新建报表</el-button>
       </div>
       <div v-if="currentReport" class="report-toolbar">
         <el-radio-group v-model="viewMode" size="small">
-          <el-radio-button label="template">模板视图</el-radio-button>
-          <el-radio-button label="compute">计算视图</el-radio-button>
+          <el-radio-button label="template">公式</el-radio-button>
+          <el-radio-button label="compute">取数</el-radio-button>
         </el-radio-group>
         <template v-if="viewMode === 'compute'">
           <el-select v-model="computeYear" size="small" style="width: 110px" placeholder="年度">
@@ -52,9 +53,95 @@
             计算
           </el-button>
         </template>
+        <ReportPageSetup
+          v-if="currentReport"
+          v-model="pageSetup"
+          :content-size="reportContentSize"
+          :saving="savingPageSetup"
+          @save="handleSavePageSetup"
+        />
+        <el-button
+          size="small"
+          icon="Download"
+          :loading="exportingExcel"
+          @click="handleExportExcel"
+        >
+          导出 Excel
+        </el-button>
         <el-button size="small" icon="Printer" @click="openPrint">打印</el-button>
       </div>
+
+      <!-- 公式视图即编辑态：改完自动保存 -->
+      <div v-if="currentReport && viewMode === 'template'" class="report-edit-toolbar">
+        <span class="cell-addr">{{ selectedAddress }}</span>
+        <span v-if="grid.selectionSummary.value" class="selection-summary">
+          {{ grid.selectionSummary.value }}
+        </span>
+        <el-popover placement="bottom-start" :width="420" trigger="click" @show="loadFormulaReference">
+          <template #reference>
+            <el-button size="small" class="formula-fx-button" title="公式速查">fx</el-button>
+          </template>
+          <div class="formula-reference">
+            <p class="formula-reference-hint">
+              点击函数名插入公式栏。支持 + - * / ^ %、括号与嵌套，如
+              <code>=ROUND(SUM(C6:C19)/3,2)</code>
+            </p>
+            <div v-for="group in formulaReferenceGroups" :key="group.name" class="formula-reference-group">
+              <div class="formula-reference-group-title">{{ group.name }}</div>
+              <div
+                v-for="item in group.items"
+                :key="item.name"
+                class="formula-reference-item"
+                @click="insertFormulaName(item)"
+              >
+                <span class="formula-reference-name">{{ item.signature }}</span>
+                <span class="formula-reference-desc">{{ item.description }}</span>
+              </div>
+            </div>
+          </div>
+        </el-popover>
+        <el-input
+          v-model="formulaInput"
+          size="small"
+          class="formula-input"
+          placeholder="输入文字，或以 = / @ 开头输入公式，例如 =SUM(C6:C19)、@ye(1001,99)"
+          @keyup.enter="applyFormulaBar"
+          @blur="applyFormulaBar"
+        />
+        <el-button-group>
+          <el-button size="small" :disabled="!hasRowSelection" @click="handleRowCol('insert_row')">插入行</el-button>
+          <el-button size="small" :disabled="!hasRowSelection" @click="handleRowCol('delete_row')">删除行</el-button>
+        </el-button-group>
+        <el-button-group>
+          <el-button size="small" :disabled="!hasColSelection" @click="handleRowCol('insert_col')">插入列</el-button>
+          <el-button size="small" :disabled="!hasColSelection" @click="handleRowCol('delete_col')">删除列</el-button>
+        </el-button-group>
+        <el-button-group>
+          <el-button size="small" :disabled="!grid.canMergeSelection.value" @click="grid.mergeSelection">合并</el-button>
+          <el-button size="small" :disabled="!grid.canUnmergeSelection.value" @click="grid.unmergeSelection">取消合并</el-button>
+        </el-button-group>
+        <span class="save-state" :class="`save-state--${grid.saveState.value}`">
+          <template v-if="grid.saveState.value === 'saving'">保存中…</template>
+          <template v-else-if="grid.saveState.value === 'error'">
+            保存失败
+            <el-button link type="danger" size="small" @click="grid.retrySave">重试</el-button>
+          </template>
+          <template v-else-if="grid.saveState.value === 'saved'">已保存 {{ savedAtText }}</template>
+          <template v-else-if="grid.isDirty.value">待保存…</template>
+        </span>
+      </div>
+
+      <StandardReportStyleToolbar
+        v-if="currentReport && viewMode === 'template'"
+        :style="grid.currentStyle.value"
+        :number-format="currentNumberFormat"
+        :disabled="!grid.hasStyleSelection.value"
+        @apply="grid.applyStyleToSelection"
+        @format="grid.applyNumberFormatToSelection"
+        @adjust-font-size="grid.adjustFontSize"
+      />
     </div>
+
 
     <HiprintDialog
       v-model="printVisible"
@@ -62,7 +149,10 @@
       :template-key="printTemplateKey"
       :title="currentReport?.name || '标准报表'"
       :get-print-html="buildPrintHtml"
-      default-paper="A4"
+      :raw-html-preview="true"
+      :default-paper="pageSetup.paperSize"
+      :default-orientation="pageSetup.orientation"
+      :margins="printMargins"
     />
 
     <el-dialog
@@ -127,28 +217,8 @@
     </el-dialog>
 
     <div class="report-body">
-      <table v-if="currentReport && gridRows.length > 0" class="report-grid">
-        <tbody>
-          <!-- 报表标题（表名）：跨列合并居中 -->
-          <tr v-if="!hasTitleInData">
-            <td :colspan="gridColCount" class="grid-cell title-cell">{{ currentReport.name }}</td>
-          </tr>
-          <template v-for="rIdx in gridRows" :key="rIdx">
-            <tr v-if="rIdx === titleRowIndex">
-              <td :colspan="gridColCount" class="grid-cell title-cell">{{ titleText }}</td>
-            </tr>
-            <tr v-else>
-              <td
-                v-for="col in gridColCount"
-                :key="col"
-                :class="cellClass(rIdx, col - 1)"
-              >
-                {{ cellDisplay(rIdx, col - 1) }}
-              </td>
-            </tr>
-          </template>
-        </tbody>
-      </table>
+      <!-- 公式与取数共用同一套渲染，格式完全一致；差别只在公式视图多一圈行列头 -->
+      <ReportSheetGrid v-if="currentReport" />
       <div v-else class="empty-state">
         <el-empty :description="currentReport ? '该报表无可显示的单元格' : '暂无标准报表，请从登录页导入 ACD 或点击重新导入'" />
       </div>
@@ -157,15 +227,36 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, provide, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import ReportSheetGrid from '@/components/report/ReportSheetGrid.vue'
+import StandardReportStyleToolbar from '@/components/report/StandardReportStyleToolbar.vue'
+import ReportPageSetup, {
+  type ReportPageSetupValue,
+} from '@/components/report/ReportPageSetup.vue'
+import { REPORT_GRID_KEY } from '@/components/report/reportGridContext'
+import { useStandardReportGrid } from '@/composables/useStandardReportGrid'
+import { useSystemParamsStore } from '@/stores/systemParams'
 import {
+  buildReportExportModel,
+  buildReportPrintHtml,
+  computeAutoFitScale,
+  exportReportToExcel,
+} from '@/utils/standardReportExport'
+import {
+  saveStandardReportPageSetup,
+  type RhStandardReportCell, updateStandardReportRowCol, type RhStandardReportRowColAction } from '@/api/ledgerStandardReport'
+import '@/views/report/report.styles.css'
+import {
+  createStandardReport,
   getStandardReports,
   getStandardReportDetail,
   previewAcdForStandardReports,
   uploadAcdForStandardReports,
   deleteStandardReport,
   computeStandardReport,
+  getFormulaReference,
+  type FormulaReferenceItem,
   type RhStandardReport,
   type RhStandardReportDetail,
   type RhStandardReportComputedCell,
@@ -175,6 +266,10 @@ import HiprintDialog from '@/components/print/HiprintDialog.vue'
 
 const reports = ref<RhStandardReport[]>([])
 const activeReportId = ref<string>('')
+// 公式视图直接就是编辑态：网格 UI 复用动态报表那套组件，数据由本 composable 适配
+const grid = useStandardReportGrid()
+provide(REPORT_GRID_KEY, grid.context)
+
 const currentReport = ref<RhStandardReportDetail | null>(null)
 const previewing = ref(false)
 const importing = ref(false)
@@ -195,14 +290,30 @@ const openPrint = () => {
   printVisible.value = true
 }
 
-// 视图模式：template=模板结构（公式文本）/ compute=按期间计算结果
-const viewMode = ref<'template' | 'compute'>('template')
+// 视图模式：进入报表默认取数；template=公式原文 / compute=按期间计算结果
+const viewMode = ref<'template' | 'compute'>('compute')
+// 视图态交给网格：公式=可编辑并显示行列头，取数=只读且不显行列头
+watch(
+  viewMode,
+  mode => {
+    grid.viewMode.value = mode
+    grid.showComputed.value = mode === 'compute' && grid.computedMap.value.size > 0
+  },
+  { immediate: true }
+)
 const now = new Date()
-const computeYear = ref<number>(now.getFullYear())
-const computePeriod = ref<number>(now.getMonth() + 1)
+// 默认年度/期间取账套当前会计区间（后端按最新已过账凭证推导，无凭证时回退 fiscal_year），
+// 而不是系统自然年月——否则新装机首次打开取数视图必然全是 0。
+const systemParams = useSystemParamsStore()
+const computeYear = ref<number>(systemParams.currentYear)
+const computePeriod = ref<number>(systemParams.currentPeriod)
 const computing = ref(false)
 const computedCells = ref<RhStandardReportComputedCell[] | null>(null)
-const years = Array.from({ length: now.getFullYear() - 2000 + 1 }, (_, i) => now.getFullYear() - i)
+// 年度下拉需覆盖账套会计区间，防止历史账套的年度不在可选范围内
+const years = computed(() => {
+  const top = Math.max(now.getFullYear(), computeYear.value)
+  return Array.from({ length: top - 2000 + 1 }, (_, i) => top - i)
+})
 
 const loadReports = async (preferredReportId?: string) => {
   try {
@@ -231,6 +342,8 @@ const loadReportDetail = async (id: string) => {
     const res = await getStandardReportDetail(id)
     if (res.code === 0) {
       currentReport.value = res.data
+      grid.loadDetail(res.data)
+      syncPageSetup(res.data)
     }
   } catch (error: any) {
     ElMessage.error(error.message || '获取报表详情失败')
@@ -239,10 +352,11 @@ const loadReportDetail = async (id: string) => {
 
 const handleSelectReport = async (index: string) => {
   activeReportId.value = index
-  // 切换报表时重置为模板视图并清空旧的计算结果
-  viewMode.value = 'template'
   computedCells.value = null
+  grid.computedMap.value = new Map()
+  grid.showComputed.value = false
   await loadReportDetail(index)
+  if (viewMode.value === 'compute') await runCompute()
 }
 
 const runCompute = async () => {
@@ -255,6 +369,17 @@ const runCompute = async () => {
     })
     if (res.code === 0) {
       computedCells.value = res.data.cells
+      // 同步给网格：取数视图据此显示结果并把数值右对齐
+      const map = new Map<string, { display_value: string; status: 'ok' | 'error'; numeric_value?: number | null }>()
+      for (const cell of res.data.cells || []) {
+        map.set(grid.cellKey(cell.row_index, cell.col_index), {
+          display_value: cell.display_value,
+          status: cell.status,
+          numeric_value: cell.numeric_value,
+        })
+      }
+      grid.computedMap.value = map
+      grid.showComputed.value = viewMode.value === 'compute'
     } else {
       ElMessage.error(res.message || '计算失败')
     }
@@ -360,36 +485,10 @@ const gridRowCount = computed(() => {
   return maxRow + 1
 })
 
-const gridRows = computed(() => Array.from({ length: gridRowCount.value }, (_, i) => i))
-
-const normalizeTitle = (value: string) => value.replace(/[\s　]/g, '')
-
-// 报表标题（表名）所在行：单元格文字去空格后与报表名一致，则该行作为标题跨列合并居中
-const titleRowIndex = computed<number | null>(() => {
-  if (!currentReport.value) return null
-  const target = normalizeTitle(currentReport.value.name)
-  if (!target) return null
-  // 该行须仅有一个文本单元格，避免误吞数据行
-  const cellsByRow = new Map<number, { count: number; first: { row_index: number; text_value: string | null; formula_text: string | null } }>()
-  for (const cell of currentReport.value.cells) {
-    const entry = cellsByRow.get(cell.row_index)
-    if (entry) entry.count += 1
-    else cellsByRow.set(cell.row_index, { count: 1, first: cell })
-  }
-  for (const [rowIndex, entry] of cellsByRow) {
-    if (entry.count !== 1) continue
-    if (entry.first.formula_text) continue
-    if (normalizeTitle(entry.first.text_value || '') === target) return rowIndex
-  }
-  return null
-})
-
-const titleText = computed(() => currentReport.value?.name || '')
-const hasTitleInData = computed(() => titleRowIndex.value !== null)
 
 // 模板单元格索引：`row_col` -> 单元格
 const templateCellMap = computed(() => {
-  const map = new Map<string, { text_value: string | null; formula_text: string | null }>()
+  const map = new Map<string, RhStandardReportCell>()
   if (!currentReport.value) return map
   for (const cell of currentReport.value.cells) {
     map.set(`${cell.row_index}_${cell.col_index}`, cell)
@@ -420,65 +519,305 @@ const cellDisplay = (row: number, col: number): string => {
   return tpl.formula_text || tpl.text_value || ''
 }
 
-const cellClass = (row: number, col: number): string => {
-  const key = `${row}_${col}`
-  const tpl = templateCellMap.value.get(key)
-  if (viewMode.value === 'compute') {
-    const computed = computedCellMap.value.get(key)
-    if (computed?.status === 'error') return 'grid-cell error-cell'
-    if (computed && computed.numeric_value !== null) return 'grid-cell num-cell'
-    return 'grid-cell'
-  }
-  if (tpl?.formula_text) return 'grid-cell formula-cell'
-  return 'grid-cell'
+/** 打印与 Excel 共用的网格模型：列宽/行高/合并/样式/取值全部与屏幕同源 */
+const buildExportModel = () => {
+  if (!currentReport.value) return null
+  return buildReportExportModel({
+    name: currentReport.value.name,
+    rowCount: gridRowCount.value,
+    colCount: gridColCount.value,
+    getColWidth: grid.getColWidth,
+    getRowHeight: grid.getRowHeight,
+    source: currentReport.value.cells,
+    getText: cellDisplay,
+    getNumeric: (row, col) => {
+      if (viewMode.value !== 'compute') return null
+      const computed = computedCellMap.value.get(`${row}_${col}`)
+      return computed && computed.status === 'ok' ? (computed.numeric_value ?? null) : null
+    },
+    isError: (row, col) =>
+      viewMode.value === 'compute' &&
+      computedCellMap.value.get(`${row}_${col}`)?.status === 'error',
+  })
 }
 
-// 生成自包含 HTML（内联样式）供 hiprint 打印 —— 还原二维网格 + 合并居中标题
-const escapeHtml = (s: string) =>
-  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+/**
+ * 实际打印用的缩放。
+ *
+ * 报表若从没设过 print_scale，不能一律按 100% 打——ACD 导入的报表默认列宽 160px、
+ * 8 列就有 1280px，远宽于 A4 纵向可打印区（约 700px），不缩放必然溢出。
+ * 这里退回与「页面设置」同一个自动适配算法。
+ */
+const effectivePrintScale = computed(() => {
+  if (hasExplicitScale.value) return pageSetup.value.scale || 1
+  return computeAutoFitScale({
+    paperSize: pageSetup.value.paperSize,
+    orientation: pageSetup.value.orientation,
+    margins: {
+      top: pageSetup.value.marginTop,
+      bottom: pageSetup.value.marginBottom,
+      left: pageSetup.value.marginLeft,
+      right: pageSetup.value.marginRight,
+    },
+    contentSize: reportContentSize.value,
+  })
+})
+
+/** 导出 Excel：纸张、边距、缩放与页面设置一致 */
+const excelPageSetup = computed(() => ({
+  paperSize: pageSetup.value.paperSize,
+  orientation: pageSetup.value.orientation,
+  scale: effectivePrintScale.value,
+  marginTop: pageSetup.value.marginTop,
+  marginBottom: pageSetup.value.marginBottom,
+  marginLeft: pageSetup.value.marginLeft,
+  marginRight: pageSetup.value.marginRight,
+  fitToPage: !hasExplicitScale.value,
+}))
 
 const buildPrintHtml = (): string => {
-  if (!currentReport.value || gridRows.value.length === 0) return ''
-  const cols = gridColCount.value
-  const tdBase =
-    'border:1px solid #000;padding:3px 8px;font-size:12px;height:24px;white-space:nowrap;'
-  const titleStyle =
-    'border:none;text-align:center;font-size:18px;font-weight:700;letter-spacing:2px;height:38px;'
-
-  const rowsHtml: string[] = []
-  // 标题
-  if (!hasTitleInData.value) {
-    rowsHtml.push(`<tr><td colspan="${cols}" style="${titleStyle}">${escapeHtml(currentReport.value.name)}</td></tr>`)
-  }
-  for (const r of gridRows.value) {
-    if (r === titleRowIndex.value) {
-      rowsHtml.push(`<tr><td colspan="${cols}" style="${titleStyle}">${escapeHtml(titleText.value)}</td></tr>`)
-      continue
-    }
-    const tds: string[] = []
-    for (let c = 0; c < cols; c++) {
-      const key = `${r}_${c}`
-      const text = cellDisplay(r, c)
-      let style = tdBase
-      if (viewMode.value === 'compute') {
-        const computed = computedCellMap.value.get(key)
-        if (computed?.status === 'error') style += 'color:#c00;text-align:right;'
-        else if (computed && computed.numeric_value !== null) style += 'text-align:right;'
-      } else if (templateCellMap.value.get(key)?.formula_text) {
-        style += 'color:#666;font-family:monospace;font-size:11px;'
-      }
-      tds.push(`<td style="${style}">${escapeHtml(text)}</td>`)
-    }
-    rowsHtml.push(`<tr>${tds.join('')}</tr>`)
-  }
-
-  return `<table style="border-collapse:collapse;width:100%;font-family:'SimSun','宋体',serif;">
-    <tbody>${rowsHtml.join('')}</tbody>
-  </table>`
+  const model = buildExportModel()
+  if (!model || model.rowCount === 0) return ''
+  return buildReportPrintHtml(model, { scale: effectivePrintScale.value })
 }
 
-onMounted(() => {
+const exportingExcel = ref(false)
+
+const handleExportExcel = async () => {
+  const model = buildExportModel()
+  if (!model || model.rowCount === 0) {
+    ElMessage.warning('当前报表没有可导出的内容')
+    return
+  }
+  try {
+    exportingExcel.value = true
+    const suffix = viewMode.value === 'compute' ? `${computeYear.value}年${computePeriod.value}期` : '公式'
+    await exportReportToExcel(model, `${model.name}_${suffix}`, excelPageSetup.value)
+    ElMessage.success('Excel 已导出')
+  } catch (error: any) {
+    ElMessage.error('导出 Excel 失败：' + (error?.message || error))
+  } finally {
+    exportingExcel.value = false
+  }
+}
+
+onMounted(async () => {
+  // 先拿到账套会计区间，再套用为取数默认值（load 有缓存，不会重复请求）
+  await systemParams.load()
+  computeYear.value = systemParams.currentYear
+  computePeriod.value = systemParams.currentPeriod
   loadReports()
+})
+
+async function handleCreateReport() {
+  try {
+    const { value } = await ElMessageBox.prompt('请输入报表名称', '新建报表', {
+      confirmButtonText: '创建',
+      cancelButtonText: '取消',
+      inputPattern: /\S+/,
+      inputErrorMessage: '报表名称不能为空',
+    })
+    const res: any = await createStandardReport({ name: String(value).trim() })
+    if (res.code !== 0) throw new Error(res.message || '创建失败')
+    ElMessage.success('创建成功')
+    await loadReports(res.data?.id)
+    viewMode.value = 'template'
+  } catch (error: any) {
+    if (error === 'cancel' || error === 'close') return
+    ElMessage.error(error?.message || '创建失败')
+  }
+}
+
+// ---------- 公式视图的编辑能力 ----------
+
+const formulaInput = ref('')
+
+// 公式速查（fx 弹层）。首次展开时才拉，避免进页面就多一次请求。
+const formulaReference = ref<FormulaReferenceItem[]>([])
+const formulaReferenceGroups = computed(() => {
+  const groups: Array<{ name: string; items: FormulaReferenceItem[] }> = []
+  for (const item of formulaReference.value) {
+    const existing = groups.find(group => group.name === item.group)
+    if (existing) existing.items.push(item)
+    else groups.push({ name: item.group, items: [item] })
+  }
+  return groups
+})
+
+const loadFormulaReference = async () => {
+  if (formulaReference.value.length > 0) return
+  try {
+    const res = await getFormulaReference()
+    if (res.code === 0) formulaReference.value = res.data || []
+  } catch {
+    // 速查表拉不到不影响手写公式，静默即可
+  }
+}
+
+/** 把函数名插进公式栏；公式栏还没有 = 开头时补上 */
+const insertFormulaName = (item: FormulaReferenceItem) => {
+  const call = item.name.startsWith('@') ? `${item.name.toLowerCase()}(` : `${item.name}(`
+  const current = formulaInput.value
+  formulaInput.value = current.startsWith('=') ? `${current}${call}` : `=${call}`
+}
+
+// 当前选区首格的数字格式，供格式工具栏回显
+const currentNumberFormat = computed(() => {
+  if (grid.selectedRow.value === null || grid.selectedCol.value === null) return ''
+  const cell = grid.cellMap.value.get(grid.cellKey(grid.selectedRow.value, grid.selectedCol.value))
+  return cell?.format_text || ''
+})
+
+// ---------- 打印页面设置 ----------
+
+const savingPageSetup = ref(false)
+const pageSetup = ref<ReportPageSetupValue>({
+  paperSize: 'A4',
+  orientation: 'portrait',
+  scale: 1,
+  marginTop: 8,
+  marginBottom: 8,
+  marginLeft: 8,
+  marginRight: 8,
+})
+
+/** 传给打印面板的四向页边距 */
+const printMargins = computed(() => ({
+  top: pageSetup.value.marginTop,
+  bottom: pageSetup.value.marginBottom,
+  left: pageSetup.value.marginLeft,
+  right: pageSetup.value.marginRight,
+}))
+
+/** 报表内容的实际像素尺寸，供页面设置自动计算缩放 */
+const reportContentSize = computed(() => {
+  // 用打印实际输出的行列数（数据范围），而不是网格的显示范围：
+  // 公式视图会多补几行几列空白，算进来会让缩放比例偏小，打印出来整体缩水。
+  const cols = gridColCount.value
+  const rows = gridRowCount.value
+  let width = 0
+  for (let index = 0; index < cols; index += 1) width += grid.getColWidth(index)
+  let height = 0
+  for (let index = 0; index < rows; index += 1) height += grid.getRowHeight(index)
+  return { width, height }
+})
+
+/** 该报表是否显式存过打印缩放；没存过就走自动适配，而不是默认 100% */
+const hasExplicitScale = ref(false)
+
+/** 切换报表时把该报表存的页面设置读出来 */
+function syncPageSetup(detail: RhStandardReportDetail) {
+  hasExplicitScale.value = detail.print_scale != null
+  pageSetup.value = {
+    paperSize: detail.paper_size || 'A4',
+    orientation: (detail.paper_orientation as 'portrait' | 'landscape') || 'portrait',
+    scale: detail.print_scale || 1,
+    marginTop: detail.margin_top ?? 8,
+    marginBottom: detail.margin_bottom ?? 8,
+    marginLeft: detail.margin_left ?? 8,
+    marginRight: detail.margin_right ?? 8,
+  }
+}
+
+async function handleSavePageSetup(value: ReportPageSetupValue) {
+  if (!currentReport.value) return
+  savingPageSetup.value = true
+  try {
+    const res: any = await saveStandardReportPageSetup(currentReport.value.id, {
+      paper_size: value.paperSize,
+      paper_orientation: value.orientation,
+      print_scale: value.scale,
+      margin_top: value.marginTop,
+      margin_bottom: value.marginBottom,
+      margin_left: value.marginLeft,
+      margin_right: value.marginRight,
+    })
+    if (res.code !== 0) throw new Error(res.message || '保存失败')
+    // 存过之后就以用户设定为准，不再自动适配
+    hasExplicitScale.value = true
+    pageSetup.value = { ...value }
+    ElMessage.success('页面设置已保存')
+  } catch (error: any) {
+    ElMessage.error(error?.message || '保存页面设置失败')
+  } finally {
+    savingPageSetup.value = false
+  }
+}
+
+const selectedAddress = computed(() => {
+  if (grid.selectedRow.value === null || grid.selectedCol.value === null) return '—'
+  return `${grid.toColumnName(grid.selectedCol.value)}${grid.selectedRow.value + 1}`
+})
+const hasRowSelection = computed(() => grid.selectedRow.value !== null)
+const hasColSelection = computed(() => grid.selectedCol.value !== null)
+const savedAtText = computed(() =>
+  grid.lastSavedAt.value ? grid.lastSavedAt.value.toLocaleTimeString('zh-CN', { hour12: false }) : ''
+)
+
+/** 选中格变化时把原始内容同步到公式栏 */
+watch([grid.selectedRow, grid.selectedCol], () => {
+  if (grid.selectedRow.value === null || grid.selectedCol.value === null) {
+    formulaInput.value = ''
+    return
+  }
+  const cell = grid.cellMap.value.get(grid.cellKey(grid.selectedRow.value, grid.selectedCol.value))
+  formulaInput.value = cell?.formula_text || cell?.text_value || ''
+})
+
+function applyFormulaBar() {
+  if (grid.selectedRow.value === null || grid.selectedCol.value === null) return
+  const cell = grid.cellMap.value.get(grid.cellKey(grid.selectedRow.value, grid.selectedCol.value))
+  const current = cell?.formula_text || cell?.text_value || ''
+  if (formulaInput.value === current) return
+  grid.setCellValue(grid.selectedRow.value, grid.selectedCol.value, formulaInput.value)
+}
+
+const ROWCOL_LABEL: Record<RhStandardReportRowColAction, string> = {
+  insert_row: '插入行',
+  delete_row: '删除行',
+  insert_col: '插入列',
+  delete_col: '删除列',
+}
+
+async function handleRowCol(action: RhStandardReportRowColAction) {
+  if (!currentReport.value) return
+  const isRow = action.endsWith('_row')
+  const index = isRow ? grid.selectedRow.value : grid.selectedCol.value
+  if (index === null) return
+
+  // 行列结构改动在服务端是一个事务（含公式引用平移），先把未决的单元格改动落库
+  await grid.flushSave()
+
+  if (action.startsWith('delete')) {
+    try {
+      await ElMessageBox.confirm(
+        `确认${ROWCOL_LABEL[action]}？该${isRow ? '行' : '列'}的内容会被删除，指向它的公式会变成 #REF!。`,
+        ROWCOL_LABEL[action],
+        { type: 'warning' }
+      )
+    } catch {
+      return
+    }
+  }
+
+  try {
+    const res: any = await updateStandardReportRowCol(currentReport.value.id, {
+      action,
+      index,
+      count: 1,
+    })
+    if (res.code !== 0) throw new Error(res.message || '操作失败')
+    ElMessage.success(`${ROWCOL_LABEL[action]}成功`)
+    await loadReportDetail(currentReport.value.id)
+  } catch (error: any) {
+    ElMessage.error(error?.message || `${ROWCOL_LABEL[action]}失败`)
+  }
+}
+
+// 离开页面前把未决的改动存下来
+onBeforeUnmount(() => {
+  void grid.flushSave()
+  grid.dispose()
 })
 </script>
 
@@ -660,5 +999,118 @@ onMounted(() => {
   display: flex;
   justify-content: center;
   align-items: center;
+}
+
+/* —— 公式视图的编辑工具条 —— */
+.report-edit-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.report-edit-toolbar .cell-addr {
+  min-width: 54px;
+  padding: 4px 8px;
+  border: 1px solid var(--el-border-color);
+  border-radius: 4px;
+  font-family: Consolas, Monaco, monospace;
+  font-size: 12px;
+  text-align: center;
+  color: var(--el-text-color-regular);
+  background: var(--el-fill-color-blank);
+}
+
+.report-edit-toolbar .selection-summary {
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.report-edit-toolbar .formula-input {
+  flex: 1;
+  min-width: 260px;
+}
+
+.report-edit-toolbar .formula-fx-button {
+  font-style: italic;
+  font-weight: 600;
+  min-width: 34px;
+  padding: 0 8px;
+}
+
+.formula-reference {
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.formula-reference-hint {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--el-text-color-secondary);
+}
+
+.formula-reference-hint code {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--el-fill-color-light);
+}
+
+.formula-reference-group + .formula-reference-group {
+  margin-top: 10px;
+}
+
+.formula-reference-group-title {
+  margin-bottom: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--el-text-color-secondary);
+}
+
+.formula-reference-item {
+  display: flex;
+  gap: 10px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.formula-reference-item:hover {
+  background: var(--el-fill-color-light);
+}
+
+.formula-reference-name {
+  flex: 0 0 46%;
+  font-family: Consolas, Monaco, monospace;
+  color: var(--el-color-primary);
+}
+
+.formula-reference-desc {
+  flex: 1;
+  color: var(--el-text-color-regular);
+}
+
+.report-edit-toolbar .save-state {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+}
+
+.report-edit-toolbar .save-state--saving {
+  color: var(--el-color-primary);
+}
+
+.report-edit-toolbar .save-state--saved {
+  color: var(--el-color-success);
+}
+
+.report-edit-toolbar .save-state--error {
+  color: var(--el-color-danger);
 }
 </style>

@@ -9,399 +9,52 @@
   -webkit-font-smoothing: antialiased;
 }
 
-/* ========== 侧边栏 ========== */
-.aside {
-  background: rgba(246, 248, 250, 0.85);
-  backdrop-filter: blur(20px);
-  transition: width 0.35s cubic-bezier(0.4, 0, 0.2, 1);
-  overflow-x: hidden;
-  overflow-y: auto;
+/* ========== 侧边栏：应用栏 + 二级导航面板 ========== */
+.aside.app-shell-aside {
+  --app-rail-width: 64px;
+  --app-nav-panel-width: 220px;
+  position: relative;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  height: 100vh;
+  flex-shrink: 0;
+  overflow: visible;
+  background: #f6f8fa;
   border-right: 1px solid rgba(0, 0, 0, 0.05);
   box-shadow: 4px 0 24px rgba(18, 199, 174, 0.05);
+  transition: width 0.28s cubic-bezier(0.4, 0, 0.2, 1);
   z-index: 200;
 }
 
-.aside::-webkit-scrollbar {
-  width: 4px;
-}
-
-.aside::-webkit-scrollbar-thumb {
-  background: rgba(18, 199, 174, 0.2);
-  border-radius: 2px;
-}
-
-.aside::-webkit-scrollbar-thumb:hover {
-  background: rgba(18, 199, 174, 0.4);
-}
-
-/* Logo */
-.logo {
-  flex-shrink: 0;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  padding: 12px 10px;
-  cursor: pointer;
-  transition: background 0.25s ease;
-  border-bottom: 1px solid rgba(18, 199, 174, 0.1);
-  position: relative;
-}
-
-.logo::before {
-  content: '';
+/* 悬浮模式：面板覆盖在主内容之上，不挤占宽度 */
+.nav-panel-floating .aside.app-shell-aside .app-shell-panel {
   position: absolute;
-  inset: 0;
-  background: linear-gradient(90deg, rgba(18, 199, 174, 0.05) 0%, transparent 70%);
-  pointer-events: none;
+  top: 0;
+  bottom: 0;
+  left: var(--app-rail-width);
+  z-index: 3;
+  box-shadow: 8px 0 28px rgba(15, 61, 58, 0.14);
+}
+
+.nav-panel-enter-active,
+.nav-panel-leave-active {
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.nav-panel-enter-from,
+.nav-panel-leave-to {
   opacity: 0;
-  transition: opacity 0.3s ease;
+  transform: translateX(-8px);
 }
 
-.logo:hover::before {
-  opacity: 1;
+/* 固定模式下不做位移动画，避免主区宽度抖动 */
+.apple-layout:not(.nav-panel-floating) .nav-panel-enter-from,
+.apple-layout:not(.nav-panel-floating) .nav-panel-leave-to {
+  transform: none;
 }
 
-.logo:hover {
-  background: rgba(18, 199, 174, 0.02);
-}
-
-.logo--collapsed {
-  padding: 12px 0;
-}
-
-.logo-brand {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-}
-
-.logo--collapsed .logo-brand {
-  justify-content: center;
-}
-
-.logo-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  background: #fff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  overflow: hidden;
-  box-shadow: 0 2px 8px rgba(18, 199, 174, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.9);
-}
-
-.logo--collapsed .logo-icon {
-  width: 38px;
-  height: 38px;
-}
-
-.logo-img {
-  width: 90%;
-  height: 90%;
-  object-fit: contain;
-  display: block;
-}
-
-.logo-text-wrap {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: center;
-  gap: 3px;
-  flex: none;
-  min-width: 0;
-}
-
-.logo-text {
-  font-size: 17px;
-  font-weight: 800;
-  letter-spacing: 1px;
-  line-height: 1.2;
-  white-space: nowrap;
-  color: #1a1a1a;
-}
-
-.logo-sub {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.5px;
-  line-height: 1.35;
-  color: #8c939d;
-}
-
-.logo-version {
-  display: inline-block;
-  margin-left: 4px;
-  padding: 0 4px;
-  border-radius: 4px;
-  background: rgba(18, 199, 174, 0.1);
-  color: #0f9f8c;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0;
-}
-
-/* 菜单 */
-.apple-menu {
-  flex: 1;
-  border: none;
-  background: transparent;
-  padding: 4px 0;
-}
-
-.apple-menu .el-sub-menu__title {
-  height: 36px;
-  line-height: 36px;
-  border-radius: 8px;
-  margin: 1px 8px;
-  font-weight: 500;
-  font-size: 13px;
-  position: relative;
-  z-index: 1;
-  transition: background-color 0.2s ease, color 0.2s ease;
-}
-
-.apple-menu .el-sub-menu__title .el-sub-menu__icon-arrow {
-  transition: transform 0.2s ease;
-}
-
-.apple-menu .el-menu--inline {
-  padding: 0;
-}
-
-.apple-menu .el-sub-menu .el-menu {
-  padding: 0 0 2px;
-}
-
-/* 展开/收起子菜单时裁剪内容，避免 collapse 动画期间文字重影 */
-.apple-menu:not(.el-menu--collapse) .el-sub-menu {
-  overflow: hidden;
-}
-
-.apple-menu .el-sub-menu .el-menu.el-menu--inline {
-  overflow: hidden !important;
-}
-
-.apple-menu .el-collapse-transition-enter-active,
-.apple-menu .el-collapse-transition-leave-active {
-  overflow: hidden !important;
-  /* 仅动画 max-height，避免 padding 与高度同时过渡产生重影 */
-  transition: max-height 0.2s ease !important;
-}
-
-.apple-menu .el-collapse-transition-enter-from,
-.apple-menu .el-collapse-transition-leave-to {
-  opacity: 1;
-}
-
-.apple-menu .el-sub-menu__title .menu-title-inner {
-  display: flex;
-  align-items: center;
-  width: 100%;
-}
-
-.apple-menu.el-menu--collapse .el-sub-menu__title .menu-title-inner {
-  justify-content: center;
-}
-
-.apple-menu .el-sub-menu__title:hover {
-  background: rgba(18, 199, 174, 0.05);
-}
-
-.apple-menu .el-sub-menu.is-active > .el-sub-menu__title,
-.apple-menu .el-sub-menu.sub-menu-current > .el-sub-menu__title {
-  color: #12C7AE !important;
-  font-weight: 600;
-}
-
-/* 当前所在分组导航页：标题前显示 👉 手指（展开态） */
-.apple-menu:not(.el-menu--collapse) .el-sub-menu.sub-menu-current > .el-sub-menu__title .menu-title-label::before {
-  content: '👉';
-  margin-right: 6px;
-  font-size: 13px;
-  line-height: 1;
-}
-
-.apple-menu .el-menu-item {
-  height: auto;
-  min-height: 32px;
-  line-height: normal;
-  border-radius: 8px;
-  margin: 0 8px;
-  padding-top: 4px !important;
-  padding-bottom: 4px !important;
-  font-size: 13px;
-  transition: background-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
-  display: flex !important;
-  align-items: center !important;
-  overflow: hidden;
-  color: #4a4a4a;
-}
-
-.apple-menu .el-menu-item > * {
-  flex: 1;
-  min-width: 0;
-}
-
-.apple-menu .el-sub-menu .el-menu {
-  overflow: hidden !important;
-}
-
-.apple-menu .el-menu-item-group__title {
-  overflow: hidden;
-}
-
-.apple-menu .el-menu-item-group > ul {
-  overflow: hidden;
-}
-
-.apple-menu .el-menu-item:hover {
-  background: rgba(18, 199, 174, 0.08);
-  color: #12C7AE;
-}
-
-.apple-menu .el-menu-item.is-active {
-  background: linear-gradient(135deg, rgba(18, 199, 174, 0.1) 0%, rgba(18, 199, 174, 0.05) 100%) !important;
-  color: #12C7AE !important;
-  font-weight: 600;
-  box-shadow: inset 2px 0 0 #12C7AE;
-}
-
-.menu-item-content {
-  position: relative;
-  display: flex;
-  align-items: center;
-  min-width: 0;
-  width: 100%;
-  padding-left: 20px;
-  line-height: 1.3;
-}
-
-.menu-item-content::before {
-  content: '👉';
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  font-size: 14px;
-  line-height: 1;
-  opacity: 0;
-  transition: opacity 0.2s ease;
-  pointer-events: none;
-}
-
-.apple-menu .el-menu-item.is-active .menu-item-content::before,
-.apple-menu-popper .el-menu-item.is-active .menu-item-content::before {
-  opacity: 1;
-}
-
-.menu-item-label {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  line-height: 1.4;
-}
-
-.menu-icon-wrap {
-  position: relative;
-  width: 18px;
-  height: 18px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-right: 6px;
-  flex-shrink: 0;
-}
-
-.apple-menu.el-menu--collapse .el-sub-menu.is-active > .el-sub-menu__title .menu-icon-wrap::after,
-.apple-menu.el-menu--collapse .el-sub-menu.sub-menu-current > .el-sub-menu__title .menu-icon-wrap::after {
-  content: '👉';
-  position: absolute;
-  right: -9px;
-  bottom: -7px;
-  font-size: 11px;
-  line-height: 1;
-  pointer-events: none;
-  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.45));
-}
-
-/* 收缩态：键盘焦点可见 */
-.apple-menu.el-menu--collapse .el-sub-menu__title:focus-visible,
-.apple-menu.el-menu--collapse .el-sub-menu__title .menu-title-inner:focus-visible,
-.apple-menu.el-menu--collapse .el-menu-item:focus-visible {
-  outline: 2px solid rgba(18, 199, 174, 0.8);
-  outline-offset: 1px;
-  border-radius: 10px;
-}
-
-.menu-title-inner {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-  width: 100%;
-}
-
-.menu-title-label {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.apple-menu.el-menu--collapse .menu-title-inner {
-  justify-content: center;
-}
-
-.apple-menu.el-menu--collapse .menu-icon-wrap {
-  margin-right: 0;
-}
-
-.apple-menu.el-menu--collapse .menu-title-label {
-  display: none;
-}
-
-/* 展开态不重复显示分组表头（表头仅在收缩弹出菜单中展示） */
-.apple-menu:not(.el-menu--collapse) .menu-popup-group > .el-menu-item-group__title {
-  display: none;
-}
-
-/* 侧边栏底部 */
-.aside-footer {
-  padding: 8px;
-  border-top: 1px solid rgba(18, 199, 174, 0.1);
-}
-
-.collapse-btn {
-  width: 100%;
-  height: 34px;
-  border: none;
-  border-radius: 10px;
-  background: rgba(18, 199, 174, 0.05);
-  color: rgba(0, 0, 0, 0.4);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.2s ease;
-}
-
-.collapse-btn:hover {
-  background: rgba(18, 199, 174, 0.1);
-  color: #12C7AE;
-}
-
-.collapse-btn svg {
-  width: 18px;
-  height: 18px;
+.breadcrumb-section {
+  color: #6b7280;
 }
 
 /* ========== 顶栏 - 现代极简风 ========== */
@@ -844,7 +497,7 @@ html.cw-light-mode .header-action-btn--perf:hover:not(:disabled) {
 .el-main.main {
   flex: 1 1 0;
   min-height: 0;
-  padding: 16px;
+  padding: 8px;
   background: #f5f5f7;
   overflow-x: hidden;
   overflow-y: auto;
@@ -1013,127 +666,6 @@ html.cw-light-mode .header-action-btn--perf:hover:not(:disabled) {
   }
 
   .main {
-    padding: 12px;
+    padding: 8px;
   }
-}
-
-/* ========== 侧栏收缩：弹出子菜单 / 悬停提示（teleport 到 body，须全局样式）========== */
-.apple-menu-popper.el-popper {
-  z-index: var(--cw-z-tooltip, 4000) !important;
-}
-
-/* 仅弹出子菜单的外层 tooltip 容器透明，避免与悬停提示样式冲突 */
-.apple-menu-popper.is-light.el-tooltip__popper:has(.el-menu--popup-container) {
-  background: transparent !important;
-  border: none !important;
-  box-shadow: none !important;
-  padding: 0 !important;
-}
-
-.apple-menu-popper.is-light.el-tooltip__popper:has(.el-menu--popup-container) .el-popper__arrow {
-  display: none !important;
-}
-
-.apple-menu-popper .el-menu--popup-container {
-  background: rgba(255, 255, 255, 0.95) !important;
-  backdrop-filter: blur(20px) !important;
-  border: 1px solid rgba(18, 199, 174, 0.15) !important;
-  border-radius: 12px !important;
-  box-shadow: 0 10px 36px rgba(18, 199, 174, 0.1) !important;
-  padding: 4px 4px 6px !important;
-}
-
-.apple-menu-popper .el-menu--popup {
-  --el-menu-text-color: #4a4a4a !important;
-  --el-menu-hover-text-color: #12C7AE !important;
-  --el-menu-bg-color: transparent !important;
-  --el-menu-hover-bg-color: rgba(18, 199, 174, 0.08) !important;
-  --el-menu-active-color: #12C7AE !important;
-  background: transparent !important;
-  border: none !important;
-  min-width: 168px !important;
-  padding: 0 !important;
-}
-
-.apple-menu-popper .el-menu--popup-container,
-.apple-menu-popper .el-menu--popup,
-.apple-menu-popper .menu-popup-group > ul {
-  overflow: visible !important;
-}
-
-.apple-menu-popper .el-menu-item {
-  color: #4a4a4a !important;
-  background: transparent !important;
-  height: auto !important;
-  min-height: 32px !important;
-  line-height: normal !important;
-  border-radius: 8px !important;
-  margin: 1px 4px !important;
-  padding-top: 4px !important;
-  padding-bottom: 4px !important;
-  font-size: 13px !important;
-  display: flex !important;
-  align-items: center !important;
-  overflow: visible !important;
-}
-
-.apple-menu-popper .el-menu-item > * {
-  flex: 1;
-  min-width: 0;
-}
-
-.apple-menu-popper .el-menu-item:hover,
-.apple-menu-popper .el-menu-item:focus,
-.apple-menu-popper .el-menu-item:focus-visible {
-  color: #12C7AE !important;
-  background: rgba(18, 199, 174, 0.08) !important;
-  outline: none;
-}
-
-.apple-menu-popper .el-menu-item.is-active {
-  color: #12C7AE !important;
-  background: rgba(18, 199, 174, 0.12) !important;
-  font-weight: 600;
-}
-
-/* 收缩弹出菜单：金色分组表头 */
-.apple-menu-popper .menu-popup-group > .el-menu-item-group__title {
-  padding: 0 !important;
-  margin: 0 4px 6px !important;
-  line-height: 1.3 !important;
-  height: auto !important;
-  pointer-events: none;
-}
-
-.apple-menu-popper .menu-popup-group-title {
-  display: block;
-  padding: 8px 10px 6px;
-  color: #12C7AE !important;
-  font-size: 13px !important;
-  font-weight: 700 !important;
-  letter-spacing: 0.5px;
-  border-bottom: 1px solid rgba(18, 199, 174, 0.15);
-}
-
-.apple-menu-popper .menu-popup-group > ul {
-  padding: 0;
-  margin: 0;
-}
-
-/* 收缩态菜单项 title 悬停提示（兼容 EP 内置 tooltip） */
-.apple-menu-popper.is-light.el-tooltip__popper:not(:has(.el-menu--popup-container)) {
-  --el-bg-color-overlay: #ffffff;
-  --el-text-color-primary: #4a4a4a;
-  background: #ffffff !important;
-  color: #4a4a4a !important;
-  border: 1px solid rgba(18, 199, 174, 0.15) !important;
-  border-radius: 8px !important;
-  box-shadow: 0 8px 24px rgba(18, 199, 174, 0.1) !important;
-  font-size: 13px !important;
-  padding: 6px 10px !important;
-}
-
-.apple-menu-popper.is-light .el-popper__arrow::before {
-  background: #ffffff !important;
-  border: 1px solid rgba(18, 199, 174, 0.15) !important;
 }

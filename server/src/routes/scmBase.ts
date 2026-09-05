@@ -7,6 +7,8 @@ import { listDocFieldDefs, listAllDocFieldDefs, upsertDocFieldDefs } from '../se
 import { computeIssueSuggestion, r6 } from '../services/scmProduction.js'
 import { SCM_OVERRUN_PARAM_KEYS, validateScmOverrunParam } from '../services/scmOverrunPolicy.js'
 import { queryOutsourceExecution, type OutsourceExecutionFilters } from '../services/scmOutsourceExecutionReport.js'
+import { queryProductionExecution, type ProductionExecutionFilters } from '../services/scmProductionExecutionReport.js'
+import { resolveScmAccount, SCM_ACCOUNT_SPECS, suggestScmAccounts } from '../services/scmAccountResolver.js'
 import { queryStockLedger, type StockLedgerFilters } from '../services/scmStockLedger.js'
 import type { ExportColumnSpec } from '../services/styledExcelExport.js'
 
@@ -56,6 +58,7 @@ const SCM_PARAM_KEYS = [
   'scm:negative_stock_warehouses',
   'scm:currencies', 'scm:io_categories', 'scm:transport_methods', 'scm:doc_no_rule',
   'scm:credit_control_enabled', 'scm:credit_control_mode',
+  'scm:qc_required_for_finish',
   ...SCM_OVERRUN_PARAM_KEYS,
 ]
 router.get('/scm/params', (req: AuthRequest, res) => {
@@ -65,6 +68,27 @@ router.get('/scm/params', (req: AuthRequest, res) => {
   ).all(asid(req), ...SCM_PARAM_KEYS)
   res.json({ code: 0, data: rows })
 })
+/**
+ * 供应链对方科目的实际取值：没配参数时系统按「默认编码 → 科目名称」自动匹配，
+ * 这里把匹配结果和候选科目一并给出来，参数页据此显示「未配置，当前自动匹配到 XXX」。
+ */
+router.get('/scm/params/resolved-accounts', (req: AuthRequest, res) => {
+  const db = getDb(); const aid = asid(req)
+  const data = SCM_ACCOUNT_SPECS.map(spec => {
+    const resolved = resolveScmAccount(db, aid, spec.key)
+    return {
+      param_key: spec.key,
+      label: spec.label,
+      resolved_code: resolved?.code || '',
+      resolved_name: resolved?.name || '',
+      // param=用户已配置，code=命中默认编码，name=按科目名称自动匹配，空=账套里找不到
+      source: resolved?.source || '',
+      candidates: suggestScmAccounts(db, aid, spec.key),
+    }
+  })
+  res.json({ code: 0, data })
+})
+
 router.put('/scm/params', operationLog('保存供应链参数', '供应链'), (req: AuthRequest, res) => {
   const { params } = req.body
   if (!Array.isArray(params)) return res.status(400).json({ code: 400, message: '参数格式错误' })
@@ -844,6 +868,46 @@ router.post('/scm/report/outsource/execution/export', async (req: AuthRequest, r
     res.send(buffer)
   } catch (error: any) {
     res.status(400).json({ code: 400, message: error?.message || '委外执行表导出失败' })
+  }
+})
+
+// ── 报表：生产执行及在制结存表（自制工单；委外见 /scm/report/outsource/execution） ──
+router.get('/scm/report/production/execution', (req: AuthRequest, res) => {
+  try {
+    const data = queryProductionExecution(getDb(), asid(req), req.query as unknown as ProductionExecutionFilters)
+    res.json({ code: 0, data })
+  } catch (error: any) {
+    res.status(400).json({ code: 400, message: error?.message || '生产执行表查询失败' })
+  }
+})
+
+router.post('/scm/report/production/execution/export', async (req: AuthRequest, res) => {
+  try {
+    const result = queryProductionExecution(getDb(), asid(req), (req.body || {}) as ProductionExecutionFilters, true)
+    const defs: Array<[string, string, 'text' | 'number']> = [
+      ['plan_code', '工单号', 'text'], ['start_date', '开工日期', 'text'],
+      ['item_code', '成品编码', 'text'], ['item_name', '成品名称', 'text'], ['spec', '规格', 'text'],
+      ['plan_qty', '计划数量', 'number'], ['finished_qty', '已完工', 'number'], ['scrap_qty', '已报废', 'number'],
+      ['remaining_qty', '未完工', 'number'], ['completion_rate', '完成率%', 'number'], ['scrap_rate', '报废率%', 'number'],
+      ['issued_material_qty', '净领料数量', 'number'], ['issued_material_cost', '已领料成本', 'number'],
+      ['mat_unit_cost', '每件料成本', 'number'], ['consumed_cost', '已消耗料成本', 'number'],
+      ['material_wip', '料在制', 'number'],
+      ['reported_good_qty', '报工合格数', 'number'], ['reported_scrap_qty', '报工报废数', 'number'],
+      ['labor_total', '报工人工', 'number'], ['overhead_total', '报工制费', 'number'],
+      ['labor_absorbed', '已吸收人工', 'number'], ['overhead_absorbed', '已吸收制费', 'number'],
+      ['labor_wip', '人工制费在制', 'number'], ['total_wip', '在制合计', 'number'],
+      ['execution_status', '执行状态', 'text'],
+    ]
+    const columns: ExportColumnSpec[] = defs.map(([, label, type]) => ({ label, width: type === 'text' ? 18 : 14, align: type === 'number' ? 'right' : 'left', type }))
+    const rows = result.rows.map((row: any) => defs.map(([key]) => row[key] ?? null))
+    const buffer = await buildStyledXlsxBuffer({ sheetName: '生产执行及在制结存', title: '生产执行及在制结存表',
+      subtitle: '料在制=已领料成本−Σ(完工+报废)×每件料成本；人工制费在制=已审核报工累计−已吸收；在制为工单级口径', columns, rows, stripe: true })
+    const fileName = `生产执行及在制结存表_${new Date().toISOString().slice(0, 10)}.xlsx`
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`)
+    res.send(buffer)
+  } catch (error: any) {
+    res.status(400).json({ code: 400, message: error?.message || '生产执行表导出失败' })
   }
 })
 

@@ -123,10 +123,19 @@
       column-key="status"
       prop="status"
       label="状态"
-      :width="colWidth('status', 80)"
+      :width="colWidth('status', 120)"
     >
       <template #default="{ row }">
         <el-tag :type="statusType[row.status]" size="small">{{ statusText[row.status] }}</el-tag>
+        <!-- 冲红标记只在凭证首行展示，避免多分录重复 -->
+        <template v-if="row._isFirstEntryRow">
+          <el-tag v-if="row.reversal_of_voucher_id" type="danger" size="small" class="voucher-reversal-tag">
+            红字
+          </el-tag>
+          <el-tag v-else-if="row.reversed_by_voucher_id" type="info" size="small" class="voucher-reversal-tag">
+            已冲红
+          </el-tag>
+        </template>
       </template>
     </el-table-column>
     <el-table-column
@@ -201,11 +210,20 @@
       </template>
     </el-table-column>
   </el-table>
+    <div v-if="flatList.length > 0" class="infinite-scroll-status">
+      <span v-if="loadingMore" class="infinite-scroll-status__loading">
+        <el-icon class="is-loading"><Loading /></el-icon>
+        加载中…
+      </span>
+      <span v-else-if="!hasMore">已全部加载</span>
+      <span v-else>下拉加载更多</span>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, ref, toRef } from 'vue'
+import { Loading } from '@element-plus/icons-vue'
 import { useFillHeightTable } from '@/composables/useFillHeightTable'
 import { formatMoney, statusType, statusText } from '@/composables/useVoucherAuditData'
 import { bindTableColumnLayout } from '@/composables/useColumnWidthMemory'
@@ -224,6 +242,10 @@ interface Props {
   highlightText?: (text: string | number | null | undefined) => string
   getCellClassNameFn?: (params: { row: any }) => string
   orderedColumnKeys?: string[]
+  /** 滚动追加加载中 */
+  loadingMore?: boolean
+  /** 是否还有未加载的数据 */
+  hasMore?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -235,6 +257,8 @@ const props = withDefaults(defineProps<Props>(), {
   mode: 'audit',
   loading: false,
   orderedColumnKeys: () => [],
+  loadingMore: false,
+  hasMore: false,
 })
 
 const { containerRef, tableHeight } = useFillHeightTable()
@@ -451,9 +475,31 @@ function voucherSpanMethod({ row, column }: { row: any; column: any }) {
     return { rowspan: 0, colspan: 0 }
   }
 }
+defineExpose({ tableRef, containerRef })
 </script>
 
 <style scoped>
+.voucher-reversal-tag {
+  margin-left: 4px;
+}
+
+.infinite-scroll-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 0;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  flex-shrink: 0;
+}
+
+.infinite-scroll-status__loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .voucher-group-even td {
   background-color: #f0f5ff;
 }
