@@ -93,7 +93,7 @@ function getSub(title: string) {
 
 .module-sections__heading {
   margin: 2px 0 8px 2px;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   font-weight: 600;
   color: var(--wb-text-2);
 }

@@ -74,15 +74,71 @@ function isNumericValue(value: string) {
   return /^-?\d+(\.\d+)?$/.test(value.trim())
 }
 
-function formatNumber(value: number, _formatText: string | null) {
+function fixedFormatter(digits: number, grouping: boolean) {
+  return new Intl.NumberFormat('zh-CN', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+    useGrouping: grouping,
+  })
+}
+
+/** 金额默认显示：千分位 + 两位小数，与润衡原报表一致 */
+const AMOUNT_FORMATTER = fixedFormatter(2, true)
+
+/**
+ * 数值显示格式。
+ *
+ * format_text 取值兼容两套写法：
+ *   - 前端格式工具栏的 token（integer / 2decimal / 4decimal / thousands / percent）
+ *   - Excel 风格的格式串（如 `#,##0.00;-#,##0.00;#`），只识别小数位数与千分位
+ * 未设置格式时按 isAmount 决定：金额一律两位小数带千分位；
+ * 行次之类的序号保持整数原样，避免出现「1.00、2.00」。
+ */
+function formatNumber(value: number, formatText: string | null, isAmount = false) {
   if (!Number.isFinite(value)) return ''
-  if (!_formatText) {
+  const format = (formatText || '').trim()
+
+  if (!format) {
+    if (isAmount) return AMOUNT_FORMATTER.format(value)
     return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(6)))
   }
-  return new Intl.NumberFormat('zh-CN', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(value)
+
+  switch (format) {
+    case 'integer':
+      return fixedFormatter(0, false).format(value)
+    case '2decimal':
+      return fixedFormatter(2, false).format(value)
+    case '4decimal':
+      return fixedFormatter(4, false).format(value)
+    case 'thousands':
+      return AMOUNT_FORMATTER.format(value)
+    case 'percent':
+      return `${fixedFormatter(2, false).format(value * 100)}%`
+    default:
+      break
+  }
+
+  // Excel 风格：取正数段，数小数点后 0 的个数，判断是否有千分位逗号
+  const positiveSection = format.split(';')[0] || format
+  const decimalMatch = /\.(0+)/.exec(positiveSection)
+  const digits = decimalMatch ? decimalMatch[1].length : 2
+  const grouping = positiveSection.includes(',')
+  return fixedFormatter(digits, grouping).format(value)
+}
+
+/**
+ * 该公式算出来的是不是「金额」。
+ *
+ * ACD 导入不带数字格式，只能从公式本身推断：
+ *   - 带 @ 取数函数（余额 / 发生额 / 现金流量）的必然是金额；
+ *   - 调用了 SUM 之类函数的是汇总金额；
+ *   - 引用了任何一个金额格的（=C7+C8、=C21-C7）也是金额。
+ * 行次公式 =B6+1 只引用上一行的序号字面量，不满足任一条件，仍按整数显示。
+ */
+function isAmountFormula(formulaSource: string, amountCells: Set<string>) {
+  if (formulaSource.includes('@')) return true
+  if (/[A-Za-z_]+\s*\(/.test(formulaSource)) return true
+  return collectCellRefs(formulaSource, isAnchorFunction).some(ref => amountCells.has(ref))
 }
 
 function splitArguments(value: string) {
@@ -517,7 +573,8 @@ function topoSortCells(cells: TemplateCellInput[]): {
 function applyTextPlaceholders(text: string, context: ExecuteContext): string {
   if (!text || !text.includes('%')) return text
   const month = String(context.period).padStart(2, '0')
-  const day = '01'
+  // 报表反映的是期末状态，日期占位符取当期最后一天（如 12 月 → 31 日）
+  const day = String(new Date(context.year, context.period, 0).getDate()).padStart(2, '0')
   // 先替换组合形式（%yh%mh%dh 连写，% 被共用），再替换单独形式
   // 每个占位符支持有无尾部 %（如 %U 和 %U% 都能匹配）
   return text
@@ -533,7 +590,8 @@ function executeCell(
   cell: TemplateCellInput,
   context: ExecuteContext,
   cellValues: Map<string, FormulaValue>,
-  circular?: Set<string>
+  circular?: Set<string>,
+  amountCells: Set<string> = new Set()
 ) {
   const address = getCellAddress(cell.row_index, cell.col_index)
   const formulaSource = cell.formula_text || cell.text_value || ''
@@ -572,11 +630,13 @@ function executeCell(
         }
       }
 
+      const isAmount = isAmountFormula(formulaSource, amountCells)
+      if (isAmount) amountCells.add(address)
       return {
         ...cell,
         address,
         raw_value: rawValue,
-        display_value: formatNumber(value, cell.format_text),
+        display_value: formatNumber(value, cell.format_text, isAmount),
         numeric_value: value,
         status: 'ok' as const,
         error: null,
@@ -627,12 +687,14 @@ export function executeTemplateSheets(sheets: TemplateSheetInput[], context: Exe
     .sort((a, b) => a.sheet_index - b.sheet_index)
     .map(sheet => {
       const cellValues = new Map<string, FormulaValue>()
+      // 已判定为金额的单元格地址；拓扑顺序保证被引用格先于引用它的格入集
+      const amountCells = new Set<string>()
       // 拓扑排序：被依赖的单元格先执行，解决 =B6+B8 引用下方单元格的问题
       const { ordered: orderedCells, circular } = topoSortCells(sheet.cells)
       // 按拓扑顺序执行，结果 Map 保持原始行列顺序输出
       const resultMap = new Map<string, ReturnType<typeof executeCell>>()
       for (const cell of orderedCells) {
-        const executed = executeCell(cell, context, cellValues, circular)
+        const executed = executeCell(cell, context, cellValues, circular, amountCells)
         resultMap.set(executed.address, executed)
       }
       // 按原始行列顺序输出

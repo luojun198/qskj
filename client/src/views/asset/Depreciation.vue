@@ -466,18 +466,18 @@ onMounted(() => {
 .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .depr-tabs { flex: 1; display: flex; flex-direction: column; padding: 0 16px; overflow: hidden; }
 .depr-tabs :deep(.el-tabs__content) { flex: 1; overflow: hidden; }
-.summary-bar { display: flex; gap: 24px; padding: 6px 0 8px; font-size: 13px; }
+.summary-bar { display: flex; gap: 24px; padding: 6px 0 8px; font-size: var(--cw-text-base); }
 .summary-bar b { font-weight: 600; }
 .total-amt { color: #e6a23c; }
 .depr-amt { color: #409eff; font-weight: 600; }
 .table-container { display: flex; flex-direction: column; height: 100%; }
 .result-banner { padding: 32px 0; }
-.voucher-tip { color: #67c23a; font-size: 13px; margin-top: 8px; }
+.voucher-tip { color: #67c23a; font-size: var(--cw-text-base); margin-top: 8px; }
 .history-filter { display: flex; align-items: center; gap: 16px; margin-bottom: 10px; }
-.history-total { font-size: 13px; color: var(--el-text-color-secondary); }
+.history-total { font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }
 .period-summary { margin-bottom: 14px; }
-.period-summary-title { font-size: 13px; font-weight: 600; margin-bottom: 6px; color: var(--el-text-color-regular); }
-.workload-hint { font-size: 13px; color: var(--el-text-color-secondary); margin-bottom: 10px; }
+.period-summary-title { font-size: var(--cw-text-base); font-weight: 600; margin-bottom: 6px; color: var(--el-text-color-regular); }
+.workload-hint { font-size: var(--cw-text-base); color: var(--el-text-color-secondary); margin-bottom: 10px; }
 .header-acc-select { display: inline-flex; align-items: center; margin-left: 12px; }
-.header-acc-select .tip-label { font-size: 13px; color: var(--el-text-color-regular); margin-right: 4px; }
+.header-acc-select .tip-label { font-size: var(--cw-text-base); color: var(--el-text-color-regular); margin-right: 4px; }
 </style>

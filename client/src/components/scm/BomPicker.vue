@@ -216,11 +216,11 @@ function confirm() {
 }
 .bp-splitter:hover { background: var(--el-color-primary-light-8); }
 .bp-splitter__grip { width: 40px; height: 3px; border-radius: 2px; background: var(--el-border-color-darker); }
-.bp-pane__hd { font-size: 13px; font-weight: 600; margin-bottom: 6px; flex-shrink: 0; }
+.bp-pane__hd { font-size: var(--cw-text-base); font-weight: 600; margin-bottom: 6px; flex-shrink: 0; }
 .bp-pane__sub { font-weight: 400; font-size: 12px; color: var(--el-text-color-secondary); margin-left: 8px; }
 .bp-table { flex: 1; }
 .bp-table :deep(.el-table__row) { cursor: pointer; }
-.bp-footer-info { margin-right: auto; font-size: 13px; color: var(--el-text-color-regular); }
+.bp-footer-info { margin-right: auto; font-size: var(--cw-text-base); color: var(--el-text-color-regular); }
 .bp-footer-info b { color: var(--el-color-primary); }
 .bp-footer-placeholder { color: var(--el-text-color-placeholder); }
 </style>

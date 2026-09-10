@@ -14,6 +14,8 @@
     :is-parent-account="isParentAccount"
     :enable-cash-flow="enableCashFlow"
     :cash-flow-items="cashFlowItems"
+    :enable-foreign-currency="enableForeignCurrency"
+    :resolve-exchange-rate="resolveEntryExchangeRate"
     :get-aux-item-names="getAuxItemNames"
     :get-aux-options="voucherAux.getAuxOptions"
     :is-aux-select-loading="isAuxSelectLoading"
@@ -35,7 +37,7 @@
     @clear-current-entry="setCurrentEntry(null)"
   />
 
-  <PrintDialog v-model="printDialogVisible" :voucher-ids="printVoucherIds" mode="single" />
+  <VoucherHiprintDialog v-model="printDialogVisible" :voucher-ids="printVoucherIds" mode="single" />
 </template>
 
 <script setup lang="ts">
@@ -43,7 +45,7 @@ import { ref, computed, nextTick } from 'vue'
 import request from '@/api/request'
 import { getCashFlowItems } from '@/api/cashFlow'
 import VoucherEntryForm from '@/components/voucher/VoucherEntryForm.vue'
-import PrintDialog from '@/components/print/PrintDialog.vue'
+import VoucherHiprintDialog from '@/components/print/VoucherHiprintDialog.vue'
 import { useVoucherForm } from '@/composables/useVoucherForm'
 import type { VoucherEntry } from '@/composables/useVoucherForm'
 import { useAuxiliaryAccounting } from '@/composables/useAuxiliaryAccounting'
@@ -77,6 +79,21 @@ const voucherTypes = computed(() => baseDataStore.voucherTypes)
 const accounts = computed(() => baseDataStore.accounts)
 const auxCategories = computed(() => baseDataStore.auxCategories)
 const enableCashFlow = computed(() => systemParamsStore.enableCashFlow)
+const enableForeignCurrency = computed(() => systemParamsStore.enableForeignCurrency)
+
+/** 外币科目默认汇率：按凭证日期所在年/期解析（与录入页 Entry.vue 一致） */
+async function resolveEntryExchangeRate(currencyCode: string): Promise<number> {
+  try {
+    const { resolveExchangeRate } = await import('@/api/currency')
+    const dateStr = String(form.value?.voucher_date || '')
+    const y = dateStr ? Number(dateStr.slice(0, 4)) : systemParamsStore.currentYear
+    const p = dateStr ? Number(dateStr.slice(5, 7)) : systemParamsStore.currentPeriod
+    const res = await resolveExchangeRate(currencyCode, y || new Date().getFullYear(), p || 1)
+    return Number(res.data?.rate) || 1
+  } catch {
+    return 1
+  }
+}
 
 const dialogVisible = ref(false)
 const dialogMode = ref<'edit' | 'view'>('view')
@@ -220,6 +237,22 @@ async function handleSubmit() {
     showError('借贷不平衡')
     return
   }
+  // 外币科目必须通过气泡录入原币与汇率
+  if (enableForeignCurrency.value) {
+    for (const e of form.value.entries) {
+      if (!e.account_id || !(e.debit_amount || e.credit_amount)) continue
+      const acc = accounts.value.find(a => a.id === e.account_id) as any
+      if (!acc || Number(acc.is_foreign) !== 1) continue
+      if (!(Number(e.foreign_amount) !== 0 && Number.isFinite(Number(e.foreign_amount)))) {
+        showWarning(`分录「${acc.code} ${acc.name}」为外币科目，请录入原币金额`)
+        return
+      }
+      if (!(Number(e.exchange_rate) > 0)) {
+        showWarning(`分录「${acc.code} ${acc.name}」为外币科目，请录入汇率`)
+        return
+      }
+    }
+  }
 
   submitLoading.value = true
   try {
@@ -236,6 +269,9 @@ async function handleSubmit() {
           direction: e.debit_amount ? 'debit' : 'credit',
           amount: e.debit_amount || e.credit_amount,
           cash_flow_code: e.cash_flow_code,
+          currency_code: e.currency_code || null,
+          exchange_rate: e.exchange_rate ?? null,
+          foreign_amount: e.foreign_amount ?? null,
           aux_data: buildAuxData(e),
         })),
     }

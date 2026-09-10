@@ -2,10 +2,10 @@
   <HiprintDialog
     v-model="visible"
     template-type="voucher"
-    template-key="voucher:standard"
     :title="dialogTitle"
     :print-data="printData"
     :default-panel-builder="buildDefaultVoucherPanel"
+    :auto-print="autoPrint"
   />
 </template>
 
@@ -24,8 +24,9 @@ interface Props {
   modelValue: boolean
   voucherIds: Array<string | number>
   mode?: 'single' | 'batch'
+  autoPrint?: boolean
 }
-const props = withDefaults(defineProps<Props>(), { mode: 'single' })
+const props = withDefaults(defineProps<Props>(), { mode: 'single', autoPrint: false })
 const emit = defineEmits<{ 'update:modelValue': [v: boolean] }>()
 
 const visible = computed({

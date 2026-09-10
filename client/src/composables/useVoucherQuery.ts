@@ -5,6 +5,13 @@ import { useSearchMemory } from '@/composables/useSearchMemory'
 import { performanceMonitor } from '@/utils/performanceMonitor'
 import { useBaseDataStore } from '@/stores/baseData'
 import type { Voucher } from '@/types/voucher'
+import {
+  buildVoucherFlatRows,
+  getVoucherSeq,
+  getTypeAbbr,
+  parseVoucherAuxData,
+} from '@/utils/voucherFlatList'
+import { VOUCHER_LIST_SOFT_CAP } from '@/utils/voucherListPerf'
 
 export interface VoucherFilters {
   keyword: string
@@ -82,6 +89,8 @@ export interface UseVoucherQueryOptions {
 
   // 默认筛选条件
   defaultFilters?: Partial<VoucherFilters>
+  /** 每次加载条数，默认 20 */
+  defaultPageSize?: number
 }
 
 export function useVoucherQuery(options: UseVoucherQueryOptions = {}) {
@@ -95,6 +104,7 @@ export function useVoucherQuery(options: UseVoucherQueryOptions = {}) {
     enableSearchMemory = false,
     searchMemoryKey = 'voucher-query-filters',
     defaultFilters = {},
+    defaultPageSize = 20,
   } = options
 
   // 获取当月日期范围
@@ -133,7 +143,7 @@ export function useVoucherQuery(options: UseVoucherQueryOptions = {}) {
     : ref(defaultFilterValues)
 
   // 分页状态
-  const pagination = reactive({ page: 1, pageSize: 20, total: 0 })
+  const pagination = reactive({ page: 1, pageSize: defaultPageSize, total: 0 })
 
   // 数据列表
   const list = ref<Voucher[]>([])
@@ -326,6 +336,27 @@ export function useVoucherQuery(options: UseVoucherQueryOptions = {}) {
     fetchData()
   }
 
+  /**
+   * 一次尽量加载剩余凭证。
+   * 表格内加载上限为软上限，避免一次塞入过多 DOM。
+   */
+  async function loadRemaining() {
+    if (!hasMore.value || loading.value || loadingMore.value) return
+    const remaining = Math.max(0, pagination.total - list.value.length)
+    if (remaining <= 0) return
+    const originalSize = pagination.pageSize === -1 ? 50 : Math.max(1, pagination.pageSize)
+    const targetSize = Math.min(VOUCHER_LIST_SOFT_CAP, pagination.total)
+    if (list.value.length >= targetSize) return
+    pagination.page = 1
+    pagination.pageSize = targetSize
+    try {
+      await fetchData()
+    } finally {
+      pagination.pageSize = originalSize
+      pagination.page = Math.max(1, Math.ceil(list.value.length / originalSize))
+    }
+  }
+
   // 排序方法
   function onSortChange(field: string, order: 'asc' | 'desc') {
     filters.value.sortField = field
@@ -367,97 +398,25 @@ export function useVoucherQuery(options: UseVoucherQueryOptions = {}) {
     await loadAuxItems(categoryId, keyword)
   }
 
-  // 凭证类型简称映射
-  const typeAbbr: Record<string, string> = {
-    记账凭证: '记',
-    收款凭证: '收',
-    付款凭证: '付',
-    转账凭证: '转',
-  }
-
-  // 提取凭证号中的序号部分
-  function getVoucherSeq(voucherNo: string) {
-    const idx = voucherNo.indexOf('-')
-    const seq = idx >= 0 ? voucherNo.slice(idx + 1) : voucherNo
-    return String(parseInt(seq, 10))
-  }
-
-  // 凭证类型简称
-  function getTypeAbbr(name: string) {
-    return typeAbbr[name] || name.charAt(0) || '凭'
-  }
-
-  // JSON 解析缓存
   const auxDataCache = new Map<string, Record<string, string>>()
-
-  // 解析 aux_data JSON
-  function parseAuxData(entry: any): Record<string, string> {
-    if (!entry.aux_data) return {}
-
-    const cacheKey = `${entry.id}_${typeof entry.aux_data === 'string' ? entry.aux_data : JSON.stringify(entry.aux_data)}`
-
-    if (auxDataCache.has(cacheKey)) {
-      return auxDataCache.get(cacheKey)!
-    }
-
-    const result: Record<string, string> = {}
-    try {
-      const auxData =
-        typeof entry.aux_data === 'string' ? JSON.parse(entry.aux_data) : entry.aux_data
-      for (const [code, val] of Object.entries(auxData)) {
-        if (val && typeof val === 'object') {
-          if ((val as any).name) {
-            result[`_aux_${code}`] = (val as any).name
-          }
-          if ((val as any).field_values && typeof (val as any).field_values === 'object') {
-            for (const [fieldKey, fieldValue] of Object.entries((val as any).field_values)) {
-              if (fieldValue !== null && fieldValue !== undefined && fieldValue !== '') {
-                result[`_aux_${code}_${fieldKey}`] = String(fieldValue)
-              }
-            }
-          }
-        }
-      }
-    } catch {
-      /* ignore */
-    }
-
-    auxDataCache.set(cacheKey, result)
-    return result
-  }
 
   // 扁平化列表（shallowRef 手动更新，避免 computed 在无关响应式变化时重新计算）
   const flatList = shallowRef<any[]>([])
 
   function buildFlatList(vouchers: any[], indexOffset = 0): any[] {
-    const rows: any[] = []
-    for (const [i, v] of vouchers.entries()) {
-      const index = indexOffset + i
-      const seq = getVoucherSeq(v.voucher_no)
-      const abbr = getTypeAbbr(v.voucher_type_name || '记')
-      const voucherLabel = `${abbr}-${seq}`
-      const entries = v.entries && v.entries.length ? v.entries : [null]
-      const entryCount = entries.length
-      for (const [entryIdx, e] of entries.entries()) {
-        rows.push({
-          ...v,
-          ...(e || {}),
-          ...(e ? parseAuxData(e) : {}),
-          voucher_no: voucherLabel,
-          _voucherId: v.id,
-          _stripeGroup: index % 2,
-          _voucherRowIndex: entryIdx,
-          _voucherEntryCount: entryCount,
-          _isFirstEntryRow: entryIdx === 0,
-        })
-      }
-    }
-    return rows
+    return buildVoucherFlatRows(vouchers, {
+      mode: 'query',
+      indexOffset,
+      auxDataCache,
+    })
   }
 
-  // 清空缓存
   function clearCache() {
     auxDataCache.clear()
+  }
+
+  function parseAuxData(entry: any) {
+    return parseVoucherAuxData(entry, auxDataCache)
   }
 
   return {
@@ -478,6 +437,7 @@ export function useVoucherQuery(options: UseVoucherQueryOptions = {}) {
     fetchData,
     loadMore,
     loadUpTo,
+    loadRemaining,
     buildQueryParams,
     onPageChange,
     onPageSizeChange,

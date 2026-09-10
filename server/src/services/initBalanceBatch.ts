@@ -5,7 +5,16 @@ import {
   assertOpeningDebitCreditExclusive,
   normalizeOpeningDebitCredit,
 } from '../utils/initBalanceOpening.js'
+import {
+  calcForeignInitBalance,
+  normalizeForeignOpeningDebitCredit,
+} from '../utils/initBalanceForeign.js'
+import {
+  calcQuantityInitBalance,
+  normalizeQuantityOpeningDebitCredit,
+} from '../utils/initBalanceQuantity.js'
 import { formatAccountDisplayLabel, formatRowLabel } from '../utils/displayLabel.js'
+import { syncInitBalanceAuxSummary } from './initBalanceAux.js'
 
 export interface InitBalanceBatchItem {
   account_id: string
@@ -14,6 +23,14 @@ export interface InitBalanceBatchItem {
   opening_credit?: number
   pre_book_debit?: number
   pre_book_credit?: number
+  foreign_opening_debit?: number
+  foreign_opening_credit?: number
+  foreign_pre_book_debit?: number
+  foreign_pre_book_credit?: number
+  qty_opening_debit?: number
+  qty_opening_credit?: number
+  qty_pre_book_debit?: number
+  qty_pre_book_credit?: number
   period?: number
   aux_item_id?: string
 }
@@ -70,19 +87,29 @@ export function saveInitBalanceBatchItems(
   const updateStmt = db.prepare(`
     UPDATE init_balances SET
       direction=?, init_balance=?, init_debit=?, init_credit=?, aux_item_id=?,
-      opening_debit=?, opening_credit=?, pre_book_debit=?, pre_book_credit=?
+      opening_debit=?, opening_credit=?, pre_book_debit=?, pre_book_credit=?,
+      foreign_init_balance=?, foreign_opening_debit=?, foreign_opening_credit=?,
+      foreign_pre_book_debit=?, foreign_pre_book_credit=?,
+      qty_init_balance=?, qty_opening_debit=?, qty_opening_credit=?,
+      qty_pre_book_debit=?, qty_pre_book_credit=?
     WHERE id=?
   `)
   const insertStmt = db.prepare(`
     INSERT INTO init_balances
       (id, account_set_id, account_id, direction, year, period,
        init_balance, init_debit, init_credit, aux_item_id,
-       opening_debit, opening_credit, pre_book_debit, pre_book_credit)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       opening_debit, opening_credit, pre_book_debit, pre_book_credit,
+       foreign_init_balance, foreign_opening_debit, foreign_opening_credit,
+       foreign_pre_book_debit, foreign_pre_book_credit,
+       qty_init_balance, qty_opening_debit, qty_opening_credit,
+       qty_pre_book_debit, qty_pre_book_credit)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
 
   let success = 0
   let failed = 0
+  /** 本次写过辅助明细的 (科目, 期间)，循环结束后统一重算科目汇总行 */
+  const auxTouched = new Map<string, { accountId: string; period: number }>()
   const errors: Array<{ id: string; label: string; error: string }> = []
   const total = items.length
   const accountLabelMap = buildAccountLabelMap(
@@ -108,6 +135,24 @@ export function saveInitBalanceBatchItems(
       const totalDebit = od + pd
       const totalCredit = oc + pc
       const initBalance = calcInitBalance(item.direction, totalDebit, totalCredit)
+      const foreignOpening = normalizeForeignOpeningDebitCredit(
+        item.foreign_opening_debit,
+        item.foreign_opening_credit
+      )
+      const fod = foreignOpening.foreign_opening_debit
+      const foc = foreignOpening.foreign_opening_credit
+      const fpd = Number(item.foreign_pre_book_debit) || 0
+      const fpc = Number(item.foreign_pre_book_credit) || 0
+      const foreignInitBalance = calcForeignInitBalance(item.direction, fod, foc, fpd, fpc)
+      const qtyOpening = normalizeQuantityOpeningDebitCredit(
+        item.qty_opening_debit,
+        item.qty_opening_credit
+      )
+      const qod = qtyOpening.qty_opening_debit
+      const qoc = qtyOpening.qty_opening_credit
+      const qpd = Number(item.qty_pre_book_debit) || 0
+      const qpc = Number(item.qty_pre_book_credit) || 0
+      const qtyInitBalance = calcQuantityInitBalance(item.direction, qod, qoc, qpd, qpc)
       const p = item.period || 1
 
       const existing = findExisting.get(accountSetId, item.account_id, year, p, auxItemId) as
@@ -125,6 +170,16 @@ export function saveInitBalanceBatchItems(
           oc,
           pd,
           pc,
+          foreignInitBalance,
+          fod,
+          foc,
+          fpd,
+          fpc,
+          qtyInitBalance,
+          qod,
+          qoc,
+          qpd,
+          qpc,
           existing.id
         )
       } else {
@@ -142,9 +197,25 @@ export function saveInitBalanceBatchItems(
           od,
           oc,
           pd,
-          pc
+          pc,
+          foreignInitBalance,
+          fod,
+          foc,
+          fpd,
+          fpc,
+          qtyInitBalance,
+          qod,
+          qoc,
+          qpd,
+          qpc
         )
       }
+      // FIX-104：批量写入辅助明细后必须补维护科目汇总行，否则账簿 / 报表按
+      // 「汇总行优先」取数时该科目期初会退回到累加辅助明细（多类目场景成倍放大）。
+      if (auxItemId !== '') {
+        auxTouched.set(`${item.account_id}|${p}`, { accountId: item.account_id, period: p })
+      }
+
       success++
     } catch (error: any) {
       failed++
@@ -158,6 +229,19 @@ export function saveInitBalanceBatchItems(
     }
 
     options?.onProgress?.(i + 1, total, success, failed)
+  }
+
+  for (const { accountId, period } of auxTouched.values()) {
+    try {
+      syncInitBalanceAuxSummary(db, accountSetId, accountId, year, period)
+    } catch (error: any) {
+      failed++
+      errors.push({
+        id: accountId,
+        label: formatAccountDisplayLabel(accountLabelMap.get(accountId)),
+        error: `辅助期初汇总行重算失败：${error?.message || '未知错误'}`,
+      })
+    }
   }
 
   return { success, failed, errors }

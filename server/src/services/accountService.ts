@@ -28,6 +28,10 @@ export interface Account {
   is_enabled: number
   is_cash: number
   is_bank: number
+  is_foreign: number
+  currency_code: string | null
+  is_quantity: number
+  quantity_unit: string | null
   no_negative: number
   allow_delete: number
   created_at: string
@@ -58,6 +62,10 @@ export interface CreateAccountParams {
   is_enabled?: boolean
   is_cash?: boolean
   is_bank?: boolean
+  is_foreign?: boolean
+  currency_code?: string | null
+  is_quantity?: boolean
+  quantity_unit?: string | null
   no_negative?: boolean
   migrate_from_parent?: boolean
 }
@@ -70,6 +78,10 @@ export interface UpdateAccountParams {
   is_enabled?: boolean
   is_cash?: boolean
   is_bank?: boolean
+  is_foreign?: boolean
+  currency_code?: string | null
+  is_quantity?: boolean
+  quantity_unit?: string | null
   no_negative?: boolean
 }
 
@@ -107,6 +119,50 @@ export class AccountService {
       `)
       .get(paramKey, accountSetId, accountSetId) as any
     return result?.param_value || null
+  }
+
+  /** 外币核算字段规范化与校验 */
+  private resolveForeignFields(
+    accountSetId: string,
+    isForeign?: boolean,
+    currencyCode?: string | null
+  ): { isForeign: number; currencyCode: string | null } {
+    if (!isForeign) {
+      return { isForeign: 0, currencyCode: null }
+    }
+    const code = String(currencyCode || '')
+      .trim()
+      .toUpperCase()
+    if (!code) {
+      throw new Error('外币核算科目必须指定币种')
+    }
+    const currency = this.db
+      .prepare(
+        `SELECT code, is_base FROM currencies WHERE account_set_id = ? AND UPPER(code) = ? LIMIT 1`
+      )
+      .get(accountSetId, code) as { code?: string; is_base?: number } | undefined
+    if (!currency?.code) {
+      throw new Error(`币种 ${code} 不存在，请先在外币类型中维护`)
+    }
+    if (currency.is_base) {
+      throw new Error('外币核算科目不能选择本位币')
+    }
+    return { isForeign: 1, currencyCode: currency.code }
+  }
+
+  /** 数量核算字段规范化与校验（与 resolveForeignFields 对称，单位为自由文本，无主数据表） */
+  private resolveQuantityFields(
+    isQuantity?: boolean,
+    quantityUnit?: string | null
+  ): { isQuantity: number; quantityUnit: string | null } {
+    if (!isQuantity) {
+      return { isQuantity: 0, quantityUnit: null }
+    }
+    const unit = String(quantityUnit || '').trim()
+    if (!unit) {
+      throw new Error('数量核算科目必须指定计量单位')
+    }
+    return { isQuantity: 1, quantityUnit: unit }
   }
 
   private getAccountCodeConfig(accountSetId: string): AccountCodeConfig {
@@ -424,6 +480,15 @@ export class AccountService {
         : null
     const hasAux = auxTypesJson ? 1 : 0
     const noNegative = params.no_negative ? 1 : 0
+    const { isForeign, currencyCode } = this.resolveForeignFields(
+      params.account_set_id,
+      params.is_foreign,
+      params.currency_code
+    )
+    const { isQuantity, quantityUnit } = this.resolveQuantityFields(
+      params.is_quantity,
+      params.quantity_unit
+    )
 
     // 判定是否需要把父科目数据迁移到本次新建的「第一个子科目」：
     // 父科目从末级变为非末级后不能再记账/挂期初，其数据/会计属性应由第一个子科目继承。
@@ -443,8 +508,8 @@ export class AccountService {
     const doCreate = this.db.transaction(() => {
       this.db
         .prepare(
-          `INSERT INTO accounts (id, account_set_id, code, name, direction, level, parent_id, is_aux, aux_types, is_enabled, is_cash, is_bank)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          `INSERT INTO accounts (id, account_set_id, code, name, direction, level, parent_id, is_aux, aux_types, is_enabled, is_cash, is_bank, is_foreign, currency_code, is_quantity, quantity_unit)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           id,
@@ -458,7 +523,11 @@ export class AccountService {
           auxTypesJson,
           params.is_enabled !== false ? 1 : 0,
           params.is_cash ? 1 : 0,
-          params.is_bank ? 1 : 0
+          params.is_bank ? 1 : 0,
+          isForeign,
+          currencyCode,
+          isQuantity,
+          quantityUnit
         )
 
       if (params.no_negative !== undefined) {
@@ -493,6 +562,7 @@ export class AccountService {
       .prepare(
         `UPDATE accounts
          SET is_aux = ?, aux_types = ?, direction = ?, is_cash = ?, is_bank = ?, no_negative = ?,
+             is_foreign = ?, currency_code = ?, is_quantity = ?, quantity_unit = ?,
              updated_at = datetime('now')
          WHERE id = ?`
       )
@@ -503,6 +573,10 @@ export class AccountService {
         parent.is_cash ?? 0,
         parent.is_bank ?? 0,
         parent.no_negative ?? 0,
+        parent.is_foreign ?? 0,
+        parent.currency_code ?? null,
+        parent.is_quantity ?? 0,
+        parent.quantity_unit ?? null,
         newAccountId
       )
 
@@ -567,6 +641,15 @@ export class AccountService {
     const newIsCash = params.is_cash ? 1 : 0
     const newIsBank = params.is_bank ? 1 : 0
     const newNoNegative = params.no_negative !== undefined ? (params.no_negative ? 1 : 0) : (oldAccount?.no_negative ?? 0)
+    const { isForeign: newIsForeign, currencyCode: newCurrencyCode } = this.resolveForeignFields(
+      oldAccount?.account_set_id || '',
+      params.is_foreign !== undefined ? params.is_foreign : !!(oldAccount?.is_foreign),
+      params.currency_code !== undefined ? params.currency_code : oldAccount?.currency_code
+    )
+    const { isQuantity: newIsQuantity, quantityUnit: newQuantityUnit } = this.resolveQuantityFields(
+      params.is_quantity !== undefined ? params.is_quantity : !!oldAccount?.is_quantity,
+      params.quantity_unit !== undefined ? params.quantity_unit : oldAccount?.quantity_unit
+    )
 
     // 计算哪些字段相对旧值实际发生了变化，只级联变化的字段
     const changedProps: Partial<{
@@ -575,6 +658,10 @@ export class AccountService {
       no_negative: number
       is_aux: number
       aux_types: string | null
+      is_foreign: number
+      currency_code: string | null
+      is_quantity: number
+      quantity_unit: string | null
     }> = {}
     if (oldAccount) {
       if ((oldAccount.is_cash ?? 0) !== newIsCash) changedProps.is_cash = newIsCash
@@ -585,13 +672,26 @@ export class AccountService {
         changedProps.is_aux = hasAux
         changedProps.aux_types = auxTypesJson
       }
+      if ((oldAccount.is_foreign ?? 0) !== newIsForeign) changedProps.is_foreign = newIsForeign
+      if ((oldAccount.currency_code ?? null) !== newCurrencyCode) {
+        changedProps.is_foreign = newIsForeign
+        changedProps.currency_code = newCurrencyCode
+      }
+      if ((oldAccount.is_quantity ?? 0) !== newIsQuantity) changedProps.is_quantity = newIsQuantity
+      // 单位变化时把 is_quantity 一并下推，避免子科目只拿到单位却没开数量核算
+      if ((oldAccount.quantity_unit ?? null) !== newQuantityUnit) {
+        changedProps.is_quantity = newIsQuantity
+        changedProps.quantity_unit = newQuantityUnit
+      }
     }
 
     this.db.transaction(() => {
       this.db
         .prepare(
           `UPDATE accounts
-           SET name = ?, direction = ?, is_aux = ?, aux_types = ?, is_enabled = ?, is_cash = ?, is_bank = ?, no_negative = ?, updated_at = datetime('now')
+           SET name = ?, direction = ?, is_aux = ?, aux_types = ?, is_enabled = ?, is_cash = ?, is_bank = ?, no_negative = ?,
+               is_foreign = ?, currency_code = ?, is_quantity = ?, quantity_unit = ?,
+               updated_at = datetime('now')
            WHERE id = ?`
         )
         .run(
@@ -603,6 +703,10 @@ export class AccountService {
           newIsCash,
           newIsBank,
           newNoNegative,
+          newIsForeign,
+          newCurrencyCode,
+          newIsQuantity,
+          newQuantityUnit,
           id
         )
 
@@ -627,7 +731,17 @@ export class AccountService {
    */
   private cascadePropertyToChildren(
     parentId: string,
-    props: Partial<{ is_cash: number; is_bank: number; no_negative: number; is_aux: number; aux_types: string | null }>
+    props: Partial<{
+      is_cash: number
+      is_bank: number
+      no_negative: number
+      is_aux: number
+      aux_types: string | null
+      is_foreign: number
+      currency_code: string | null
+      is_quantity: number
+      quantity_unit: string | null
+    }>
   ): void {
     const fields: string[] = []
     const values: (number | string | null)[] = []
@@ -650,6 +764,22 @@ export class AccountService {
     if (props.aux_types !== undefined) {
       fields.push('aux_types = ?')
       values.push(props.aux_types)
+    }
+    if (props.is_foreign !== undefined) {
+      fields.push('is_foreign = ?')
+      values.push(props.is_foreign)
+    }
+    if (props.currency_code !== undefined) {
+      fields.push('currency_code = ?')
+      values.push(props.currency_code)
+    }
+    if (props.is_quantity !== undefined) {
+      fields.push('is_quantity = ?')
+      values.push(props.is_quantity)
+    }
+    if (props.quantity_unit !== undefined) {
+      fields.push('quantity_unit = ?')
+      values.push(props.quantity_unit)
     }
     if (fields.length === 0) return
 

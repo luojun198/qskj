@@ -640,7 +640,7 @@ async function runBatchAction(action: keyof typeof ACTION_LABEL) {
 .scm-doc-page :deep(.doc-line-summary td.el-table__cell) { background: var(--el-fill-color-light); }
 
 .filter-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
-.total-hint { font-size: 13px; color: var(--el-text-color-secondary); margin-left: auto; }
+.total-hint { font-size: var(--cw-text-base); color: var(--el-text-color-secondary); margin-left: auto; }
 .doc-type-tabs { margin-bottom: 8px; }
-.selection-hint { font-size: 13px; color: var(--el-color-primary); white-space: nowrap; }
+.selection-hint { font-size: var(--cw-text-base); color: var(--el-color-primary); white-space: nowrap; }
 </style>

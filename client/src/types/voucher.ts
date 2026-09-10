@@ -10,6 +10,18 @@ export interface VoucherEntry {
   aux_data?: Record<string, AuxItemRef>
   cash_flow_code?: string
   cash_flow_name?: string
+  /** 外币核算：币种编码 */
+  currency_code?: string | null
+  /** 外币核算：记账汇率 */
+  exchange_rate?: number | null
+  /** 外币核算：原币金额 */
+  foreign_amount?: number | null
+  /** 数量核算：数量 */
+  quantity?: number | null
+  /** 数量核算：单价 */
+  unit_price?: number | null
+  /** 数量核算：计量单位 */
+  unit?: string | null
 }
 
 /** 辅助项目引用（存储在 aux_data 中的结构） */

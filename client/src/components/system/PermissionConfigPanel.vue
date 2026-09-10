@@ -86,7 +86,7 @@ onMounted(() => {
 
 .perm-loading {
   color: var(--el-text-color-secondary);
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   text-align: center;
   padding: 24px 0;
 }

@@ -124,7 +124,11 @@ export function createAssetTestDb(): Database.Database {
       name TEXT NOT NULL,
       direction TEXT,
       is_aux INTEGER DEFAULT 0,
-      aux_types TEXT
+      aux_types TEXT,
+      is_foreign INTEGER DEFAULT 0,
+      currency_code TEXT,
+      is_quantity INTEGER DEFAULT 0,
+      quantity_unit TEXT
     );
     CREATE TABLE voucher_types (
       id TEXT PRIMARY KEY,
@@ -167,7 +171,9 @@ export function createAssetTestDb(): Database.Database {
       person_id TEXT, person_name TEXT,
       func_class_id TEXT, func_class_name TEXT,
       aux_data TEXT,
-      cash_flow_code TEXT, cash_flow_name TEXT
+      cash_flow_code TEXT, cash_flow_name TEXT,
+      currency_code TEXT, exchange_rate REAL, foreign_amount REAL,
+      quantity REAL DEFAULT 0, unit_price REAL DEFAULT 0, unit TEXT
     );
     CREATE TABLE aux_categories (
       id TEXT PRIMARY KEY,

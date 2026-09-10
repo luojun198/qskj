@@ -110,7 +110,7 @@
 
 .balance-title {
   font-family: var(--font-display);
-  font-size: 15px;
+  font-size: var(--cw-text-lg);
   font-weight: 600;
   color: var(--text-primary);
 }
@@ -200,7 +200,7 @@
   }
   
   .print-date-range {
-    font-size: 14px;
+    font-size: var(--cw-text-base);
     color: var(--text-secondary);
   }
 }

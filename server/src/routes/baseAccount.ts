@@ -79,6 +79,10 @@ router.post('/accounts', operationLog('新增科目', '基础设置'), (req: Aut
     is_enabled,
     is_cash,
     is_bank,
+    is_foreign,
+    currency_code,
+    is_quantity,
+    quantity_unit,
     no_negative,
     migrate_from_parent,
   } = req.body
@@ -107,6 +111,10 @@ router.post('/accounts', operationLog('新增科目', '基础设置'), (req: Aut
       is_enabled,
       is_cash,
       is_bank,
+      is_foreign,
+      currency_code,
+      is_quantity,
+      quantity_unit,
       no_negative,
       migrate_from_parent,
     })
@@ -118,7 +126,20 @@ router.post('/accounts', operationLog('新增科目', '基础设置'), (req: Aut
 
 router.put('/accounts/:id', operationLog('修改科目', '基础设置'), (req: AuthRequest, res) => {
   const { id } = req.params
-  const { name, direction, is_aux, aux_types, is_enabled, is_cash, is_bank, no_negative } = req.body
+  const {
+    name,
+    direction,
+    is_aux,
+    aux_types,
+    is_enabled,
+    is_cash,
+    is_bank,
+    is_foreign,
+    currency_code,
+    is_quantity,
+    quantity_unit,
+    no_negative,
+  } = req.body
 
   const db = getDb()
   // 归属校验：跨账套或不存在的科目一律视为不存在（多账套隔离）
@@ -139,6 +160,10 @@ router.put('/accounts/:id', operationLog('修改科目', '基础设置'), (req: 
       is_enabled,
       is_cash,
       is_bank,
+      is_foreign,
+      currency_code,
+      is_quantity,
+      quantity_unit,
       no_negative,
     })
     res.json({ code: 0, message: '更新成功' })

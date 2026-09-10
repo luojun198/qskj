@@ -31,13 +31,13 @@
   overflow: hidden;
 }
 
-/* 页面标题：与 wb-card 标题同一语言（薄荷竖条 + 15px/600） */
+/* 页面标题：与 wb-card 标题同一语言（薄荷竖条 + text-lg/600） */
 .page-header h3 {
   flex-shrink: 0;
   margin: 0;
   position: relative;
   padding-left: 10px;
-  font-size: 15px;
+  font-size: var(--cw-text-lg);
   font-weight: 600;
   color: #1f2d33;
 }
@@ -55,7 +55,7 @@
 
 /* 标题旁的元信息（数量、状态统计等） */
 .page-header h3 + span {
-  font-size: 12px;
+  font-size: var(--cw-text-sm);
   font-weight: 400;
   color: #8a9aa1;
 }
@@ -162,13 +162,145 @@
   max-width: 220px;
 }
 
+/* ========== 页头/筛选/工具行控件统一高度（28px） ==========
+   同一行内输入框、下拉、日期、按钮等必须等高：
+   各组件 size 属性混用（small/default/large）不再影响视觉高度与字号。
+   实现原理：EP 大部分尺寸走 CSS 变量（--el-component-size* 等），
+   在容器上统一覆写即可级联到所有后代控件；
+   少数硬编码尺寸（按钮 32px、select 24/32/40px）需显式覆盖。
+   容器清单：标准页头/筛选行/工具行 + scm 报表页共用的 .rpt-bar + 资产报表 .filter-bar；
+   其他自定义工具行在模板上补挂 .toolbar 即可获得同一套归一规则。 */
+:root {
+  /* 行高统一值，便于后续整体调整 */
+  --ctl-row-height: 28px;
+}
+
+.page-header,
+.filter-row,
+.toolbar,
+.page-toolbar,
+.list-toolbar,
+.page-header-actions,
+.quick-filter-btns,
+.page-header-scroll-track,
+.toolbar-track,
+.rpt-bar,
+.filter-bar {
+  --el-component-size: var(--ctl-row-height);
+  --el-component-size-small: var(--ctl-row-height);
+  --el-component-size-large: var(--ctl-row-height);
+  --el-button-size: var(--ctl-row-height);
+  --el-checkbox-height: var(--ctl-row-height);
+}
+
+/* 按钮默认高度在 EP 中为硬编码 32px（仅 small/large 走 --el-button-size），统一显式覆盖 */
+:is(.page-header, .filter-row, .toolbar, .page-toolbar, .list-toolbar, .page-header-actions, .quick-filter-btns, .rpt-bar, .filter-bar) .el-button {
+  height: var(--ctl-row-height);
+  padding-top: 0;
+  padding-bottom: 0;
+  font-size: var(--cw-text-sm);
+}
+
+/* 圆形/图标按钮保持正方形，避免只压高度变成椭圆 */
+:is(.page-header, .filter-row, .toolbar, .page-toolbar, .list-toolbar, .page-header-actions, .quick-filter-btns, .rpt-bar, .filter-bar) .el-button.is-circle {
+  width: var(--ctl-row-height);
+  padding: 0;
+}
+
+/* flex 行内 gap 已提供间距，去掉 EP 相邻按钮额外的 12px 左外边距，避免间距叠加 */
+:is(.page-header, .filter-row, .toolbar, .page-toolbar, .list-toolbar, .page-header-actions, .quick-filter-btns, .rpt-bar, .filter-bar) .el-button + .el-button {
+  margin-left: 0;
+}
+
+/* el-select 的 min-height 按 size 硬编码（24/32/40px），统一为行高 */
+:is(.page-header, .filter-row, .toolbar, .page-toolbar, .list-toolbar, .page-header-actions, .quick-filter-btns, .rpt-bar, .filter-bar) .el-select .el-select__wrapper {
+  min-height: var(--ctl-row-height) !important;
+}
+
+/* 输入框：apple 覆盖给 wrapper 加了 1px 实边框，而 EP 按无边框计算 inner 高度（组件尺寸-2px），
+   导致输入框总比行高多出 2px（实测 30 vs 28）。按 border-box 显式压回行高，inner 同步收紧。 */
+:is(.page-header, .filter-row, .toolbar, .page-toolbar, .list-toolbar, .page-header-actions, .quick-filter-btns, .rpt-bar, .filter-bar) .el-input__wrapper {
+  height: var(--ctl-row-height) !important;
+  box-sizing: border-box;
+}
+
+:is(.page-header, .filter-row, .toolbar, .page-toolbar, .list-toolbar, .page-header-actions, .quick-filter-btns, .rpt-bar, .filter-bar) .el-input {
+  --el-input-inner-height: calc(var(--ctl-row-height) - 4px);
+}
+
+/* 开关根高度按 size 硬编码（32/24px），会把行高撑出参差；统一为行高，内部滑块自动居中 */
+:is(.page-header, .filter-row, .toolbar, .page-toolbar, .list-toolbar, .page-header-actions, .quick-filter-btns, .rpt-bar, .filter-bar) .el-switch {
+  height: var(--ctl-row-height);
+}
+
+/* 复选框/单选框 small 尺寸根高度硬编码 24px（.el-checkbox.el-checkbox--small 等与容器规则同优先级且 EP 样式后加载），
+   统一为行高（内部勾选框居中，视觉不变） */
+:is(.page-header, .filter-row, .toolbar, .page-toolbar, .list-toolbar, .page-header-actions, .quick-filter-btns, .rpt-bar, .filter-bar) .el-checkbox,
+:is(.page-header, .filter-row, .toolbar, .page-toolbar, .list-toolbar, .page-header-actions, .quick-filter-btns, .rpt-bar, .filter-bar) .el-radio {
+  height: var(--ctl-row-height) !important;
+}
+
+/* 顶部多标签栏右侧的页面操作位（Teleport 投递的「列设置」等按钮）：与标签项同高 28px */
+.tabs-bar__actions {
+  --el-component-size: var(--ctl-row-height);
+  --el-component-size-small: var(--ctl-row-height);
+  --el-component-size-large: var(--ctl-row-height);
+  --el-button-size: var(--ctl-row-height);
+}
+
+.tabs-bar__actions .el-button {
+  height: var(--ctl-row-height);
+  padding-top: 0;
+  padding-bottom: 0;
+  font-size: var(--cw-text-sm);
+}
+
+/* 行内控件字号统一 12px，避免 small/default 混用时文字大小不一 */
+:is(.page-header, .filter-row, .toolbar, .page-toolbar, .list-toolbar, .page-header-actions, .quick-filter-btns, .rpt-bar, .filter-bar) :is(.el-input, .el-date-editor, .el-input-number, .el-cascader) {
+  font-size: var(--cw-text-sm);
+}
+
+:is(.page-header, .filter-row, .toolbar, .page-toolbar, .list-toolbar, .page-header-actions, .quick-filter-btns, .rpt-bar, .filter-bar) .el-select .el-select__wrapper {
+  font-size: var(--cw-text-sm);
+}
+
+/* 单选按钮组：inner 高度由 padding+字号推出（非变量驱动），统一显式对齐行高；
+   双写 .el-radio-button 提高优先级，压过 EP 后加载的 .el-radio-button--small .el-radio-button__inner */
+:is(.page-header, .filter-row, .toolbar, .page-toolbar, .list-toolbar, .page-header-actions, .quick-filter-btns, .rpt-bar, .filter-bar) .el-radio-button .el-radio-button__inner {
+  height: var(--ctl-row-height);
+  display: inline-flex;
+  align-items: center;
+  padding: 0 12px;
+  font-size: var(--cw-text-sm);
+  box-sizing: border-box;
+}
+
+/* 行内联表单（el-form inline）的表单项：去掉底部间距、标签与控件同高 */
+:is(.page-header, .filter-row, .toolbar, .page-toolbar, .list-toolbar, .page-header-actions, .quick-filter-btns, .rpt-bar, .filter-bar) .el-form-item {
+  margin-bottom: 0 !important;
+}
+
+:is(.page-header, .filter-row, .toolbar, .page-toolbar, .list-toolbar, .page-header-actions, .quick-filter-btns, .rpt-bar, .filter-bar) .el-form-item__label {
+  height: var(--ctl-row-height) !important;
+  line-height: var(--ctl-row-height) !important;
+  font-size: var(--cw-text-sm);
+}
+
+/* 行内纯文本标签（如「关键字」「日志类型」，限无 class 的裸 span，不影响状态标签）：不换行、与控件垂直对齐 */
+:is(.filter-row, .toolbar, .page-toolbar, .list-toolbar, .page-header-actions, .quick-filter-btns, .rpt-bar, .filter-bar) > span:not([class]) {
+  font-size: var(--cw-text-sm);
+  line-height: var(--ctl-row-height);
+  white-space: nowrap;
+  color: var(--ink-500, #62858a);
+}
+
 /* ========== 科目选择下拉（树形 / 平铺）统一样式 ========== */
 .account-tree-select :deep(.el-select__wrapper) {
   min-height: 32px;
 }
 
 .account-tree-select :deep(.el-select__selected-item) {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   line-height: 1.35;
   max-width: 100%;
   overflow: hidden;
@@ -208,7 +340,7 @@
   max-width: none !important;
   height: auto !important;
   overflow: visible !important;
-  font-size: 12px !important;
+  font-size: var(--cw-text-sm) !important;
   line-height: 1.4 !important;
   font-weight: 400 !important;
   white-space: nowrap !important;
@@ -234,7 +366,7 @@
 .account-tree-node-option__name {
   flex: 1 1 auto;
   min-width: 0;
-  font-size: 12px;
+  font-size: var(--cw-text-sm);
   color: var(--el-text-color-primary, #303133);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -251,7 +383,7 @@
   height: auto !important;
   min-height: 28px;
   padding: 6px 12px !important;
-  font-size: 12px !important;
+  font-size: var(--cw-text-sm) !important;
   line-height: 1.4 !important;
   font-weight: 400 !important;
   white-space: normal !important;
@@ -265,7 +397,7 @@
 
 .account-select-option__row {
   display: block;
-  font-size: 12px;
+  font-size: var(--cw-text-sm);
   line-height: 1.4;
   white-space: normal;
   word-break: break-word;
@@ -653,7 +785,7 @@
 }
 
 .empty-state-text {
-  font-size: 14px;
+  font-size: var(--cw-text-base);
   margin-bottom: 16px;
 }
 
@@ -684,14 +816,14 @@
 
 .form-tip {
   color: #909399;
-  font-size: 12px;
+  font-size: var(--cw-text-sm);
   line-height: 1.5;
   margin-top: 4px;
 }
 
 .form-error {
   color: #c0392b;
-  font-size: 12px;
+  font-size: var(--cw-text-sm);
   line-height: 1.5;
   margin-top: 4px;
 }
@@ -779,7 +911,7 @@
 }
 
 .pagination-bar .pagination-text {
-  font-size: 12px;
+  font-size: var(--cw-text-sm);
   color: #909399;
   white-space: nowrap;
   line-height: 24px;
@@ -795,7 +927,7 @@
   display: flex !important;
   align-items: center !important;
   box-sizing: border-box !important;
-  font-size: 12px !important;
+  font-size: var(--cw-text-sm) !important;
   line-height: 22px !important;
 }
 
@@ -807,7 +939,7 @@
   display: flex !important;
   align-items: center !important;
   height: 24px !important;
-  font-size: 12px !important;
+  font-size: var(--cw-text-sm) !important;
   gap: 4px !important;
 }
 
@@ -821,12 +953,12 @@
   height: 24px !important;
   line-height: 24px !important;
   min-width: 24px !important;
-  font-size: 12px !important;
+  font-size: var(--cw-text-sm) !important;
 }
 
 /* 总数文案 */
 .page .el-pagination .el-pagination__total {
-  font-size: 12px !important;
+  font-size: var(--cw-text-sm) !important;
   line-height: 24px !important;
 }
 
@@ -834,7 +966,7 @@
 .pagination-bar .el-pagination .el-pagination__jump,
 .page .el-pagination .el-pagination__jump {
   height: 24px !important;
-  font-size: 12px !important;
+  font-size: var(--cw-text-sm) !important;
   display: flex !important;
   align-items: center !important;
   margin-left: 6px !important;
@@ -860,7 +992,7 @@
 .page .el-pagination .el-pagination__jump .el-input__inner {
   height: auto !important;
   line-height: normal !important;
-  font-size: 12px !important;
+  font-size: var(--cw-text-sm) !important;
   text-align: center !important;
   padding: 0 !important;
 }
@@ -871,14 +1003,42 @@
 }
 
 /* 中等宽度 / 浏览器缩放：工具区占满剩余宽度并横向滚动 */
+/* 中等宽度 / 浏览器缩放：工具区放不下时换行展示（所有控件可见），不再隐藏式横向滚动 */
 @media (max-width: 1100px) {
+  .page-header {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+
   .page-header > .page-header-actions,
   .page-header > .filter-row,
   .page-header > .toolbar,
   .page-header > .quick-filter-btns,
   .page-header > div:not(:first-child) {
+    flex-wrap: wrap;
+    overflow-x: visible;
+    overflow-y: visible;
     justify-content: flex-start;
     max-width: 100%;
+    row-gap: 8px;
+  }
+
+  /* 内层 track 由 max-content 单行改为随容器换行 */
+  .page-header-scroll-track,
+  .toolbar-track {
+    flex-wrap: wrap;
+    width: 100%;
+    min-width: 0;
+    justify-content: flex-start;
+    row-gap: 8px;
+  }
+
+  /* 独立筛选栏同样换行 */
+  .filter-row {
+    flex-wrap: wrap;
+    overflow-x: visible;
+    overflow-y: visible;
+    row-gap: 8px;
   }
 }
 
@@ -914,11 +1074,31 @@
     overflow-x: visible;
     overflow-y: visible;
     padding: 12px;
-    gap: 12px;
+    gap: 8px;
+  }
+
+  /* 小屏下筛选控件弹性占宽：窄控件半行、宽控件（日期区间等）整行 */
+  .filter-row .filter-ctl--xs,
+  .filter-row .filter-ctl--sm,
+  .filter-row .filter-ctl--md,
+  .page-header .filter-ctl--xs,
+  .page-header .filter-ctl--sm,
+  .page-header .filter-ctl--md {
+    flex: 1 1 calc(50% - 8px);
+    width: auto !important;
+    max-width: none !important;
+    min-width: 130px;
+  }
+
+  .filter-row .filter-ctl--lg,
+  .page-header .filter-ctl--lg {
+    flex: 1 1 100%;
+    width: auto !important;
+    max-width: none !important;
   }
 
   .page-header h3 {
-    font-size: 15px;
+    font-size: var(--cw-text-lg);
   }
 
   /* 768px 以下仍允许换行（手机竖屏横向滚动体验差） */
@@ -1497,14 +1677,14 @@
   height: 20px;
   padding: 0 6px;
   border-radius: 4px;
-  font-size: 12px;
+  font-size: var(--cw-text-sm);
   line-height: 20px;
 }
 
 .el-table:not(.paper-table) .el-button.is-link,
 .el-table:not(.paper-table) .el-button--small.is-link,
 .compact-data-table.el-table--small .el-button.is-link {
-  font-size: 12px;
+  font-size: var(--cw-text-sm);
 }
 
 /* 紧凑表表头：覆盖全局 .el-table__header 的大写/渐变感，与表体密度一致 */
@@ -1577,7 +1757,7 @@
 
 .page:has(.compact-data-table) > .page-header h3,
 .page:has(.el-table):not(:has(.paper-table)) > .page-header h3 {
-  font-size: 15px;
+  font-size: var(--cw-text-lg);
   line-height: 1.25;
   font-weight: 600;
 }
@@ -1603,7 +1783,7 @@
 
 .page:has(.compact-data-table) .filter-row .el-checkbox__label,
 .page:has(.compact-data-table) .page-header .el-checkbox__label {
-  font-size: 12px;
+  font-size: var(--cw-text-sm);
 }
 
 .page:has(.compact-data-table) .filter-row .el-divider--vertical,
@@ -1618,7 +1798,7 @@
 
 .page:has(.compact-data-table) .pagination-bar .el-pagination,
 .page:has(.compact-data-table) .el-pagination {
-  font-size: 12px;
+  font-size: var(--cw-text-sm);
   height: 22px !important;
 }
 
@@ -1627,7 +1807,7 @@
   min-width: 22px;
   height: 22px;
   line-height: 22px;
-  font-size: 12px;
+  font-size: var(--cw-text-sm);
 }
 
 /* 全站数据列表表头：与表体、二级导航同一字号，字重 600 */
@@ -1818,7 +1998,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
 }
 
 .cw-grouped-checkbox-group__header .el-checkbox__label {
@@ -1849,7 +2029,7 @@
 }
 
 .cw-grouped-checkbox-items .el-checkbox__label {
-  font-size: 12px;
+  font-size: var(--cw-text-sm);
   padding-left: 6px;
   line-height: 1.4;
   white-space: normal;

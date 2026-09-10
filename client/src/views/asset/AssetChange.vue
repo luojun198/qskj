@@ -793,7 +793,7 @@ onMounted(async () => {
 }
 
 .change-header__asset {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   color: var(--el-text-color-secondary);
 }
 
@@ -804,7 +804,7 @@ onMounted(async () => {
 }
 
 .picker-label {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   color: var(--el-text-color-regular);
 }
 
@@ -852,7 +852,7 @@ onMounted(async () => {
 }
 
 .voucher-preview {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   color: var(--el-color-primary);
   background: var(--el-color-primary-light-9);
   padding: 6px 12px;
@@ -890,16 +890,16 @@ onMounted(async () => {
 
 .change-history h4 {
   margin: 0 0 12px;
-  font-size: 14px;
+  font-size: var(--cw-text-base);
 }
 
 .history-item__title {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   line-height: 1.5;
 }
 
 .history-item__amt {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   font-weight: 600;
 }
 

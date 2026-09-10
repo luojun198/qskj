@@ -275,7 +275,7 @@ onActivated(() => {
 <style scoped>
 .scm-arap-page { display: flex; flex-direction: column; height: 100%; padding: 12px 16px; }
 .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
-.total-hint { margin-left: auto; font-size: 13px; color: var(--el-text-color-secondary); }
+.total-hint { margin-left: auto; font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }
 .page-body { flex: 1; min-height: 0; }
 .amt-ar { color: #15803d !important; font-weight: 700; }
 .amt-ap { color: #dc2626 !important; font-weight: 700; }

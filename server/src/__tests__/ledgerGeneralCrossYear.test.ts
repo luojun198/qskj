@@ -32,7 +32,9 @@ function setup() {
       name TEXT,
       direction TEXT,
       level INTEGER DEFAULT 1,
-      is_enabled INTEGER DEFAULT 1
+      is_enabled INTEGER DEFAULT 1,
+      is_foreign INTEGER DEFAULT 0,
+      currency_code TEXT
     );
     CREATE TABLE init_balances (
       id TEXT PRIMARY KEY,
@@ -69,7 +71,8 @@ function setup() {
   const accId = 'acc-1001'
 
   db.prepare(
-    `INSERT INTO accounts VALUES (?, ?, '1001', '库存现金', 'debit', 1, 1)`
+    `INSERT INTO accounts (id, account_set_id, code, name, direction, level, is_enabled)
+     VALUES (?, ?, '1001', '库存现金', 'debit', 1, 1)`
   ).run(accId, setId)
 
   // 2026 年初 1000

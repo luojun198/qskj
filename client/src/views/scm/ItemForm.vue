@@ -115,13 +115,13 @@
               <el-form-item label="辅单位换算">
                 <div style="width:100%">
                   <div v-for="(su, i) in form.secondary_units" :key="i" style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
-                    <span style="color:var(--el-text-color-secondary);font-size:13px">1</span>
+                    <span style="color:var(--el-text-color-secondary);font-size: var(--cw-text-base)">1</span>
                     <el-select v-model="su.unit_code" filterable placeholder="辅单位" style="width:160px" clearable>
                       <el-option v-for="u in unitOptions" :key="u.code" :label="u.name" :value="u.code" />
                     </el-select>
-                    <span style="color:var(--el-text-color-secondary);font-size:13px">=</span>
+                    <span style="color:var(--el-text-color-secondary);font-size: var(--cw-text-base)">=</span>
                     <el-input-number v-model="su.conversion_rate" :min="0" :precision="6" :controls="false" style="width:140px" placeholder="含主单位数量" />
-                    <span style="color:var(--el-text-color-secondary);font-size:13px">{{ form.primary_unit_code || '主单位' }}</span>
+                    <span style="color:var(--el-text-color-secondary);font-size: var(--cw-text-base)">{{ form.primary_unit_code || '主单位' }}</span>
                     <el-button link type="danger" size="small" @click="removeSecondaryUnit(i)">删除</el-button>
                   </div>
                   <el-button size="small" @click="addSecondaryUnit"><el-icon><Plus /></el-icon>添加辅单位</el-button>
@@ -599,10 +599,10 @@ onDeactivated(() => {
   padding: 10px 16px; border-bottom: 1px solid var(--el-border-color-light);
   background: var(--el-bg-color); flex-shrink: 0; gap: 12px;
 }
-.item-form-header__left { display: flex; align-items: center; gap: 8px; font-size: 14px; min-width: 0; }
+.item-form-header__left { display: flex; align-items: center; gap: 8px; font-size: var(--cw-text-base); min-width: 0; }
 .item-form-header__sep { color: var(--el-text-color-placeholder); }
 .item-form-header__title { font-weight: 600; color: var(--el-text-color-primary); white-space: nowrap; }
-.item-form-header__meta { color: var(--el-text-color-secondary); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.item-form-header__meta { color: var(--el-text-color-secondary); font-size: var(--cw-text-base); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .item-form-header__right { display: flex; gap: 8px; flex-shrink: 0; }
 
 .item-form-body { flex: 1; overflow: auto; padding: 16px 18px; }

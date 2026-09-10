@@ -305,7 +305,7 @@ onMounted(async () => {
 }
 .page-title span {
   color: #909399;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
 }
 .page-actions {
   display: flex;

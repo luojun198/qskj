@@ -25,6 +25,8 @@ export interface StyledXlsxSheetSpec {
   columns: ExportColumnSpec[]
   /** 已解析的叶子单元格值矩阵（行主序，按叶子列顺序） */
   rows: (string | number | null)[][]
+  /** 合计行之前的小计行（如外币表按币种小计），每行与叶子列一一对应，首列原样取值 */
+  subtotalRows?: (string | number | null)[][]
   /** 合计行（与叶子列一一对应；首列自动写「合计」） */
   summaryValues?: (string | number | null)[]
   stripe?: boolean
@@ -199,6 +201,7 @@ function appendStyledSheet(workbook: ExcelJS.Workbook, options: StyledXlsxSheetS
     subtitle,
     columns,
     rows,
+    subtotalRows,
     summaryValues,
     stripe = true,
   } = options
@@ -276,6 +279,17 @@ function appendStyledSheet(workbook: ExcelJS.Workbook, options: StyledXlsxSheetS
     })
     currentRow += 1
   })
+
+  for (const subtotal of subtotalRows || []) {
+    const row = worksheet.getRow(currentRow)
+    row.height = 18
+    leafColumns.forEach((column, colIndex) => {
+      const cell = row.getCell(colIndex + 1)
+      cell.value = normalizeCellValue(subtotal[colIndex] ?? '')
+      applyCellStyle(cell, { align: column.align, type: column.type, bold: true })
+    })
+    currentRow += 1
+  }
 
   if (summaryValues?.length) {
     const row = worksheet.getRow(currentRow)

@@ -18,6 +18,13 @@
         >
         <el-button @click="handleClose">取消</el-button>
       </div>
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        class="print-tip"
+        title="点击「打印」后，请在系统打印对话框中选择打印机、纸张与份数。编辑模版时修改的上/下/左/右边距会在保存后生效于预览与打印。"
+      />
 
       <!-- 预览区域 -->
       <div class="preview-area">
@@ -221,10 +228,19 @@ const handlePrint = async () => {
 
   await nextTick()
   try {
+    const tpl = currentTemplate.value
     openPrintWindow({
       itemSelector: '.print-dialog-content .preview-item',
       title: '打印凭证',
       expandSelector: '.print-dialog-content .preview-area',
+      marginsMm: tpl
+        ? {
+            top: Number(tpl.margin_top) || 0,
+            right: Number(tpl.margin_right) || 0,
+            bottom: Number(tpl.margin_bottom) || 0,
+            left: Number(tpl.margin_left) || 0,
+          }
+        : undefined,
     })
   } catch {
     ElMessage.warning('未找到可打印的内容，请稍后重试')
@@ -287,6 +303,11 @@ watch(
   padding: 10px;
   border-bottom: 1px solid #e0e0e0;
   background-color: #f5f5f5;
+}
+
+.print-tip {
+  margin: 0;
+  border-radius: 0;
 }
 
 .preview-area {

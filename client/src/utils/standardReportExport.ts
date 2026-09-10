@@ -11,7 +11,13 @@
 import ExcelJS from 'exceljs'
 
 import { downloadExcelWorkbook } from './exportStyledExcel'
-import { parseStyleKey, styleToCssText, type CellStyle } from '@/composables/useReportCellStyle'
+import {
+  fontFamilyCss,
+  parseStyleKey,
+  rowCenterOffsetPx,
+  styleToCssText,
+  type CellStyle,
+} from '@/composables/useReportCellStyle'
 
 export interface ReportExportCell {
   rowIndex: number
@@ -125,6 +131,113 @@ export function buildReportExportModel(options: BuildModelOptions): ReportExport
 
 /** 单元格左右内边距（px）；打印样式与铺开宽度都要用它，写死两处必然对不上 */
 const CELL_PADDING_X = 8
+
+/**
+ * 数值格的左右内边距（px）。
+ *
+ * 金额是定宽的、一位都不能少，比项目名更需要横向空间；文本格保持 8px 不动，
+ * 数值格收窄到 3px，相当于每格多出 10px ≈ 一位半数字的余量。
+ */
+const NUMERIC_PADDING_X = 3
+
+/** 打印正文默认字号（px），与 tdBase 保持一致 */
+const PRINT_FONT_SIZE = 12
+
+/** 数值缩排的下限字号（px），再小就辨认不出来了 */
+const MIN_NUMERIC_FONT_SIZE = 8
+
+/**
+ * 估算文本在宋体下的像素宽度：西文/数字是半角（0.5em），中日韩与全角符号按 1em 算。
+ * 只用来判断「会不会被裁掉」，不需要精确到亚像素。
+ */
+export function estimateTextWidth(text: string, fontSize: number) {
+  let width = 0
+  for (const ch of text) {
+    const code = ch.codePointAt(0) || 0
+    width += code > 0x2e7f ? fontSize : fontSize * 0.5
+  }
+  return width
+}
+
+/** 打印表格默认字体，与 buildReportPrintHtml 里 table 的 font-family 一致 */
+const PRINT_FONT_FAMILY = "'SimSun','宋体',serif"
+
+/**
+ * 不同渲染器（浏览器排版 / html2canvas 光栅化 / 打印机 DPI 取整）之间的字宽误差余量。
+ * 比例 + 固定像素双保险：短数字靠固定像素兜底，长数字靠比例兜底。
+ */
+const TEXT_WIDTH_TOLERANCE_RATIO = 1.04
+const TEXT_WIDTH_TOLERANCE_PX = 2
+
+let measureContext: CanvasRenderingContext2D | null | undefined
+
+/**
+ * 用真实字体实测文本宽度（px）；非浏览器环境或 canvas 不可用时返回 null。
+ *
+ * 只靠「半角 0.5em」估算只对宋体成立：微软雅黑 / 黑体的数字明显更宽，
+ * 加粗（宋体没有粗体字面、由渲染器加粗描边）也会变宽，估算偏小就会被裁掉末位小数。
+ */
+export function measureTextWidth(
+  text: string,
+  fontSize: number,
+  fontFamily?: string,
+  bold?: boolean
+): number | null {
+  if (measureContext === undefined) {
+    try {
+      measureContext =
+        typeof document !== 'undefined'
+          ? document.createElement('canvas').getContext('2d')
+          : null
+    } catch {
+      measureContext = null
+    }
+  }
+  if (!measureContext) return null
+  try {
+    measureContext.font = `${bold ? '700 ' : ''}${fontSize}px ${fontFamily || PRINT_FONT_FAMILY}`
+    const width = measureContext.measureText(text).width
+    return Number.isFinite(width) && width > 0 ? width : null
+  } catch {
+    return null
+  }
+}
+
+export interface FitNumericFontOptions {
+  /** CSS font-family；不传用打印默认宋体 */
+  fontFamily?: string
+  bold?: boolean
+}
+
+/**
+ * 数值格的「缩小字体填充」（同 Excel 的 shrink to fit）。
+ *
+ * 打印 / 导出 PDF 与屏幕预览对不上、末位小数被切掉，根因是数值格 `white-space:nowrap`
+ * 又套了 `overflow:hidden`：只要渲染器把字量得比浏览器宽一点点（html2canvas 重新排版、
+ * 打印机按物理 DPI 取整都会），超出的部分就被直接裁掉，而且是无声裁掉。
+ * 与其让它裁，不如按比例降字号，保证整串数字完整出现。
+ *
+ * 字宽取「真实字体实测」与「宋体估算」中的较大者，再加安全余量。
+ */
+export function fitNumericFontSize(
+  text: string,
+  availableWidth: number,
+  baseFontSize: number,
+  options: FitNumericFontOptions = {}
+) {
+  const trimmed = text.trim()
+  if (!trimmed || availableWidth <= 0) return baseFontSize
+  const usable = availableWidth - TEXT_WIDTH_TOLERANCE_PX
+  if (usable <= 0) return MIN_NUMERIC_FONT_SIZE
+
+  const estimated = estimateTextWidth(trimmed, baseFontSize)
+  const measured = measureTextWidth(trimmed, baseFontSize, options.fontFamily, options.bold)
+  const needed = Math.max(estimated, measured ?? 0) * TEXT_WIDTH_TOLERANCE_RATIO
+  if (needed <= usable) return baseFontSize
+
+  const scaled = Math.floor(((usable / needed) * baseFontSize) * 10) / 10
+  return Math.max(MIN_NUMERIC_FONT_SIZE, Math.min(baseFontSize, scaled))
+}
 
 /** 认定「表格主体到此为止」所需的连续无边框列数，与导入侧 fillTableBorders 一致 */
 const TABLE_COL_GAP = 2
@@ -309,7 +422,29 @@ function spillWidth(
 
   let extra = 0
   for (let col = startCol + cell.colSpan; col < model.colCount; col += 1) {
-    if (nonEmptyCols.has(col) || borderedCols.has(col)) break
+    if (nonEmptyCols.has(col) || borderedCols.has(col)) {
+      // 整行居中的格子（抬头日期）不算墙：它的文字只占中线附近一小段，
+      // 左侧的「纳税人名称」可以继续铺到日期文字之前，否则名称会被迫折行
+      const blocker = rowCells.find(item => item.colIndex === col)
+      if (blocker && !borderedCols.has(col)) {
+        const blockerStyle = parseStyleKey(blocker.styleKey)
+        if (blockerStyle.rowCenter && blockerStyle.textAlign === 'center') {
+          const center = rowCenterOffsetPx(
+            index => model.colWidths[index] || 0,
+            model.colCount,
+            startCol
+          )
+          const half =
+            estimateTextWidth(blocker.text.trim(), blockerStyle.fontSize || PRINT_FONT_SIZE) / 2
+          const blockerWidth = model.colWidths
+            .slice(blocker.colIndex, blocker.colIndex + blocker.colSpan)
+            .reduce((sum, width) => sum + (width || 0), 0)
+          const allowed = Math.min(center - half - CELL_PADDING_X - ownWidth, extra + blockerWidth)
+          extra = Math.max(extra, allowed)
+        }
+      }
+      break
+    }
     extra += model.colWidths[col] || 0
   }
 
@@ -380,19 +515,63 @@ export function buildReportPrintHtml(
       const cellStyle = parseStyleKey(cell.styleKey)
       const inGrid = Boolean(gridClassNames(cell, bounds))
       let style = tdBase + styleToCssText(inGrid ? styleWithoutBorder(cellStyle) : cellStyle)
+      // 与屏幕、Excel 一致：格子自带对齐（如居中的行次列）优先，未设对齐的数值才右对齐
       if (cell.isError) style += 'color:#c00;text-align:right;'
-      else if (cell.numericValue !== null) style += 'text-align:right;'
+      else if (cell.numericValue !== null && !cellStyle.textAlign) style += 'text-align:right;'
       const classAttr = inGrid ? ` class="${gridClassNames(cell, bounds)}"` : ''
       const spanAttr =
         (cell.colSpan > 1 ? ` colspan="${cell.colSpan}"` : '') +
         (cell.rowSpan > 1 ? ` rowspan="${cell.rowSpan}"` : '')
 
+      // 数值格：收窄内边距 + 必要时降字号，宁可字小也不能少一位小数
+      const isNumericCell = cell.numericValue !== null || cell.isError
+      if (isNumericCell && cell.text.trim()) {
+        const ownWidth = printModel.colWidths
+          .slice(cell.colIndex, cell.colIndex + cell.colSpan)
+          .reduce((sum, width) => sum + (width || 0), 0)
+        const baseFontSize = cellStyle.fontSize || PRINT_FONT_SIZE
+        const fontSize = fitNumericFontSize(
+          cell.text,
+          ownWidth - NUMERIC_PADDING_X * 2,
+          baseFontSize,
+          {
+            fontFamily: fontFamilyCss(cellStyle.fontFamily) || undefined,
+            bold: cellStyle.bold,
+          }
+        )
+        style += `padding-left:${NUMERIC_PADDING_X}px;padding-right:${NUMERIC_PADDING_X}px;font-size:${fontSize}px;`
+      }
+
       const spill = spillWidth(printModel, cell, cellStyle, list, nonEmptyCols)
       const content = escapeHtml(cell.text)
+
+      // 整行居中：文字锚在整张表的中线上，可以探出本格（抬头行两侧通常留白）。
+      // 不能给 td 设 overflow，见函数注释第 3 点；position:relative 不影响 border-collapse。
+      if (cellStyle.rowCenter && cellStyle.textAlign === 'center' && cell.text.trim()) {
+        const offset = rowCenterOffsetPx(
+          index => printModel.colWidths[index] || 0,
+          printModel.colCount,
+          cell.colIndex
+        )
+        return (
+          `<td${classAttr}${spanAttr} style="${style}position:relative;">` +
+          `<span style="position:absolute;left:${Math.round(offset)}px;top:50%;` +
+          `transform:translate(-50%,-50%);white-space:nowrap;">${content}</span>` +
+          `</td>`
+        )
+      }
+
       if (spill === null) {
+        // 与屏幕一致：文字在格内自动换行（导入时已按折行行数撑高了行高），数值保持单行；
+        // 用 max-height 兜住，避免极端长文本把行撑出预设高度、打乱分页
+        const rowHeight = printModel.rowHeights[rowIndex] || 0
+        const wrap =
+          cell.numericValue === null && !cell.isError
+            ? `white-space:normal;word-break:break-all;max-height:${Math.max(0, rowHeight - 6)}px;`
+            : 'white-space:nowrap;'
         return (
           `<td${classAttr}${spanAttr} style="${style}">` +
-          `<div style="overflow:hidden;white-space:nowrap;">${content}</div>` +
+          `<div style="overflow:hidden;${wrap}">${content}</div>` +
           `</td>`
         )
       }
@@ -583,8 +762,25 @@ function applyCellStyle(target: ExcelJS.Cell, cell: ReportExportCell) {
     }
   }
 
-  const format = cell.formatText ? NUMBER_FORMATS[cell.formatText] : ''
-  if (format && cell.numericValue !== null) target.numFmt = format
+  if (cell.numericValue === null) return
+  const format =
+    (cell.formatText ? NUMBER_FORMATS[cell.formatText] : '') || inferNumberFormat(cell.text)
+  if (format) target.numFmt = format
+}
+
+/**
+ * 没设数字格式的数值格，按屏幕显示文本反推 Excel 格式，保证 Excel 里的小数位、千分位
+ * 与屏幕一致（服务端对金额默认输出「千分位 + 两位小数」，Excel 若按「常规」会丢掉末尾 0）。
+ */
+export function inferNumberFormat(text: string): string {
+  const trimmed = String(text || '').trim()
+  const matched = /^-?(\d{1,3}(,\d{3})+|\d+)(\.(\d+))?$/.exec(trimmed)
+  if (!matched) return ''
+  const grouping = trimmed.includes(',')
+  const digits = matched[4]?.length || 0
+  if (!grouping && digits === 0) return ''
+  const integerPart = grouping ? '#,##0' : '0'
+  return digits > 0 ? `${integerPart}.${'0'.repeat(digits)}` : integerPart
 }
 
 /** 工作表名不能含 : \\ / ? * [ ]，且不超过 31 字符 */

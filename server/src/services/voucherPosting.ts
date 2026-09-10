@@ -12,6 +12,7 @@ export interface VoucherEntryLike {
   direction: 'debit' | 'credit'
   amount: number
   amount_cents?: number
+  foreign_amount?: number | null
   dept_id?: string | number | null
   project_id?: string | number | null
   supplier_id?: string | number | null
@@ -141,7 +142,8 @@ export function applyVoucherPosting(
   )
 
   const getInitBalance = db.prepare(`
-    SELECT COALESCE(SUM(init_balance), 0) as init_balance
+    SELECT COALESCE(SUM(init_balance), 0) as init_balance,
+           COALESCE(SUM(foreign_init_balance), 0) as foreign_init_balance
     FROM init_balances
     WHERE account_set_id=? AND account_id=? AND year=? AND aux_item_id=?
   `)
@@ -150,8 +152,12 @@ export function applyVoucherPosting(
   // 不含 1~N-1 期发生额），目前所有账簿/报表查询已改为动态计算，end_balance 列保留仅为
   // 历史兼容，不应被任何业务逻辑信任。
   const upsertBalance = db.prepare(`
-    INSERT INTO account_balances (id, account_set_id, account_id, account_code, account_name, direction, year, period, init_balance, current_debit, current_credit, end_balance, end_debit, end_credit, aux_item_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO account_balances (
+      id, account_set_id, account_id, account_code, account_name, direction, year, period,
+      init_balance, current_debit, current_credit, end_balance, end_debit, end_credit, aux_item_id,
+      foreign_init_balance, foreign_current_debit, foreign_current_credit, foreign_end_balance
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(account_set_id, account_id, year, period, aux_item_id) DO UPDATE SET
       init_balance = COALESCE(init_balance, excluded.init_balance),
       current_debit = current_debit + excluded.current_debit,
@@ -159,6 +165,15 @@ export function applyVoucherPosting(
       end_balance = CASE WHEN direction = 'debit'
         THEN COALESCE(init_balance, 0) + (current_debit + excluded.current_debit) - (current_credit + excluded.current_credit)
         ELSE COALESCE(init_balance, 0) + (current_credit + excluded.current_credit) - (current_debit + excluded.current_debit)
+      END,
+      foreign_init_balance = COALESCE(foreign_init_balance, excluded.foreign_init_balance),
+      foreign_current_debit = COALESCE(foreign_current_debit, 0) + excluded.foreign_current_debit,
+      foreign_current_credit = COALESCE(foreign_current_credit, 0) + excluded.foreign_current_credit,
+      foreign_end_balance = CASE WHEN direction = 'debit'
+        THEN COALESCE(foreign_init_balance, 0) + (COALESCE(foreign_current_debit, 0) + excluded.foreign_current_debit)
+             - (COALESCE(foreign_current_credit, 0) + excluded.foreign_current_credit)
+        ELSE COALESCE(foreign_init_balance, 0) + (COALESCE(foreign_current_credit, 0) + excluded.foreign_current_credit)
+             - (COALESCE(foreign_current_debit, 0) + excluded.foreign_current_debit)
       END
   `)
 
@@ -179,6 +194,7 @@ export function applyVoucherPosting(
         auxItemId
       ) as any
       const initBalance = initBalRow?.init_balance || 0
+      const foreignInitBalance = initBalRow?.foreign_init_balance || 0
       const accountRow = getAccountDirection.get(entry.account_id, ctx.accountSetId) as
         | { direction: 'debit' | 'credit' }
         | undefined
@@ -188,6 +204,9 @@ export function applyVoucherPosting(
       const amountToUse = entry.amount_cents ? centsToYuan(entry.amount_cents) : entry.amount
       const currentDebit = isDebit ? amountToUse : 0
       const currentCredit = isDebit ? 0 : amountToUse
+      const foreignAmount = Number(entry.foreign_amount) || 0
+      const foreignCurrentDebit = isDebit ? foreignAmount : 0
+      const foreignCurrentCredit = isDebit ? 0 : foreignAmount
 
       // Compute end_balance for the INSERT case (first posting to this account/period)
       const endBalance = calcSignedBalance(
@@ -195,6 +214,12 @@ export function applyVoucherPosting(
         initBalance,
         currentDebit,
         currentCredit
+      )
+      const foreignEndBalance = calcSignedBalance(
+        accountDirection,
+        foreignInitBalance,
+        foreignCurrentDebit,
+        foreignCurrentCredit
       )
 
       upsertBalance.run(
@@ -212,7 +237,11 @@ export function applyVoucherPosting(
         endBalance,
         0,
         0,
-        auxItemId
+        auxItemId,
+        foreignInitBalance,
+        foreignCurrentDebit,
+        foreignCurrentCredit,
+        foreignEndBalance
       )
     }
   })
@@ -239,7 +268,10 @@ export function applyVoucherUnpost(
     UPDATE account_balances SET
       current_debit = current_debit - ?,
       current_credit = current_credit - ?,
-      end_balance = end_balance - CASE WHEN direction = 'debit' THEN ? - ? ELSE ? - ? END
+      end_balance = end_balance - CASE WHEN direction = 'debit' THEN ? - ? ELSE ? - ? END,
+      foreign_current_debit = COALESCE(foreign_current_debit, 0) - ?,
+      foreign_current_credit = COALESCE(foreign_current_credit, 0) - ?,
+      foreign_end_balance = COALESCE(foreign_end_balance, 0) - CASE WHEN direction = 'debit' THEN ? - ? ELSE ? - ? END
     WHERE account_set_id=? AND account_id=? AND year=? AND period=?
       AND COALESCE(aux_item_id, '') = ?
   `)
@@ -263,6 +295,9 @@ export function applyVoucherUnpost(
       const amountToUse = entry.amount_cents ? centsToYuan(entry.amount_cents) : entry.amount
       const debitAmount = isDebit ? amountToUse : 0
       const creditAmount = isDebit ? 0 : amountToUse
+      const foreignAmount = Number(entry.foreign_amount) || 0
+      const foreignDebit = isDebit ? foreignAmount : 0
+      const foreignCredit = isDebit ? 0 : foreignAmount
 
       const auxItemId = buildAuxItemId(entry)
 
@@ -273,6 +308,12 @@ export function applyVoucherUnpost(
         creditAmount,
         creditAmount,
         debitAmount,
+        foreignDebit,
+        foreignCredit,
+        foreignDebit,
+        foreignCredit,
+        foreignCredit,
+        foreignDebit,
         ctx.accountSetId,
         entry.account_id,
         voucher.year,

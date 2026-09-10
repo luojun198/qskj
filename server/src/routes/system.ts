@@ -22,6 +22,16 @@ async function importExcelReportsFromTemplate(...args: any[]) {
 }
 import { listImportableExcelFiles } from '../utils/reportTemplateFiles.js'
 import { syncAcdReportFormulasToAccountSet } from '../services/acdReportFormulaSync.js'
+import {
+  createAccountSetFromStandardTemplate,
+  invalidateStandardTemplateSummaryCache,
+  listStandardTemplatesForClient,
+  StandardTemplateCreateError,
+} from '../services/standardTemplateAccountSet.js'
+import {
+  getStandardTemplateGroups,
+  invalidateStandardTemplateCache,
+} from '../services/standardTemplateScan.js'
 import systemReinitializeRoutes from './systemReinitialize.js'
 import { PERMISSIONS, PERMISSION_MODULES, CW_TO_ACD } from '../db/permissions.js'
 import { getLicensedModules } from '../services/licenseService.js'
@@ -319,64 +329,6 @@ function getTemplateDirs(): string[] {
   return [join(cwd, '模版'), resolve(cwd, '..', '模版')]
 }
 
-// Helper: resolve standard template directories
-function getStandardTemplateDirs(): string[] {
-  const deployDir = getDeployDir()
-  return [
-    join(deployDir, '标准模版'),
-    join(process.cwd(), '标准模版'),
-    resolve(process.cwd(), '..', '标准模版'),
-  ]
-}
-
-// Helper: scan standard templates (folders with ACD + Excel files)
-function scanStandardTemplates(): Array<{
-  id: string
-  name: string
-  description: string
-  acdFile: string
-  excelFiles: Array<{ name: string; path: string }>
-}> {
-  const dirs = getStandardTemplateDirs()
-  const templates: Array<{
-    id: string
-    name: string
-    description: string
-    acdFile: string
-    excelFiles: Array<{ name: string; path: string }>
-  }> = []
-  const seen = new Set<string>()
-
-  for (const dir of dirs) {
-    if (!existsSync(dir)) continue
-
-    const subDirs = readdirSync(dir, { withFileTypes: true }).filter(d => d.isDirectory())
-
-    for (const subDir of subDirs) {
-      const subDirPath = join(dir, subDir.name)
-      const files = readdirSync(subDirPath)
-
-      const acdFile = files.find(f => f.toLowerCase().endsWith('.acd'))
-      if (!acdFile) continue
-
-      if (seen.has(subDir.name)) continue
-      seen.add(subDir.name)
-
-      const excelFiles = listImportableExcelFiles(subDirPath)
-
-      templates.push({
-        id: subDir.name,
-        name: subDir.name,
-        description: `包含 1 个 ACD 文件和 ${excelFiles.length} 个报表模板`,
-        acdFile: join(subDirPath, acdFile),
-        excelFiles,
-      })
-    }
-  }
-
-  return templates
-}
-
 // Helper: find template file path by template id (filename)
 function findTemplateFile(templateId: string): string | null {
   const templateDirs = getTemplateDirs()
@@ -432,15 +384,40 @@ router.get('/account-set-templates', (req: AuthRequest, res) => {
   res.json({ code: 0, data: templates })
 })
 
-// 获取标准模板列表
+// 获取标准模板列表（目录来自「标准模版/catalog.json」+ 子目录扫描）
 router.get('/standard-account-set-templates', (req: AuthRequest, res) => {
   try {
-    const templates = scanStandardTemplates()
-    res.json({ code: 0, data: templates })
+    res.json({
+      code: 0,
+      data: listStandardTemplatesForClient(),
+      groups: getStandardTemplateGroups(),
+    })
   } catch (error: any) {
     res.status(500).json({ code: 500, message: error.message })
   }
 })
+
+// 刷新标准模版目录：替换「标准模版/catalog.json」或 ACD 文件后调用，无需重启服务
+router.post(
+  '/standard-account-set-templates/refresh',
+  requirePermission('system:account'),
+  operationLog('刷新标准模版目录', '系统管理'),
+  (req: AuthRequest, res) => {
+    try {
+      invalidateStandardTemplateCache()
+      invalidateStandardTemplateSummaryCache()
+      const templates = listStandardTemplatesForClient()
+      res.json({
+        code: 0,
+        data: templates,
+        groups: getStandardTemplateGroups(),
+        message: `已重新扫描标准模版目录，共 ${templates.length} 个模版`,
+      })
+    } catch (error: any) {
+      res.status(500).json({ code: 500, message: error.message })
+    }
+  }
+)
 
 // 从模板创建账套
 router.post(
@@ -569,124 +546,46 @@ router.post(
   }
 )
 
-// 从标准模板创建账套
+// 从标准模板创建账套（准则目录见「标准模版/catalog.json」）
 router.post(
   '/account-sets/from-standard-template',
   requirePermission('system:account'),
   operationLog('从标准模板创建账套', '系统管理'),
   async (req: AuthRequest, res) => {
-    const {
-      name,
-      code,
-      credit_code,
-      fiscal_year,
-      start_date,
-      unit_leader,
-      chief_accountant,
-      standard_template_id,
-    } = req.body
-
-    if (!name) {
-      return res.status(400).json({ code: 400, message: '名称不能为空' })
-    }
-    if (!standard_template_id) {
-      return res.status(400).json({ code: 400, message: '请选择标准模板' })
-    }
-
-    // 查找标准模板
-    const templates = scanStandardTemplates()
-    const template = templates.find(t => t.id === standard_template_id)
-    if (!template) {
-      return res.status(404).json({ code: 404, message: '标准模板不存在' })
-    }
-
     const db = getDb()
-    const id = uuidv4()
-    const finalCode = allocateAccountSetCode(db, code)
-    const fiscalYear = fiscal_year || new Date().getFullYear()
-    const normalizedStartDate = resolveAccountSetStartDate(start_date, fiscalYear)
-
-    // 创建账套
-    db.prepare(
-      `
-      INSERT INTO account_sets (id, name, code, credit_code, fiscal_year, start_date, unit_leader, chief_accountant)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `
-    ).run(
-      id,
-      name,
-      finalCode,
-      credit_code,
-      fiscalYear,
-      normalizedStartDate,
-      unit_leader,
-      chief_accountant
-    )
-
-    // 创建管理员账号
-    ensureAccountSetSecurityBootstrap(id)
-
-    bootstrapNewAccountSetDefaults(db, id, {
-      start_date: normalizedStartDate,
-      fiscal_year: fiscalYear,
-      unit_name: name,
-    })
-
-    // 导入 ACD 文件（会自动推断并设置科目编码长度）
-    let acdStats: any = {}
-    let acdBuffer: Buffer
     try {
-      acdBuffer = readFileSync(template.acdFile)
-      acdStats = importAcdTemplateToAccountSet(id, acdBuffer)
+      const result = await createAccountSetFromStandardTemplate(db, req.body || {})
+      res.json({
+        code: 0,
+        message:
+          result.reportStats?.failed > 0
+            ? '从标准模板创建成功，但 Excel 报表导入部分失败'
+            : '从标准模板创建成功',
+        data: {
+          id: result.id,
+          accountSetId: result.id,
+          name: result.name,
+          code: result.code,
+          start_date: result.start_date,
+          template: result.template,
+          accounting_standard: result.accounting_standard,
+          acdStats: result.acdStats,
+          standardReports: result.standardReports,
+          reportStats: result.reportStats,
+          acdFormulaStats: result.acdFormulaStats,
+          warnings: result.warnings,
+        },
+      })
     } catch (err: any) {
-      console.error('ACD import error:', err)
-      // ACD 导入失败，删除账套
-      db.prepare('DELETE FROM account_sets WHERE id = ?').run(id)
+      if (err instanceof StandardTemplateCreateError) {
+        return res.status(err.status).json({ code: err.status, message: err.message })
+      }
+      console.error('[标准模板] 创建账套失败:', err)
       return res.status(500).json({
         code: 500,
-        message: 'ACD 导入失败: ' + (err.message || '未知错误'),
+        message: '创建账套失败: ' + (err?.message || '未知错误'),
       })
     }
-
-    // 批量导入 Excel 报表。报表导入失败不能让已创建账套返回 500。
-    let reportStats: any = { total: 0, success: 0, failed: 0, results: [] }
-    let acdFormulaStats: any = null
-    try {
-      reportStats = await importExcelReportsFromTemplate(db, id, template.excelFiles)
-      acdFormulaStats = syncAcdReportFormulasToAccountSet(db as any, id, acdBuffer)
-    } catch (err: any) {
-      console.error('[标准模板] Excel 报表导入失败:', err)
-      reportStats = {
-        total: template.excelFiles.length,
-        success: 0,
-        failed: template.excelFiles.length,
-        results: [],
-        error: err.message || '未知错误',
-      }
-    }
-
-    res.json({
-      code: 0,
-      message: reportStats.failed > 0
-        ? '从标准模板创建成功，但报表导入部分失败'
-        : '从标准模板创建成功',
-      data: {
-        id,
-        accountSetId: id,
-        name,
-        code: finalCode,
-        start_date: readAccountSetStartDate(db, id),
-        acdStats: {
-          accounts: acdStats.accounts?.inserted + acdStats.accounts?.updated || 0,
-          transferTypes: acdStats.transferTypes?.types || 0,
-          transferItems: acdStats.transferTypes?.items || 0,
-          voucherTypes: acdStats.voucherTypes?.inserted + acdStats.voucherTypes?.updated || 0,
-          auxiliaryItems: acdStats.auxiliaryData?.totalItems || 0,
-        },
-        reportStats,
-        acdFormulaStats,
-      },
-    })
   }
 )
 

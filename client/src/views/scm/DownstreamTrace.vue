@@ -365,7 +365,7 @@ onMounted(load)
 }
 .dt-header__left, .dt-header__right { display: flex; align-items: center; gap: 8px; }
 .dt-header__sep { color: var(--el-text-color-placeholder); }
-.dt-header__title { font-size: 15px; font-weight: 600; }
+.dt-header__title { font-size: var(--cw-text-lg); font-weight: 600; }
 .dt-body { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px; padding: 12px 16px; overflow: auto; }
 /* 下游去向：把多张下游表收拢为一个区，区内各表之间留间距 */
 .dt-zone { display: flex; flex-direction: column; gap: 12px; }
@@ -375,7 +375,7 @@ onMounted(load)
   border-radius: 8px; border: 1px solid var(--el-border-color-lighter);
 }
 .dt-zone-bar__icon { font-size: 16px; }
-.dt-zone-bar__name { margin: 0; font-size: 14px; font-weight: 600; }
+.dt-zone-bar__name { margin: 0; font-size: var(--cw-text-base); font-weight: 600; }
 .dt-zone-bar__desc { font-size: 12px; color: var(--el-text-color-secondary); }
 .dt-zone-bar__count { margin-left: auto; font-size: 12px; color: var(--el-text-color-secondary); }
 /* 上游：蓝调；下游：绿调，配合箭头方向一眼区分 */
@@ -390,9 +390,9 @@ onMounted(load)
   display: flex; align-items: center; gap: 10px; padding: 10px 12px;
   background: var(--el-fill-color-lighter); border-bottom: 1px solid var(--el-border-color-lighter);
 }
-.dt-group__header h3 { margin: 0; font-size: 14px; }
+.dt-group__header h3 { margin: 0; font-size: var(--cw-text-base); }
 .dt-group__header span { font-size: 12px; color: var(--el-text-color-secondary); }
-.dt-group__more { margin-left: auto; font-size: 13px; }
+.dt-group__more { margin-left: auto; font-size: var(--cw-text-base); }
 .dt-table { width: 100%; }
 .dt-muted { color: var(--el-text-color-placeholder); }
 .dt-op-del { margin-left: 8px; }

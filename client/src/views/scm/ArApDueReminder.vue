@@ -10,9 +10,9 @@
     </div>
 
     <!-- 信用额度控制设置 -->
-    <div class="credit-box">
+    <div class="credit-box toolbar">
       <span class="credit-title">销售信用额度控制</span>
-      <el-switch v-model="creditEnabled" active-text="启用" inline-prompt style="margin:0 12px" />
+      <el-switch v-model="creditEnabled" active-text="启用" inline-prompt size="small" style="margin:0 12px" />
       <el-radio-group v-model="creditMode" size="small" :disabled="!creditEnabled">
         <el-radio-button value="warn">仅提示</el-radio-button>
         <el-radio-button value="block">超额阻断</el-radio-button>
@@ -124,16 +124,16 @@ onMounted(() => { load(); loadCredit() })
 <style scoped>
 .scm-due-page { display: flex; flex-direction: column; height: 100%; padding: 12px 16px; gap: 8px; }
 .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.filter-row .lbl { font-size: 13px; color: var(--el-text-color-secondary); }
-.total-hint { margin-left: auto; font-size: 13px; color: var(--el-text-color-secondary); }
+.filter-row .lbl { font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }
+.total-hint { margin-left: auto; font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }
 .total-hint .over { color: var(--el-color-danger); }
 .total-hint .soon { color: var(--el-color-warning); }
-.credit-box { display: flex; align-items: center; padding: 6px 10px; background: var(--el-fill-color-light); border-radius: 6px; font-size: 13px; flex-wrap: wrap; }
+.credit-box { display: flex; align-items: center; padding: 6px 10px; background: var(--el-fill-color-light); border-radius: 6px; font-size: var(--cw-text-base); flex-wrap: wrap; }
 .credit-title { font-weight: 600; }
 .credit-note { margin-left: 14px; color: var(--el-text-color-secondary); }
 .body { flex: 1; min-height: 0; display: flex; gap: 12px; }
 .section { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.sec-hd { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.sec-hd { font-size: var(--cw-text-base); font-weight: 600; margin-bottom: 4px; }
 .sec-hd.over { color: var(--el-color-danger); }
 .sec-hd.soon { color: var(--el-color-warning); }
 .over { color: var(--el-color-danger); font-weight: 600; }

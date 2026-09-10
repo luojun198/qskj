@@ -27,15 +27,14 @@
           @clear="fetchData"
           @keyup.enter="fetchData"
         />
-        <el-select
-          v-model="filters.account_level"
-          placeholder="科目级次"
-          clearable
-          class="filter-ctl--xs"
-          @change="fetchData"
-        >
-          <el-option v-for="level in 4" :key="level" :label="`展开到${level}级`" :value="level" />
-        </el-select>
+        <AccountLevelButtons
+          :at-top="levelFilter.atTop.value"
+          :at-bottom="levelFilter.atBottom.value"
+          @top="levelFilter.goTop"
+          @up="levelFilter.goUp"
+          @down="levelFilter.goDown"
+          @bottom="levelFilter.goBottom"
+        />
         <el-divider direction="vertical" />
         <el-checkbox-group v-model="filters.filter_types" size="small" @change="fetchData">
           <el-checkbox value="init_balance">有期初</el-checkbox>
@@ -265,6 +264,7 @@
       default-paper="A4"
       default-orientation="landscape"
       :use-templates="false"
+      :show-font-size="true"
     />
   </div>
 </template>
@@ -288,11 +288,18 @@ import {
 } from '@/utils/ledgerExportBuilders'
 import { getSummaryAccountRows } from '@/utils/exportLedgerHelpers'
 import AccountScopeAlert from '@/components/AccountScopeAlert.vue'
+import AccountLevelButtons from '@/components/ledger/AccountLevelButtons.vue'
+import { useAccountLevelFilter } from '@/composables/useAccountLevelFilter'
 import { useUserStore } from '@/stores/user'
 
 const { drillDown } = useDrillDownNavigate()
 const { accountSetName } = storeToRefs(useUserStore())
 const list = ref<any[]>([])
+/**
+ * 数据里出现过的最深级次。按级次过滤后接口只返回 ≤N 级，不能直接拿当前列表算「底层」，
+ * 否则展开到 2 级时会被误判为已到底；页面默认按底层加载，首屏就能拿到真实深度。
+ */
+const deepestLevel = ref(0)
 const loading = ref(false)
 const initialLoaded = ref(false)
 const hideZero = ref(true)
@@ -325,10 +332,19 @@ const filters = ref<any>({
   start_date: `${year}-01-01`,
   end_date: `${year}-12-31`,
   account_code: '',
-  account_level: null,
   filter_types: ['init_balance', 'has_amount', 'has_balance'],
   include_unposted: true,
 })
+
+// 顶层 / 上级 / 下级 / 底层：默认底层（不限级次），与科目维护同一套按钮与快捷键
+const levelFilter = useAccountLevelFilter({
+  getMaxLevel: () => deepestLevel.value,
+  onChange: () => fetchData(),
+})
+const accountLevel = levelFilter.accountLevel
+// 原「显示原币」勾选框已移除：它只切换一个币种列，从不向后端要原币金额，是个空开关；
+// 而本表会把子科目汇总到父科目，不同币种的原币相加没有业务含义。
+// 需要原币口径请走「外币余额表」/「辅助项目外币余额表」，那里按 is_foreign 平铺、不做父子汇总。
 
 const printDateLabel = computed(() => {
   const s = filters.value.start_date || `${year}-01-01`
@@ -346,7 +362,7 @@ function balDir(balance: number, acctDir: string): string {
 function amt(v: number): string {
   return v && v > 0 ? formatAmount(v) : hideZero.value ? '' : formatAmount(0)
 }
-function buildPrintHtml(): string {
+function buildPrintHtml(ctx?: { fontSize?: number }): string {
   const summaryRows = getSummaryRows(list.value)
   const initSides = sumBalanceSides(summaryRows, 'init_balance')
   const endSides = sumBalanceSides(summaryRows, 'end_balance')
@@ -359,6 +375,7 @@ function buildPrintHtml(): string {
     rows: list.value,
     monochrome: true,
     fitToPage: true,
+    fontSize: ctx?.fontSize ?? 12,
     headerRows: [
       [
         { label: '科目编码', rowspan: 2, width: '10%' },
@@ -539,7 +556,7 @@ async function fetchData() {
     if (filters.value.start_date) params.start_date = filters.value.start_date
     if (filters.value.end_date) params.end_date = filters.value.end_date
     if (filters.value.account_code) params.account_code = filters.value.account_code
-    if (filters.value.account_level) params.account_level = filters.value.account_level
+    if (accountLevel.value) params.account_level = accountLevel.value
     if (filters.value.filter_types && filters.value.filter_types.length > 0) {
       params.filter_types = filters.value.filter_types.join(',')
     }
@@ -547,6 +564,10 @@ async function fetchData() {
 
     const res = await request.get<any[]>('/ledger/general', { params })
     list.value = res.data
+    deepestLevel.value = Math.max(
+      deepestLevel.value,
+      ...list.value.map((row: any) => Number(row.level) || 0)
+    )
     initialLoaded.value = true
     await afterTableLayout()
   } finally {
@@ -559,7 +580,7 @@ async function exportData() {
     filters.value.start_date && filters.value.end_date
       ? `${filters.value.start_date}_${filters.value.end_date}`
       : new Date().toISOString().split('T')[0]
-  const summaryRows = getSummaryAccountRows(list.value, filters.value.account_level)
+  const summaryRows = getSummaryAccountRows(list.value, accountLevel.value)
 
   await exportStyledTable({
     fileName: `科目余额表_${dateRange}.xlsx`,
@@ -586,7 +607,7 @@ function handleRowDblClick(row: any) {
     start_date: filters.value.start_date || '',
     end_date: filters.value.end_date || '',
     account_code: filters.value.account_code || '',
-    account_level: filters.value.account_level ? String(filters.value.account_level) : '',
+    account_level: accountLevel.value ? String(accountLevel.value) : '',
   })
 }
 

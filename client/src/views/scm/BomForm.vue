@@ -261,7 +261,7 @@ function goBack() {
   padding: 10px 16px; border-bottom: 1px solid var(--el-border-color-light);
   background: var(--el-bg-color); flex-shrink: 0;
 }
-.bom-form-header__left { display: flex; align-items: center; gap: 6px; font-size: 14px; }
+.bom-form-header__left { display: flex; align-items: center; gap: 6px; font-size: var(--cw-text-base); }
 .bom-form-header__sep { color: var(--el-text-color-placeholder); }
 .bom-form-header__title { font-weight: 600; color: var(--el-text-color-primary); }
 .bom-form-header__right { display: flex; gap: 8px; }
@@ -269,7 +269,7 @@ function goBack() {
 .bom-lines-toolbar {
   display: flex; align-items: center; gap: 8px; margin: 10px 0 8px;
 }
-.bom-lines-summary { margin-left: auto; font-size: 13px; color: var(--el-text-color-secondary); }
+.bom-lines-summary { margin-left: auto; font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }
 
 .compact-data-table :deep(.el-table__cell) {
   padding: 0;

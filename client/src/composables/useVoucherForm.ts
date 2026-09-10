@@ -80,6 +80,14 @@ export function useVoucherForm(auxCategories: Ref<any[]>) {
     next.credit_amount = entry.direction === 'credit' ? entry.amount || 0 : null
     next.cash_flow_code = entry.cash_flow_code || ''
     next.cash_flow_name = entry.cash_flow_name || ''
+    // 外币核算三字段（编辑已保存凭证时还原）
+    next.currency_code = entry.currency_code || null
+    next.exchange_rate = entry.exchange_rate != null ? Number(entry.exchange_rate) : null
+    next.foreign_amount = entry.foreign_amount != null ? Number(entry.foreign_amount) : null
+    // 数量核算三字段（编辑已保存凭证时还原）
+    next.quantity = entry.quantity ? Number(entry.quantity) : null
+    next.unit_price = entry.unit_price ? Number(entry.unit_price) : null
+    next.unit = entry.unit || null
 
     // 从 aux_data JSON 字段恢复辅助核算数据
     if (entry.aux_data) {

@@ -58,6 +58,7 @@ import baseInitBalanceRoutes from './routes/baseInitBalance.js'
 import basePrintTemplateRoutes from './routes/basePrintTemplate.js'
 import baseKeyboardShortcutsRoutes from './routes/baseKeyboardShortcuts.js'
 import baseCashFlowRoutes from './routes/baseCashFlow.js'
+import baseCurrencyRoutes from './routes/baseCurrency.js'
 import voucherRoutes from './routes/voucher.js'
 import voucherAuditRoutes from './routes/voucherAudit.js'
 import voucherPostingRoutes from './routes/voucherPosting.js'
@@ -65,6 +66,7 @@ import voucherBatchRoutes from './routes/voucherBatch.js'
 import voucherPeriodRoutes from './routes/voucherPeriod.js'
 import voucherAiRoutes from './routes/voucherAi.js'
 import voucherAutoTransferRoutes from './routes/voucherAutoTransfer.js'
+import voucherFxRevalRoutes from './routes/voucherFxReval.js'
 import voucherTemplateRoutes from './routes/voucherTemplate.js'
 import taskRoutes from './routes/task.js'
 import sharedTasksRoutes from './routes/sharedTasks.js'
@@ -259,6 +261,7 @@ app.use('/api/system', systemRoutes)
 app.use('/api/base', baseRoutes)
 app.use('/api/base/keyboard-shortcuts', baseKeyboardShortcutsRoutes)
 app.use('/api/base/cash-flow-items', baseCashFlowRoutes)
+app.use('/api/base', baseCurrencyRoutes)
 app.use('/api/base', baseAccountRoutes)
 app.use('/api/base', baseVoucherTypeRoutes)
 app.use('/api/base', baseProjectRoutes)
@@ -272,6 +275,7 @@ app.use('/api/voucher', voucherBatchRoutes)
 app.use('/api/voucher', voucherPeriodRoutes)
 app.use('/api/voucher', voucherAiRoutes)
 app.use('/api/voucher', voucherAutoTransferRoutes)
+app.use('/api/voucher', voucherFxRevalRoutes)
 app.use('/api/voucher', taskRoutes)
 app.use('/api/voucher-templates', voucherTemplateRoutes)
 app.use('/api/ledger', ledgerRoutes)

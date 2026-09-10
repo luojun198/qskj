@@ -1,8 +1,9 @@
 import { v4 as uuidv4 } from 'uuid'
 import type Database from 'better-sqlite3'
+import { buildDefaultVoucherHiprintPanel } from './printTemplateHiprintDefaults.js'
 
 /** 默认批量/凭证打印模版名称 */
-export const DEFAULT_BATCH_PRINT_TEMPLATE_NAME = '标准模版'
+export const DEFAULT_BATCH_PRINT_TEMPLATE_NAME = '标准记账凭证'
 
 const CONTENT_WIDTH_MM = 200
 
@@ -343,12 +344,47 @@ export function ensureDefaultPrintTemplateForAccountSet(
     return { created: false, id: existingDefault.id }
   }
 
-  const config = buildDefaultBatchPrintTemplateConfig()
-  const templateId = uuidv4()
-  const elementsJson = JSON.stringify(config.elements)
   const cols = db.prepare(`PRAGMA table_info(print_templates)`).all() as Array<{ name: string }>
   const colNames = new Set(cols.map(c => c.name))
   const hasTimestamps = colNames.has('created_at') && colNames.has('updated_at')
+  const hasHiprintCols = colNames.has('panel') && colNames.has('template_type') && colNames.has('template_key')
+  const templateId = uuidv4()
+
+  if (hasHiprintCols) {
+    const panelJson = JSON.stringify(buildDefaultVoucherHiprintPanel())
+    const hiprintCols = `id, account_set_id, name, paper_size, paper_width, paper_height,
+        margin_top, margin_bottom, margin_left, margin_right, elements,
+        template_type, template_key, panel, is_default`
+    const hiprintVals = `?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1`
+    const params = [
+      templateId,
+      accountSetId,
+      DEFAULT_BATCH_PRINT_TEMPLATE_NAME,
+      'custom',
+      210,
+      148,
+      8,
+      8,
+      12,
+      12,
+      '[]',
+      'voucher',
+      'voucher:standard',
+      panelJson,
+    ]
+    if (hasTimestamps) {
+      db.prepare(
+        `INSERT INTO print_templates (${hiprintCols}, created_at, updated_at)
+         VALUES (${hiprintVals}, datetime('now'), datetime('now'))`
+      ).run(...params)
+    } else {
+      db.prepare(`INSERT INTO print_templates (${hiprintCols}) VALUES (${hiprintVals})`).run(...params)
+    }
+    return { created: true, id: templateId }
+  }
+
+  const config = buildDefaultBatchPrintTemplateConfig()
+  const elementsJson = JSON.stringify(config.elements)
 
   if (hasTimestamps) {
     db.prepare(

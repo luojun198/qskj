@@ -1,5 +1,5 @@
 <template>
-  <div class="report-view-toolbar">
+    <div class="report-view-toolbar">
     <div class="report-view-toolbar__main">
       <div class="report-view-toolbar__title">
         <h3>{{ pageTitle }}</h3>
@@ -27,6 +27,9 @@
               </el-dropdown-item>
               <el-dropdown-item command="toggle-formula" divided>
                 {{ !showExecutionResult ? '✓ ' : '' }}显示公式
+              </el-dropdown-item>
+              <el-dropdown-item command="toggle-fit-print" divided>
+                {{ fitPrintToPage ? '✓ ' : '' }}打印适应一页
               </el-dropdown-item>
             </el-dropdown-menu>
           </template>
@@ -78,10 +81,12 @@ const yearModel = defineModel<number>('year', { required: true })
 const periodModel = defineModel<number>('period', { required: true })
 const showExecutionResult = defineModel<boolean>('showExecutionResult', { required: true })
 const showZeroValue = defineModel<boolean>('showZeroValue', { required: true })
+const fitPrintToPage = defineModel<boolean>('fitPrintToPage', { default: false })
 
 function handleDisplayCommand(command: string) {
   if (command === 'toggle-result') showExecutionResult.value = true
   if (command === 'toggle-formula') showExecutionResult.value = false
   if (command === 'toggle-zero') showZeroValue.value = !showZeroValue.value
+  if (command === 'toggle-fit-print') fitPrintToPage.value = !fitPrintToPage.value
 }
 </script>

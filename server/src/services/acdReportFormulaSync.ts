@@ -1,6 +1,7 @@
 import type { Database as SqliteDatabase } from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
 import iconv from 'iconv-lite'
+import xlsx from 'xlsx'
 
 import { parseAcdFileTables, splitTableRows } from '../scripts/importAcdToCurrentAccountSet.js'
 import { fixCashFlowReportFormulas } from '../scripts/fixCashFlowReportFormulas.js'
@@ -9,7 +10,8 @@ import { fixBudgetSurplusReportFormulas } from '../scripts/fixBudgetSurplusRepor
 type ParsedAcdCell = {
   rowIndex: number
   colIndex: number
-  cellType: 'text' | 'formula'
+  /** number = vts 里的数字常量格（RK/NUMBER/INTEGER 记录），如行次列手工填的 5、6、7 */
+  cellType: 'text' | 'formula' | 'number'
   textValue: string | null
   formulaText: string | null
   /** 由 vts 的格式表还原出的样式，token 约定见 client 的 useReportCellStyle */
@@ -27,11 +29,22 @@ type ParsedAcdSheet = {
   cells: ParsedAcdCell[]
 }
 
+/**
+ * 从 vts 还原出的版面：按列下标的列宽（px）与按行下标的行高（px），稀疏数组，缺项表示 vts 没给。
+ * 行下标与单元格同基准（vts 的第 0 行是空的占位行，单元格记录已整体上移一行，这里同样处理）。
+ */
+export type AcdSheetLayout = {
+  colWidthsPx: Array<number | undefined>
+  rowHeightsPx: Array<number | undefined>
+}
+
 type ParsedAcdTemplate = {
   reportCode: string
   reportName: string
   sourceFile: string
   sheets: ParsedAcdSheet[]
+  /** 版面只在第一个 sheet（呈现版）里有 COLINFO/ROW 记录，后续公式版共用同一套 */
+  layout: AcdSheetLayout
 }
 
 type BinaryCellRecord = ParsedAcdCell & {
@@ -175,32 +188,37 @@ const COMPILED_FUNCTIONS: Record<number, { name: string; argCount: number }> = {
  * 无法用纯表达式表达的 token（IF/GOTO 跳转、字符串常量、未知函数）一律返回 null，
  * 由调用方记 warning 后跳过——宁可缺一格，也不要造出一个算错的公式。
  */
-function decodeCompiledFormula(tokens: Buffer) {
+function decodeCompiledFormula(tokens: Buffer, wideRefs = false) {
   const stack: string[] = []
+  // 老版引用 token 是 BIFF5 式（列 1 字节、行高 2 位是相对标志）；新版是 BIFF8 式（列 2 字节、相对标志在列的高 2 位）
+  const colWidth = wideRefs ? 2 : 1
+  const readCol = (at: number) => (wideRefs ? tokens.readUInt16LE(at) & 0x3fff : tokens[at] & 0x3f)
 
   for (let index = 0; index < tokens.length; ) {
     const opcode = tokens[index]
 
     if (PTG_REF.has(opcode)) {
-      if (index + 3 >= tokens.length) return null
+      const size = 1 + 2 + colWidth
+      if (index + size > tokens.length) return null
       const rowIndex = (tokens.readUInt16LE(index + 1) & 0x3fff) - 1
-      const colIndex = tokens[index + 3] & 0x3f
+      const colIndex = readCol(index + 3)
       if (rowIndex < 0) return null
       stack.push(getCellAddress(rowIndex, colIndex))
-      index += 4
+      index += size
       continue
     }
 
-    // 区域引用：rowFirst:2 rowLast:2 colFirst:1 colLast:1
+    // 区域引用：rowFirst:2 rowLast:2 colFirst colLast（列宽随版本 1/2 字节）
     if (PTG_AREA.has(opcode)) {
-      if (index + 6 >= tokens.length) return null
+      const size = 1 + 4 + colWidth * 2
+      if (index + size > tokens.length) return null
       const rowFirst = (tokens.readUInt16LE(index + 1) & 0x3fff) - 1
       const rowLast = (tokens.readUInt16LE(index + 3) & 0x3fff) - 1
-      const colFirst = tokens[index + 5] & 0x3f
-      const colLast = tokens[index + 6] & 0x3f
+      const colFirst = readCol(index + 5)
+      const colLast = readCol(index + 5 + colWidth)
       if (rowFirst < 0 || rowLast < 0) return null
       stack.push(`${getCellAddress(rowFirst, colFirst)}:${getCellAddress(rowLast, colLast)}`)
-      index += 7
+      index += size
       continue
     }
 
@@ -218,17 +236,27 @@ function decodeCompiledFormula(tokens: Buffer) {
       continue
     }
 
-    // 字符串字面量：`[0x17][字节数:1][GB 编码内容]`
+    // 字符串字面量：老版 `[0x17][字节数:1][GB 编码内容]`；新版 `[0x17][字符数:1][flags:1][内容]`，flags bit0 为 UTF-16
     if (opcode === 0x17) {
       if (index + 1 >= tokens.length) return null
       const length = tokens[index + 1]
-      if (index + 2 + length > tokens.length) return null
-      const text = iconv
-        .decode(tokens.subarray(index + 2, index + 2 + length), 'gb18030')
-        .replace(/\0/g, '')
+      let text: string
+      let size: number
+      if (wideRefs) {
+        const unicode = (tokens[index + 2] & 0x01) === 0x01
+        const byteLength = unicode ? length * 2 : length
+        if (index + 3 + byteLength > tokens.length) return null
+        const body = tokens.subarray(index + 3, index + 3 + byteLength)
+        text = unicode ? body.toString('utf16le') : iconv.decode(body, 'gb18030')
+        size = 3 + byteLength
+      } else {
+        if (index + 2 + length > tokens.length) return null
+        text = iconv.decode(tokens.subarray(index + 2, index + 2 + length), 'gb18030')
+        size = 2 + length
+      }
       // Excel 用两个双引号表示一个字面量双引号
-      stack.push(`"${text.replace(/"/g, '""')}"`)
-      index += 2 + length
+      stack.push(`"${text.replace(/\0/g, '').replace(/"/g, '""')}"`)
+      index += size
       continue
     }
 
@@ -382,11 +410,24 @@ function parseFontRecord(data: Buffer): ParsedFont | null {
   const nameLength = data[14]
   if (twips < FONT_MIN_TWIPS || twips > FONT_MAX_TWIPS) return null
   if (weight !== 400 && weight !== 500 && weight !== 600 && weight !== 700) return null
-  if (!nameLength || nameLength > 32 || 15 + nameLength > data.length) return null
+  if (!nameLength || nameLength > 32) return null
 
+  // 字体名与文本记录同样分两代：老版 `[n:1][n 字节 GBK]`；新版 `[n:1][flags:1][正文]`，flags bit0 为 UTF-16
   let name = ''
   try {
-    name = iconv.decode(data.subarray(15, 15 + nameLength), 'gb18030').replace(/\0/g, '').trim()
+    // 新版 flags 字节只会是 0/1，作为 GBK 首字节是控制字符，字体名不可能以它开头——据此区分两代布局
+    const isNewLayout = data[15] <= 0x01
+    if (!isNewLayout) {
+      if (15 + nameLength > data.length) return null
+      name = iconv.decode(data.subarray(15, 15 + nameLength), 'gb18030')
+    } else {
+      const unicode = (data[15] & 0x01) === 0x01
+      const byteLength = unicode ? nameLength * 2 : nameLength
+      if (16 + byteLength > data.length) return null
+      const body = data.subarray(16, 16 + byteLength)
+      name = unicode ? body.toString('utf16le') : iconv.decode(body, 'gb18030')
+    }
+    name = name.replace(/\0/g, '').trim()
   } catch {
     return null
   }
@@ -427,16 +468,22 @@ function parseXfTable(buffer: Buffer): Buffer[] {
   while (offset + 2 <= buffer.length) {
     const length = buffer[offset + 1]
     if (offset + 2 + length > buffer.length) break
-    if (buffer[offset] === 0xe0 && length === XF_RECORD_LENGTH) {
-      table.push(buffer.subarray(offset + 2, offset + 2 + XF_RECORD_LENGTH))
+    if (buffer[offset] === 0xe0 && (length === XF_RECORD_LENGTH || length === XF_RECORD_LENGTH_V2)) {
+      table.push(buffer.subarray(offset + 2, offset + 2 + length))
     }
     offset += 2 + length
   }
   return table
 }
 
-/** XF 记录长度；只认这个长度，避免把别的 0xE0 记录误当格式项 */
+/** XF 记录长度；只认这两个长度，避免把别的 0xE0 记录误当格式项 */
 const XF_RECORD_LENGTH = 20
+/**
+ * 新版（文本记录带 flags 字节的那一代）XF 是 24 字节：第 7 字节插入了旋转角度、第 8 字节插入了缩进，
+ * 原第 7 字节的标志位后移到第 9 字节，边框段仍在 10~17 字节，所以下面按下标取对齐/字体/边框的逻辑两代通用。
+ * 已用同一张现金流量表的两代文件逐条比对 XF #39~#57，对齐、字体下标、有无边框完全一致。
+ */
+const XF_RECORD_LENGTH_V2 = 24
 
 /** XF 第 6 字节的低 3 位是水平对齐，取值同 BIFF：0 常规 1 左 2 中 3 右 4 填充 5 两端 6 跨列居中 */
 const XF_ALIGN_TOKENS = ['', 'left', 'center', 'right', '', '', 'center']
@@ -482,17 +529,57 @@ function xfToStyleKey(xf: Buffer | undefined, fonts: Array<ParsedFont | null> = 
   return tokens.length ? tokens.join(' ') : null
 }
 
+/** 文本记录头：row:2 col:2 xf:2 charCount:2 */
+const TEXT_HEADER_LENGTH = 8
+/** 单格文本最多多少个字符（老版按字节、新版按字符），超出即视为误命中 */
+const TEXT_MAX_CHARS = 240
+
+/**
+ * 解出文本记录的正文。vts 有两代文本记录布局，按记录长度自动区分：
+ *   老版：`[0x04][len][row][col][xf][n:2][n 字节 GBK]`，len = 8 + n；
+ *   新版：`[0x04][len][row][col][xf][n:2][flags:1][正文]`，flags bit0 = 1 时正文为 n 个 UTF-16LE 字符
+ *         （2n 字节），为 0 时是 n 字节单字节文本；len = 9 + 正文字节数。
+ * 新版是较新的润衡导出的（如 2025 年的 ZW04 绿环 BVI），中文全部走 UTF-16，
+ * 旧解析器按老版布局校验长度全部落空，整份 ACD 19 张报表有 18 张被当成空模板跳过。
+ */
+function decodeTextRecordBody(
+  buffer: Buffer,
+  dataStart: number,
+  recordLength: number,
+  charCount: number
+): { text: string; layout: TextLayout } | null {
+  if (charCount <= 0 || charCount > TEXT_MAX_CHARS) return null
+  const bodyStart = dataStart + TEXT_HEADER_LENGTH
+  if (recordLength === TEXT_HEADER_LENGTH + charCount) {
+    return { text: iconv.decode(buffer.subarray(bodyStart, bodyStart + charCount), 'gb18030'), layout: 'legacy' }
+  }
+  const flags = buffer[bodyStart]
+  if (flags > 0x01) return null
+  const unicode = flags === 0x01
+  const byteLength = unicode ? charCount * 2 : charCount
+  if (recordLength !== TEXT_HEADER_LENGTH + 1 + byteLength) return null
+  const body = buffer.subarray(bodyStart + 1, bodyStart + 1 + byteLength)
+  return { text: unicode ? body.toString('utf16le') : iconv.decode(body, 'gb18030'), layout: 'flagged' }
+}
+
+/**
+ * 文本记录的两代布局，同时决定编译公式里引用 token 的宽度：
+ * legacy（老版）配 BIFF5 式引用（列 1 字节），flagged（新版）配 BIFF8 式引用（列 2 字节）。
+ */
+type TextLayout = 'legacy' | 'flagged'
+
 function parseTextRecords(
   buffer: Buffer,
   xfTable: Buffer[],
   fonts: Array<ParsedFont | null>
-): BinaryCellRecord[] {
+): { records: BinaryCellRecord[]; layout: TextLayout } {
   const records: BinaryCellRecord[] = []
+  const layoutVotes: Record<TextLayout, number> = { legacy: 0, flagged: 0 }
 
   for (let offset = 0; offset <= buffer.length - 10; offset += 1) {
     if (buffer[offset] !== 0x04) continue
     const recordLength = buffer[offset + 1]
-    if (recordLength < 8 || offset + 2 + recordLength > buffer.length) continue
+    if (recordLength < TEXT_HEADER_LENGTH + 1 || offset + 2 + recordLength > buffer.length) continue
 
     const rowIndex = buffer.readUInt16LE(offset + 2)
     const colIndex = buffer.readUInt16LE(offset + 4)
@@ -500,15 +587,14 @@ function parseTextRecords(
     const textLength = buffer.readUInt16LE(offset + 8)
 
     if (rowIndex === 0 || colIndex > 64 || style > 0x2000) continue
-    if (textLength <= 0 || textLength !== recordLength - 8 || textLength > 240) continue
 
-    const rawText = iconv
-      .decode(buffer.subarray(offset + 10, offset + 10 + textLength), 'gb18030')
-      .replace(/\0/g, '')
-      .trim()
+    const decoded = decodeTextRecordBody(buffer, offset + 2, recordLength, textLength)
+    if (decoded === null) continue
+    const rawText = decoded.text.replace(/\0/g, '').trim()
 
     if (!rawText || /[\ue000-\uf8ff]/u.test(rawText)) continue
 
+    layoutVotes[decoded.layout] += 1
     const isFormula = rawText.startsWith('@') || rawText.startsWith('=')
     records.push({
       offset,
@@ -522,7 +608,7 @@ function parseTextRecords(
     })
   }
 
-  return records
+  return { records, layout: layoutVotes.flagged > layoutVotes.legacy ? 'flagged' : 'legacy' }
 }
 
 /**
@@ -542,8 +628,10 @@ function parseCompiledFormulaRecords(
   buffer: Buffer,
   warnings: string[],
   xfTable: Buffer[],
-  fonts: Array<ParsedFont | null>
+  fonts: Array<ParsedFont | null>,
+  layout: TextLayout = 'legacy'
 ): BinaryCellRecord[] {
+  const wideRefs = layout === 'flagged'
   const records: BinaryCellRecord[] = []
 
   for (let offset = 0; offset <= buffer.length - COMPILED_HEADER_LENGTH - 2; offset += 1) {
@@ -562,7 +650,7 @@ function parseCompiledFormulaRecords(
 
     const tokenStart = offset + 2 + COMPILED_HEADER_LENGTH
     const tokenBuffer = buffer.subarray(tokenStart, tokenStart + tokenLength)
-    const formulaText = decodeCompiledFormula(tokenBuffer)
+    const formulaText = decodeCompiledFormula(tokenBuffer, wideRefs)
 
     if (!formulaText) {
       warnings.push(`未解析公式记录: row=${rowIndex} col=${colIndex} len=${tokenLength}`)
@@ -589,42 +677,197 @@ function parseCompiledFormulaRecords(
   return records
 }
 
-function parseVtsSheets(buffer: Buffer, fallbackName: string, warnings: string[]) {
+/**
+ * 数值常量记录**没有长度字节**：`[opcode][row:2][col:2][xf:2][value]`，value 依记录类型定长。
+ * 这也是链式扫描一到单元格区就 desync 的根源——碰到第一条 RK 就把值当成了长度。
+ *
+ * 行次列里手工敲的数字（如新准则模板里应收票据~预付款项的 5/6/7/8）就存成 RK 记录，
+ * 旧实现只认文本与公式，这些格子被整体丢掉，其下 `=B12+1` 就从 1 重新起算，行号全错。
+ */
+const NUMBER_RECORD_DATA_LENGTH: Record<number, number> = {
+  0x7e: 10, // RK：4 字节压缩数值
+  0x03: 14, // NUMBER：8 字节 double
+}
+
+/**
+ * 单元格记录之后紧跟的记录类型（另一格 / 空格 / 行尾 EOF 等）。
+ * 数值记录无长度字节可校验，滑动窗口靠「下一字节必须是合法记录头」排除误命中，
+ * 实测标准模板 1200 余条命中里只有这些取值。
+ */
+const CELL_FOLLOWER_OPCODES = new Set([
+  0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x0a, 0x1c, 0x5d, 0x7e, 0xbd, 0xbe, 0xd6, 0xfd,
+])
+
+/** RK 编码：低两位是标志（bit1 整数、bit0 除以 100），其余 30 位是整数或 double 的高 30 位 */
+function decodeRkValue(raw: number) {
+  const isInteger = (raw & 2) !== 0
+  const divideBy100 = (raw & 1) !== 0
+  let value: number
+  if (isInteger) {
+    value = raw >> 2
+  } else {
+    const scratch = Buffer.alloc(8)
+    scratch.writeInt32LE(raw & ~3, 4)
+    value = scratch.readDoubleLE(0)
+  }
+  return divideBy100 ? value / 100 : value
+}
+
+/**
+ * @param startOffset 只认此偏移之后的记录：单元格按行序存放，每个 sheet 的第一格都是标题文本，
+ *   数值格必然在首条文本/公式记录之后；文件头部（字体表、格式表、版面）里的同形字节一律不认。
+ */
+function parseNumberRecords(
+  buffer: Buffer,
+  xfTable: Buffer[],
+  fonts: Array<ParsedFont | null>,
+  startOffset: number
+): BinaryCellRecord[] {
+  const records: BinaryCellRecord[] = []
+  // 没读出格式表时无法校验 xf，宁可不认数值记录，也不要把随机字节当成单元格
+  if (xfTable.length === 0) return records
+
+  for (let offset = Math.max(0, startOffset); offset < buffer.length - 1; offset += 1) {
+    const dataLength = NUMBER_RECORD_DATA_LENGTH[buffer[offset]]
+    if (!dataLength) continue
+    const end = offset + 1 + dataLength
+    if (end >= buffer.length) continue
+
+    const rowIndex = buffer.readUInt16LE(offset + 1)
+    const colIndex = buffer.readUInt16LE(offset + 3)
+    const style = buffer.readUInt16LE(offset + 5)
+    if (rowIndex === 0 || rowIndex > 1000 || colIndex > 64 || style >= xfTable.length) continue
+    if (!CELL_FOLLOWER_OPCODES.has(buffer[end])) continue
+
+    const value =
+      buffer[offset] === 0x7e
+        ? decodeRkValue(buffer.readInt32LE(offset + 7))
+        : buffer.readDoubleLE(offset + 7)
+    if (!Number.isFinite(value) || Math.abs(value) >= 1e15) continue
+
+    records.push({
+      offset,
+      rowIndex: rowIndex - 1,
+      colIndex,
+      cellType: 'number',
+      textValue: formatNumericLiteral(value),
+      formulaText: null,
+      styleKey: xfToStyleKey(xfTable[style], fonts),
+      centerAcross: isCenterAcross(xfTable[style]),
+    })
+  }
+
+  return records
+}
+
+/** COLINFO / ROW 记录同样没有长度字节，数据段定长 */
+const COLINFO_DATA_LENGTH = 12
+const ROW_DATA_LENGTH = 16
+/** 列宽单位是默认字体一个字符宽的 1/256；数字字符宽约为字号的 0.556（Arial 比例） */
+const COL_CHAR_WIDTH_RATIO = 0.556
+/** 列宽换算后再加的左右留白（px） */
+const COL_EXTRA_PX = 5
+/** 行高单位 twips：1pt = 20twips，1pt = 4/3px，故 1px = 15twips */
+const TWIPS_PER_PX = 15
+
+/**
+ * 还原版面（列宽、行高）。
+ *
+ * 只扫第一格单元格记录之前的区域：三个 sheet 里只有排在最前的呈现版带 COLINFO 与自定义行高
+ * （ROW 记录 flags 含 0x40），后面的公式版行高全是默认值，读了也没用。
+ * 单元格记录已把 vts 的行号整体减 1（第 0 行是空占位行），行高同样对齐。
+ */
+function parseSheetLayout(
+  buffer: Buffer,
+  firstCellOffset: number,
+  fonts: Array<ParsedFont | null>
+): AcdSheetLayout {
+  const layout: AcdSheetLayout = { colWidthsPx: [], rowHeightsPx: [] }
+  const defaultFontPt = fonts[0]?.pt || 12
+  const charPx = ptToPx(defaultFontPt) * COL_CHAR_WIDTH_RATIO
+
+  const limit = Math.min(firstCellOffset, buffer.length)
+  for (let offset = 0; offset + 1 + ROW_DATA_LENGTH <= limit; offset += 1) {
+    const opcode = buffer[offset]
+    if (opcode === 0x7d) {
+      const firstCol = buffer.readUInt16LE(offset + 1)
+      const lastCol = buffer.readUInt16LE(offset + 3)
+      const width = buffer.readUInt16LE(offset + 5)
+      const style = buffer.readUInt16LE(offset + 7)
+      if (firstCol > lastCol || lastCol > 64 || width === 0 || width > 30000 || style > 512) continue
+      const px = Math.round((width / 256) * charPx + COL_EXTRA_PX)
+      for (let col = firstCol; col <= lastCol; col += 1) layout.colWidthsPx[col] = px
+      offset += COLINFO_DATA_LENGTH
+      continue
+    }
+    if (opcode === 0x08) {
+      const row = buffer.readUInt16LE(offset + 1)
+      const firstCol = buffer.readUInt16LE(offset + 3)
+      const lastCol = buffer.readUInt16LE(offset + 5)
+      const twips = buffer.readUInt16LE(offset + 7)
+      const reserved = buffer.readUInt32LE(offset + 9)
+      if (row > 1000 || firstCol > lastCol || lastCol > 64 || reserved !== 0) continue
+      if (twips < 60 || twips > 5000) continue
+      // 第 0 行是占位行，单元格已整体上移一行
+      if (row >= 1) layout.rowHeightsPx[row - 1] = Math.round(twips / TWIPS_PER_PX)
+      offset += ROW_DATA_LENGTH
+    }
+  }
+  return layout
+}
+
+export function parseVtsSheets(buffer: Buffer, fallbackName: string, warnings: string[]) {
   const xfTable = parseXfTable(buffer)
   const fonts = parseFontTable(buffer)
-  const records = [
-    ...parseTextRecords(buffer, xfTable, fonts),
-    ...parseCompiledFormulaRecords(buffer, warnings, xfTable, fonts),
-  ].sort((left, right) => left.offset - right.offset)
-
-  if (records.length === 0) {
-    return [] as ParsedAcdSheet[]
+  const textResult = parseTextRecords(buffer, xfTable, fonts)
+  const anchoredRecords = [
+    ...textResult.records,
+    ...parseCompiledFormulaRecords(buffer, warnings, xfTable, fonts, textResult.layout),
+  ]
+  if (anchoredRecords.length === 0) {
+    return { sheets: [] as ParsedAcdSheet[], layout: { colWidthsPx: [], rowHeightsPx: [] } }
   }
+  anchoredRecords.sort((left, right) => left.offset - right.offset)
+  const firstCellOffset = anchoredRecords[0].offset
+  const layout = parseSheetLayout(buffer, firstCellOffset, fonts)
+
+  // 一个 vts 顺序存放同一报表的多个版本（呈现版 / @ 公式版 / 编译版），每个版本内部的单元格
+  // 严格按 (row, col) 升序排列。因此「行列序回退」就是版本边界，比早先靠 r0c0 文本含「表」字
+  // 判标题可靠得多——标题不含「表」、或首格不在 r0c0 的报表，旧法会把两个版本粘成一张。
+  // 边界只用文本/公式记录来判：数值记录无长度字节、校验较弱，偶有误命中会制造假边界。
+  const boundaries: number[] = []
+  for (let index = 1; index < anchoredRecords.length; index += 1) {
+    const prev = anchoredRecords[index - 1]
+    const curr = anchoredRecords[index]
+    const goesBack =
+      curr.rowIndex < prev.rowIndex || (curr.rowIndex === prev.rowIndex && curr.colIndex < prev.colIndex)
+    if (goesBack) boundaries.push(curr.offset)
+  }
+
+  const records = [
+    ...anchoredRecords,
+    ...parseNumberRecords(buffer, xfTable, fonts, firstCellOffset),
+  ].sort((left, right) => left.offset - right.offset)
 
   const sheets: ParsedAcdSheet[] = []
   let currentSheet: ParsedAcdSheet | null = null
+  let nextBoundary = 0
 
   for (const record of records) {
-    if (isSheetTitleCell(record)) {
+    const reachedBoundary = nextBoundary < boundaries.length && record.offset >= boundaries[nextBoundary]
+    if (reachedBoundary) nextBoundary += 1
+    if (!currentSheet || reachedBoundary) {
       if (currentSheet && currentSheet.cells.length > 0) {
         sheets.push(currentSheet)
       }
       currentSheet = {
-        name: String(record.textValue || fallbackName),
+        name: isSheetTitleCell(record) ? String(record.textValue || fallbackName) : fallbackName,
         index: sheets.length,
         cells: [],
       }
     }
 
-    if (!currentSheet) {
-      currentSheet = {
-        name: fallbackName,
-        index: sheets.length,
-        cells: [],
-      }
-    }
-
-    currentSheet.cells.push({
+    currentSheet!.cells.push({
       rowIndex: record.rowIndex,
       colIndex: record.colIndex,
       cellType: record.cellType,
@@ -639,7 +882,130 @@ function parseVtsSheets(buffer: Buffer, fallbackName: string, warnings: string[]
     sheets.push(currentSheet)
   }
 
-  return sheets
+  return { sheets, layout }
+}
+
+/** OLE2 复合文档魔数（真正的 BIFF8 .xls 工作簿） */
+const OLE2_MAGIC = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1])
+
+function isOle2Workbook(buffer: Buffer) {
+  return buffer.length > OLE2_MAGIC.length && buffer.subarray(0, OLE2_MAGIC.length).equals(OLE2_MAGIC)
+}
+
+/**
+ * xlsx 库对 BIFF8 里的单字节字符串按 Latin-1 解码（未挂 codepage 表），中文会变成 `²¹³ä×ÊÁÏ` 这样的乱码；
+ * 原字节其实是 GBK，按 Latin-1 还原字节后再以 gb18030 解码即可。全是 ASCII 或已含真正中文的串不动。
+ */
+function repairLatin1Gbk(value: string) {
+  if (!/[\u0080-\u00ff]/.test(value) || /[\u0100-\uffff]/.test(value)) return value
+  try {
+    return iconv.decode(Buffer.from(value, 'latin1'), 'gb18030')
+  } catch {
+    return value
+  }
+}
+
+/**
+ * 第三代 vts：整个文件就是一个标准 Excel 97-2003 工作簿（如 2025 年的 ZW04 绿环 BVI 里 19 张报表中的 11 张）。
+ * 交给 xlsx 库解析，再映射成与自研二进制解析器一致的 sheet/cell/layout 结构：
+ *   - 字符串以 @ / = 开头 → 取数公式 / 表达式；带 f 的数值或错误格 → `=` 公式；纯数值 → number 常量；
+ *   - 与自研格式一样，第 0 行是占位空行，单元格与行高整体上移一行；
+ *   - 列宽/行高直接取 !cols / !rows 的像素值。
+ * 社区版 xlsx 不解析单元格样式，styleKey 为空，边框由导入侧 fillTableBorders 统一补齐。
+ */
+export function parseOleVtsSheets(buffer: Buffer, fallbackName: string, warnings: string[]) {
+  let workbook: xlsx.WorkBook
+  try {
+    workbook = xlsx.read(buffer, { type: 'buffer', cellStyles: true, cellFormula: true, cellNF: false })
+  } catch (error) {
+    warnings.push(`xlsx 解析 vts 失败: ${fallbackName} - ${error instanceof Error ? error.message : String(error)}`)
+    return { sheets: [] as ParsedAcdSheet[], layout: { colWidthsPx: [], rowHeightsPx: [] } as AcdSheetLayout }
+  }
+  return mapWorkbookToSheets(workbook, fallbackName)
+}
+
+/** 把 xlsx 库读出的工作簿映射成 sheet/cell/layout；独立出来便于用内存工作簿做单测 */
+export function mapWorkbookToSheets(workbook: xlsx.WorkBook, fallbackName: string) {
+  const layout: AcdSheetLayout = { colWidthsPx: [], rowHeightsPx: [] }
+  const sheets: ParsedAcdSheet[] = []
+  workbook.SheetNames.forEach((sheetName, sheetIndex) => {
+    const worksheet = workbook.Sheets[sheetName]
+    if (!worksheet || !worksheet['!ref']) return
+    const range = xlsx.utils.decode_range(worksheet['!ref'])
+    const cells: ParsedAcdCell[] = []
+
+    for (let row = Math.max(1, range.s.r); row <= range.e.r; row += 1) {
+      for (let col = range.s.c; col <= range.e.c; col += 1) {
+        const cell = worksheet[xlsx.utils.encode_cell({ r: row, c: col })] as xlsx.CellObject | undefined
+        if (!cell) continue
+        const parsed = mapWorkbookCell(cell)
+        if (!parsed) continue
+        cells.push({ rowIndex: row - 1, colIndex: col, styleKey: null, centerAcross: false, ...parsed })
+      }
+    }
+    if (!cells.length) return
+
+    // 版面只取第一个 sheet（呈现版）的，与自研格式一致
+    if (sheets.length === 0) {
+      ;(worksheet['!cols'] || []).forEach((info, index) => {
+        if (info?.wpx && info.wpx > 0) layout.colWidthsPx[index] = Math.round(info.wpx)
+      })
+      ;(worksheet['!rows'] || []).forEach((info, index) => {
+        if (index >= 1 && info?.hpx && info.hpx > 0) layout.rowHeightsPx[index - 1] = Math.round(info.hpx)
+      })
+    }
+
+    const title = cells.find(cell => cell.rowIndex === 0 && cell.colIndex === 0 && cell.cellType === 'text')
+    sheets.push({
+      name: title?.textValue || sheetName || `${fallbackName}#${sheetIndex}`,
+      index: sheets.length,
+      cells,
+    })
+  })
+
+  return { sheets, layout }
+}
+
+/**
+ * 单元格整体上移一行后，`=` 表达式里的行号也要同步减 1（`=B8+1` → `=B7+1`），
+ * 否则行次公式会指向自己。只改引号外的 A1 式引用；函数名（SUM、LOG10）后面紧跟 `(`，不会被误改。
+ */
+export function shiftFormulaRows(formula: string, delta: number) {
+  return formula
+    .split('"')
+    .map((segment, index) => {
+      if (index % 2 === 1) return segment
+      return segment.replace(
+        /(?<![A-Za-z0-9_.])(\$?)([A-Z]{1,3})(\$?)(\d+)(?![\d(])/g,
+        (_match, colAbs: string, col: string, rowAbs: string, row: string) => {
+          const shifted = Number(row) + delta
+          return shifted >= 1 ? `${colAbs}${col}${rowAbs}${shifted}` : `${colAbs}${col}${rowAbs}${row}`
+        }
+      )
+    })
+    .join('"')
+}
+
+function mapWorkbookCell(
+  cell: xlsx.CellObject
+): Pick<ParsedAcdCell, 'cellType' | 'textValue' | 'formulaText'> | null {
+  if (cell.f) {
+    return { cellType: 'formula', textValue: null, formulaText: `=${shiftFormulaRows(cell.f, -1)}` }
+  }
+  if (cell.t === 's' || cell.t === 'str') {
+    const text = repairLatin1Gbk(String(cell.v ?? '')).replace(/\0/g, '').trim()
+    if (!text) return null
+    const isFormula = text.startsWith('@') || text.startsWith('=')
+    return {
+      cellType: isFormula ? 'formula' : 'text',
+      textValue: isFormula ? null : text,
+      formulaText: isFormula ? text : null,
+    }
+  }
+  if (cell.t === 'n' && typeof cell.v === 'number' && Number.isFinite(cell.v)) {
+    return { cellType: 'number', textValue: formatNumericLiteral(cell.v), formulaText: null }
+  }
+  return null
 }
 
 export function extractAcdReportTemplates(acdBuffer: Buffer) {
@@ -674,8 +1040,11 @@ export function extractAcdReportTemplates(acdBuffer: Buffer) {
     if (!buffer) continue
 
     let sheets: ParsedAcdSheet[]
+    let layout: AcdSheetLayout
     try {
-      sheets = parseVtsSheets(buffer, reportName, warnings)
+      ;({ sheets, layout } = isOle2Workbook(buffer)
+        ? parseOleVtsSheets(buffer, reportName, warnings)
+        : parseVtsSheets(buffer, reportName, warnings))
     } catch (error) {
       warnings.push(
         `跳过解析失败的报表模板: ${reportName} (${sourceFile}) - ${error instanceof Error ? error.message : String(error)}`
@@ -693,6 +1062,7 @@ export function extractAcdReportTemplates(acdBuffer: Buffer) {
       reportName,
       sourceFile,
       sheets,
+      layout,
     })
   }
 

@@ -190,10 +190,10 @@ onMounted(init)
 .qc-form-header__meta { font-size: 12px; color: var(--el-text-color-secondary); }
 .qc-form-header__right { display: flex; gap: 8px; }
 .qc-form-body { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 12px 16px; gap: 6px; }
-.qc-lines-hd { display: flex; align-items: center; gap: 12px; font-weight: 600; font-size: 13px; }
+.qc-lines-hd { display: flex; align-items: center; gap: 12px; font-weight: 600; font-size: var(--cw-text-base); }
 .qc-lines-hd__hint { margin-left: auto; font-weight: 400; font-size: 12px; color: var(--el-text-color-secondary); }
 .qc-lines { flex: 1; min-height: 200px; }
-.qc-empty { padding: 24px 0; color: var(--el-text-color-secondary); font-size: 13px; }
+.qc-empty { padding: 24px 0; color: var(--el-text-color-secondary); font-size: var(--cw-text-base); }
 .qc-hint { font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.6; }
 .bad { color: var(--el-color-danger); font-weight: 600; }
 </style>

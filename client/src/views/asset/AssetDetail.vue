@@ -238,9 +238,9 @@ onMounted(async () => {
 .detail-body { padding: 16px; flex: 1; overflow: auto; }
 .info-card { margin-bottom: 16px; }
 .ledger-section { margin-bottom: 16px; }
-.ledger-section h4 { margin: 0 0 8px; font-size: 14px; display: flex; align-items: center; gap: 12px; }
+.ledger-section h4 { margin: 0 0 8px; font-size: var(--cw-text-base); display: flex; align-items: center; gap: 12px; }
 .attach-upload { display: inline-block; }
-.progress-section h4 { margin: 0 0 8px; font-size: 14px; }
+.progress-section h4 { margin: 0 0 8px; font-size: var(--cw-text-base); }
 .progress-bar-wrap { max-width: 500px; }
 .depr-amt { color: #409eff; font-weight: 600; }
 .incr { color: #67c23a; }

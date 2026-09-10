@@ -271,7 +271,7 @@ onMounted(async () => {
 .rc-table { flex:1; }
 .rc-table :deep(.el-table__body-wrapper) { overflow-y:auto; }
 .rc-footer { padding:5px 12px; border-top:1px solid var(--el-border-color-light); display:flex; align-items:center; gap:8px; min-height:36px; }
-.footer-hint { font-size:13px; color:#606266; }
+.footer-hint { font-size: var(--cw-text-base); color:#606266; }
 .footer-tip { font-size:12px; color:#909399; }
 .dc { color:#409eff; }
 .cr { color:#f56c6c; }

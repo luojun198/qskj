@@ -890,7 +890,7 @@
 
     <!-- 序列号录入对话框：每行一个序列号 -->
     <el-dialog v-model="serialDialogVisible" title="录入序列号" width="420px" append-to-body>
-      <div style="margin-bottom:8px;color:var(--el-text-color-secondary);font-size:13px">
+      <div style="margin-bottom:8px;color:var(--el-text-color-secondary);font-size: var(--cw-text-base)">
         {{ serialRow?.item_code }} {{ serialRow?.item_name || '' }} · 需 {{ Number(serialRow?.qty) || 0 }} 个（每行一个）
       </div>
       <el-input v-model="serialText" type="textarea" :rows="8" placeholder="每行一个序列号，可粘贴" />
@@ -2239,7 +2239,7 @@ async function initForm() {
     form.value.doc_type = initDocType.value
     lines.value = [newLine()]
     if (form.value.doc_type) {
-      try { const r = await scmApi.getDocNextNo(form.value.doc_type); if (r.code === 0) form.value.doc_no = r.data.next_no } catch { }
+      try { const r = await scmApi.getDocNextNo(form.value.doc_type, form.value.doc_date); if (r.code === 0) form.value.doc_no = r.data.next_no } catch { }
     }
     if (isPlanControlledDoc.value && initPlanId.value) {
       form.value.plan_id = initPlanId.value
@@ -3202,7 +3202,7 @@ function goCost() {
   padding: 10px 16px; border-bottom: 1px solid var(--el-border-color-light);
   background: var(--el-bg-color); flex-shrink: 0;
 }
-.doc-form-header__left { display: flex; align-items: center; gap: 6px; font-size: 14px; }
+.doc-form-header__left { display: flex; align-items: center; gap: 6px; font-size: var(--cw-text-base); }
 .doc-form-header__sep { color: var(--el-text-color-placeholder); }
 .doc-form-header__title { font-weight: 600; color: var(--el-text-color-primary); }
 .doc-form-header__meta { margin-left: 10px; font-size: 12px; color: var(--el-text-color-secondary); }
@@ -3213,7 +3213,7 @@ function goCost() {
   /* 独占一行并抬高层级：按钮多时换行而不是压到下方表格表头上，避免与「#/编号」表头重叠糊成一团 */
   position: relative; z-index: 2;
 }
-.doc-lines-summary { margin-left: auto; font-size: 13px; color: var(--el-text-color-secondary); }
+.doc-lines-summary { margin-left: auto; font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }
 .doc-cost-hint { margin-left: 12px; color: var(--el-color-warning); font-size: 12px; }
 .payment-source-panel { margin-top: 2px; }
 .payment-source-tip { margin-bottom: 10px; }
@@ -3232,7 +3232,7 @@ function goCost() {
 .rt-stock { color: var(--el-color-primary); font-size: 12px; }
 .line-col-setting__hd {
   display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 6px; font-size: 13px; font-weight: 600;
+  margin-bottom: 6px; font-size: var(--cw-text-base); font-weight: 600;
 }
 .line-col-setting__group { display: flex; flex-direction: column; gap: 2px; }
 .line-col-setting__empty { color: var(--el-text-color-placeholder); font-size: 12px; padding: 6px 0; }
@@ -3243,12 +3243,12 @@ function goCost() {
 /* 组装单成品/子件分组 */
 .as-group { margin-top: 10px; }
 .as-group__hd { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
-.as-group__title { font-weight: 600; font-size: 14px; }
+.as-group__title { font-weight: 600; font-size: var(--cw-text-base); }
 .as-group__title.is-product { color: var(--el-color-success); }
 .as-group__title.is-component { color: var(--el-color-info); }
 .as-group__count { font-size: 12px; color: var(--el-text-color-secondary); }
 .as-group__hint { font-size: 12px; color: var(--el-text-color-placeholder); }
-.as-empty { text-align: center; color: var(--el-text-color-placeholder); font-size: 13px; padding: 12px 0; border: 1px dashed var(--el-border-color-lighter); border-top: none; }
+.as-empty { text-align: center; color: var(--el-text-color-placeholder); font-size: var(--cw-text-base); padding: 12px 0; border: 1px dashed var(--el-border-color-lighter); border-top: none; }
 .mat-dlg-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .mat-dlg-hint { font-size: 12px; color: var(--el-text-color-secondary); }
 /* 合计行（表体最后一行）：加粗 + 浅底，水平滚动条落在其下方 */
@@ -3259,7 +3259,7 @@ function goCost() {
 .cost-source-panel { padding: 10px 14px 14px 56px; background: var(--el-fill-color-lighter); }
 .cost-source-panel__header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
 .cost-source-panel__formula { margin-left: 12px; font-size: 12px; color: var(--el-text-color-secondary); }
-.cost-source-panel__segments { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; color: var(--el-text-color-regular); }
+.cost-source-panel__segments { display: flex; flex-wrap: wrap; gap: 14px; font-size: var(--cw-text-base); color: var(--el-text-color-regular); }
 .cost-source-table { width: 100%; }
 .compact-data-table :deep(.cell) {
   padding: 0 4px;
@@ -3296,7 +3296,7 @@ function goCost() {
   border: 1px dashed var(--el-border-color);
   border-radius: var(--radius-sm);
   margin-bottom: 12px;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   gap: 16px;
 }
 .relation-item {

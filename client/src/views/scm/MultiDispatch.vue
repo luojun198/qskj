@@ -294,11 +294,11 @@ onMounted(() => {
 }
 .md-header__left { display: flex; align-items: center; flex-wrap: wrap; }
 .md-header__sep { margin: 0 8px; color: var(--el-text-color-placeholder); }
-.md-header__title { font-size: 15px; font-weight: 600; }
+.md-header__title { font-size: var(--cw-text-lg); font-weight: 600; }
 .md-header__right { display: flex; align-items: center; gap: 8px; }
 .md-body { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 12px 16px 0; }
 .md-hint {
-  font-size: 13px; color: var(--el-text-color-secondary);
+  font-size: var(--cw-text-base); color: var(--el-text-color-secondary);
   margin-bottom: 10px; line-height: 1.7;
   padding: 8px 12px; background: var(--el-fill-color-light); border-radius: 4px;
 }
@@ -307,7 +307,7 @@ onMounted(() => {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   padding: 10px 16px; border-top: 1px solid var(--el-border-color-lighter);
 }
-.md-tip { margin-left: auto; font-size: 13px; color: var(--el-text-color-secondary); }
+.md-tip { margin-left: auto; font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }
 .md-short { color: var(--el-color-danger); font-weight: 600; }
 .md-neg { color: var(--el-color-danger); }
 .md-doc-no { font-family: var(--el-font-family-mono, monospace); font-size: 12px; }

@@ -115,7 +115,7 @@ onMounted(load)
 }
 .cd-header__left { display: flex; align-items: center; }
 .cd-header__sep { margin: 0 8px; color: var(--el-text-color-placeholder); }
-.cd-header__title { font-size: 15px; font-weight: 600; }
+.cd-header__title { font-size: var(--cw-text-lg); font-weight: 600; }
 .cd-body { flex: 1; min-height: 0; overflow: auto; padding: 12px 16px 16px; }
 .cd-hint { font-size: 12px; color: var(--el-text-color-secondary); margin: 8px 0 12px; line-height: 1.6; }
 .sum-cards { display: flex; gap: 10px; flex-wrap: wrap; }
@@ -126,9 +126,9 @@ onMounted(load)
 .sum-cards .card .val { font-size: 18px; font-weight: 600; margin-top: 2px; }
 .cd-prod { margin-bottom: 18px; }
 .cd-prod__hd { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
-.cd-prod__title { font-size: 14px; }
+.cd-prod__title { font-size: var(--cw-text-base); }
 .cd-prod__sub { margin-left: 10px; font-size: 12px; color: var(--el-text-color-secondary); }
-.cd-prod__seg { display: flex; gap: 14px; font-size: 13px; color: var(--el-text-color-regular); }
+.cd-prod__seg { display: flex; gap: 14px; font-size: var(--cw-text-base); color: var(--el-text-color-regular); }
 .cd-prod__seg .seg.muted { opacity: .5; }
 .cd-prod__seg .seg b { color: var(--el-text-color-primary); }
 </style>

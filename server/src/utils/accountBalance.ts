@@ -42,6 +42,26 @@ export function calcInitBalanceFromDebitCredit(
 }
 
 /** SQL：按科目余额方向将分录金额转为有符号增量 */
+/**
+ * 「按科目方向签名」的 SQL 片段：贷方科目取 贷-借，借方科目取 借-贷。
+ * 期初余额、账前发生额、辅助明细等多处都要这条规则，此前各自手写 CASE，
+ * 改一处漏几处。新增用法一律走本函数，勿再内联 `CASE WHEN direction = 'credit'`。
+ *
+ * @param accountDirectionRef 科目方向列引用，如 'a.direction'
+ * @param debitExpr  借方金额表达式（调用方自行包好 COALESCE / SUM）
+ * @param creditExpr 贷方金额表达式
+ */
+export function buildDirectionSignedNetSql(
+  accountDirectionRef: string,
+  debitExpr: string,
+  creditExpr: string
+): string {
+  return `CASE WHEN ${accountDirectionRef} = 'credit'
+    THEN (${creditExpr}) - (${debitExpr})
+    ELSE (${debitExpr}) - (${creditExpr})
+  END`
+}
+
 export function buildSignedEntryAmountSql(
   accountDirectionRef: string,
   entryDirectionRef: string,

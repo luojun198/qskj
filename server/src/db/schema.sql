@@ -124,6 +124,10 @@ CREATE TABLE IF NOT EXISTS accounts (
   is_cash INTEGER DEFAULT 0,
   is_bank INTEGER DEFAULT 0,
   require_cash_flow INTEGER NOT NULL DEFAULT 0,
+  is_foreign INTEGER NOT NULL DEFAULT 0,
+  currency_code TEXT,
+  is_quantity INTEGER NOT NULL DEFAULT 0,
+  quantity_unit TEXT,
   no_negative INTEGER DEFAULT 0,
   ledger_format TEXT DEFAULT 'three_column' CHECK(ledger_format IN ('three_column', 'multi_column', 'quantity_amount')),
   is_enabled INTEGER DEFAULT 1,
@@ -207,6 +211,16 @@ CREATE TABLE IF NOT EXISTS init_balances (
   opening_credit REAL NOT NULL DEFAULT 0,
   pre_book_debit REAL NOT NULL DEFAULT 0,
   pre_book_credit REAL NOT NULL DEFAULT 0,
+  foreign_init_balance REAL NOT NULL DEFAULT 0,
+  foreign_opening_debit REAL NOT NULL DEFAULT 0,
+  foreign_opening_credit REAL NOT NULL DEFAULT 0,
+  foreign_pre_book_debit REAL NOT NULL DEFAULT 0,
+  foreign_pre_book_credit REAL NOT NULL DEFAULT 0,
+  qty_init_balance REAL NOT NULL DEFAULT 0,
+  qty_opening_debit REAL NOT NULL DEFAULT 0,
+  qty_opening_credit REAL NOT NULL DEFAULT 0,
+  qty_pre_book_debit REAL NOT NULL DEFAULT 0,
+  qty_pre_book_credit REAL NOT NULL DEFAULT 0,
   init_balance_cents INTEGER,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(account_set_id, account_id, year, period, aux_item_id)
@@ -267,11 +281,51 @@ CREATE TABLE IF NOT EXISTS voucher_entries (
   func_class_name TEXT,
   cash_flow_code TEXT,
   cash_flow_name TEXT,
+  currency_code TEXT,
+  exchange_rate REAL,
+  foreign_amount REAL,
   aux_data TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_voucher_entries_cash_flow ON voucher_entries(cash_flow_code);
+
+-- 外币币种
+CREATE TABLE IF NOT EXISTS currencies (
+  id TEXT PRIMARY KEY,
+  account_set_id TEXT NOT NULL REFERENCES account_sets(id),
+  code TEXT NOT NULL,
+  name TEXT NOT NULL,
+  is_base INTEGER NOT NULL DEFAULT 0,
+  default_rate REAL NOT NULL DEFAULT 1,
+  begin_rate REAL NOT NULL DEFAULT 1,
+  end_rate REAL NOT NULL DEFAULT 1,
+  rate_decimals INTEGER NOT NULL DEFAULT 4,
+  is_enabled INTEGER NOT NULL DEFAULT 1,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(account_set_id, code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_currencies_account_set ON currencies(account_set_id);
+
+-- 外币汇率（按年/期）
+CREATE TABLE IF NOT EXISTS exchange_rates (
+  id TEXT PRIMARY KEY,
+  account_set_id TEXT NOT NULL REFERENCES account_sets(id),
+  currency_code TEXT NOT NULL,
+  year INTEGER NOT NULL,
+  period INTEGER NOT NULL,
+  rate REAL NOT NULL DEFAULT 1,
+  closing_rate REAL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(account_set_id, currency_code, year, period)
+);
+
+CREATE INDEX IF NOT EXISTS idx_exchange_rates_account_set
+  ON exchange_rates(account_set_id, currency_code, year, period);
 
 -- 现金流量项目
 CREATE TABLE IF NOT EXISTS cash_flow_items (
@@ -337,6 +391,10 @@ CREATE TABLE IF NOT EXISTS account_balances (
   end_balance REAL DEFAULT 0,
   end_debit REAL DEFAULT 0,
   end_credit REAL DEFAULT 0,
+  foreign_init_balance REAL NOT NULL DEFAULT 0,
+  foreign_current_debit REAL NOT NULL DEFAULT 0,
+  foreign_current_credit REAL NOT NULL DEFAULT 0,
+  foreign_end_balance REAL NOT NULL DEFAULT 0,
   aux_item_id TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(account_set_id, account_id, year, period, aux_item_id)
@@ -367,6 +425,18 @@ CREATE TABLE IF NOT EXISTS auto_transfer_runs (
   created_by TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(account_set_id, year, period, transfer_type_code)
+);
+
+-- 期末调汇生成记录（每期一张）
+CREATE TABLE IF NOT EXISTS fx_revaluation_runs (
+  id TEXT PRIMARY KEY,
+  account_set_id TEXT NOT NULL REFERENCES account_sets(id),
+  year INTEGER NOT NULL,
+  period INTEGER NOT NULL,
+  voucher_id TEXT NOT NULL REFERENCES vouchers(id),
+  created_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(account_set_id, year, period)
 );
 
 -- ===================== AI 模块 =====================

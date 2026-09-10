@@ -1,6 +1,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import type { Ref, ComputedRef } from 'vue'
 import { withAccountTreeSelectLabel } from '@/utils/accountSelectDisplay'
+import { resolveAccountParentId } from '@/utils/accountPathDisplay'
 
 export function useAccountTree(list: Ref<any[]>, tableRef: Ref<any>) {
   const expandedSet = ref<Set<string>>(new Set())
@@ -37,27 +38,7 @@ export function useAccountTree(list: Ref<any[]>, tableRef: Ref<any>) {
       map[item.id] = { ...item, children: [] }
     }
 
-    function resolveParentId(item: any): string | null {
-      if (item.parent_id && map[item.parent_id]) return item.parent_id
-      const code = String(item.code || '')
-      if (!code) return null
-      let bestId: string | null = null
-      let bestLen = 0
-      for (const candidate of Object.values(map)) {
-        if (candidate.id === item.id) continue
-        const parentCode = String(candidate.code || '')
-        if (
-          parentCode.length > 0 &&
-          parentCode.length < code.length &&
-          code.startsWith(parentCode) &&
-          parentCode.length > bestLen
-        ) {
-          bestId = candidate.id
-          bestLen = parentCode.length
-        }
-      }
-      return bestId
-    }
+    const resolveParentId = (item: any) => resolveAccountParentId(item, map)
 
     const pushed = new Set<string>()
     for (const item of list.value) {

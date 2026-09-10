@@ -320,7 +320,7 @@ onMounted(load)
   color: var(--el-text-color-placeholder);
 }
 .mr-preview-header__title {
-  font-size: 15px;
+  font-size: var(--cw-text-lg);
   font-weight: 600;
 }
 .mr-preview-body {
@@ -363,7 +363,7 @@ onMounted(load)
   align-items: center;
   padding: 10px 12px;
   color: var(--el-text-color-secondary);
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   line-height: 1.6;
 }
 .mr-groups {
@@ -395,7 +395,7 @@ onMounted(load)
 }
 .mr-group__header h3 {
   margin: 0 0 4px;
-  font-size: 14px;
+  font-size: var(--cw-text-base);
 }
 .mr-group__header span {
   font-size: 12px;

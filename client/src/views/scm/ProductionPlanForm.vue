@@ -457,15 +457,15 @@ function goBack() { router.push({ name: 'ScmProductionPlan', query: { plan_type:
   padding: 10px 16px; border-bottom: 1px solid var(--el-border-color-light);
   background: var(--el-bg-color); flex-shrink: 0;
 }
-.pp-form-header__left { display: flex; align-items: center; gap: 6px; font-size: 14px; }
+.pp-form-header__left { display: flex; align-items: center; gap: 6px; font-size: var(--cw-text-base); }
 .pp-form-header__sep { color: var(--el-text-color-placeholder); }
 .pp-form-header__title { font-weight: 600; color: var(--el-text-color-primary); }
 .pp-form-header__right { display: flex; gap: 8px; }
 .pp-form-body { flex: 1; overflow: auto; padding: 14px 16px; }
 .pp-lines-toolbar { display: flex; align-items: center; gap: 8px; margin: 6px 0 8px; }
 .pp-detail-toolbar { margin-top: 16px; padding-top: 10px; border-top: 1px dashed var(--el-border-color); }
-.pp-lines-title { font-size: 14px; font-weight: 600; margin-right: 6px; }
-.pp-lines-summary { margin-left: auto; font-size: 13px; color: var(--el-text-color-secondary); }
+.pp-lines-title { font-size: var(--cw-text-base); font-weight: 600; margin-right: 6px; }
+.pp-lines-summary { margin-left: auto; font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }
 .pp-product-table :deep(.current-row > td) { background: var(--el-color-primary-light-9) !important; }
 .pp-cur { color: var(--el-color-primary); font-weight: 700; }
 .compact-data-table :deep(.el-table__cell) { padding: 0; }

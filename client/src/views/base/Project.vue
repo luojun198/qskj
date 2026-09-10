@@ -456,7 +456,7 @@
         show-icon
         style="margin-bottom: 12px"
       />
-      <p style="color: #909399; font-size: 13px">
+      <p style="color: #909399; font-size: var(--cw-text-base)">
         系统将自动跳过已被科目或凭证使用的项目，仅删除未使用的项目。
       </p>
       <template #footer>
@@ -1734,14 +1734,14 @@ onActivated(() => {
   height: 32px;
   line-height: 32px;
   padding: 0 12px;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
 }
 
 .project-empty {
   padding: 12px;
   color: #909399;
   text-align: center;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
 }
 
 .project-table {
@@ -1801,7 +1801,7 @@ onActivated(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 14px;
+  font-size: var(--cw-text-base);
   color: #606266;
 }
 .uploaded-file-info .file-name .el-icon {
@@ -1810,7 +1810,7 @@ onActivated(() => {
 }
 .import-tips {
   margin-bottom: 16px;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   color: #606266;
   line-height: 1.8;
 }

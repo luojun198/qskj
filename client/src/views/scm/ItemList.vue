@@ -7,7 +7,7 @@
         <h3>物料管理</h3>
         <span>{{ itemCountLabel }}</span>
       </div>
-      <div class="item-toolbar">
+      <div class="item-toolbar toolbar">
         <!-- 筛选过滤 -->
         <el-input
           v-model="filters.keyword"
@@ -633,7 +633,7 @@ onActivated(() => {
 
 .item-title h3 {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--cw-text-lg);
   line-height: 1.2;
 }
 

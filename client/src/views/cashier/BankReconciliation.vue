@@ -152,7 +152,7 @@ function handlePrint() {
 .recon-body { flex: 1; overflow: auto; padding: 16px; }
 .balance-cards { display: flex; gap: 16px; margin-bottom: 16px; }
 .bal-card { flex: 1; text-align: center; padding: 16px; border-radius: 8px; background: var(--el-fill-color-lighter); }
-.bal-label { font-size: 13px; color: var(--el-text-color-secondary); margin-bottom: 4px; }
+.bal-label { font-size: var(--cw-text-base); color: var(--el-text-color-secondary); margin-bottom: 4px; }
 .bal-value { font-size: 22px; font-weight: 700; }
 .unrecon-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; min-width: 0; }
 /* Grid 子项默认 min-width:auto，会与 EP doLayout 形成列宽正反馈循环 */
@@ -160,15 +160,15 @@ function handlePrint() {
 .unrecon-col :deep(.el-table) { width: 100% !important; max-width: 100%; }
 .unrecon-col :deep(.el-table__body table),
 .unrecon-col :deep(.el-table__header table) { table-layout: fixed; width: 100% !important; }
-.unrecon-col h4 { margin: 0 0 8px; font-size: 13px; }
-.col-footer { padding: 8px 0; font-size: 13px; text-align: right; }
+.unrecon-col h4 { margin: 0 0 8px; font-size: var(--cw-text-base); }
+.col-footer { padding: 8px 0; font-size: var(--cw-text-base); text-align: right; }
 .col-footer .val { font-weight: 600; margin: 0 4px; }
 .debit { color: #409eff; }
 .credit { color: #f56c6c; }
 .adjusted-section { display: flex; align-items: center; gap: 12px; justify-content: center; padding: 16px; border-radius: 8px; background: var(--el-fill-color-lighter); flex-wrap: wrap; }
 .adj-card { padding: 12px 24px; border-radius: 6px; text-align: center; border: 2px solid var(--el-border-color); }
 .adj-card.match { border-color: #67c23a; }
-.adj-label { font-size: 13px; color: var(--el-text-color-secondary); }
+.adj-label { font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }
 .adj-value { font-size: 20px; font-weight: 700; }
 .adj-arrow { font-size: 24px; display: flex; align-items: center; }
 .diff-tag { width: 100%; text-align: center; }

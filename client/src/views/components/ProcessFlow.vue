@@ -265,7 +265,7 @@ function auxVariant(node: FlowNode, index: number) {
 
 .flow-connector__arrow {
   color: var(--wb-text-3);
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   margin-left: -2px;
 }
 
@@ -318,7 +318,7 @@ function auxVariant(node: FlowNode, index: number) {
   width: 22px;
   height: 22px;
   border-radius: 6px;
-  font-size: 14px;
+  font-size: var(--cw-text-base);
 }
 
 .flow-branch__title {
@@ -342,7 +342,7 @@ function auxVariant(node: FlowNode, index: number) {
 }
 
 .flow-aux__title {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   font-weight: 600;
   color: var(--wb-text-2);
 }

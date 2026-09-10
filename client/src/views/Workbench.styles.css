@@ -54,7 +54,7 @@
 }
 
 .security-notice__title {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   font-weight: 600;
   color: var(--wb-text);
   margin-bottom: 3px;
@@ -63,7 +63,7 @@
 .security-notice__info {
   display: flex;
   gap: 14px;
-  font-size: 12px;
+  font-size: var(--cw-text-sm);
   color: var(--wb-text-3);
 }
 
@@ -123,7 +123,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 14px;
+  font-size: var(--cw-text-base);
   font-weight: 700;
   color: #fff;
   background: linear-gradient(135deg, var(--mint-500), var(--mint-700));
@@ -136,7 +136,7 @@
 
 .wb-greet__title {
   margin: 0;
-  font-size: 16px;
+  font-size: var(--cw-text-lg);
   font-weight: 600;
   line-height: 1.3;
   color: var(--wb-text);
@@ -147,7 +147,7 @@
 
 .wb-greet__sub {
   margin: 2px 0 0;
-  font-size: 12px;
+  font-size: var(--cw-text-sm);
   color: var(--wb-text-3);
 }
 
@@ -158,6 +158,64 @@
   flex-shrink: 0;
 }
 
+/* ========== 常用功能：经典卡片按钮样式 ========== */
+.wb-quick .app-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
+  gap: 10px 8px;
+}
+
+.wb-quick .app-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 4px 8px;
+  border: 1px solid var(--wb-line);
+  border-radius: var(--wb-radius);
+  background: var(--wb-canvas);
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  min-width: 0;
+  transition: all 0.16s ease;
+}
+
+.wb-quick .app-tile:hover {
+  background: var(--wb-card);
+  border-color: var(--border-brand);
+  box-shadow: var(--wb-shadow-hover);
+  transform: translateY(-2px);
+}
+
+.wb-quick .app-tile__icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  flex-shrink: 0;
+  transition: transform 0.16s ease;
+}
+
+.wb-quick .app-tile:hover .app-tile__icon {
+  transform: scale(1.06);
+}
+
+.wb-quick .app-tile__label {
+  font-size: var(--cw-text-sm);
+  line-height: 1.3;
+  color: var(--wb-text);
+  text-align: center;
+  width: 100%;
+  max-width: 100%;
+  white-space: normal;
+  font-weight: 500;
+}
+
 /* ========== 通用组件卡（基元见 design-tokens/workbench.css） ========== */
 .wb-card + .wb-card,
 .wb-card + .wb-row,
@@ -165,10 +223,10 @@
   margin-top: var(--wb-gap);
 }
 
-/* ========== 两列：待办 + 经营数据 ========== */
+/* ========== 两列：待办 + 经营数据（右侧经营数据拓宽） ========== */
 .wb-row {
   display: grid;
-  grid-template-columns: minmax(300px, 5fr) minmax(0, 7fr);
+  grid-template-columns: minmax(260px, 4fr) minmax(0, 8fr);
   gap: var(--wb-gap);
   align-items: stretch;
 }
@@ -229,7 +287,7 @@
 }
 
 .todo-row__title {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   font-weight: 500;
   color: var(--wb-text);
   white-space: nowrap;
@@ -253,7 +311,7 @@
 .todo-row__count {
   min-width: 26px;
   text-align: right;
-  font-size: 14px;
+  font-size: var(--cw-text-base);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   color: var(--mint-700);
@@ -276,7 +334,7 @@
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  font-size: 12px;
+  font-size: var(--cw-text-sm);
   color: var(--wb-text-3);
   flex-shrink: 0;
   transition: color 0.14s ease;
@@ -287,7 +345,7 @@
 }
 
 .todo-row__go .el-icon {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
 }
 
 /* 指标卡：灰底瓷贴嵌在白卡内，悬停浮白，形成「卡 > 贴 > 图标」三级 */
@@ -320,7 +378,7 @@
 
 /* 主数据卡（经营数据）再抬一级：数值更醒目 */
 .wb-card--raised .kpi-card__value {
-  font-size: 17px;
+  font-size: 15px;
 }
 
 .kpi-card__icon {
@@ -346,7 +404,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--cw-text-sm);
   color: var(--wb-text-3);
   white-space: nowrap;
   overflow: hidden;
@@ -368,7 +426,7 @@
 }
 
 .kpi-card__value {
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 700;
   line-height: 1.2;
   color: var(--wb-text);
@@ -386,11 +444,13 @@
   text-overflow: ellipsis;
 }
 
-/* ========== 财务数据组件 ========== */
+/* ========== 财务数据组件（底部四卡：趋势 / 现金银行 / 近期凭证 / Top5） ========== */
 .wb-widgets {
   display: grid;
-  grid-template-columns: minmax(0, 8fr) minmax(280px, 4fr);
+  grid-template-columns: minmax(0, 1.3fr) minmax(380px, 1fr);
+  grid-auto-rows: auto;
   gap: var(--wb-gap);
+  align-items: stretch;
 }
 
 .wb-trend,
@@ -398,310 +458,556 @@
   grid-column: 1;
 }
 
-.wb-activity,
-.wb-cash {
+.wb-cash,
+.wb-activity {
   grid-column: 2;
 }
 
-.chart-legend {
+.wb-widgets .wb-card {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
+  flex-direction: column;
+  min-height: 0;
 }
 
-.legend-item {
+/* ---- ① 趋势卡：摘要条 ---- */
+.trend-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.trend-stat {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px 8px 14px;
+  border-radius: var(--wb-radius);
+  background: var(--wb-canvas);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.trend-stat::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--mint-500);
+}
+
+.trend-stat.is-expense::before { background: var(--warning); }
+.trend-stat.is-surplus::before { background: var(--blue-500); }
+
+.trend-stat__label {
+  font-size: 11.5px;
+  color: var(--wb-text-3);
+  white-space: nowrap;
+}
+
+.trend-stat__value {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--wb-text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.trend-stat__value.negative {
+  color: var(--danger);
+}
+
+.trend-stat__delta {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  font-size: 12px;
-  color: var(--wb-text-2);
+  gap: 3px;
+  font-size: 11px;
+  color: var(--wb-text-3);
+  white-space: nowrap;
 }
 
-.legend-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 2px;
-  display: inline-block;
-}
+.trend-stat__delta.up { color: var(--success); }
+.trend-stat__delta.down { color: var(--danger); }
+.trend-stat.is-expense .trend-stat__delta.up { color: var(--danger); }
+.trend-stat.is-expense .trend-stat__delta.down { color: var(--success); }
 
-.legend-dot.income { background: #12c7ae; }
-.legend-dot.expense { background: #f4a52e; }
-.legend-dot.fee { background: #f2545b; }
-.legend-dot.cost { background: #9c8ff5; }
-.legend-dot.surplus { background: #2e84f5; }
+.trend-chart-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
 
 .chart-container {
   width: 100%;
-  height: 260px;
+  height: 232px;
 }
 
-/* 科目活跃度 */
-.activity-list {
+.chart-empty {
+  position: absolute;
+  inset: 0 0 34px;
   display: flex;
   flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: var(--cw-text-sm);
+  color: var(--wb-text-3);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0.85));
+  pointer-events: none;
+}
+
+.chart-empty__icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--blue-600);
+  background: var(--blue-50);
+}
+
+.chart-empty__icon svg {
+  fill: none !important;
+  stroke: currentColor;
+}
+
+/* ---- ② 现金银行结构 ---- */
+.cash-total-bar {
+  padding: 10px 12px 9px;
+  border-radius: var(--wb-radius);
+  background: linear-gradient(135deg, #fff8ea 0%, #ffffff 60%);
+  border: 1px solid #f6e6c4;
+  margin-bottom: 10px;
+}
+
+.cash-total-bar__main {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
   gap: 12px;
+  margin-bottom: 8px;
 }
 
-.activity-item {
+.cash-total-bar__label {
+  font-size: var(--cw-text-sm);
+  color: var(--wb-text-2);
+}
+
+.cash-total-bar__value {
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--wb-text);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.2px;
+}
+
+.cash-total-bar__value.negative {
+  color: var(--danger);
+}
+
+.cash-total-bar__track {
+  display: flex;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--wb-line);
+  gap: 2px;
+}
+
+.cash-total-bar__seg {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  transition: width 0.5s ease;
+}
+
+.cash-total-bar__legend {
+  display: flex;
+  gap: 14px;
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--wb-text-2);
+}
+
+.cash-total-bar__legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.cash-total-bar__legend-item i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.cash-groups {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+}
+
+.cash-group {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  border: 1px solid var(--wb-line);
+  border-radius: var(--wb-radius);
+  padding: 10px 10px 8px;
+  min-width: 0;
+  background: #fff;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
 }
 
-.activity-header {
+.cash-group:hover {
+  border-color: var(--border-brand);
+  box-shadow: var(--wb-shadow-hover);
+}
+
+.cash-group__head {
   display: flex;
+  align-items: baseline;
   justify-content: space-between;
   gap: 8px;
-  font-size: 12.5px;
 }
 
-.activity-name {
+.cash-group__name {
+  font-size: var(--cw-text-sm);
+  font-weight: 600;
   color: var(--wb-text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.activity-amount {
-  color: var(--wb-text-2);
+.cash-group__total {
+  font-size: var(--cw-text-base);
+  font-weight: 700;
+  color: var(--mint-700);
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
 }
 
-.activity-bar {
+.cash-group__total.negative {
+  color: var(--danger);
+}
+
+.cash-group__pie {
+  display: flex;
+  justify-content: center;
+  margin: 2px 0 4px;
+}
+
+.cash-pie {
+  width: 100%;
+  height: 150px;
+}
+
+.cash-group__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 96px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.cash-item {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto 38px;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px;
+  border-radius: 5px;
+  font-size: 11.5px;
+  line-height: 1.3;
+}
+
+.cash-item:hover {
+  background: var(--wb-canvas);
+}
+
+.cash-item__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.cash-item__name {
+  color: var(--wb-text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cash-item__value {
+  color: var(--wb-text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.cash-item__value.negative {
+  color: var(--danger);
+}
+
+.cash-item__pct {
+  text-align: right;
+  color: var(--wb-text-3);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+
+.cash-item--empty {
+  grid-template-columns: 1fr;
+  color: var(--wb-text-3);
+  justify-items: center;
+  padding: 10px 0;
+}
+
+/* ---- ③ 近期凭证：日期徽标列表 ---- */
+.voucher-feed {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.voucher-card {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 10px 7px 8px;
+  border: 1px solid var(--wb-line);
+  border-left-width: 3px;
+  border-left-color: var(--wb-line-strong);
+  border-radius: var(--wb-radius);
+  background: #fff;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease, background 0.16s ease;
+}
+
+.voucher-card:hover {
+  background: var(--wb-canvas);
+  border-color: var(--border-brand);
+  border-left-color: var(--mint-500);
+  box-shadow: var(--wb-shadow-hover);
+  transform: translateY(-1px);
+}
+
+.voucher-card.is-draft { border-left-color: var(--warning); }
+.voucher-card.is-audited { border-left-color: var(--blue-500); }
+.voucher-card.is-posted { border-left-color: var(--mint-500); }
+
+.voucher-card__date {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 40px;
+  border-radius: 8px;
+  background: var(--wb-canvas);
+  color: var(--wb-text);
+  line-height: 1;
+}
+
+.voucher-card__date b {
+  font-size: var(--cw-text-lg);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.voucher-card__date small {
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--wb-text-3);
+}
+
+.voucher-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.voucher-card__line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.voucher-card__no {
+  font-size: var(--cw-text-base);
+  font-weight: 600;
+  color: var(--wb-text);
+  white-space: nowrap;
+}
+
+.voucher-card__status {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--wb-canvas);
+  color: var(--wb-text-2);
+  white-space: nowrap;
+}
+
+.voucher-card.is-draft .voucher-card__status { background: var(--warning-soft); color: #b26a05; }
+.voucher-card.is-audited .voucher-card__status { background: var(--info-soft); color: var(--blue-700); }
+.voucher-card.is-posted .voucher-card__status { background: var(--success-soft); color: var(--mint-700); }
+
+.voucher-card__abstract {
+  font-size: var(--cw-text-sm);
+  color: var(--wb-text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.voucher-card__amount {
+  font-size: var(--cw-text-base);
+  font-weight: 700;
+  color: var(--wb-text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ---- ④ Top 5 排名榜 ---- */
+.rank-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  justify-content: space-evenly;
+}
+
+.rank-item {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) 40px;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 6px 6px;
+  border-radius: var(--wb-radius);
+  transition: background 0.16s ease;
+}
+
+.rank-item:hover {
+  background: var(--wb-canvas);
+}
+
+.rank-item__badge {
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--cw-text-sm);
+  font-weight: 700;
+  color: var(--wb-text-2);
+  background: var(--wb-canvas);
+  font-variant-numeric: tabular-nums;
+}
+
+.rank-item.is-rank-1 .rank-item__badge { color: #fff; background: linear-gradient(135deg, #f7b955, #ef8f1b); box-shadow: 0 2px 6px rgba(244, 165, 46, 0.35); }
+.rank-item.is-rank-2 .rank-item__badge { color: #fff; background: linear-gradient(135deg, #a9b6c2, #7f8f9e); }
+.rank-item.is-rank-3 .rank-item__badge { color: #fff; background: linear-gradient(135deg, #d8a37a, #b97a4e); }
+
+.rank-item__body {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.rank-item__line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.rank-item__name {
+  font-size: var(--cw-text-sm);
+  font-weight: 500;
+  color: var(--wb-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rank-item__name small {
+  margin-left: 6px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--wb-text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.rank-item__amount {
+  font-size: var(--cw-text-sm);
+  font-weight: 600;
+  color: var(--wb-text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.rank-item__track {
+  display: block;
   height: 6px;
   border-radius: 3px;
   background: var(--wb-canvas);
   overflow: hidden;
 }
 
-.activity-bar-fill {
+.rank-item__fill {
   display: block;
   height: 100%;
   border-radius: 3px;
-  background: linear-gradient(90deg, var(--mint-400), var(--mint-600));
-  transition: width 0.4s ease;
+  background: linear-gradient(90deg, #9fe6da, var(--mint-500));
+  transition: width 0.5s ease;
 }
 
-/* 近期凭证 */
-.voucher-list {
-  display: flex;
-  flex-direction: column;
-}
+.rank-item.is-rank-1 .rank-item__fill { background: linear-gradient(90deg, #2dcfb5, #0a8576); }
+.rank-item.is-rank-2 .rank-item__fill { background: linear-gradient(90deg, #79b4ff, #2e84f5); }
+.rank-item.is-rank-3 .rank-item__fill { background: linear-gradient(90deg, #c2b8ff, #9c8ff5); }
 
-.voucher-table-head,
-.voucher-item {
-  display: grid;
-  grid-template-columns: 56px 92px minmax(0, 1fr) 68px 120px;
-  gap: 10px;
-  align-items: center;
-  padding: 8px 6px;
-}
-
-.voucher-table-head {
-  font-size: 12px;
-  color: var(--wb-text-3);
-  border-bottom: 1px solid var(--wb-line);
-}
-
-.voucher-table-head span:last-child,
-.voucher-amount {
+.rank-item__share {
   text-align: right;
-}
-
-.voucher-item {
-  border: none;
-  border-bottom: 1px solid var(--wb-line);
-  background: transparent;
-  text-align: left;
-  font-size: 13px;
-  color: var(--wb-text);
-  cursor: pointer;
-  transition: background 0.14s ease;
-}
-
-.voucher-item:last-of-type {
-  border-bottom: none;
-}
-
-.voucher-item:hover {
-  background: var(--wb-canvas);
-}
-
-.voucher-date {
-  color: var(--wb-text-3);
-  font-variant-numeric: tabular-nums;
-}
-
-.voucher-no {
+  font-size: var(--cw-text-sm);
   font-weight: 600;
-  color: var(--wb-text);
-}
-
-.voucher-abstract {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   color: var(--wb-text-2);
-}
-
-.voucher-status {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  height: 20px;
-  padding: 0 8px;
-  border-radius: 4px;
-  font-size: 11.5px;
-  background: var(--wb-canvas);
-  color: var(--wb-text-2);
-}
-
-.voucher-status.draft {
-  background: var(--warning-soft);
-  color: #b26a05;
-}
-
-.voucher-status.audited {
-  background: var(--info-soft);
-  color: var(--blue-700);
-}
-
-.voucher-status.posted {
-  background: var(--success-soft);
-  color: var(--mint-700);
-}
-
-.voucher-amount {
-  font-weight: 600;
   font-variant-numeric: tabular-nums;
-}
-
-/* 现金银行结构 */
-.cash-structure {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.cash-group {
-  border: 1px solid var(--wb-line);
-  border-radius: var(--wb-radius);
-  padding: 10px 12px 12px;
-}
-
-.cash-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  margin-bottom: 8px;
-}
-
-.cash-name {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--wb-text);
-}
-
-.cash-total {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--mint-700);
-  font-variant-numeric: tabular-nums;
-}
-
-.cash-body {
-  display: grid;
-  grid-template-columns: 120px minmax(0, 1fr);
-  gap: 10px;
-  align-items: center;
-}
-
-.cash-pie-wrap {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.cash-pie {
-  width: 120px;
-  height: 120px;
-}
-
-.cash-children {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  max-height: 132px;
-  overflow-y: auto;
-  padding-right: 2px;
-  scrollbar-width: thin;
-}
-
-.cash-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-}
-
-.cash-row-name {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  color: var(--wb-text-2);
-}
-
-.cash-row-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 2px;
-  flex-shrink: 0;
-}
-
-.cash-row-name span {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.cash-row-value {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-  flex-shrink: 0;
-  font-variant-numeric: tabular-nums;
-}
-
-.cash-row-value strong {
-  color: var(--wb-text);
-  font-weight: 600;
-}
-
-.cash-row-value em {
-  font-style: normal;
-  font-size: 11px;
-  color: var(--wb-text-3);
-}
-
-.cash-row-value.negative strong,
-.cash-row-value.negative em {
-  color: var(--danger);
-}
-
-.cash-empty {
-  font-size: 12px;
-  color: var(--wb-text-3);
 }
 
 /* ========== 自定义常用功能对话框 ========== */
 .fav-editor__hint {
   margin: 0 0 12px;
-  font-size: 12px;
+  font-size: var(--cw-text-sm);
   color: var(--wb-text-3);
 }
 
@@ -718,7 +1024,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   font-weight: 600;
   color: var(--wb-text);
   margin-bottom: 6px;
@@ -739,12 +1045,18 @@
 .wb-footer {
   margin-top: 24px;
   text-align: center;
-  font-size: 12px;
+  font-size: var(--cw-text-sm);
   color: var(--wb-text-3);
 }
 
 /* ========== 响应式 ========== */
 @media (max-width: 1440px) {
+  .kpi-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1100px) {
   .kpi-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -791,13 +1103,8 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .voucher-table-head,
-  .voucher-item {
-    grid-template-columns: 52px 80px minmax(0, 1fr) 100px;
-  }
-
-  .voucher-status {
-    display: none;
+  .trend-summary {
+    grid-template-columns: 1fr;
   }
 
   .fav-editor__items {
@@ -810,8 +1117,12 @@
     grid-template-columns: 1fr;
   }
 
-  .cash-body {
+  .cash-groups {
     grid-template-columns: 1fr;
+  }
+
+  .voucher-card__abstract {
+    display: none;
   }
 
   .security-notice {

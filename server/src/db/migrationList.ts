@@ -136,6 +136,34 @@ import {
   down as addVoucherReversalDown,
 } from './migrations/20260904_add_voucher_reversal.js'
 import {
+  up as addForeignCurrencyUp,
+  down as addForeignCurrencyDown,
+} from './migrations/20260905_add_foreign_currency.js'
+import {
+  up as alignStandardReportBoldUp,
+  down as alignStandardReportBoldDown,
+} from './migrations/20260906_align_standard_report_bold.js'
+import {
+  up as centerStandardReportHeaderDateUp,
+  down as centerStandardReportHeaderDateDown,
+} from './migrations/20260906_center_standard_report_header_date.js'
+import {
+  up as moveStandardReportHeaderLabelUp,
+  down as moveStandardReportHeaderLabelDown,
+} from './migrations/20260906_move_standard_report_header_label.js'
+import {
+  up as currencyBeginEndRateUp,
+  down as currencyBeginEndRateDown,
+} from './migrations/20260908_currency_begin_end_rate.js'
+import {
+  up as fxRevaluationRunsUp,
+  down as fxRevaluationRunsDown,
+} from './migrations/20260908_fx_revaluation_runs.js'
+import {
+  up as addQuantityAccountingUp,
+  down as addQuantityAccountingDown,
+} from './migrations/20260909_add_quantity_accounting.js'
+import {
   up as fixBalanceSheetTemplateFormulasUp,
   down as fixBalanceSheetTemplateFormulasDown,
 } from './migrations/20260531_fix_balance_sheet_template_formulas.js'
@@ -1972,5 +2000,47 @@ export const migrations: Migration[] = [
     name: 'add_voucher_reversal',
     up: addVoucherReversalUp,
     down: addVoucherReversalDown,
+  },
+  {
+    version: 114,
+    name: 'add_foreign_currency',
+    up: addForeignCurrencyUp,
+    down: addForeignCurrencyDown,
+  },
+  {
+    version: 115,
+    name: 'align_standard_report_bold',
+    up: alignStandardReportBoldUp,
+    down: alignStandardReportBoldDown,
+  },
+  {
+    version: 116,
+    name: 'center_standard_report_header_date',
+    up: centerStandardReportHeaderDateUp,
+    down: centerStandardReportHeaderDateDown,
+  },
+  {
+    version: 117,
+    name: 'move_standard_report_header_label',
+    up: moveStandardReportHeaderLabelUp,
+    down: moveStandardReportHeaderLabelDown,
+  },
+  {
+    version: 118,
+    name: 'currency_begin_end_rate',
+    up: currencyBeginEndRateUp,
+    down: currencyBeginEndRateDown,
+  },
+  {
+    version: 119,
+    name: 'fx_revaluation_runs',
+    up: fxRevaluationRunsUp,
+    down: fxRevaluationRunsDown,
+  },
+  {
+    version: 120,
+    name: 'add_quantity_accounting',
+    up: addQuantityAccountingUp,
+    down: addQuantityAccountingDown,
   },
 ]

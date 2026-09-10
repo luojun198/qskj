@@ -31,6 +31,10 @@ describe('AccountService', () => {
         is_bank INTEGER DEFAULT 0,
         allow_delete INTEGER DEFAULT 1,
         no_negative INTEGER DEFAULT 0,
+        is_foreign INTEGER DEFAULT 0,
+        currency_code TEXT,
+        is_quantity INTEGER DEFAULT 0,
+        quantity_unit TEXT,
         created_at TEXT,
         updated_at TEXT
       );

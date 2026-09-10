@@ -368,7 +368,7 @@ onUnmounted(() => {
 }
 
 .task-status {
-  font-size: 14px;
+  font-size: var(--cw-text-base);
   padding: 4px 12px;
   border-radius: 4px;
 }
@@ -402,7 +402,7 @@ onUnmounted(() => {
 
 .task-detail p {
   margin: 8px 0;
-  font-size: 14px;
+  font-size: var(--cw-text-base);
 }
 
 .success-message {

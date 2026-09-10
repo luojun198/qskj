@@ -1,6 +1,6 @@
 <template>
   <div class="reinit-panel">
-    <div class="reinit-toolbar">
+    <div class="reinit-toolbar toolbar">
       <el-radio-group v-model="mode" size="small" class="reinit-toolbar__mode">
         <el-radio value="voucher_only">仅清理凭证</el-radio>
         <el-radio value="full_reinit">重新初始化</el-radio>
@@ -32,7 +32,7 @@
       </el-tooltip>
     </div>
 
-    <div v-if="mode === 'full_reinit'" class="reinit-extra">
+    <div v-if="mode === 'full_reinit'" class="reinit-extra toolbar">
       <div class="reinit-extra__row">
         <span class="reinit-extra__label">科目级数</span>
         <el-input-number
@@ -66,21 +66,15 @@
           <el-option label="新企业会计准则" value="enterprise" />
         </el-select>
         <span class="reinit-extra__label">标准模板</span>
-        <el-select
+        <StandardTemplateSelect
           v-model="standardTemplateId"
           size="small"
           class="reinit-extra__template"
           placeholder="请选择标准模板"
           :loading="templatesLoading"
-          filterable
-        >
-          <el-option
-            v-for="item in filteredTemplates"
-            :key="item.id"
-            :label="item.name"
-            :value="item.id"
-          />
-        </el-select>
+          :templates="filteredTemplates"
+          :groups="templateGroups"
+        />
       </div>
       <div class="reinit-extra__preserve">
         <span class="reinit-extra__label">保留项</span>
@@ -150,6 +144,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { QuestionFilled } from '@element-plus/icons-vue'
 import TaskProgressDialog from '@/components/task/TaskProgressDialog.vue'
+import StandardTemplateSelect from '@/components/system/StandardTemplateSelect.vue'
 import { useAsyncBatchTask } from '@/composables/useAsyncBatchTask'
 import { showError, showOperationError } from '@/composables/useMessage'
 import {
@@ -178,6 +173,7 @@ const accountCodeLengths = ref<number[]>([4, 2, 2, 2, 2, 2, 2, 2, 2, 2])
 const accountingStandard = ref<'government' | 'small_business' | 'enterprise'>('government')
 const standardTemplateId = ref('')
 const templates = ref<StandardTemplateItem[]>([])
+const templateGroups = ref<string[]>([])
 const templatesLoading = ref(false)
 const preview = ref<ReinitPreviewResult | null>(null)
 const previewLoading = ref(false)
@@ -209,9 +205,10 @@ const modeDesc = computed(() =>
     : '重选准则与标准模板并重导科目，须设置科目级数/长度；期初将清空；须重新选择建账日期；可勾选保留项。'
 )
 
+// 以后端目录（catalog.json）声明的准则为准，未声明时按名称推断；auto 模板对任何准则都可选
 const filteredTemplates = computed(() => {
   return templates.value.filter(item => {
-    const inferred = inferAccountingStandardFromTemplateName(item.name)
+    const inferred = item.inferredStandard || inferAccountingStandardFromTemplateName(item.name)
     if (inferred === 'auto') return true
     return inferred === accountingStandard.value
   })
@@ -266,6 +263,7 @@ async function loadTemplates() {
   try {
     const res = await fetchStandardTemplates()
     templates.value = res.data || []
+    templateGroups.value = res.groups || []
   } catch (error) {
     showOperationError('加载标准模板', error)
   } finally {
@@ -446,7 +444,7 @@ onMounted(() => {
 }
 
 .reinit-toolbar__help {
-  font-size: 15px;
+  font-size: var(--cw-text-lg);
   color: var(--el-text-color-placeholder);
   cursor: help;
   flex-shrink: 0;

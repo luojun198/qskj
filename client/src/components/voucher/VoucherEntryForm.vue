@@ -67,6 +67,9 @@
             <span class="meta-label">分录数</span>
             <span class="meta-text">{{ form.entries.length }}</span>
           </div>
+          <div class="meta-item">
+            <AccountDisplayModeSwitch />
+          </div>
         </div>
       </div>
 
@@ -95,7 +98,13 @@
             @dblclick="handleBalanceDisplayDblclick"
           >
             <span class="balance-account"
-              >{{ currentEntryBalance.code }} {{ currentEntryBalance.name }}</span
+              >{{
+                getSuggestionLabel({
+                  id: currentEntryBalance.id,
+                  code: currentEntryBalance.code,
+                  name: currentEntryBalance.name,
+                })
+              }}</span
             >
             <span class="balance-label">科目余额：</span>
             <span
@@ -159,10 +168,15 @@
             </template>
           </el-table-column>
 
-          <el-table-column label="会计科目" min-width="240">
+          <el-table-column
+            label="会计科目"
+            :min-width="accountDisplayMode === 'full' ? 320 : 240"
+          >
             <template #default="{ row }">
               <div v-if="isReadonly" class="entry-account-readonly" @click="setCurrentEntry(row)">
-                <span class="entry-readonly-text">{{ getAccountDisplay(row) }}</span>
+                <span class="entry-readonly-text" :title="getAccountDisplay(row)">{{
+                  getAccountDisplay(row)
+                }}</span>
                 <template v-if="getEntryAuxCategories(row).length">
                   <span
                     v-for="cat in getEntryAuxCategories(row)"
@@ -182,7 +196,9 @@
                 title="出纳生成的凭证：现金/银行科目已锁定，只能修改对方（挂账）科目"
                 @click="setCurrentEntry(row)"
               >
-                <span class="entry-readonly-text">{{ getAccountDisplay(row) }}</span>
+                <span class="entry-readonly-text" :title="getAccountDisplay(row)">{{
+                  getAccountDisplay(row)
+                }}</span>
                 <el-tag size="small" type="info" effect="plain" style="margin-left: 6px">
                   现金科目·锁定
                 </el-tag>
@@ -220,7 +236,7 @@
                           fontStyle: item.isParent ? 'italic' : 'normal',
                         }"
                       >
-                        {{ item.code }} {{ item.name }}
+                        {{ getSuggestionLabel(item) }}
                       </span>
                       <template v-if="item.auxNames?.length && !item.isParent">
                         <span
@@ -245,53 +261,170 @@
 
           <el-table-column label="借方金额" width="148" align="right">
             <template #default="{ row }">
-              <div v-if="isReadonly" class="entry-readonly-amount" @click="setCurrentEntry(row)">
-                <span
-                  v-if="row.debit_amount"
-                  :class="{ 'entry-amount-red': Number(row.debit_amount) < 0 }"
-                  >{{ formatMoney(row.debit_amount) }}</span
-                >
+              <div
+                v-if="isReadonly"
+                class="entry-readonly-amount"
+                :class="{ 'is-foreign': isForeignRow(row) || isQuantityRow(row) }"
+                :title="amountCellTitle(row, 'debit')"
+                @click="onReadonlyAmountClick(row, 'debit', $event)"
+              >
+                <div v-if="row.debit_amount" class="amount-line">
+                  <span :class="{ 'entry-amount-red': Number(row.debit_amount) < 0 }">{{
+                    formatMoney(row.debit_amount)
+                  }}</span>
+                  <span v-if="row.foreign_amount" class="foreign-amount-inline">
+                    {{ row.currency_code || '原币' }} {{ formatMoney(Number(row.foreign_amount) || 0) }}
+                  </span>
+                  <span v-else-if="row.quantity" class="foreign-amount-inline">
+                    {{ quantityInlineText(row) }}
+                  </span>
+                </div>
               </div>
-              <el-input-number
-                v-else
-                v-model="row.debit_amount"
-                :precision="2"
-                :controls="false"
-                :class="{ 'entry-amount-red': Number(row.debit_amount) < 0 }"
-                :disabled="isLockedCashRow(row)"
-                size="small"
-                class="amount-input"
-                @focus="setCurrentEntry(row)"
-                @change="onAmountChange(row, 'debit')"
-                @keydown.enter="onDebitEnter(row, $event)"
-                @keydown="onDebitKeydown(row, $event)"
-              />
+              <!-- 外币科目：本位币只读，点击 / 聚焦弹出气泡录入原币与汇率 -->
+              <div
+                v-else-if="isForeignRow(row)"
+                class="foreign-amount-cell"
+                :class="{
+                  'is-active': isForeignPopoverFor(row, 'debit'),
+                  'is-disabled': isLockedCashRow(row),
+                }"
+                :tabindex="isLockedCashRow(row) ? -1 : 0"
+                :title="amountCellTitle(row, 'debit')"
+                @focus="onForeignCellFocus(row, 'debit', $event)"
+                @click="onForeignCellFocus(row, 'debit', $event)"
+                @keydown="onForeignCellKeydown(row, 'debit', $event)"
+              >
+                <div v-if="row.debit_amount" class="amount-line">
+                  <span :class="{ 'entry-amount-red': Number(row.debit_amount) < 0 }">{{
+                    formatMoney(row.debit_amount)
+                  }}</span>
+                  <span v-if="row.foreign_amount" class="foreign-amount-inline">
+                    {{ row.currency_code }} {{ formatMoney(Number(row.foreign_amount) || 0) }}
+                  </span>
+                </div>
+              </div>
+              <!-- 数量核算科目：金额只读，点击 / 聚焦弹出气泡录入数量与单价/金额 -->
+              <div
+                v-else-if="isQuantityRow(row)"
+                class="foreign-amount-cell"
+                :class="{
+                  'is-active': isQuantityPopoverFor(row, 'debit'),
+                  'is-disabled': isLockedCashRow(row),
+                }"
+                :tabindex="isLockedCashRow(row) ? -1 : 0"
+                :title="amountCellTitle(row, 'debit')"
+                @focus="onQuantityCellFocus(row, 'debit', $event)"
+                @click="onQuantityCellFocus(row, 'debit', $event)"
+                @keydown="onQuantityCellKeydown(row, 'debit', $event)"
+              >
+                <div v-if="row.debit_amount" class="amount-line">
+                  <span :class="{ 'entry-amount-red': Number(row.debit_amount) < 0 }">{{
+                    formatMoney(row.debit_amount)
+                  }}</span>
+                  <span v-if="row.quantity" class="foreign-amount-inline">
+                    {{ quantityInlineText(row) }}
+                  </span>
+                </div>
+              </div>
+              <template v-else>
+                <el-input-number
+                  v-model="row.debit_amount"
+                  :precision="2"
+                  :controls="false"
+                  :class="{ 'entry-amount-red': Number(row.debit_amount) < 0 }"
+                  :disabled="isLockedCashRow(row)"
+                  size="small"
+                  class="amount-input"
+                  @focus="setCurrentEntry(row)"
+                  @change="onAmountChange(row, 'debit')"
+                  @keydown.enter="onDebitEnter(row, $event)"
+                  @keydown="onDebitKeydown(row, $event)"
+                />
+              </template>
             </template>
           </el-table-column>
 
           <el-table-column label="贷方金额" width="148" align="right">
             <template #default="{ row }">
-              <div v-if="isReadonly" class="entry-readonly-amount" @click="setCurrentEntry(row)">
-                <span
-                  v-if="row.credit_amount"
-                  :class="{ 'entry-amount-red': Number(row.credit_amount) < 0 }"
-                  >{{ formatMoney(row.credit_amount) }}</span
-                >
+              <div
+                v-if="isReadonly"
+                class="entry-readonly-amount"
+                :class="{ 'is-foreign': isForeignRow(row) || isQuantityRow(row) }"
+                :title="amountCellTitle(row, 'credit')"
+                @click="onReadonlyAmountClick(row, 'credit', $event)"
+              >
+                <div v-if="row.credit_amount" class="amount-line">
+                  <span :class="{ 'entry-amount-red': Number(row.credit_amount) < 0 }">{{
+                    formatMoney(row.credit_amount)
+                  }}</span>
+                  <span v-if="row.foreign_amount" class="foreign-amount-inline">
+                    {{ row.currency_code || '原币' }} {{ formatMoney(Number(row.foreign_amount) || 0) }}
+                  </span>
+                  <span v-else-if="row.quantity" class="foreign-amount-inline">
+                    {{ quantityInlineText(row) }}
+                  </span>
+                </div>
               </div>
-              <el-input-number
-                v-else
-                v-model="row.credit_amount"
-                :precision="2"
-                :controls="false"
-                :class="{ 'entry-amount-red': Number(row.credit_amount) < 0 }"
-                :disabled="isLockedCashRow(row)"
-                size="small"
-                class="amount-input"
-                @focus="setCurrentEntry(row)"
-                @change="onAmountChange(row, 'credit')"
-                @keydown.enter="onCreditEnter(row, $event)"
-                @keydown="onCreditKeydown(row, $event)"
-              />
+              <div
+                v-else-if="isForeignRow(row)"
+                class="foreign-amount-cell"
+                :class="{
+                  'is-active': isForeignPopoverFor(row, 'credit'),
+                  'is-disabled': isLockedCashRow(row),
+                }"
+                :tabindex="isLockedCashRow(row) ? -1 : 0"
+                :title="amountCellTitle(row, 'credit')"
+                @focus="onForeignCellFocus(row, 'credit', $event)"
+                @click="onForeignCellFocus(row, 'credit', $event)"
+                @keydown="onForeignCellKeydown(row, 'credit', $event)"
+              >
+                <div v-if="row.credit_amount" class="amount-line">
+                  <span :class="{ 'entry-amount-red': Number(row.credit_amount) < 0 }">{{
+                    formatMoney(row.credit_amount)
+                  }}</span>
+                  <span v-if="row.foreign_amount" class="foreign-amount-inline">
+                    {{ row.currency_code }} {{ formatMoney(Number(row.foreign_amount) || 0) }}
+                  </span>
+                </div>
+              </div>
+              <!-- 数量核算科目：金额只读，点击 / 聚焦弹出气泡录入数量与单价/金额 -->
+              <div
+                v-else-if="isQuantityRow(row)"
+                class="foreign-amount-cell"
+                :class="{
+                  'is-active': isQuantityPopoverFor(row, 'credit'),
+                  'is-disabled': isLockedCashRow(row),
+                }"
+                :tabindex="isLockedCashRow(row) ? -1 : 0"
+                :title="amountCellTitle(row, 'credit')"
+                @focus="onQuantityCellFocus(row, 'credit', $event)"
+                @click="onQuantityCellFocus(row, 'credit', $event)"
+                @keydown="onQuantityCellKeydown(row, 'credit', $event)"
+              >
+                <div v-if="row.credit_amount" class="amount-line">
+                  <span :class="{ 'entry-amount-red': Number(row.credit_amount) < 0 }">{{
+                    formatMoney(row.credit_amount)
+                  }}</span>
+                  <span v-if="row.quantity" class="foreign-amount-inline">
+                    {{ quantityInlineText(row) }}
+                  </span>
+                </div>
+              </div>
+              <template v-else>
+                <el-input-number
+                  v-model="row.credit_amount"
+                  :precision="2"
+                  :controls="false"
+                  :class="{ 'entry-amount-red': Number(row.credit_amount) < 0 }"
+                  :disabled="isLockedCashRow(row)"
+                  size="small"
+                  class="amount-input"
+                  @focus="setCurrentEntry(row)"
+                  @change="onAmountChange(row, 'credit')"
+                  @keydown.enter="onCreditEnter(row, $event)"
+                  @keydown="onCreditKeydown(row, $event)"
+                />
+              </template>
             </template>
           </el-table-column>
 
@@ -360,6 +493,176 @@
           </div>
         </div>
       </div>
+
+      <!-- 外币录入气泡：挂在触发的借/贷金额格上 -->
+      <el-popover
+        :visible="foreignPopover.visible"
+        :virtual-ref="foreignPopover.triggerEl"
+        virtual-triggering
+        placement="bottom-end"
+        :width="300"
+        :show-arrow="true"
+        :teleported="true"
+        :persistent="false"
+        popper-class="voucher-foreign-popover"
+      >
+        <div class="foreign-popover" @keydown.esc.stop.prevent="cancelForeignPopover">
+          <div class="foreign-popover-header">
+            <span>外币录入</span>
+            <span class="foreign-popover-currency">{{ foreignPopover.currencyCode || '-' }}</span>
+          </div>
+          <div class="foreign-popover-row">
+            <span class="foreign-popover-label">方向</span>
+            <el-radio-group
+              v-model="foreignPopover.side"
+              size="small"
+              :disabled="foreignPopover.readonly"
+            >
+              <el-radio-button value="debit">借方</el-radio-button>
+              <el-radio-button value="credit">贷方</el-radio-button>
+            </el-radio-group>
+          </div>
+          <div class="foreign-popover-row">
+            <span class="foreign-popover-label">原币金额</span>
+            <el-input-number
+              ref="foreignAmountInputRef"
+              v-model="foreignPopover.foreignAmount"
+              :precision="2"
+              :step="0.01"
+              :controls="false"
+              :disabled="foreignPopover.readonly"
+              size="small"
+              class="foreign-popover-input"
+              placeholder="= 自动平衡"
+              @keydown="onForeignAmountKeydown"
+            />
+          </div>
+          <div class="foreign-popover-row">
+            <span class="foreign-popover-label">汇率</span>
+            <el-input-number
+              ref="foreignRateInputRef"
+              v-model="foreignPopover.rate"
+              :min="0"
+              :precision="6"
+              :step="0.0001"
+              :controls="false"
+              :disabled="foreignPopover.readonly"
+              size="small"
+              class="foreign-popover-input"
+              @keydown="onForeignRateKeydown"
+            />
+          </div>
+          <div class="foreign-popover-row foreign-popover-total">
+            <span class="foreign-popover-label">折合本位币</span>
+            <span class="foreign-popover-base">{{ formatMoney(foreignPopoverBase) }}</span>
+          </div>
+          <div class="foreign-popover-actions">
+            <el-button size="small" @click="cancelForeignPopover">
+              {{ foreignPopover.readonly ? '关闭' : '取消' }}
+            </el-button>
+            <el-button
+              v-if="!foreignPopover.readonly"
+              size="small"
+              type="primary"
+              @click="confirmForeignPopover"
+            >
+              确定
+            </el-button>
+          </div>
+        </div>
+      </el-popover>
+
+      <!-- 数量录入气泡：数量必填，单价与金额二选一，另一个自动反算 -->
+      <el-popover
+        :visible="quantityPopover.visible"
+        :virtual-ref="quantityPopover.triggerEl"
+        virtual-triggering
+        placement="bottom-end"
+        :width="300"
+        :show-arrow="true"
+        :teleported="true"
+        :persistent="false"
+        popper-class="voucher-foreign-popover voucher-quantity-popover"
+      >
+        <div class="foreign-popover" @keydown.esc.stop.prevent="cancelQuantityPopover">
+          <div class="foreign-popover-header">
+            <span>数量录入</span>
+            <span class="foreign-popover-currency">{{ quantityPopover.unit || '-' }}</span>
+          </div>
+          <div class="foreign-popover-row">
+            <span class="foreign-popover-label">方向</span>
+            <el-radio-group
+              v-model="quantityPopover.side"
+              size="small"
+              :disabled="quantityPopover.readonly"
+            >
+              <el-radio-button value="debit">借方</el-radio-button>
+              <el-radio-button value="credit">贷方</el-radio-button>
+            </el-radio-group>
+          </div>
+          <div class="foreign-popover-row">
+            <span class="foreign-popover-label">数量</span>
+            <el-input-number
+              ref="quantityInputRef"
+              v-model="quantityPopover.quantity"
+              :precision="6"
+              :step="1"
+              :controls="false"
+              :disabled="quantityPopover.readonly"
+              size="small"
+              class="foreign-popover-input"
+              placeholder="必填"
+              @change="onQuantityFieldChange('quantity')"
+              @keydown="onQuantityKeydown($event, 'quantity')"
+            />
+          </div>
+          <div class="foreign-popover-row">
+            <span class="foreign-popover-label">单价</span>
+            <el-input-number
+              ref="unitPriceInputRef"
+              v-model="quantityPopover.unitPrice"
+              :precision="4"
+              :step="0.0001"
+              :controls="false"
+              :disabled="quantityPopover.readonly"
+              size="small"
+              class="foreign-popover-input"
+              placeholder="与金额二选一"
+              @change="onQuantityFieldChange('unitPrice')"
+              @keydown="onQuantityKeydown($event, 'unitPrice')"
+            />
+          </div>
+          <div class="foreign-popover-row">
+            <span class="foreign-popover-label">金额</span>
+            <el-input-number
+              ref="quantityAmountInputRef"
+              v-model="quantityPopover.amount"
+              :precision="2"
+              :step="0.01"
+              :controls="false"
+              :disabled="quantityPopover.readonly"
+              size="small"
+              class="foreign-popover-input"
+              placeholder="与单价二选一"
+              @change="onQuantityFieldChange('amount')"
+              @keydown="onQuantityKeydown($event, 'amount')"
+            />
+          </div>
+          <div class="foreign-popover-actions">
+            <el-button size="small" @click="cancelQuantityPopover">
+              {{ quantityPopover.readonly ? '关闭' : '取消' }}
+            </el-button>
+            <el-button
+              v-if="!quantityPopover.readonly"
+              size="small"
+              type="primary"
+              @click="confirmQuantityPopover"
+            >
+              确定
+            </el-button>
+          </div>
+        </div>
+      </el-popover>
 
       <div v-if="currentEntry && filteredAuxCategories.length > 0" class="voucher-aux-panel">
         <div class="voucher-aux-header">
@@ -703,7 +1006,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, nextTick, computed } from 'vue'
+import { ref, reactive, watch, nextTick, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import type { VoucherForm, VoucherEntry } from '@/composables/useVoucherForm'
 import { useKeyboardShortcuts, commonShortcuts } from '@/composables/useKeyboardShortcuts'
@@ -713,6 +1016,8 @@ import request from '@/api/request'
 import { Document, Upload, Download, Printer, Collection } from '@element-plus/icons-vue'
 import { formatAmount } from '@/utils/format'
 import { accountNeedsCashFlowItem, isAuxCategoryExcludedFromAccount } from '@/utils/accountCashFlow'
+import { formatAccountFullPath } from '@/utils/accountPathDisplay'
+import { accountDisplayMode } from '@/utils/accountDisplayPreference'
 import DialogNavigation from '@/components/common/DialogNavigation.vue'
 
 interface NavigationInfo {
@@ -759,6 +1064,8 @@ interface Props {
   navigationInfo?: NavigationInfo | null
   enableCashFlow?: boolean
   cashFlowItems?: Array<{ code: string; name: string }>
+  enableForeignCurrency?: boolean
+  resolveExchangeRate?: (currencyCode: string) => number | Promise<number>
   accountSetStartDate?: string
   duplicateWarnings?: string[]
 }
@@ -768,6 +1075,8 @@ const props = withDefaults(defineProps<Props>(), {
   navigationInfo: null,
   enableCashFlow: false,
   cashFlowItems: () => [],
+  enableForeignCurrency: false,
+  resolveExchangeRate: undefined,
   accountSetStartDate: '',
   duplicateWarnings: () => [],
 })
@@ -837,6 +1146,547 @@ const showCashFlowForCurrentEntry = computed(() => {
   if (!acc) return false
   return accountNeedsCashFlowItem(acc)
 })
+
+// ========== 外币录入气泡 ==========
+
+/** 分录科目是否为外币科目（账套开启外币核算 且 科目 is_foreign=1） */
+function isForeignRow(row: any): boolean {
+  if (!props.enableForeignCurrency || !row?.account_id) return false
+  const acc = props.accounts.find(a => a.id === row.account_id) as any
+  return !!acc && Number(acc.is_foreign) === 1
+}
+
+const foreignPopover = reactive({
+  visible: false,
+  readonly: false,
+  row: null as any,
+  side: 'debit' as 'debit' | 'credit',
+  currencyCode: '' as string,
+  foreignAmount: null as number | null,
+  rate: null as number | null,
+  triggerEl: null as HTMLElement | null,
+})
+const foreignAmountInputRef = ref<any>(null)
+const foreignRateInputRef = ref<any>(null)
+/** 取消后把焦点还给触发格时，不要因 focus 事件再次弹出 */
+let suppressForeignFocusOpen = false
+
+const foreignPopoverBase = computed(() => {
+  const foreign = Number(foreignPopover.foreignAmount) || 0
+  const rate = Number(foreignPopover.rate) || 0
+  if (!foreign || !(rate > 0)) return 0
+  return Math.round(foreign * rate * 100) / 100
+})
+
+/** 金额格悬停提示：原币 × 汇率 = 本位币（单行显示时汇率不再直接展示） */
+function foreignTitle(row: any, side: 'debit' | 'credit'): string {
+  const base = side === 'debit' ? row?.debit_amount : row?.credit_amount
+  if (!base || !row?.foreign_amount) return ''
+  const rate = Number(row.exchange_rate) > 0 ? row.exchange_rate : '-'
+  return `${row.currency_code || '原币'} ${formatMoney(Number(row.foreign_amount) || 0)} × 汇率 ${rate} = ${formatMoney(base)}`
+}
+
+function isForeignPopoverFor(row: any, side: 'debit' | 'credit'): boolean {
+  return foreignPopover.visible && foreignPopover.row === row && foreignPopover.side === side
+}
+
+function focusForeignInput(which: 'amount' | 'rate') {
+  nextTick(() => {
+    const comp = which === 'amount' ? foreignAmountInputRef.value : foreignRateInputRef.value
+    const input = (comp?.$el as HTMLElement | undefined)?.querySelector('input') as
+      | HTMLInputElement
+      | null
+      | undefined
+    if (input) {
+      input.focus()
+      input.select()
+    }
+  })
+}
+
+async function openForeignPopover(
+  row: any,
+  side: 'debit' | 'credit',
+  triggerEl: HTMLElement | null,
+  readonly = false
+) {
+  if (!row) return
+  if (foreignPopover.visible && foreignPopover.row === row && foreignPopover.side === side) return
+  props.setCurrentEntry(row)
+  if (!readonly) await ensureForeignDefaults(row)
+  // 已有金额时，以已录方向为准
+  const existingSide: 'debit' | 'credit' | null = row.debit_amount
+    ? 'debit'
+    : row.credit_amount
+      ? 'credit'
+      : null
+  foreignPopover.row = row
+  foreignPopover.side = existingSide || side
+  foreignPopover.readonly = readonly
+  foreignPopover.currencyCode = row.currency_code || ''
+  foreignPopover.foreignAmount =
+    row.foreign_amount != null && row.foreign_amount !== '' ? Number(row.foreign_amount) : null
+  foreignPopover.rate = Number(row.exchange_rate) > 0 ? Number(row.exchange_rate) : null
+  foreignPopover.triggerEl = triggerEl
+  foreignPopover.visible = true
+  if (!readonly) focusForeignInput('amount')
+}
+
+let suppressForeignFocusTimer: ReturnType<typeof setTimeout> | null = null
+
+function closeForeignPopover() {
+  foreignPopover.visible = false
+  foreignPopover.row = null
+  foreignPopover.triggerEl = null
+  // el-popover 关闭时 focus-trap 会把焦点还给触发格，短时间内忽略由此产生的 focus，避免气泡被重新弹出
+  suppressForeignFocusOpen = true
+  if (suppressForeignFocusTimer) clearTimeout(suppressForeignFocusTimer)
+  suppressForeignFocusTimer = setTimeout(() => {
+    suppressForeignFocusOpen = false
+    suppressForeignFocusTimer = null
+  }, 300)
+}
+
+function cancelForeignPopover() {
+  const row = foreignPopover.row
+  const side = foreignPopover.side
+  closeForeignPopover()
+  // 焦点回到触发格，避免丢焦
+  if (row && !isReadonly.value) {
+    nextTick(() => {
+      const el = findForeignCellEl(row, side)
+      el?.focus()
+    })
+  }
+}
+
+/** 确定：原币 × 汇率 → 本位币回填到所选方向，并跳到下一行 */
+function confirmForeignPopover() {
+  const row = foreignPopover.row
+  if (!row) return
+  const foreign = Number(foreignPopover.foreignAmount)
+  const rate = Number(foreignPopover.rate)
+  if (!Number.isFinite(foreign) || foreign === 0) {
+    showWarning('请输入原币金额')
+    focusForeignInput('amount')
+    return
+  }
+  if (!(rate > 0)) {
+    showWarning('请输入大于 0 的汇率')
+    focusForeignInput('rate')
+    return
+  }
+  const base = Math.round(foreign * rate * 100) / 100
+  const side = foreignPopover.side
+  row.currency_code = foreignPopover.currencyCode || row.currency_code || null
+  row.foreign_amount = foreign
+  row.exchange_rate = rate
+  if (side === 'debit') {
+    row.debit_amount = base
+    row.credit_amount = null
+  } else {
+    row.credit_amount = base
+    row.debit_amount = null
+  }
+  row.direction = side
+  row.amount = base
+  props.onAmountChange(row, side)
+  closeForeignPopover()
+  moveToNextRow(row)
+}
+
+function findForeignCellEl(row: any, side: 'debit' | 'credit'): HTMLElement | null {
+  const tableEl = document.querySelector('.voucher-table')
+  if (!tableEl) return null
+  const rowIdx = props.form.entries.indexOf(row)
+  if (rowIdx === -1) return null
+  const tr = tableEl.querySelectorAll('.el-table__body-wrapper tbody tr')[rowIdx]
+  const cell = tr?.querySelectorAll('td')[side === 'debit' ? 2 : 3]
+  return (cell?.querySelector('.foreign-amount-cell') as HTMLElement | null) || null
+}
+
+function onForeignCellFocus(row: any, side: 'debit' | 'credit', event: Event) {
+  if (isLockedCashRow(row)) return
+  if (event.type === 'focus' && suppressForeignFocusOpen) return
+  const el = (event.currentTarget as HTMLElement | null) || findForeignCellEl(row, side)
+  void openForeignPopover(row, side, el)
+}
+
+function onForeignCellKeydown(row: any, side: 'debit' | 'credit', event: KeyboardEvent) {
+  if (event.key === 'Enter' || event.key === ' ') {
+    stopEnterBubble(event)
+    const el = (event.currentTarget as HTMLElement | null) || findForeignCellEl(row, side)
+    void openForeignPopover(row, side, el)
+  }
+}
+
+function onReadonlyAmountClick(row: any, side: 'debit' | 'credit', event: MouseEvent) {
+  props.setCurrentEntry(row)
+  if (isForeignRow(row) || row?.foreign_amount) {
+    void openForeignPopover(row, side, event.currentTarget as HTMLElement, true)
+    return
+  }
+  if (isQuantityRow(row) || row?.quantity) {
+    openQuantityPopover(row, side, event.currentTarget as HTMLElement, true)
+  }
+}
+
+/** 原币金额：Enter → 汇率；= → 用当前汇率把借贷差额折成原币 */
+function onForeignAmountKeydown(event: KeyboardEvent) {
+  if (event.key === 'Enter') {
+    stopEnterBubble(event)
+    syncForeignInput(event, 'amount')
+    focusForeignInput('rate')
+    return
+  }
+  if (event.key === '=') {
+    event.preventDefault()
+    const row = foreignPopover.row
+    const rate = Number(foreignPopover.rate) || 0
+    if (!row || !(rate > 0)) return
+    const otherDebit = props.totalDebit - (Number(row.debit_amount) || 0)
+    const otherCredit = props.totalCredit - (Number(row.credit_amount) || 0)
+    const diff = +(otherCredit - otherDebit).toFixed(2)
+    if (diff === 0) return
+    foreignPopover.side = diff > 0 ? 'debit' : 'credit'
+    foreignPopover.foreignAmount = Math.round((Math.abs(diff) / rate) * 100) / 100
+  }
+}
+
+function onForeignRateKeydown(event: KeyboardEvent) {
+  if (event.key === 'Enter') {
+    stopEnterBubble(event)
+    syncForeignInput(event, 'rate')
+    confirmForeignPopover()
+  }
+}
+
+/** el-input-number 在 Enter 时未必已触发 change，直接读取输入框原始值 */
+function syncForeignInput(event: KeyboardEvent, which: 'amount' | 'rate') {
+  const input = event.target as HTMLInputElement | null
+  if (!input) return
+  const raw = String(input.value || '')
+    .replace(/,/g, '')
+    .trim()
+  if (!raw) return
+  const n = Number(raw)
+  if (!Number.isFinite(n)) return
+  if (which === 'amount') foreignPopover.foreignAmount = n
+  else foreignPopover.rate = n
+}
+
+/** 点击气泡与触发格以外的地方时关闭气泡 */
+function onDocumentMousedownForForeign(event: MouseEvent) {
+  const target = event.target as HTMLElement | null
+  if (!target) return
+  const insidePopover = !!target.closest('.voucher-foreign-popover')
+  if (foreignPopover.visible) {
+    if (
+      !insidePopover &&
+      !(foreignPopover.triggerEl && foreignPopover.triggerEl.contains(target))
+    ) {
+      closeForeignPopover()
+    }
+  }
+  if (quantityPopover.visible) {
+    if (
+      !insidePopover &&
+      !(quantityPopover.triggerEl && quantityPopover.triggerEl.contains(target))
+    ) {
+      closeQuantityPopover()
+    }
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('mousedown', onDocumentMousedownForForeign, true)
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', onDocumentMousedownForForeign, true)
+})
+
+// 科目变更为非外币科目、或弹窗关闭时收起气泡
+watch(
+  () => [props.modelValue, props.currentEntry?.account_id] as const,
+  () => {
+    if (foreignPopover.visible && foreignPopover.row && !isForeignRow(foreignPopover.row)) {
+      closeForeignPopover()
+    }
+    if (!props.modelValue && foreignPopover.visible) closeForeignPopover()
+    if (!props.modelValue && quantityPopover.visible) closeQuantityPopover()
+  }
+)
+
+async function ensureForeignDefaults(entry: any) {
+  if (!props.enableForeignCurrency || !entry?.account_id) return
+  const acc = props.accounts.find(a => a.id === entry.account_id) as any
+  if (!acc || Number(acc.is_foreign) !== 1) {
+    entry.currency_code = null
+    entry.exchange_rate = null
+    entry.foreign_amount = null
+    return
+  }
+  entry.currency_code = acc.currency_code || entry.currency_code || null
+  if (!(Number(entry.exchange_rate) > 0) && entry.currency_code && props.resolveExchangeRate) {
+    const rate = await props.resolveExchangeRate(entry.currency_code)
+    if (Number(rate) > 0) entry.exchange_rate = Number(rate)
+  }
+}
+
+// ========== 数量录入气泡 ==========
+
+/** 分录科目是否为数量核算科目（科目 is_quantity=1；无账套级总开关） */
+function isQuantityRow(row: any): boolean {
+  if (!row?.account_id) return false
+  const acc = props.accounts.find(a => a.id === row.account_id) as any
+  return !!acc && Number(acc.is_quantity) === 1
+}
+
+function quantityUnitOf(row: any): string {
+  const acc = props.accounts.find(a => a.id === row?.account_id) as any
+  return String(row?.unit || acc?.quantity_unit || '')
+}
+
+/** 金额格小字副行：`10 个 × 11.1000` */
+function quantityInlineText(row: any): string {
+  const qty = Number(row?.quantity) || 0
+  if (!qty) return ''
+  const unit = quantityUnitOf(row)
+  const price = Number(row?.unit_price) || 0
+  const qtyText = formatQuantity(qty)
+  return price ? `${qtyText}${unit} × ${formatUnitPrice(price)}` : `${qtyText}${unit}`
+}
+
+function formatQuantity(value: number): string {
+  // 去掉无意义的末尾 0（10.000000 → 10），保留最多 6 位小数
+  return String(Number(Number(value).toFixed(6)))
+}
+
+function formatUnitPrice(value: number): string {
+  return Number(value).toFixed(4)
+}
+
+/** 金额格 hover 提示：外币优先，其次数量 */
+function amountCellTitle(row: any, side: 'debit' | 'credit'): string {
+  const fx = foreignTitle(row, side)
+  if (fx) return fx
+  const base = side === 'debit' ? row?.debit_amount : row?.credit_amount
+  const qty = Number(row?.quantity) || 0
+  if (!base || !qty) return ''
+  const price = Number(row?.unit_price) || 0
+  const unit = quantityUnitOf(row)
+  return price
+    ? `${formatQuantity(qty)}${unit} × 单价 ${formatUnitPrice(price)} = ${formatMoney(base)}`
+    : `${formatQuantity(qty)}${unit} = ${formatMoney(base)}`
+}
+
+const quantityPopover = reactive({
+  visible: false,
+  readonly: false,
+  row: null as any,
+  side: 'debit' as 'debit' | 'credit',
+  unit: '' as string,
+  quantity: null as number | null,
+  unitPrice: null as number | null,
+  amount: null as number | null,
+  triggerEl: null as HTMLElement | null,
+})
+const quantityInputRef = ref<any>(null)
+const unitPriceInputRef = ref<any>(null)
+const quantityAmountInputRef = ref<any>(null)
+/** 取消后把焦点还给触发格时，不要因 focus 事件再次弹出 */
+let suppressQuantityFocusOpen = false
+let suppressQuantityFocusTimer: ReturnType<typeof setTimeout> | null = null
+
+function isQuantityPopoverFor(row: any, side: 'debit' | 'credit'): boolean {
+  return quantityPopover.visible && quantityPopover.row === row && quantityPopover.side === side
+}
+
+function focusQuantityInput(which: 'quantity' | 'unitPrice' | 'amount') {
+  nextTick(() => {
+    const comp =
+      which === 'quantity'
+        ? quantityInputRef.value
+        : which === 'unitPrice'
+          ? unitPriceInputRef.value
+          : quantityAmountInputRef.value
+    const input = (comp?.$el as HTMLElement | undefined)?.querySelector('input') as
+      | HTMLInputElement
+      | null
+      | undefined
+    if (input) {
+      input.focus()
+      input.select()
+    }
+  })
+}
+
+/**
+ * 数量 / 单价 / 金额三者联算：数量恒为输入项，单价与金额二选一，改哪个就反算另一个。
+ *   改数量或单价 → 金额 = 数量 × 单价
+ *   改金额       → 单价 = 金额 ÷ 数量
+ */
+function onQuantityFieldChange(field: 'quantity' | 'unitPrice' | 'amount') {
+  const qty = Number(quantityPopover.quantity) || 0
+  if (field === 'amount') {
+    const amount = Number(quantityPopover.amount) || 0
+    if (qty && amount) {
+      quantityPopover.unitPrice = Math.round((amount / qty) * 10000) / 10000
+    }
+    return
+  }
+  const price = Number(quantityPopover.unitPrice) || 0
+  if (qty && price) {
+    quantityPopover.amount = Math.round(qty * price * 100) / 100
+  } else if (field === 'quantity' && qty && Number(quantityPopover.amount)) {
+    // 只改了数量、单价还空着：以已录金额为准反算单价
+    quantityPopover.unitPrice =
+      Math.round(((Number(quantityPopover.amount) || 0) / qty) * 10000) / 10000
+  }
+}
+
+function onQuantityKeydown(event: KeyboardEvent, field: 'quantity' | 'unitPrice' | 'amount') {
+  if (event.key !== 'Enter') return
+  stopEnterBubble(event)
+  onQuantityFieldChange(field)
+  if (field === 'quantity') {
+    focusQuantityInput('unitPrice')
+  } else if (field === 'unitPrice') {
+    focusQuantityInput('amount')
+  } else {
+    confirmQuantityPopover()
+  }
+}
+
+function openQuantityPopover(
+  row: any,
+  side: 'debit' | 'credit',
+  triggerEl: HTMLElement | null,
+  readonly = false
+) {
+  if (!row) return
+  if (quantityPopover.visible && quantityPopover.row === row && quantityPopover.side === side) return
+  props.setCurrentEntry(row)
+  if (!readonly) ensureQuantityDefaults(row)
+  // 已有金额时，以已录方向为准
+  const existingSide: 'debit' | 'credit' | null = row.debit_amount
+    ? 'debit'
+    : row.credit_amount
+      ? 'credit'
+      : null
+  quantityPopover.row = row
+  quantityPopover.side = existingSide || side
+  quantityPopover.readonly = readonly
+  quantityPopover.unit = quantityUnitOf(row)
+  quantityPopover.quantity =
+    row.quantity != null && row.quantity !== '' ? Number(row.quantity) : null
+  quantityPopover.unitPrice =
+    Number(row.unit_price) > 0 ? Number(row.unit_price) : null
+  quantityPopover.amount =
+    Number(row.debit_amount) || Number(row.credit_amount) || null
+  quantityPopover.triggerEl = triggerEl
+  quantityPopover.visible = true
+  if (!readonly) focusQuantityInput('quantity')
+}
+
+function closeQuantityPopover() {
+  quantityPopover.visible = false
+  quantityPopover.row = null
+  quantityPopover.triggerEl = null
+  suppressQuantityFocusOpen = true
+  if (suppressQuantityFocusTimer) clearTimeout(suppressQuantityFocusTimer)
+  suppressQuantityFocusTimer = setTimeout(() => {
+    suppressQuantityFocusOpen = false
+    suppressQuantityFocusTimer = null
+  }, 300)
+}
+
+function cancelQuantityPopover() {
+  const row = quantityPopover.row
+  const side = quantityPopover.side
+  closeQuantityPopover()
+  if (row && !isReadonly.value) {
+    nextTick(() => {
+      findQuantityCellEl(row, side)?.focus()
+    })
+  }
+}
+
+/** 确定：数量必填，单价与金额至少一个；回填分录并跳到下一行 */
+function confirmQuantityPopover() {
+  const row = quantityPopover.row
+  if (!row) return
+  const qty = Number(quantityPopover.quantity)
+  if (!Number.isFinite(qty) || qty === 0) {
+    showWarning('请输入数量')
+    focusQuantityInput('quantity')
+    return
+  }
+  const price = Number(quantityPopover.unitPrice) || 0
+  let amount = Number(quantityPopover.amount) || 0
+  if (!price && !amount) {
+    showWarning('请输入单价或金额')
+    focusQuantityInput('unitPrice')
+    return
+  }
+  if (!amount) amount = Math.round(qty * price * 100) / 100
+  const unitPrice = price || Math.round((amount / qty) * 10000) / 10000
+
+  const side = quantityPopover.side
+  row.quantity = qty
+  row.unit_price = unitPrice
+  row.unit = quantityPopover.unit || null
+  if (side === 'debit') {
+    row.debit_amount = amount
+    row.credit_amount = null
+  } else {
+    row.credit_amount = amount
+    row.debit_amount = null
+  }
+  row.direction = side
+  row.amount = amount
+  props.onAmountChange(row, side)
+  closeQuantityPopover()
+  moveToNextRow(row)
+}
+
+function findQuantityCellEl(row: any, side: 'debit' | 'credit'): HTMLElement | null {
+  const tableEl = document.querySelector('.voucher-table')
+  if (!tableEl) return null
+  const rowIdx = props.form.entries.indexOf(row)
+  if (rowIdx === -1) return null
+  const tr = tableEl.querySelectorAll('.el-table__body-wrapper tbody tr')[rowIdx]
+  const cell = tr?.querySelectorAll('td')[side === 'debit' ? 2 : 3]
+  return (cell?.querySelector('.foreign-amount-cell') as HTMLElement | null) || null
+}
+
+function onQuantityCellFocus(row: any, side: 'debit' | 'credit', event: Event) {
+  if (isLockedCashRow(row)) return
+  if (event.type === 'focus' && suppressQuantityFocusOpen) return
+  const el = (event.currentTarget as HTMLElement | null) || findQuantityCellEl(row, side)
+  openQuantityPopover(row, side, el)
+}
+
+function onQuantityCellKeydown(row: any, side: 'debit' | 'credit', event: KeyboardEvent) {
+  if (event.key === 'Enter' || event.key === ' ') {
+    stopEnterBubble(event)
+    const el = (event.currentTarget as HTMLElement | null) || findQuantityCellEl(row, side)
+    openQuantityPopover(row, side, el)
+  }
+}
+
+/** 切换科目后同步数量字段：非数量科目清空，数量科目带出科目单位 */
+function ensureQuantityDefaults(entry: any) {
+  if (!entry?.account_id) return
+  const acc = props.accounts.find(a => a.id === entry.account_id) as any
+  if (!acc || Number(acc.is_quantity) !== 1) {
+    entry.quantity = null
+    entry.unit_price = null
+    entry.unit = null
+    return
+  }
+  entry.unit = acc.quantity_unit || entry.unit || null
+}
 
 // 现金/银行标志决定控件是否显示；账套开关只决定是否必填。
 const cashFlowRequired = computed(
@@ -1121,12 +1971,37 @@ function handleRowClick(row: VoucherEntry) {
   }
 }
 
+/** 按当前开关取科目展示文本；全路径模式下查不到科目时回落到分录快照，避免历史凭证显示 '-' */
 function getAccountDisplay(row: VoucherEntry): string {
+  if (accountDisplayMode.value === 'full') {
+    const acc =
+      props.accounts.find(a => a.id === row.account_id) ||
+      (row.account_code ? props.accounts.find(a => a.code === row.account_code) : null)
+    if (acc) return formatAccountFullPath(acc.code, acc.id, props.accounts, acc.name)
+  }
   if (row.account_code || row.account_name) {
     return `${row.account_code || ''} ${row.account_name || ''}`.trim()
   }
   const acc = props.accounts.find(a => a.id === row.account_id)
   return acc ? `${acc.code} ${acc.name}` : '-'
+}
+
+/**
+ * 科目单元格/输入框/候选项统一的展示文本，跟随「科目显示」开关。
+ * 传 accounts 里的科目对象，或任何带 id/code/name 的对象均可。
+ */
+function accountInputText(acc: any): string {
+  if (!acc) return ''
+  if (accountDisplayMode.value === 'full') {
+    return formatAccountFullPath(acc.code, acc.id, props.accounts, acc.name)
+  }
+  return `${acc.code || ''} ${acc.name || ''}`.trim()
+}
+
+/** autocomplete 下拉候选项的展示文本（父科目分组标题维持「编码 名称」不变） */
+function getSuggestionLabel(item: any): string {
+  if (item?.isParent) return `${item?.code || ''} ${item?.name || ''}`.trim()
+  return accountInputText(item)
 }
 
 function getAuxItemName(cat: any, entry: VoucherEntry | null): string {
@@ -1286,6 +2161,7 @@ function handleClose() {
 // 不考虑记账因素，直接从 init_balances（期初）+ 所有凭证分录实时汇总
 
 const currentEntryBalance = ref<{
+  id: string
   code: string
   name: string
   direction: string
@@ -1355,6 +2231,7 @@ async function fetchCurrentEntryBalance() {
         endBalance >= 0 ? data.direction : data.direction === 'debit' ? 'credit' : 'debit'
       const isSameSide = balanceDirection === acc.direction
       currentEntryBalance.value = {
+        id: acc.id,
         code: acc.code,
         name: acc.name,
         direction: balanceDirection,
@@ -1857,7 +2734,11 @@ function focusCellInput(row: VoucherEntry, colIndex: number) {
     if (input) {
       input.focus()
       input.select()
+      return
     }
+    // 外币 / 数量科目的金额格没有 input，聚焦只读格即会弹出对应气泡
+    const foreignCell = cell.querySelector('.foreign-amount-cell') as HTMLElement | null
+    if (foreignCell) foreignCell.focus()
   })
 }
 
@@ -1891,7 +2772,7 @@ watch(
       if (state && !state.input) {
         const acc = props.accounts.find(a => a.id === row.account_id)
         if (acc) {
-          state.input = `${acc.code} ${acc.name}`
+          state.input = accountInputText(acc)
         }
       }
     }
@@ -1912,12 +2793,23 @@ watch(
         const key = getAccountRowKey(row)
         const acc = props.accounts.find(a => a.id === row.account_id)
         if (acc) {
-          accountInputStateMap.value[key] = { input: `${acc.code} ${acc.name}` }
+          accountInputStateMap.value[key] = { input: accountInputText(acc) }
         }
       }
     })
   }
 )
+
+// 切换「科目显示」开关时，刷新已缓存的科目输入框文本
+watch(accountDisplayMode, () => {
+  for (const row of props.form.entries) {
+    if (!row.account_id) continue
+    const state = accountInputStateMap.value[getAccountRowKey(row)]
+    if (!state) continue
+    const acc = props.accounts.find(a => a.id === row.account_id)
+    if (acc) state.input = accountInputText(acc)
+  }
+})
 
 function getAccountRowKey(row: any): string {
   const rowObject = row as object
@@ -1936,7 +2828,7 @@ function ensureAccountInputState(row: any): AccountInputState {
   if (!state) {
     const acc = row.account_id ? props.accounts.find(a => a.id === row.account_id) : null
     state = {
-      input: acc ? `${acc.code} ${acc.name}` : '',
+      input: acc ? accountInputText(acc) : '',
     }
     accountInputStateMap.value[key] = state
   }
@@ -1951,7 +2843,7 @@ function getAccountInput(row: any): string {
 function buildAccountSuggestion(acc: any): AccountSuggestion {
   const isParent = props.isParentAccount(acc.id)
   return {
-    value: `${acc.code} ${acc.name}`,
+    value: accountInputText(acc),
     id: acc.id,
     code: acc.code,
     name: acc.name,
@@ -2084,7 +2976,7 @@ function onAccountInputChange(row: any, val: string | number) {
 
   const trimmed = state.input.trim()
   const selectedAcc = row.account_id ? props.accounts.find(a => a.id === row.account_id) : null
-  const selectedDisplay = selectedAcc ? `${selectedAcc.code} ${selectedAcc.name}` : ''
+  const selectedDisplay = accountInputText(selectedAcc)
 
   // 一旦用户开始编辑已选科目（输入值不再等于完整显示值），先解除选中状态，允许自由回退/继续输入
   if (row.account_id && trimmed !== selectedDisplay) {
@@ -2141,9 +3033,11 @@ function onAccountSuggestionPointer(item: any, e: MouseEvent) {
 function applySelectedAccount(row: any, acc: any) {
   const state = ensureAccountInputState(row)
   row.account_id = acc.id
-  state.input = `${acc.code} ${acc.name}`
+  state.input = accountInputText(acc)
   props.onAccountChange(row)
   props.setCurrentEntry(row)
+  void ensureForeignDefaults(row)
+  ensureQuantityDefaults(row)
 }
 
 function onAccountAutoFocus(row: any) {
@@ -2152,7 +3046,7 @@ function onAccountAutoFocus(row: any) {
   if (row.account_id && !state.input) {
     const acc = props.accounts.find(a => a.id === row.account_id)
     if (acc) {
-      state.input = `${acc.code} ${acc.name}`
+      state.input = accountInputText(acc)
     }
   }
 }
@@ -2555,7 +3449,7 @@ useKeyboardShortcuts([
 
 .voucher-aux-readonly-value {
   color: #303133;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   min-width: 120px;
   padding: 4px 8px;
   background: #f5f7fa;
@@ -2567,7 +3461,7 @@ useKeyboardShortcuts([
   display: block;
   padding: 4px 8px;
   color: #303133;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   line-height: 1.5;
   cursor: pointer;
 }
@@ -2791,6 +3685,59 @@ useKeyboardShortcuts([
   margin-bottom: 8px;
 }
 
+/* 金额 + 原币 同一行：本位币在右，原币小字紧跟其后，超长省略 */
+.amount-line {
+  display: flex;
+  justify-content: flex-end;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+  white-space: nowrap;
+}
+.amount-line > span:first-child {
+  flex-shrink: 0;
+}
+.foreign-amount-inline {
+  font-size: 11px;
+  color: #909399;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* 外币科目金额格：只读展示，聚焦 / 点击弹出外币气泡 */
+.foreign-amount-cell {
+  height: 28px;
+  padding: 0 8px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  text-align: right;
+  cursor: pointer;
+  border: 1px dashed var(--el-border-color);
+  border-radius: 4px;
+  background: var(--el-fill-color-lighter);
+  outline: none;
+  line-height: 1;
+  min-width: 0;
+}
+.foreign-amount-cell .amount-line {
+  width: 100%;
+}
+.foreign-amount-cell:hover,
+.foreign-amount-cell:focus,
+.foreign-amount-cell.is-active {
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+}
+.foreign-amount-cell.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.entry-readonly-amount.is-foreign {
+  text-decoration: underline dotted var(--el-color-primary-light-5);
+}
+
 .voucher-date-warning {
   margin-top: 6px;
   grid-column: 1 / -1;
@@ -2806,5 +3753,59 @@ useKeyboardShortcuts([
 
 .duplicate-warnings .el-alert:last-child {
   margin-bottom: 0;
+}
+</style>
+
+<!-- 外币气泡通过 teleport 挂到 body，需要非 scoped 样式 -->
+<style>
+.voucher-foreign-popover.el-popover {
+  padding: 10px 12px;
+}
+.voucher-foreign-popover .foreign-popover-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.voucher-foreign-popover .foreign-popover-currency {
+  font-size: 12px;
+  color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+  padding: 0 6px;
+  border-radius: 3px;
+}
+.voucher-foreign-popover .foreign-popover-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.voucher-foreign-popover .foreign-popover-label {
+  width: 72px;
+  flex: 0 0 72px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.voucher-foreign-popover .foreign-popover-input {
+  flex: 1;
+}
+.voucher-foreign-popover .foreign-popover-input .el-input__inner {
+  text-align: right;
+}
+.voucher-foreign-popover .foreign-popover-total {
+  border-top: 1px dashed var(--el-border-color-lighter);
+  padding-top: 8px;
+}
+.voucher-foreign-popover .foreign-popover-base {
+  flex: 1;
+  text-align: right;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.voucher-foreign-popover .foreign-popover-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 </style>

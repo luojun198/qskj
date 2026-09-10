@@ -26,7 +26,13 @@ const TRANSIENT_ROUTE_NAMES = new Set([
 
 /** 新增、编辑页面不得被标签上限自动回收。 */
 function isEditorRoute(routeName: string): boolean {
-  return /(?:New|Edit)$/.test(routeName) || routeName === 'ProjectCategoryForm'
+  return /(?:New|Edit)$/.test(routeName) || routeName === 'ProjectCategoryForm' || routeName === 'PrintTemplateDesigner'
+}
+
+/** 打印模板设计器：新建与保存后带 id 的地址共用一个标签，避免保存时拆掉画布。 */
+export function isPrintTemplateDesignerPath(fullPath: string): boolean {
+  const path = fullPath.split('?')[0] || ''
+  return path === '/base/print-template/design' || path.startsWith('/base/print-template/design/')
 }
 
 /** 同一购销报表工作台内切换固定报表或自定义查询时复用当前标签。 */
@@ -78,6 +84,10 @@ export function getViewKey(fullPath: string, accountKey: string, routeName?: str
 
   const scmDocFamily = getScmDocTabFamily(fullPath)
   if (scmDocFamily) return `${accountKey}:scm-doc:${scmDocFamily}`
+
+  if (name === 'PrintTemplateDesigner' || isPrintTemplateDesignerPath(fullPath)) {
+    return `${accountKey}:print-template-design`
+  }
 
   if (TRANSIENT_ROUTE_NAMES.has(name)) return `${accountKey}:route:${name}`
 

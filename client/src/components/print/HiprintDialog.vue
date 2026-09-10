@@ -28,6 +28,19 @@
           <el-option v-if="templates.length === 0" label="内置默认排版" value="" />
         </el-select>
       </template>
+      <template v-if="showFontSize">
+        <span class="label">字号</span>
+        <el-select
+          v-model="fontSizeKey"
+          size="small"
+          style="width: 100px"
+          @change="renderPreview"
+        >
+          <el-option label="小" value="small" />
+          <el-option label="中" value="medium" />
+          <el-option label="大" value="large" />
+        </el-select>
+      </template>
       <div class="spacer" />
       <el-button size="small" :loading="rendering" @click="renderPreview">刷新预览</el-button>
       <el-button size="small" :loading="exportingPdf" @click="handleExportPdf">
@@ -58,16 +71,23 @@ import {
   printRawHtml,
   renderElementToPdfBlob,
   paperDimensionsMm,
+  normalizePanelForRender,
+  PRINT_FONT_SIZE_MAP,
+  type PrintFontSizeKey,
 } from '@/utils/printTemplateHiprint'
 import type { ApplicableTemplate, PrintTemplateType, PrintTemplate } from '@/types/print'
+
+export type GetPrintHtmlFn = (ctx?: { fontSize?: number }) => string
 
 interface Props {
   modelValue: boolean
   templateType: PrintTemplateType
-  templateKey: string
+  templateKey?: string
   title?: string
+  /** 打开后直接调起系统打印并关闭 */
+  autoPrint?: boolean
   /** html 模式（账册/报表）：返回要打印的二维表格 HTML */
-  getPrintHtml?: () => string
+  getPrintHtml?: GetPrintHtmlFn
   /** 字段模式（凭证）：打印数据对象或数组 */
   printData?: Record<string, unknown> | Record<string, unknown>[]
   /** 字段模式无自定义模板时的内置默认面板构造（如凭证默认模板） */
@@ -85,6 +105,8 @@ interface Props {
    * hiprint 的 html 元素会重排表格，网格会变成孤立方框。
    */
   rawHtmlPreview?: boolean
+  /** 显示字号选择（小/中/大），默认中=12px */
+  showFontSize?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -93,6 +115,8 @@ const props = withDefaults(defineProps<Props>(), {
   useTemplates: true,
   defaultOrientation: 'portrait',
   rawHtmlPreview: false,
+  showFontSize: false,
+  autoPrint: false,
 })
 
 const emit = defineEmits<{ 'update:modelValue': [value: boolean] }>()
@@ -112,6 +136,13 @@ const printing = ref(false)
 const exportingPdf = ref(false)
 const previewEmpty = ref(false)
 const previewRef = ref<HTMLElement | null>(null)
+const fontSizeKey = ref<PrintFontSizeKey>('medium')
+
+function resolvePrintHtml(): string {
+  if (!props.getPrintHtml) return ''
+  const fontSize = props.showFontSize ? PRINT_FONT_SIZE_MAP[fontSizeKey.value] : undefined
+  return props.getPrintHtml(fontSize != null ? { fontSize } : undefined)
+}
 
 // 当前 hiprint 模板实例
 let currentTp: any = null
@@ -126,7 +157,7 @@ const loadTemplates = async () => {
   try {
     const res = await getApplicableTemplates({
       template_type: props.templateType,
-      template_key: props.templateKey,
+      ...(props.templateKey ? { template_key: props.templateKey } : {}),
     })
     if (res.code === 0) {
       templates.value = res.data
@@ -145,7 +176,7 @@ const loadTemplates = async () => {
 /** 取得当前要用的 hiprint 面板（有自定义模板用其 panel，否则用内置单 HTML 面板） */
 const resolvePanelAndData = async (): Promise<{ panel: any; data: any } | null> => {
   // html 模式：账册/报表
-  const html = props.getPrintHtml ? props.getPrintHtml() : ''
+  const html = resolvePrintHtml()
 
   let detail: PrintTemplate | null = null
   if (props.useTemplates && selectedTemplateId.value) {
@@ -159,13 +190,15 @@ const resolvePanelAndData = async (): Promise<{ panel: any; data: any } | null> 
 
   // 自定义 hiprint 模板（有 panels 且含面板）→ 字段绑定模式（凭证为主）
   const designedPanels = (detail?.panel as any)?.panels
+  // normalizePanelForRender：把非表格元素钉在设计坐标上（否则 hiprint 打印时会让分录表
+  // 后面的签章行跟着表格真实高度下移，和设计器对不上），并注入合计行的求和渲染函数
   if (Array.isArray(designedPanels) && designedPanels.length > 0 && props.printData) {
-    return { panel: detail!.panel, data: props.printData }
+    return { panel: normalizePanelForRender(detail!.panel), data: props.printData }
   }
 
   // 字段模式但无自定义模板：用内置默认面板（凭证默认模板）
   if (props.printData && props.defaultPanelBuilder) {
-    return { panel: props.defaultPanelBuilder(), data: props.printData }
+    return { panel: normalizePanelForRender(props.defaultPanelBuilder()), data: props.printData }
   }
 
   // 否则 html 模式：用模板纸张/底图包一个单 html 面板
@@ -198,7 +231,7 @@ const renderPreview = async () => {
   previewEmpty.value = false
   try {
     if (props.rawHtmlPreview && props.getPrintHtml) {
-      const html = props.getPrintHtml()
+      const html = resolvePrintHtml()
       if (!html) {
         previewEmpty.value = true
         if (previewRef.value) previewRef.value.innerHTML = ''
@@ -247,7 +280,7 @@ const handlePrint = async () => {
   printing.value = true
   try {
     if (props.rawHtmlPreview && props.getPrintHtml) {
-      const html = props.getPrintHtml()
+      const html = resolvePrintHtml()
       if (!html) {
         ElMessage.warning('无可打印内容')
         return
@@ -311,15 +344,44 @@ const handleExportPdf = async () => {
   }
 }
 
+function hasPrintData(data: unknown): boolean {
+  if (Array.isArray(data)) return data.length > 0
+  return !!data && typeof data === 'object' && Object.keys(data as object).length > 0
+}
+
+let autoPrinted = false
+
+async function maybeAutoPrint() {
+  if (!props.autoPrint || autoPrinted) return
+  if (props.printData && !hasPrintData(props.printData)) return
+  if (previewEmpty.value) return
+  autoPrinted = true
+  await handlePrint()
+  visible.value = false
+}
+
 const handleOpened = async () => {
   await loadTemplates()
   await renderPreview()
+  await maybeAutoPrint()
 }
 
 watch(
   () => props.modelValue,
   v => {
-    if (!v && previewRef.value) previewRef.value.innerHTML = ''
+    if (!v) {
+      autoPrinted = false
+      if (previewRef.value) previewRef.value.innerHTML = ''
+    }
+  }
+)
+
+watch(
+  () => props.printData,
+  async () => {
+    if (!visible.value) return
+    await renderPreview()
+    await maybeAutoPrint()
   }
 )
 </script>

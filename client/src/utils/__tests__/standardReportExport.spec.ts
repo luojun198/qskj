@@ -7,6 +7,9 @@ import {
   buildReportPrintHtml,
   buildReportWorkbook,
   ensureExportTableBorders,
+  estimateTextWidth,
+  fitNumericFontSize,
+  inferNumberFormat,
   styleKeyHasBorder,
   type BuildModelOptions,
 } from '../standardReportExport'
@@ -321,6 +324,24 @@ describe('buildReportWorkbook', () => {
     expect(sheet.getCell('A2').value).toBe('r1c0')
   })
 
+  it('未设格式的金额按屏幕文本反推 Excel 数字格式', () => {
+    expect(inferNumberFormat('4,667,670.90')).toBe('#,##0.00')
+    expect(inferNumberFormat('-1,540,000.00')).toBe('#,##0.00')
+    expect(inferNumberFormat('12.5')).toBe('0.0')
+    expect(inferNumberFormat('7')).toBe('')
+    expect(inferNumberFormat('货币资金')).toBe('')
+
+    const model = buildReportExportModel(
+      makeOptions({
+        getText: (row, col) => (row === 1 && col === 1 ? '4,667,670.90' : `r${row}c${col}`),
+        getNumeric: (row, col) => (row === 1 && col === 1 ? 4667670.9 : null),
+      })
+    )
+    const sheet = buildReportWorkbook(model).worksheets[0]
+    expect(sheet.getCell('B2').value).toBe(4667670.9)
+    expect(sheet.getCell('B2').numFmt).toBe('#,##0.00')
+  })
+
   it('样式落到字体与对齐上', () => {
     const sheet = buildReportWorkbook(buildReportExportModel(makeOptions())).worksheets[0]
 
@@ -390,5 +411,111 @@ describe('buildPrintWorkbook 页面设置', () => {
 
     expect(sheet.pageSetup.fitToPage).toBe(false)
     expect(sheet.pageSetup.scale).toBe(80)
+  })
+})
+
+describe('整行居中', () => {
+  it('align-row-center 的格子把文字锚在整表中线上，而不是本格中线', () => {
+    const widths = [193, 36, 121, 121, 193, 35, 121, 121]
+    const model = buildReportExportModel(
+      makeOptions({
+        rowCount: 1,
+        colCount: widths.length,
+        getColWidth: index => widths[index],
+        getRowHeight: () => 24,
+        source: [
+          { row_index: 0, col_index: 0 },
+          {
+            row_index: 0,
+            col_index: 1,
+            style_key: 'align-row-center font-size-15',
+            merge_info: JSON.stringify({ rowSpan: 1, colSpan: 6 }),
+          },
+          { row_index: 0, col_index: 7, style_key: 'align-right' },
+        ],
+        getText: (_row, col) => ['纳税人名称：某公司', '2025年12月31日', '', '', '', '', '', '会企01表'][col],
+      })
+    )
+    const html = buildReportPrintHtml(model)
+    const total = widths.reduce((sum, width) => sum + width, 0)
+
+    expect(html).toContain(`position:absolute;left:${Math.round(total / 2 - 193)}px;`)
+    expect(html).toMatch(/translate\(-50%,-50%\);white-space:nowrap;">2025年12月31日</)
+    expect(html).toContain('colspan="6"')
+
+    // 左侧「纳税人名称」不被日期格挡住：越过格线铺开，但停在日期文字之前
+    const spill = html.match(/display:inline-block;width:(\d+(?:\.\d+)?)px;overflow:hidden;">纳税人名称/)
+    expect(spill).not.toBeNull()
+    const spillWidth = Number(spill![1])
+    // 铺开宽度从名称格左边缘起算；必须停在中线减去日期半宽之前
+    const dateHalf = estimateTextWidth('2025年12月31日', 15) / 2
+    expect(spillWidth).toBeGreaterThan(193)
+    expect(spillWidth).toBeLessThan(total / 2 - dateHalf)
+  })
+})
+
+describe('数值格缩小字体填充', () => {
+  it('放得下时保持原字号', () => {
+    expect(fitNumericFontSize('1234.56', 100, 12)).toBe(12)
+  })
+
+  it('略微放不下时降到刚好放得下', () => {
+    const available = estimateTextWidth('3180850.60', 12) - 4
+
+    const fitted = fitNumericFontSize('3180850.60', available, 12)
+
+    expect(fitted).toBeLessThan(12)
+    expect(estimateTextWidth('3180850.60', fitted)).toBeLessThanOrEqual(available)
+  })
+
+  it('再窄也不会低于 8px 下限', () => {
+    expect(fitNumericFontSize('3180850.60', 20, 12)).toBe(8)
+  })
+
+  it('估算宽度之上留有安全余量，不同渲染器量得略宽也不会裁掉末位', () => {
+    const exact = estimateTextWidth('3180850.60', 12)
+
+    // 可用宽度恰好等于估算宽度：浏览器排版刚好塞下，但 html2canvas / 打印机可能量得更宽
+    expect(fitNumericFontSize('3180850.60', exact, 12)).toBeLessThan(12)
+    // 留足余量后才保持原字号
+    expect(fitNumericFontSize('3180850.60', exact * 1.04 + 2, 12)).toBe(12)
+  })
+
+  it('传入字体与加粗时不报错，且结果不高于宋体估算', () => {
+    const plain = fitNumericFontSize('3180850.60', 60, 12)
+    const bold = fitNumericFontSize('3180850.60', 60, 12, {
+      fontFamily: '"Microsoft YaHei", 微软雅黑, sans-serif',
+      bold: true,
+    })
+    expect(bold).toBeLessThanOrEqual(plain)
+    expect(bold).toBeGreaterThanOrEqual(8)
+  })
+
+  it('打印 HTML 里长金额被降字号，短金额不动', () => {
+    const model = buildReportExportModel(
+      makeOptions({
+        rowCount: 1,
+        colCount: 2,
+        getColWidth: index => (index === 0 ? 40 : 200),
+        getRowHeight: () => 24,
+        source: [
+          { row_index: 0, col_index: 0 },
+          { row_index: 0, col_index: 1 },
+        ],
+        getText: (_row, col) => (col === 0 ? '3180850.60' : '12.00'),
+        getNumeric: (_row, col) => (col === 0 ? 3180850.6 : 12),
+      })
+    )
+    const html = buildReportPrintHtml(model)
+
+    expect(html).toContain('>3180850.60<')
+    const shrunk = html.match(/font-size:(\d+(?:\.\d+)?)px;"><div[^>]*>3180850\.60/)
+    const kept = html.match(/font-size:(\d+(?:\.\d+)?)px;"><div[^>]*>12\.00/)
+
+    // 40px 的列放不下 10 位数字，必须缩字号；200px 的列够宽，保持 12px
+    expect(shrunk).not.toBeNull()
+    expect(Number(shrunk![1])).toBeLessThan(12)
+    expect(kept).not.toBeNull()
+    expect(Number(kept![1])).toBe(12)
   })
 })

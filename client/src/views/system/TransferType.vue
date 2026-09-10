@@ -77,7 +77,7 @@
 
       <main class="content-section transfer-detail">
         <template v-if="selectedType">
-          <div class="detail-toolbar">
+          <div class="detail-toolbar toolbar">
             <span class="type-badge">{{ selectedType.code || '--' }}</span>
             <div class="editor-row">
               <label class="editor-field editor-field--code">
@@ -695,7 +695,7 @@ onActivated(() => reloadContentColumnWidths())
 
 .page-header h3 {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--cw-text-lg);
   line-height: 1.25;
   font-weight: 600;
   color: var(--el-text-color-primary);
@@ -968,7 +968,7 @@ onActivated(() => reloadContentColumnWidths())
   justify-content: center;
   gap: 8px;
   color: var(--el-text-color-placeholder);
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   background: var(--el-fill-color-lighter);
   border-radius: 6px;
 }

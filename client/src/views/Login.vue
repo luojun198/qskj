@@ -120,20 +120,19 @@
             <el-radio :value="true">标准模版</el-radio>
             <el-radio :value="false">空账套</el-radio>
           </el-radio-group>
-          <el-select
+          <StandardTemplateSelect
             v-if="createForm.use_template"
             v-model="createForm.standard_template_id"
-            placeholder="选择标准模版"
+            :templates="standardTemplates"
+            :groups="standardTemplateGroups"
+            placeholder="选择会计准则 / 科目体系模版"
+            size="small"
             clearable
             class="template-select"
-          >
-            <el-option
-              v-for="tpl in standardTemplates"
-              :key="tpl.id"
-              :label="tpl.name"
-              :value="tpl.id"
-            />
-          </el-select>
+          />
+          <div v-if="createForm.use_template && selectedTemplate" class="template-hint">
+            {{ selectedTemplate.description }}
+          </div>
         </el-form-item>
         <el-form-item label="统一社会信用代码">
           <el-input v-model="createForm.credit_code" maxlength="18" />
@@ -339,6 +338,7 @@ import { computed, ref, reactive, onMounted, nextTick, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { getDefaultLandingPath } from '@/config/navigation'
 import { useUserStore } from '@/stores/user'
+import { loadHomePage } from '@/utils/homePreference'
 import { useSystemParamsStore } from '@/stores/systemParams'
 import { useLicenseStore } from '@/stores/license'
 import { useBrandingStore } from '@/stores/branding'
@@ -349,6 +349,12 @@ import { UploadFilled, Upload, CircleCheck, CircleClose, Plus } from '@element-p
 import request from '@/api/request'
 import { getAccountSetDefaultStartDate } from '@/utils/format'
 import { useAppBuildInfo } from '@/composables/useAppBuildInfo'
+import StandardTemplateSelect from '@/components/system/StandardTemplateSelect.vue'
+import { fetchStandardTemplates as requestStandardTemplates } from '@/api/standardTemplates'
+import {
+  pickDefaultStandardTemplate,
+  type StandardTemplateItem,
+} from '@/utils/standardTemplateGroups'
 import {
   clearRememberedLogin,
   loadRememberedLogin,
@@ -370,15 +376,11 @@ const loading = ref(false)
 const accountSets = ref<AccountSetItem[]>([])
 const userList = ref<UserItem[]>([])
 
-interface StandardTemplate {
-  id: string
-  name: string
-  description: string
-  acdFile: string
-  excelFiles: Array<{ name: string; path: string }>
-}
-
-const standardTemplates = ref<StandardTemplate[]>([])
+const standardTemplates = ref<StandardTemplateItem[]>([])
+const standardTemplateGroups = ref<string[]>([])
+const selectedTemplate = computed(
+  () => standardTemplates.value.find(item => item.id === createForm.standard_template_id) || null
+)
 
 const showCreateDialog = ref(false)
 const creating = ref(false)
@@ -505,19 +507,19 @@ async function fetchAccountSets(options?: {
 // 获取标准模版列表
 async function fetchStandardTemplates() {
   try {
-    const res = await request.get<StandardTemplate[]>('/auth/standard-account-set-templates', {
-      skipErrorToast: true,
-    })
-    standardTemplates.value = res.data || []
+    const result = await requestStandardTemplates('auth', { skipErrorToast: true })
+    standardTemplates.value = result.templates
+    standardTemplateGroups.value = result.groups
     if (
       createForm.use_template &&
       !createForm.standard_template_id &&
       standardTemplates.value.length > 0
     ) {
-      createForm.standard_template_id = standardTemplates.value[0].id
+      createForm.standard_template_id = pickDefaultStandardTemplate(standardTemplates.value)
     }
   } catch {
     standardTemplates.value = []
+    standardTemplateGroups.value = []
   }
 }
 
@@ -644,11 +646,13 @@ async function afterLoginSuccess(res: any, forcedLogin = false) {
 
   queueLastLoginNotice(res.lastLoginTime, res.lastLoginIp)
   await systemParamsStore.load()
+  const home = loadHomePage(userStore.userInfo?.username || '', userStore.accountSetId || '')
   await router.push(
     getDefaultLandingPath(
       userStore.permissions,
       systemParamsStore.enableCashFlow,
-      useLicenseStore().modules
+      useLicenseStore().modules,
+      home
     )
   )
 }

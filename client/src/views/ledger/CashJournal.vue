@@ -718,7 +718,11 @@ watch(
   }
 )
 
+/** 已应用的 ?scope 查询串（cash / bank），页签复用时据此判断是否需要切换范围 */
+let appliedScope = ''
+
 onMounted(async () => {
+  appliedScope = String(route.query.scope || '')
   await fetchCashBankAccounts()
   if (route.query.account_id) {
     filters.value.account_id = String(route.query.account_id)
@@ -726,12 +730,22 @@ onMounted(async () => {
     if (route.query.end_date) filters.value.end_date = String(route.query.end_date)
     currentPage.value = 1
     await fetchData()
+  } else if (route.query.scope === 'bank') {
+    // 财务总账工作页面「银行日记账」入口
+    await quickFilterBank()
   } else {
     await applyCashScope()
   }
 })
 
+/** 页签被复用时（已打开现金日记账，再从工作页面点银行日记账），按新查询串切换范围 */
 onActivated(() => {
+  const scope = String(route.query.scope || '')
+  if (scope !== appliedScope) {
+    appliedScope = scope
+    if (scope === 'bank') void quickFilterBank()
+    else if (scope === 'cash') void quickFilterCash()
+  }
   void tryRestoreVoucherModal()
 })
 </script>

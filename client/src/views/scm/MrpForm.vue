@@ -45,7 +45,7 @@
 
     <el-card shadow="never" class="source-card">
       <template #header><div class="card-title"><b>需求来源</b><span>仅提交来源 ID，物料和数量由服务端重新读取</span></div></template>
-      <div v-if="isNew && editable" class="source-toolbar">
+      <div v-if="isNew && editable" class="source-toolbar toolbar">
         <el-radio-group v-model="sourceKind" size="small" @change="loadOptions">
           <el-radio-button value="sales_order">销售订单</el-radio-button><el-radio-button value="production_plan">生产计划</el-radio-button>
           <el-radio-button value="assembly">组装单</el-radio-button><el-radio-button value="outsource_plan">委外计划</el-radio-button>
@@ -208,5 +208,5 @@ watch(()=>route.fullPath,()=>{if(tabsStore.activeKey!==myTabKey)return;if(isScmM
 </script>
 
 <style scoped>
-.mrp-form-page{display:flex;flex-direction:column;height:100%;padding:12px 16px;gap:10px;overflow:auto}.form-header{display:flex;align-items:center;justify-content:space-between}.header-left,.header-actions,.source-toolbar,.card-title{display:flex;align-items:center;gap:8px}.sep{color:var(--el-text-color-secondary)}.head-card :deep(.el-card__body){padding:10px 14px}.head-card :deep(.el-form-item){margin-bottom:0}.remark-item{min-width:360px;flex:1}.source-card :deep(.el-card__body){padding:10px 12px}.card-title{justify-content:space-between}.card-title span{font-size:12px;color:var(--el-text-color-secondary)}.source-toolbar{margin-bottom:8px}.option-table{margin-bottom:8px}.source-summary-table{margin-top:8px}.selected-title{font-size:13px;color:var(--el-text-color-secondary);margin:8px 0 6px}.selected-list{display:flex;gap:6px;flex-wrap:wrap;min-height:32px}.source-tag{cursor:pointer}.selected-list :deep(.el-empty){padding:4px;width:100%}.demand-card :deep(.el-card__body){padding:0}.result-card{flex:1;min-height:260px;display:flex;flex-direction:column}.result-card :deep(.el-card__body){flex:1;min-height:0;padding:0}.net{color:var(--el-color-danger)}
+.mrp-form-page{display:flex;flex-direction:column;height:100%;padding:12px 16px;gap:10px;overflow:auto}.form-header{display:flex;align-items:center;justify-content:space-between}.header-left,.header-actions,.source-toolbar,.card-title{display:flex;align-items:center;gap:8px}.sep{color:var(--el-text-color-secondary)}.head-card :deep(.el-card__body){padding:10px 14px}.head-card :deep(.el-form-item){margin-bottom:0}.remark-item{min-width:360px;flex:1}.source-card :deep(.el-card__body){padding:10px 12px}.card-title{justify-content:space-between}.card-title span{font-size:12px;color:var(--el-text-color-secondary)}.source-toolbar{margin-bottom:8px}.option-table{margin-bottom:8px}.source-summary-table{margin-top:8px}.selected-title{font-size: var(--cw-text-base);color:var(--el-text-color-secondary);margin:8px 0 6px}.selected-list{display:flex;gap:6px;flex-wrap:wrap;min-height:32px}.source-tag{cursor:pointer}.selected-list :deep(.el-empty){padding:4px;width:100%}.demand-card :deep(.el-card__body){padding:0}.result-card{flex:1;min-height:260px;display:flex;flex-direction:column}.result-card :deep(.el-card__body){flex:1;min-height:0;padding:0}.net{color:var(--el-color-danger)}
 </style>

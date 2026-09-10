@@ -1,4 +1,4 @@
-import { Router } from 'express'
+import { Router, Response } from 'express'
 import { v4 as uuidv4 } from 'uuid'
 import { getDb } from '../db/index.js'
 import { authMiddleware, AuthRequest, operationLog } from '../middleware/index.js'
@@ -7,6 +7,14 @@ import {
   assertOpeningDebitCreditExclusive,
   normalizeOpeningDebitCredit,
 } from '../utils/initBalanceOpening.js'
+import {
+  calcForeignInitBalance,
+  normalizeForeignOpeningDebitCredit,
+} from '../utils/initBalanceForeign.js'
+import {
+  calcQuantityInitBalance,
+  normalizeQuantityOpeningDebitCredit,
+} from '../utils/initBalanceQuantity.js'
 import {
   checkInitBalanceAuxCategoryConsistency,
   getInitBalanceAuxConfig,
@@ -99,6 +107,10 @@ router.get('/init-balances', (req: AuthRequest, res) => {
     SELECT a.*, ib.init_balance, ib.init_debit, ib.init_credit,
            ib.opening_debit, ib.opening_credit,
            ib.pre_book_debit, ib.pre_book_credit,
+           ib.foreign_init_balance, ib.foreign_opening_debit, ib.foreign_opening_credit,
+           ib.foreign_pre_book_debit, ib.foreign_pre_book_credit,
+           ib.qty_init_balance, ib.qty_opening_debit, ib.qty_opening_credit,
+           ib.qty_pre_book_debit, ib.qty_pre_book_credit,
            ib.direction as balance_direction,
            (SELECT COUNT(*) FROM init_balances ib2
             WHERE ib2.account_set_id = a.account_set_id
@@ -311,6 +323,14 @@ router.post('/init-balances', operationLog('录入期初余额', '基础设置')
     opening_credit,
     pre_book_debit,
     pre_book_credit,
+    foreign_opening_debit,
+    foreign_opening_credit,
+    foreign_pre_book_debit,
+    foreign_pre_book_credit,
+    qty_opening_debit,
+    qty_opening_credit,
+    qty_pre_book_debit,
+    qty_pre_book_credit,
   } = req.body
   const db = getDb()
   const y = year || new Date().getFullYear()
@@ -349,6 +369,21 @@ router.post('/init-balances', operationLog('录入期初余额', '基础设置')
   const totalDebit = od + pd
   const totalCredit = oc + pc
   const normalizedInitBalance = init_balance ?? calcInitBalance(direction, totalDebit, totalCredit)
+  const foreignOpening = normalizeForeignOpeningDebitCredit(
+    foreign_opening_debit,
+    foreign_opening_credit
+  )
+  const fod = foreignOpening.foreign_opening_debit
+  const foc = foreignOpening.foreign_opening_credit
+  const fpd = Number(foreign_pre_book_debit) || 0
+  const fpc = Number(foreign_pre_book_credit) || 0
+  const foreignInitBalance = calcForeignInitBalance(direction, fod, foc, fpd, fpc)
+  const qtyOpening = normalizeQuantityOpeningDebitCredit(qty_opening_debit, qty_opening_credit)
+  const qod = qtyOpening.qty_opening_debit
+  const qoc = qtyOpening.qty_opening_credit
+  const qpd = Number(qty_pre_book_debit) || 0
+  const qpc = Number(qty_pre_book_credit) || 0
+  const qtyInitBalance = calcQuantityInitBalance(direction, qod, qoc, qpd, qpc)
 
   const existing = db
     .prepare(
@@ -361,7 +396,11 @@ router.post('/init-balances', operationLog('录入期初余额', '基础设置')
       `
       UPDATE init_balances SET
         direction=?, init_balance=?, init_debit=?, init_credit=?, aux_item_id=?,
-        opening_debit=?, opening_credit=?, pre_book_debit=?, pre_book_credit=?
+        opening_debit=?, opening_credit=?, pre_book_debit=?, pre_book_credit=?,
+        foreign_init_balance=?, foreign_opening_debit=?, foreign_opening_credit=?,
+        foreign_pre_book_debit=?, foreign_pre_book_credit=?,
+        qty_init_balance=?, qty_opening_debit=?, qty_opening_credit=?,
+        qty_pre_book_debit=?, qty_pre_book_credit=?
       WHERE id=?
     `
     ).run(
@@ -374,6 +413,16 @@ router.post('/init-balances', operationLog('录入期初余额', '基础设置')
       oc,
       pd,
       pc,
+      foreignInitBalance,
+      fod,
+      foc,
+      fpd,
+      fpc,
+      qtyInitBalance,
+      qod,
+      qoc,
+      qpd,
+      qpc,
       existing.id
     )
   } else {
@@ -382,8 +431,12 @@ router.post('/init-balances', operationLog('录入期初余额', '基础设置')
       INSERT INTO init_balances
         (id, account_set_id, account_id, direction, year, period,
          init_balance, init_debit, init_credit, aux_item_id,
-         opening_debit, opening_credit, pre_book_debit, pre_book_credit)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         opening_debit, opening_credit, pre_book_debit, pre_book_credit,
+         foreign_init_balance, foreign_opening_debit, foreign_opening_credit,
+         foreign_pre_book_debit, foreign_pre_book_credit,
+         qty_init_balance, qty_opening_debit, qty_opening_credit,
+         qty_pre_book_debit, qty_pre_book_credit)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `
     ).run(
       uuidv4(),
@@ -399,7 +452,17 @@ router.post('/init-balances', operationLog('录入期初余额', '基础设置')
       od,
       oc,
       pd,
-      pc
+      pc,
+      foreignInitBalance,
+      fod,
+      foc,
+      fpd,
+      fpc,
+      qtyInitBalance,
+      qod,
+      qoc,
+      qpd,
+      qpc
     )
   }
 
@@ -554,13 +617,19 @@ router.get('/init-balances/aux-can-edit', (req: AuthRequest, res) => {
   })
 })
 
-router.get('/init-balances/clear-preview', (req: AuthRequest, res) => {
-  const { year, mode, account_ids } = req.query
+// 清理预览：GET 与 POST 共用同一处理逻辑
+// POST 版本用于筛选清理场景 —— 科目数量多时 account_ids 拼在 URL 上会超出
+// Node 默认的请求头长度上限（16KB），连接被直接重置，前端只看到 Network Error
+const handleClearPreview = (req: AuthRequest, res: Response) => {
+  const source = req.method === 'POST' ? req.body : req.query
+  const { year, mode, account_ids } = source || {}
   const db = getDb()
   const y = Number(year) || new Date().getFullYear()
   const clearMode = mode === 'aux' ? 'aux' : 'direct'
   let accountIds: string[] | undefined
-  if (typeof account_ids === 'string' && account_ids.trim()) {
+  if (Array.isArray(account_ids)) {
+    accountIds = account_ids.map(String).map(id => id.trim()).filter(Boolean)
+  } else if (typeof account_ids === 'string' && account_ids.trim()) {
     accountIds = account_ids.split(',').map(id => id.trim()).filter(Boolean)
   }
   const scopeErrIds = assertAccountIdsInScope(req.accountScope, accountIds)
@@ -583,6 +652,13 @@ router.get('/init-balances/clear-preview', (req: AuthRequest, res) => {
   } catch (error: any) {
     res.status(400).json({ code: 1, message: error.message })
   }
+}
+
+router.get('/init-balances/clear-preview', (req: AuthRequest, res) => {
+  handleClearPreview(req, res)
+})
+router.post('/init-balances/clear-preview', (req: AuthRequest, res) => {
+  handleClearPreview(req, res)
 })
 
 router.post(

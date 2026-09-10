@@ -8,13 +8,17 @@
       <button
         type="button"
         class="app-rail__item app-rail__item--workbench"
-        :class="{ 'is-active': activeAppKey === WORKBENCH_APP_KEY }"
-        :title="'工作台'"
+        :class="{ 'is-active': activeAppKey === WORKBENCH_APP_KEY, 'is-home': isHomePath('/dashboard') }"
+        :title="isHomePath('/dashboard') ? '工作台（默认主页）' : '工作台'"
         role="tab"
         :aria-selected="activeAppKey === WORKBENCH_APP_KEY"
         @click="emit('home')"
+        @contextmenu.prevent="emit('context', { app: null, event: $event })"
       >
-        <span class="app-rail__icon"><component :is="resolveNavIcon('LayoutDashboard')" :size="20" :stroke-width="1.8" /></span>
+        <span class="app-rail__icon">
+          <component :is="resolveNavIcon('LayoutDashboard')" :size="20" :stroke-width="1.8" />
+          <i v-if="isHomePath('/dashboard')" class="app-rail__home-dot" aria-hidden="true"></i>
+        </span>
         <span class="app-rail__label">工作台</span>
       </button>
 
@@ -23,29 +27,24 @@
         :key="app.key"
         type="button"
         class="app-rail__item"
-        :class="{ 'is-active': activeAppKey === app.key }"
-        :title="app.description ? `${app.title} · ${app.description}` : app.title"
+        :class="{ 'is-active': activeAppKey === app.key, 'is-home': isHomeApp(app) }"
+        :title="appTitle(app)"
         role="tab"
         :aria-selected="activeAppKey === app.key"
         @click="emit('select', app)"
+        @contextmenu.prevent="emit('context', { app, event: $event })"
         @mouseenter="emit('preload', app)"
         @focus="emit('preload', app)"
       >
-        <span class="app-rail__icon"><component :is="resolveNavIcon(app.icon)" :size="20" :stroke-width="1.8" /></span>
+        <span class="app-rail__icon">
+          <component :is="resolveNavIcon(app.icon)" :size="20" :stroke-width="1.8" />
+          <i v-if="isHomeApp(app)" class="app-rail__home-dot" aria-hidden="true"></i>
+        </span>
         <span class="app-rail__label">{{ shortLabel(app.title) }}</span>
       </button>
     </div>
 
     <div class="app-rail__footer">
-      <button
-        type="button"
-        class="app-rail__pin"
-        :class="{ 'is-pinned': pinned }"
-        :title="pinned ? '固定展开（点击恢复自动隐藏）' : '自动隐藏（点击固定展开）'"
-        @click="emit('toggle-pin')"
-      >
-        <component :is="resolveNavIcon(pinned ? 'PinOff' : 'Pin')" :size="16" :stroke-width="1.8" />
-      </button>
       <span v-if="version" class="app-rail__version" :title="`版本 ${version}`">v{{ version }}</span>
     </div>
   </nav>
@@ -54,23 +53,38 @@
 <script setup lang="ts">
 import { WORKBENCH_APP_KEY, type NavApp } from '@/config/navigation'
 import { resolveNavIcon } from '@/config/navIcons'
+import { getGroupNavigationPath } from '@/utils/groupNavigation'
 
-defineProps<{
+const props = defineProps<{
   apps: NavApp[]
   /** 当前高亮的应用键（按路由归属推导） */
   activeAppKey: string
-  pinned: boolean
   logoSrc: string
   brandTitle: string
   version?: string
+  /** 用户设置的默认主页路径，'' 表示未自定义 */
+  homePath?: string
 }>()
 
 const emit = defineEmits<{
   (e: 'select', app: NavApp): void
   (e: 'preload', app: NavApp): void
   (e: 'home'): void
-  (e: 'toggle-pin'): void
+  (e: 'context', payload: { app: NavApp | null; event: MouseEvent }): void
 }>()
+
+function isHomePath(path: string): boolean {
+  return !!props.homePath && props.homePath === path
+}
+
+function isHomeApp(app: NavApp): boolean {
+  return isHomePath(getGroupNavigationPath(app.title))
+}
+
+function appTitle(app: NavApp): string {
+  const base = app.description ? `${app.title} · ${app.description}` : app.title
+  return isHomeApp(app) ? `${base}（默认主页）` : base
+}
 
 /** 应用栏标签最多四字，超长时去掉「管理」后缀 */
 function shortLabel(title: string): string {
@@ -181,11 +195,27 @@ function shortLabel(title: string): string {
 }
 
 .app-rail__icon {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 22px;
   height: 22px;
+}
+
+.app-rail__home-dot {
+  position: absolute;
+  top: -2px;
+  right: -3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #ffc53d;
+  box-shadow: 0 0 0 1.5px rgba(11, 47, 45, 0.9);
+}
+
+.app-rail__item.is-home .app-rail__label {
+  color: #fff;
 }
 
 .app-rail__label {
@@ -203,29 +233,6 @@ function shortLabel(title: string): string {
   gap: 6px;
   padding: 8px 0 10px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.app-rail__pin {
-  width: 32px;
-  height: 32px;
-  border: none;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.7);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: background 0.18s ease, color 0.18s ease;
-}
-
-.app-rail__pin:hover {
-  background: rgba(255, 255, 255, 0.14);
-  color: #fff;
-}
-
-.app-rail__pin.is-pinned {
-  color: #12c7ae;
 }
 
 .app-rail__version {

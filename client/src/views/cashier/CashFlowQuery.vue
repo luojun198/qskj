@@ -157,7 +157,7 @@ async function handleExport() {
 <style scoped>
 .page-flow-query { display: flex; flex-direction: column; height: 100%; }
 .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.balance-summary { display: flex; gap: 24px; padding: 6px 16px; background: var(--el-fill-color-lighter); font-size: 13px; }
+.balance-summary { display: flex; gap: 24px; padding: 6px 16px; background: var(--el-fill-color-lighter); font-size: var(--cw-text-base); }
 .balance-summary b { font-weight: 600; }
 .debit { color: #409eff; }
 .credit { color: #f56c6c; }

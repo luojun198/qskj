@@ -1,21 +1,21 @@
 <template>
   <div class="standard-report-container">
     <!-- 顶部工具栏：报表下拉选择 + 导入/删除 + 视图与期间 -->
-    <div class="report-header">
+    <div class="report-header toolbar">
       <div class="report-header-left">
         <span class="page-title">标准报表</span>
         <el-select
           v-model="activeReportId"
           size="small"
           placeholder="请选择报表"
-          style="width: 240px"
+          style="width: 280px"
           :no-data-text="'暂无报表，请导入'"
           @change="handleSelectReport"
         >
           <el-option
             v-for="report in reports"
             :key="report.id"
-            :label="report.name"
+            :label="formatReportLabel(report)"
             :value="report.id"
           />
         </el-select>
@@ -192,8 +192,8 @@
           :value="report.code"
           class="import-report-option"
         >
+          <span class="report-option-seq">{{ report.code }}.</span>
           <span class="report-option-name">{{ report.name }}</span>
-          <span class="report-option-code">编码 {{ report.code }}</span>
           <span class="report-option-file">{{ report.source_file }}</span>
         </el-checkbox>
       </el-checkbox-group>
@@ -266,6 +266,12 @@ import HiprintDialog from '@/components/print/HiprintDialog.vue'
 
 const reports = ref<RhStandardReport[]>([])
 const activeReportId = ref<string>('')
+
+/** 下拉与导入列表统一展示「序号.报表名」，序号即 ACD 报表编码（bb00006.vts → 6） */
+function formatReportLabel(report: { code?: string | null; name: string }): string {
+  const code = String(report.code ?? '').trim()
+  return code ? `${code}. ${report.name}` : report.name
+}
 // 公式视图直接就是编辑态：网格 UI 复用动态报表那套组件，数据由本 composable 适配
 const grid = useStandardReportGrid()
 provide(REPORT_GRID_KEY, grid.context)
@@ -505,10 +511,16 @@ const computedCellMap = computed(() => {
   return map
 })
 
+/** 取数结果为数值 0：屏幕、打印、Excel 一律留白 */
+const isZeroResult = (cell: RhStandardReportComputedCell) =>
+  cell.status === 'ok' && cell.numeric_value === 0
+
 const cellDisplay = (row: number, col: number): string => {
   const key = `${row}_${col}`
   if (viewMode.value === 'compute') {
     const computed = computedCellMap.value.get(key)
+    // 零值留白，与屏幕网格一致
+    if (computed && isZeroResult(computed)) return ''
     if (computed) return computed.display_value
     // 计算视图下，文本单元格仍显示原文字（项目名/表头）
     const tpl = templateCellMap.value.get(key)
@@ -533,7 +545,8 @@ const buildExportModel = () => {
     getNumeric: (row, col) => {
       if (viewMode.value !== 'compute') return null
       const computed = computedCellMap.value.get(`${row}_${col}`)
-      return computed && computed.status === 'ok' ? (computed.numeric_value ?? null) : null
+      if (!computed || computed.status !== 'ok' || isZeroResult(computed)) return null
+      return computed.numeric_value ?? null
     },
     isError: (row, col) =>
       viewMode.value === 'compute' &&
@@ -919,18 +932,21 @@ onBeforeUnmount(() => {
   align-items: flex-start;
 }
 
-.report-option-name,
-.report-option-code,
 .report-option-file {
   display: block;
 }
 
+.report-option-seq,
 .report-option-name {
   color: #303133;
   font-weight: 600;
 }
 
-.report-option-code,
+/* 序号右侧留白，与报表名同行显示 */
+.report-option-seq {
+  margin-right: 4px;
+}
+
 .report-option-file {
   margin-top: 3px;
   color: #909399;
@@ -953,7 +969,7 @@ onBeforeUnmount(() => {
 .report-grid {
   border-collapse: collapse;
   width: max-content;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
 }
 
 .report-grid .grid-cell {

@@ -59,6 +59,25 @@ export function applyMovingAvgIn(
   return { id: moveId, account_set_id: accountSetId, move_date: doc.date, doc_type: doc.type, doc_no: doc.no, line_seq: doc.seq, warehouse_code: warehouse, item_code: itemCode, direction: 'in', qty: inQty, unit_cost: inCost, amount: Math.round(inCost * inQty * 100) / 100, balance_qty: newQty, balance_amount: newAmt, balance_avg_cost: avg }
 }
 
+/**
+ * 该物料最近一次入库的单价，作为负库存出库时的成本兜底。
+ * 先看本仓/全仓的入库流水，再退回物料档案的参考进价；都没有则返回 0。
+ */
+function lastInboundUnitCost(db: Database.Database, accountSetId: string, itemCode: string): number {
+  const move = db.prepare(
+    `SELECT unit_cost FROM scm_stock_move
+      WHERE account_set_id=? AND item_code=? AND direction='in' AND unit_cost > 0
+      ORDER BY move_date DESC, rowid DESC LIMIT 1`
+  ).get(accountSetId, itemCode) as { unit_cost: number } | undefined
+  if (move?.unit_cost) return Math.round(move.unit_cost * 10000) / 10000
+
+  const item = db.prepare(
+    'SELECT purchase_price, ref_cost FROM scm_item WHERE account_set_id=? AND code=?'
+  ).get(accountSetId, itemCode) as { purchase_price?: number; ref_cost?: number } | undefined
+  const price = Number(item?.purchase_price || 0) || Number(item?.ref_cost || 0)
+  return price > 0 ? Math.round(price * 10000) / 10000 : 0
+}
+
 /** 移动加权平均出仓：取当前均价为 unit_cost，减少库存 */
 export function applyMovingAvgOut(
   db: Database.Database, accountSetId: string,
@@ -73,7 +92,9 @@ export function applyMovingAvgOut(
 
   const oldQty = stock?.qty || 0
   const oldAmt = stock?.amount || 0
-  const unitCost = stock?.avg_cost || 0
+  // 负库存出库时该仓可能根本没有库存记录（或均价为 0），直接取 0 会把销售成本、
+  // 库存金额一起记成 0，成本被低估且事后难以察觉。此处按该物料最近一次入库单价兜底。
+  const unitCost = stock?.avg_cost || lastInboundUnitCost(db, accountSetId, itemCode) || 0
   const newQtyRaw = Math.round((oldQty - outQty) * 10000) / 10000
   if (!options.allowNegative && newQtyRaw < -0.000001) {
     throw new Error(`库存不足，物料 ${itemCode} 在仓库 ${warehouse} 当前库存 ${oldQty}，本次出库 ${outQty}`)
@@ -155,7 +176,8 @@ export function reverseDocMoves(
     const newQty = Math.abs(newQtyRaw) < 0.000001 ? 0 : newQtyRaw
     const newAmtRaw = oldAmt + rollback.amountDelta
     const newAmt = newQty === 0 ? 0 : (allowNegative ? newAmtRaw : Math.max(0, newAmtRaw))
-    const avg = newQty !== 0 ? newAmt / newQty : 0
+    // 与 applyMovingAvgIn/Out 统一按 4 位舍入，避免回滚后均价出现长尾差
+    const avg = newQty !== 0 ? Math.round((newAmt / newQty) * 10000) / 10000 : 0
     if (stock) {
       db.prepare('UPDATE scm_stock SET qty=?,amount=?,avg_cost=?,updated_at=datetime(\'now\') WHERE account_set_id=? AND warehouse_code=? AND item_code=?')
         .run(newQty, newAmt, avg, accountSetId, rollback.warehouse, rollback.itemCode)

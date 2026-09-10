@@ -450,7 +450,7 @@ defineExpose({ openPanel })
 .ip-filter__lbl { font-size: 12px; color: var(--el-text-color-secondary); }
 .ip-filter__stock { margin-left: auto; }
 .no-data {
-  padding: 20px; text-align: center; color: var(--el-text-color-secondary); font-size: 13px;
+  padding: 20px; text-align: center; color: var(--el-text-color-secondary); font-size: var(--cw-text-base);
 }
 .text-success { color: var(--el-color-success); }
 .text-muted { color: var(--el-text-color-placeholder); }

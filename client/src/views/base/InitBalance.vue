@@ -20,10 +20,18 @@
     <div class="page-header">
       <div class="header-left">
         <el-select v-model="selectedYear" class="year-select" size="small" @change="onYearChange">
-          <el-option v-for="y in years" :key="y" :label="`${y}年`" :value="y" />
+          <el-option
+            v-for="y in years"
+            :key="y"
+            :label="y === bookStartYear ? `${y}年（建账年度）` : `${y}年`"
+            :value="y"
+          />
         </el-select>
         <el-tag v-if="isMidYear" type="warning" size="small" effect="plain">
           年中开账 · 第{{ startMonth }}期
+        </el-tag>
+        <el-tag v-if="bookStartYear && !isBookStartYear" type="info" size="small" effect="plain">
+          建账年度 {{ bookStartYear }} 年 · 本年「年初」= {{ selectedYear - 1 }} 年年末结转
         </el-tag>
       </div>
 
@@ -367,6 +375,114 @@
                     inputmode="decimal"
                     @blur="onEditInputBlur(row, 'opening_credit')"
                     @keydown="handleCellKeydown($event, row, 'opening_credit')"
+                  />
+                </template>
+              </template>
+            </el-table-column>
+
+            <el-table-column
+              v-if="enableForeignCurrency"
+              label="原币年初"
+              width="110"
+              align="right"
+            >
+              <template #default="{ row }">
+                <span v-if="row.is_foreign" class="computed-value" :title="row.currency_code || ''">
+                  {{
+                    formatAmount(
+                      row.foreign_opening_debit ||
+                        row.foreign_opening_credit ||
+                        row.foreign_init_balance ||
+                        0
+                    )
+                  }}
+                </span>
+              </template>
+            </el-table-column>
+
+            <!-- 期初数量：仅数量核算科目可录，与年初借/贷同一套行内编辑 -->
+            <el-table-column
+              v-if="showQuantityColumns"
+              label="数量借"
+              width="120"
+              align="right"
+            >
+              <template #default="{ row }">
+                <template v-if="!row.is_quantity" />
+                <template v-else-if="parentIdSet.has(row.id) || isAuxLeafAccount(row)">
+                  <span class="computed-value" style="cursor: default">{{
+                    formatQuantity(row.qty_opening_debit || 0)
+                  }}</span>
+                </template>
+                <template v-else>
+                  <span
+                    v-if="
+                      editingCell?.rowId !== row.id || editingCell?.field !== 'qty_opening_debit'
+                    "
+                    class="editable-cell"
+                    :class="{
+                      'cell-active':
+                        currentRow?.id === row.id &&
+                        activeField === 'qty_opening_debit' &&
+                        editingCell?.rowId !== row.id,
+                      'cell-dirty': isCellDirty(row, 'qty_opening_debit'),
+                      'cell-unsaved': unsavedSet.has(row.id + '_qty_opening_debit'),
+                    }"
+                    @click="!locked && startEdit(row, 'qty_opening_debit')"
+                    >{{ formatQuantity(row.qty_opening_debit || 0) }}</span
+                  >
+                  <input
+                    v-else
+                    :ref="el => setEditInputRef(row.id, 'qty_opening_debit', el)"
+                    v-model="editValue"
+                    type="text"
+                    class="cell-input"
+                    inputmode="decimal"
+                    @blur="onEditInputBlur(row, 'qty_opening_debit')"
+                    @keydown="handleCellKeydown($event, row, 'qty_opening_debit')"
+                  />
+                </template>
+              </template>
+            </el-table-column>
+            <el-table-column
+              v-if="showQuantityColumns"
+              label="数量贷"
+              width="120"
+              align="right"
+            >
+              <template #default="{ row }">
+                <template v-if="!row.is_quantity" />
+                <template v-else-if="parentIdSet.has(row.id) || isAuxLeafAccount(row)">
+                  <span class="computed-value" style="cursor: default">{{
+                    formatQuantity(row.qty_opening_credit || 0)
+                  }}</span>
+                </template>
+                <template v-else>
+                  <span
+                    v-if="
+                      editingCell?.rowId !== row.id || editingCell?.field !== 'qty_opening_credit'
+                    "
+                    class="editable-cell"
+                    :class="{
+                      'cell-active':
+                        currentRow?.id === row.id &&
+                        activeField === 'qty_opening_credit' &&
+                        editingCell?.rowId !== row.id,
+                      'cell-dirty': isCellDirty(row, 'qty_opening_credit'),
+                      'cell-unsaved': unsavedSet.has(row.id + '_qty_opening_credit'),
+                    }"
+                    @click="!locked && startEdit(row, 'qty_opening_credit')"
+                    >{{ formatQuantity(row.qty_opening_credit || 0) }}</span
+                  >
+                  <input
+                    v-else
+                    :ref="el => setEditInputRef(row.id, 'qty_opening_credit', el)"
+                    v-model="editValue"
+                    type="text"
+                    class="cell-input"
+                    inputmode="decimal"
+                    @blur="onEditInputBlur(row, 'qty_opening_credit')"
+                    @keydown="handleCellKeydown($event, row, 'qty_opening_credit')"
                   />
                 </template>
               </template>
@@ -726,6 +842,7 @@ import type { TableColumnCtx, UploadFile } from 'element-plus'
 import HiprintDialog from '@/components/print/HiprintDialog.vue'
 import { buildTablePrintHtml } from '@/utils/printTemplateHiprint'
 import { useUserStore } from '@/stores/user'
+import { useSystemParamsStore } from '@/stores/systemParams'
 
 const router = useRouter()
 const route = useRoute()
@@ -771,6 +888,8 @@ const { isBlocked: isScopeBlocked, emptyDescription: scopeEmptyDescription } = u
 const balanceCheck = ref<any>(null)
 const isMidYear = ref(false)
 const startMonth = ref(1)
+const systemParamsStore = useSystemParamsStore()
+const enableForeignCurrency = computed(() => systemParamsStore.enableForeignCurrency)
 const saving = ref(false)
 const locked = ref(false)
 const lockReason = ref('')
@@ -793,7 +912,24 @@ const activeField = ref<BalanceField>('opening_debit')
 // 年度选择
 const currentYear = new Date().getFullYear()
 const selectedYear = ref(currentYear)
-const years = Array.from({ length: 10 }, (_, i) => currentYear - i)
+/** 建账年度：来自账套建账日期，0 表示未取到 */
+const bookStartYear = computed(() => systemParamsStore.startYear)
+const isBookStartYear = computed(
+  () => bookStartYear.value > 0 && selectedYear.value === bookStartYear.value
+)
+/**
+ * 年度下拉：下限取建账年度（取不到时回退近 10 年），上限取系统年度与当前会计年度的较大者。
+ * 原实现固定为「今年往前 10 年」，早于 10 年前建账的账套（如 2016 年建账）选不到建账年度，
+ * 只能看到之后年度的年初余额（即上年年末结转），容易误以为期初数不对。
+ */
+const years = computed(() => {
+  const start = bookStartYear.value
+  const maxYear = Math.max(currentYear, systemParamsStore.currentYear, selectedYear.value, start)
+  const minYear = start > 0 ? Math.min(start, maxYear) : maxYear - 9
+  const arr: number[] = []
+  for (let y = maxYear; y >= minYear; y--) arr.push(y)
+  return arr
+})
 
 // 导入相关
 const importDialogVisible = ref(false)
@@ -927,7 +1063,25 @@ const summaryBalanceClass = computed(() => {
 
 // ===================== 行内编辑 =====================
 
-type BalanceField = 'opening_debit' | 'opening_credit' | 'pre_book_debit' | 'pre_book_credit'
+type BalanceField =
+  | 'opening_debit'
+  | 'opening_credit'
+  | 'pre_book_debit'
+  | 'pre_book_credit'
+  | 'qty_opening_debit'
+  | 'qty_opening_credit'
+
+/** 数量字段保留 6 位小数，金额字段保留 2 位 */
+const QUANTITY_FIELDS: BalanceField[] = ['qty_opening_debit', 'qty_opening_credit']
+function isQuantityField(field: BalanceField): boolean {
+  return QUANTITY_FIELDS.includes(field)
+}
+
+/** 数量展示：6 位小数，0 显示空串（与库存数量金额表一致） */
+function formatQuantity(value: number | null | undefined): string {
+  const n = Number(value) || 0
+  return n ? Math.abs(n).toFixed(6) : ''
+}
 
 interface EditingCell {
   rowId: string
@@ -937,9 +1091,14 @@ interface EditingCell {
 const FIELDS: BalanceField[] = [
   'opening_debit',
   'opening_credit',
+  'qty_opening_debit',
+  'qty_opening_credit',
   'pre_book_debit',
   'pre_book_credit',
 ]
+
+/** 列表里存在数量核算科目时才显示数量两列 */
+const showQuantityColumns = computed(() => list.value.some((row: any) => row.is_quantity))
 
 const editingCell = ref<EditingCell | null>(null)
 const editValue = ref('')
@@ -1002,7 +1161,11 @@ function commitEdit() {
   if (!editingCell.value) return
   const { rowId, field } = editingCell.value
   const val = parseFloat(editValue.value)
-  const numVal = isNaN(val) ? 0 : Math.round(val * 100) / 100
+  const numVal = isNaN(val)
+    ? 0
+    : isQuantityField(field)
+      ? Math.round(val * 1e6) / 1e6
+      : Math.round(val * 100) / 100
 
   const row = list.value.find(r => r.id === rowId)
   if (row) {
@@ -1024,6 +1187,22 @@ function commitEdit() {
         fieldsToPersist.push('opening_credit', 'opening_debit')
       } else if (prevVal !== numVal) {
         fieldsToPersist.push('opening_credit')
+      }
+    } else if (field === 'qty_opening_debit') {
+      row.qty_opening_debit = numVal
+      if (Math.abs(numVal) > 1e-9 && Math.abs(row.qty_opening_credit || 0) > 1e-9) {
+        row.qty_opening_credit = 0
+        fieldsToPersist.push('qty_opening_debit', 'qty_opening_credit')
+      } else if (prevVal !== numVal) {
+        fieldsToPersist.push('qty_opening_debit')
+      }
+    } else if (field === 'qty_opening_credit') {
+      row.qty_opening_credit = numVal
+      if (Math.abs(numVal) > 1e-9 && Math.abs(row.qty_opening_debit || 0) > 1e-9) {
+        row.qty_opening_debit = 0
+        fieldsToPersist.push('qty_opening_credit', 'qty_opening_debit')
+      } else if (prevVal !== numVal) {
+        fieldsToPersist.push('qty_opening_credit')
       }
     } else if (prevVal !== numVal) {
       row[field] = numVal
@@ -1059,8 +1238,12 @@ function cancelEdit() {
 }
 
 function getVisibleFields(): BalanceField[] {
-  if (isMidYear.value) return FIELDS
-  return ['opening_debit', 'opening_credit']
+  // 按 FIELDS 的列顺序过滤，保证方向键/Tab 的移动顺序与表格列顺序一致
+  return FIELDS.filter(field => {
+    if (isQuantityField(field)) return showQuantityColumns.value
+    if (field === 'pre_book_debit' || field === 'pre_book_credit') return isMidYear.value
+    return true
+  })
 }
 
 function navigateByKeyboard(
@@ -1127,6 +1310,10 @@ async function saveCell(row: any, field: BalanceField) {
       opening_credit: opening.opening_credit,
       pre_book_debit: row.pre_book_debit || 0,
       pre_book_credit: row.pre_book_credit || 0,
+      qty_opening_debit: row.qty_opening_debit || 0,
+      qty_opening_credit: row.qty_opening_credit || 0,
+      qty_pre_book_debit: row.qty_pre_book_debit || 0,
+      qty_pre_book_credit: row.qty_pre_book_credit || 0,
     })
     unsavedSet.value = new Set([...unsavedSet.value].filter(k => k !== row.id + '_' + field))
   } catch {
@@ -1152,18 +1339,24 @@ function recalcParentTotals() {
     let od = 0,
       oc = 0,
       pd = 0,
-      pc = 0
+      pc = 0,
+      qod = 0,
+      qoc = 0
     for (const child of node.children) {
       sumChildren(child)
       od += child.opening_debit || 0
       oc += child.opening_credit || 0
       pd += child.pre_book_debit || 0
       pc += child.pre_book_credit || 0
+      qod += child.qty_opening_debit || 0
+      qoc += child.qty_opening_credit || 0
     }
     node.opening_debit = od
     node.opening_credit = oc
     node.pre_book_debit = pd
     node.pre_book_credit = pc
+    node.qty_opening_debit = qod
+    node.qty_opening_credit = qoc
     node.balanceValue = calcBalance(node)
 
     const listItem = list.value.find(item => item.id === node.id)
@@ -1172,6 +1365,8 @@ function recalcParentTotals() {
       listItem.opening_credit = oc
       listItem.pre_book_debit = pd
       listItem.pre_book_credit = pc
+      listItem.qty_opening_debit = qod
+      listItem.qty_opening_credit = qoc
       listItem.balanceValue = node.balanceValue
     }
   }
@@ -1795,13 +1990,13 @@ async function loadClearPreview() {
       request.get('/base/init-balances/clear-preview', {
         params: { year: selectedYear.value, mode: 'aux' },
       }) as Promise<any>,
+      // 筛选结果的科目数量可能上千，account_ids 放在 URL 上会超出请求头长度限制，
+      // 导致连接被重置（前端表现为 Network Error），因此改用 POST 走请求体
       filteredDirectClearAccountIds.value.length
-        ? (request.get('/base/init-balances/clear-preview', {
-            params: {
-              year: selectedYear.value,
-              mode: 'direct',
-              account_ids: filteredDirectClearAccountIds.value.join(','),
-            },
+        ? (request.post('/base/init-balances/clear-preview', {
+            year: selectedYear.value,
+            mode: 'direct',
+            account_ids: filteredDirectClearAccountIds.value,
           }) as Promise<any>)
         : Promise.resolve({ data: { count: 0 } }),
     ])
@@ -2196,6 +2391,17 @@ async function handleTaskCompleted() {
 
 onMounted(() => {
   applyInitBalanceEntryYear()
+  void systemParamsStore.load().then(() => {
+    // 参数加载后若默认年度落在账套区间之外（如系统年份晚于账套最新会计年度），
+    // 自动落到账套的当前会计年度，避免打开就是一片空白
+    if (route.query.year) return
+    const list = years.value
+    if (list.length === 0 || list.includes(selectedYear.value)) return
+    const target = Math.min(Math.max(systemParamsStore.currentYear, list[list.length - 1]), list[0])
+    if (target === selectedYear.value) return
+    selectedYear.value = target
+    onYearChange()
+  })
   fetchData()
   checkCanEdit()
   window.addEventListener('keydown', handleKeydown)
@@ -2276,20 +2482,20 @@ onBeforeUnmount(() => {
   flex: 1;
 }
 .voucher-audit-return-btn__eyebrow {
-  font-size: 12px;
+  font-size: var(--cw-text-sm);
   line-height: 1.3;
   color: #e6a23c;
   font-weight: 600;
   letter-spacing: 0.02em;
 }
 .voucher-audit-return-btn__title {
-  font-size: 17px;
+  font-size: var(--cw-text-xl);
   line-height: 1.25;
   font-weight: 700;
   color: #1f2d3d;
 }
 .voucher-audit-return-btn__desc {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   line-height: 1.45;
   color: #606266;
 }
@@ -2301,7 +2507,7 @@ onBeforeUnmount(() => {
   border-radius: 999px;
   background: #409eff;
   color: #fff;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   font-weight: 600;
   white-space: nowrap;
   flex-shrink: 0;
@@ -2443,7 +2649,7 @@ onBeforeUnmount(() => {
   text-decoration: underline dotted;
 }
 .balance-check-icon {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   flex-shrink: 0;
 }
 .balance-debit {
@@ -2505,7 +2711,7 @@ onBeforeUnmount(() => {
 .import-tips {
   margin-bottom: 16px;
   color: #606266;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   line-height: 1.8;
 }
 .import-tips p {

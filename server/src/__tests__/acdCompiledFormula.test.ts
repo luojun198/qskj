@@ -75,6 +75,66 @@ describeIfTemplate('ACD 编译公式还原', () => {
     expect(formulas).toContain('=IF(B5>0,D5/B5,"-")')
   })
 
+  it('行次列手工填的数字常量（RK 记录）应还原为 number 单元格', () => {
+    // 新准则资产负债表里应收票据~预付款项四行的行次不是 =B8+1 公式而是敲死的 5/6/7/8，
+    // vts 把它们存成没有长度字节的 RK 记录。丢掉它们，其下的 =B12+1 就从 1 重新起算。
+    const cells = cellsOf(/^资产负债表\(已执行新金融、收入准则\)/)
+    const numberAt = (rowIndex: number, colIndex: number) =>
+      cells.find(
+        cell => cell.rowIndex === rowIndex && cell.colIndex === colIndex && cell.cellType === 'number'
+      )?.textValue
+
+    expect(numberAt(8, 1)).toBe('5')
+    expect(numberAt(9, 1)).toBe('6')
+    expect(numberAt(10, 1)).toBe('7')
+    expect(numberAt(11, 1)).toBe('8')
+    // 负债侧同行同值
+    expect(numberAt(11, 5)).toBe('8')
+    // 数字格与其上下的公式格共用同一套样式（居中、16px）
+    const numberCell = cells.find(
+      cell => cell.rowIndex === 8 && cell.colIndex === 1 && cell.cellType === 'number'
+    )
+    expect(numberCell?.styleKey).toContain('align-center')
+  })
+
+  it('数字常量不得与文本/公式格重合', () => {
+    // 「企业所得税申报表」「利润表（季报）」等的 sheet 切分本来就不干净（两个版本粘在一起、错一行），
+    // 文本格同样重合，不在此约束范围内；这里只看切分干净的三大报表标准版。
+    const cleanTemplates = templates.filter(item =>
+      /^(资产负债表\(已执行新金融、收入准则\)|利润表\(已执行新金融、收入准则\)|现金流量表)$/.test(item.reportName)
+    )
+    expect(cleanTemplates).toHaveLength(3)
+    for (const template of cleanTemplates) {
+      for (const sheet of template.sheets) {
+        const occupied = new Set(
+          sheet.cells
+            .filter(cell => cell.cellType !== 'number')
+            .map(cell => `${cell.rowIndex}_${cell.colIndex}`)
+        )
+        for (const cell of sheet.cells) {
+          if (cell.cellType !== 'number') continue
+          expect(
+            occupied.has(`${cell.rowIndex}_${cell.colIndex}`),
+            `${template.reportName} r${cell.rowIndex}c${cell.colIndex} 数字格与其它格重合`
+          ).toBe(false)
+        }
+      }
+    }
+  })
+
+  it('应还原原报表的列宽与行高版面', () => {
+    expect(balanceSheet).toBeDefined()
+    const layout = balanceSheet!.layout
+    // 项目列 21.1 字符宽、行次列 3.4 字符宽、金额列 13 字符宽：项目列明显宽于金额列，行次列最窄
+    expect(layout.colWidthsPx).toHaveLength(8)
+    expect(layout.colWidthsPx[0]).toBeGreaterThan(layout.colWidthsPx[2]!)
+    expect(layout.colWidthsPx[2]).toBeGreaterThan(layout.colWidthsPx[1]!)
+    expect(layout.colWidthsPx[1]).toBeLessThan(50)
+    // 标题行 960 twips = 64px，正文行 432 twips ≈ 29px
+    expect(layout.rowHeightsPx[0]).toBe(64)
+    expect(layout.rowHeightsPx[5]).toBe(29)
+  })
+
   it('该模板已无未解析公式记录', () => {
     const { warnings } = extractAcdReportTemplates(readFileSync(TEMPLATE_PATH))
     const unresolved = warnings.filter(item => item.startsWith('未解析公式记录'))

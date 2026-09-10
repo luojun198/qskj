@@ -592,7 +592,7 @@ onMounted(async () => {
 .report-tabs { flex: 1; display: flex; flex-direction: column; padding: 0 16px; overflow: hidden; }
 .report-tabs :deep(.el-tabs__content) { flex: 1; overflow: auto; padding-top: 8px; }
 .filter-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
-.filter-hint { font-size: 13px; color: var(--el-text-color-secondary); }
+.filter-hint { font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }
 .total-amt { color: #e6a23c; }
 .depr-amt { color: #409eff; font-weight: 600; }
 .incr { color: #67c23a; font-weight: 500; }

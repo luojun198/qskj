@@ -13,8 +13,12 @@ import {
   applyReceivableFromShipment,
   applyPayableFromReceipt,
   applyOutsourceFeePayable,
+  applyInvoice,
+  reverseInvoice,
+  sumGrossAmount,
   getPaymentSources,
   getPartnerBalanceSummary,
+  verifyArAp,
 } from '../services/scmArAp.js'
 import { computeFinishCost } from '../routes/scmDoc.js'
 
@@ -29,13 +33,15 @@ function createDb() {
     CREATE TABLE scm_stock_move (id TEXT, account_set_id TEXT, move_date TEXT, doc_type TEXT, doc_no TEXT,
       line_seq INTEGER, warehouse_code TEXT, item_code TEXT, direction TEXT, qty REAL, unit_cost REAL,
       amount REAL, batch_no TEXT, balance_qty REAL, balance_amount REAL, balance_avg_cost REAL);
-    CREATE TABLE scm_doc (id TEXT, account_set_id TEXT, doc_type TEXT, doc_no TEXT, status TEXT, doc_date TEXT, partner_code TEXT);
+    CREATE TABLE scm_doc (id TEXT, account_set_id TEXT, doc_type TEXT, doc_no TEXT, status TEXT, doc_date TEXT, partner_code TEXT, source_doc_id TEXT);
+    CREATE TABLE scm_doc_line (id TEXT, account_set_id TEXT, doc_id TEXT, seq INTEGER, item_code TEXT, qty REAL, price REAL, amount REAL, tax_amount REAL);
     CREATE TABLE scm_partner (id TEXT, account_set_id TEXT, code TEXT, name TEXT, ar_account TEXT, ap_account TEXT);
     CREATE TABLE scm_ar_ap_log (id TEXT, account_set_id TEXT, partner_code TEXT, doc_type TEXT, doc_no TEXT,
       doc_date TEXT, due_date TEXT, direction TEXT, amount REAL, ar_account TEXT, ap_account TEXT, cashier_journal_id TEXT,
       remark TEXT, verified_amount REAL NOT NULL DEFAULT 0, created_at TEXT DEFAULT (datetime('now')));
     CREATE TABLE scm_ar_ap_verify (id TEXT PRIMARY KEY, account_set_id TEXT, partner_code TEXT, verify_no TEXT,
       verify_date TEXT, in_log_id TEXT, out_log_id TEXT, amount REAL, created_by TEXT, created_at TEXT DEFAULT (datetime('now')));
+    CREATE TABLE scm_item (id TEXT, account_set_id TEXT, code TEXT, name TEXT, purchase_price REAL, ref_cost REAL);
     CREATE TABLE cashier_journal (id TEXT, account_set_id TEXT, account_code TEXT, currency TEXT, biz_date TEXT,
       summary TEXT, debit REAL, credit REAL, settle_type TEXT, counter_account TEXT, created_by TEXT);
   `)
@@ -95,6 +101,38 @@ describe('scmCosting 移动加权平均', () => {
     expect(stock(db)).toMatchObject({ qty: 5, amount: 500, avg_cost: 100 })
   })
 
+  // ── S5 / S7 回归 ─────────────────────────────────────────
+
+  it('S5 负库存出库无库存记录时按最近入库单价兜底，不再记成本 0', () => {
+    // 先在别的仓入库，建立该物料的入库单价轨迹
+    applyMovingAvgIn(db, AID, 'W9', 'I1', 10, 88, ref('IN-9'))
+    const { unitCost } = applyMovingAvgOut(db, AID, 'W1', 'I1', 2, { ...ref('OUT-1'), type: 'PL' }, { allowNegative: true })
+    expect(unitCost).toBe(88)
+    expect(stock(db, 'W1', 'I1')).toMatchObject({ qty: -2, amount: -176 })
+  })
+
+  it('S5 无任何入库轨迹时退回物料档案参考进价', () => {
+    db.prepare('INSERT INTO scm_item (id,account_set_id,code,name,purchase_price,ref_cost) VALUES (?,?,?,?,?,?)')
+      .run(uuidv4(), AID, 'I2', '物料二', 0, 55)
+    const { unitCost } = applyMovingAvgOut(db, AID, 'W1', 'I2', 1, { ...ref('OUT-2'), type: 'PL' }, { allowNegative: true })
+    expect(unitCost).toBe(55)
+  })
+
+  it('S5 档案也没有价格时仍返回 0（保持可用，不抛错）', () => {
+    const { unitCost } = applyMovingAvgOut(db, AID, 'W1', 'I3', 1, { ...ref('OUT-3'), type: 'PL' }, { allowNegative: true })
+    expect(unitCost).toBe(0)
+  })
+
+  it('S7 反审核回算均价按 4 位舍入，与入/出库口径一致', () => {
+    const docId = uuidv4()
+    db.prepare('INSERT INTO scm_doc (id,account_set_id,doc_type,doc_no) VALUES (?,?,?,?)').run(docId, AID, 'PI', 'IN-R')
+    applyMovingAvgIn(db, AID, 'W1', 'I1', 3, 10, ref('IN-0'))
+    applyMovingAvgIn(db, AID, 'W1', 'I1', 1, 20, ref('IN-R'))
+    reverseDocMoves(db, AID, docId)
+    const avg = stock(db).avg_cost
+    expect(avg).toBe(Math.round(avg * 10000) / 10000)
+  })
+
   it('getCostingMethod 默认 moving_avg，可读参数', () => {
     expect(getCostingMethod(db, AID)).toBe('moving_avg')
     db.prepare('INSERT INTO system_params (id,account_set_id,param_key,param_value) VALUES (?,?,?,?)').run(uuidv4(), AID, 'scm:costing_method', 'fifo')
@@ -114,6 +152,132 @@ describe('scmArAp 货物驱动往来', () => {
     applyReceivableFromShipment(db, AID, { doc_type: 'SO', doc_no: 'S1', doc_date: '2026-06-01', partner_code: 'P1' }, [{ amount: 300 }, { amount: 100 }])
     const rows = db.prepare("SELECT direction, amount FROM scm_ar_ap_log WHERE account_set_id=?").all(AID) as any[]
     expect(rows).toEqual([{ direction: 'in', amount: 400 }])
+  })
+
+  // ── S2：往来台账改为含税口径 ──────────────────────────────
+
+  it('S2 销售发货按价税合计挂应收（与凭证借方应收口径一致）', () => {
+    const lines = [{ amount: 300, tax_amount: 39 }, { amount: 100, tax_amount: 13 }]
+    applyReceivableFromShipment(db, AID, { doc_type: 'SO', doc_no: 'S2', doc_date: '2026-06-01', partner_code: 'P1' }, lines)
+    const row = db.prepare("SELECT amount FROM scm_ar_ap_log WHERE doc_no='S2'").get() as any
+    // 凭证 sale 分支借应收 = Σ(amt + tax) = 452
+    const voucherAr = lines.reduce((t, l) => t + l.amount + l.tax_amount, 0)
+    expect(row.amount).toBe(452)
+    expect(row.amount).toBe(voucherAr)
+  })
+
+  it('S2 采购入库按价税合计挂应付（与凭证贷方应付口径一致）', () => {
+    const lines = [{ amount: 1000, tax_amount: 130 }]
+    applyPayableFromReceipt(db, AID, { doc_type: 'PI', doc_no: 'I2', doc_date: '2026-06-01', partner_code: 'P1' }, lines)
+    const row = db.prepare("SELECT amount FROM scm_ar_ap_log WHERE doc_no='I2'").get() as any
+    expect(row.amount).toBe(1130)
+    expect(row.amount).toBe(lines.reduce((t, l) => t + l.amount + l.tax_amount, 0))
+  })
+
+  it('S2 含税收款可以把应收核销干净（原不含税口径下税额永远核不掉）', () => {
+    applyReceivableFromShipment(db, AID, { doc_type: 'SO', doc_no: 'S3', doc_date: '2026-06-01', partner_code: 'P1' }, [{ amount: 1000, tax_amount: 130 }])
+    const inLog = db.prepare("SELECT id, amount FROM scm_ar_ap_log WHERE doc_no='S3'").get() as any
+    expect(inLog.amount).toBe(1130)
+    // 客户按含税额 1130 付款，核销后无余额
+    db.prepare(`INSERT INTO scm_ar_ap_log (id,account_set_id,partner_code,doc_type,doc_no,doc_date,direction,amount,verified_amount)
+      VALUES (?,?,?,'RCV','R1','2026-06-10','out',1130,0)`).run(uuidv4(), AID, 'P1')
+    const outLog = db.prepare("SELECT id FROM scm_ar_ap_log WHERE doc_no='R1'").get() as any
+    expect(() => verifyArAp(db, AID, {
+      partner_code: 'P1', matches: [{ in_log_id: inLog.id, out_log_id: outLog.id, amount: 1130 }],
+    })).not.toThrow()
+    const after = db.prepare("SELECT amount, verified_amount FROM scm_ar_ap_log WHERE doc_no='S3'").get() as any
+    expect(after.amount - after.verified_amount).toBe(0)
+  })
+
+  // ── S1：发票（RP/RS）挂账 ─────────────────────────────────
+
+  /** 建一张来源单据（含明细），返回其 id */
+  const mkSourceDoc = (docType: string, docNo: string, lines: Array<{ amount: number; tax_amount: number }>) => {
+    const id = uuidv4()
+    db.prepare("INSERT INTO scm_doc (id,account_set_id,doc_type,doc_no,doc_date,partner_code) VALUES (?,?,?,?,?,?)")
+      .run(id, AID, docType, docNo, '2026-06-01', 'P1')
+    lines.forEach((l, i) => db.prepare("INSERT INTO scm_doc_line (id,account_set_id,doc_id,seq,amount,tax_amount) VALUES (?,?,?,?,?,?)")
+      .run(uuidv4(), AID, id, i + 1, l.amount, l.tax_amount))
+    return id
+  }
+  const logOf = (docNo: string) => db.prepare("SELECT * FROM scm_ar_ap_log WHERE doc_no=?").get(docNo) as any
+  const logCount = () => (db.prepare("SELECT COUNT(*) c FROM scm_ar_ap_log WHERE account_set_id=?").get(AID) as any).c
+
+  it('S1 有来源单据的发票校正暂估额，不新增台账（避免同一笔业务双计）', () => {
+    const srcLines = [{ amount: 1000, tax_amount: 130 }]
+    const srcId = mkSourceDoc('PI', 'PI-1', srcLines)
+    applyPayableFromReceipt(db, AID, { doc_type: 'PI', doc_no: 'PI-1', doc_date: '2026-06-01', partner_code: 'P1' }, srcLines)
+    expect(logOf('PI-1').amount).toBe(1130)
+    expect(logCount()).toBe(1)
+
+    // 实际开票 1200 + 156 税
+    const r = applyInvoice(db, AID,
+      { doc_type: 'RP', doc_no: 'RP-1', doc_date: '2026-06-05', partner_code: 'P1', source_doc_id: srcId },
+      [{ amount: 1200, tax_amount: 156 }])
+    expect(r).toMatchObject({ mode: 'adjust', amount: 1356, sourceDocNo: 'PI-1' })
+    expect(logCount()).toBe(1)                    // 没有新增
+    expect(logOf('PI-1').amount).toBe(1356)       // 按发票金额校正
+    expect(logOf('PI-1').remark).toMatch(/RP-1/)
+  })
+
+  it('S1 独立发票（无来源单据）新挂一条台账', () => {
+    const r = applyInvoice(db, AID,
+      { doc_type: 'RS', doc_no: 'RS-9', doc_date: '2026-06-05', partner_code: 'P1' },
+      [{ amount: 500, tax_amount: 65 }])
+    expect(r).toMatchObject({ mode: 'create', amount: 565 })
+    const log = logOf('RS-9')
+    expect(log).toMatchObject({ direction: 'in', amount: 565, ar_account: '1131' })
+    expect(log.ap_account).toBeNull()
+  })
+
+  it('S1 独立采购发票挂应付科目', () => {
+    applyInvoice(db, AID, { doc_type: 'RP', doc_no: 'RP-9', doc_date: '2026-06-05', partner_code: 'P1' }, [{ amount: 200, tax_amount: 26 }])
+    const log = logOf('RP-9')
+    expect(log).toMatchObject({ amount: 226, ap_account: '2121' })
+    expect(log.ar_account).toBeNull()
+  })
+
+  it('S1 发票金额低于已核销金额时拦截', () => {
+    const srcLines = [{ amount: 1000, tax_amount: 130 }]
+    const srcId = mkSourceDoc('PI', 'PI-2', srcLines)
+    applyPayableFromReceipt(db, AID, { doc_type: 'PI', doc_no: 'PI-2', doc_date: '2026-06-01', partner_code: 'P1' }, srcLines)
+    db.prepare("UPDATE scm_ar_ap_log SET verified_amount=800 WHERE doc_no='PI-2'").run()
+    expect(() => applyInvoice(db, AID,
+      { doc_type: 'RP', doc_no: 'RP-2', doc_date: '2026-06-05', partner_code: 'P1', source_doc_id: srcId },
+      [{ amount: 500, tax_amount: 65 }])).toThrow(/已核销金额/)
+  })
+
+  it('S1 反审核发票：校正过暂估的还原为来源单据金额', () => {
+    const srcLines = [{ amount: 1000, tax_amount: 130 }]
+    const srcId = mkSourceDoc('PI', 'PI-3', srcLines)
+    applyPayableFromReceipt(db, AID, { doc_type: 'PI', doc_no: 'PI-3', doc_date: '2026-06-01', partner_code: 'P1' }, srcLines)
+    const invoice = { doc_type: 'RP', doc_no: 'RP-3', doc_date: '2026-06-05', partner_code: 'P1', source_doc_id: srcId }
+    applyInvoice(db, AID, invoice, [{ amount: 1200, tax_amount: 156 }])
+    expect(logOf('PI-3').amount).toBe(1356)
+
+    reverseInvoice(db, AID, invoice)
+    expect(logOf('PI-3').amount).toBe(1130)       // 还原为来源单据价税合计
+    expect(String(logOf('PI-3').remark ?? '')).not.toMatch(/RP-3/)
+    expect(logCount()).toBe(1)
+  })
+
+  it('S1 反审核独立发票：删除自己的台账', () => {
+    const invoice = { doc_type: 'RS', doc_no: 'RS-4', doc_date: '2026-06-05', partner_code: 'P1' }
+    applyInvoice(db, AID, invoice, [{ amount: 500, tax_amount: 65 }])
+    expect(logCount()).toBe(1)
+    reverseInvoice(db, AID, invoice)
+    expect(logCount()).toBe(0)
+  })
+
+  it('S1 无往来单位或零金额的发票不挂账', () => {
+    expect(applyInvoice(db, AID, { doc_type: 'RP', doc_no: 'RP-0', doc_date: '2026-06-05' }, [{ amount: 100, tax_amount: 13 }]).mode).toBe('skip')
+    expect(applyInvoice(db, AID, { doc_type: 'RP', doc_no: 'RP-0', doc_date: '2026-06-05', partner_code: 'P1' }, []).mode).toBe('skip')
+    expect(logCount()).toBe(0)
+  })
+
+  it('sumGrossAmount 累加价税合计并按分舍入', () => {
+    expect(sumGrossAmount([{ amount: 33.335, tax_amount: 0 }, { amount: 1, tax_amount: 0.135 }])).toBe(34.48)
+    expect(sumGrossAmount([])).toBe(0)
   })
 
   it('采购入库生成应付（direction=in）', () => {

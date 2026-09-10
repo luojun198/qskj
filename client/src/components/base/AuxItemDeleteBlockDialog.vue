@@ -118,13 +118,13 @@ function statusTagType(status: string): 'info' | 'warning' | 'success' {
 }
 
 .block-dialog-alert-title {
-  font-size: 14px;
+  font-size: var(--cw-text-base);
   line-height: 1.5;
 }
 
 .block-dialog-item-meta {
   margin: 6px 0 0;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   color: var(--el-text-color-secondary);
 }
 
@@ -136,7 +136,7 @@ function statusTagType(status: string): 'info' | 'warning' | 'success' {
 }
 
 .block-dialog-section-title {
-  font-size: 14px;
+  font-size: var(--cw-text-base);
   font-weight: 600;
   color: var(--el-text-color-primary);
 }
@@ -150,7 +150,7 @@ function statusTagType(status: string): 'info' | 'warning' | 'success' {
   padding: 12px 14px;
   border-radius: 8px;
   background: var(--el-fill-color-light);
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   line-height: 1.7;
   color: var(--el-text-color-regular);
 }

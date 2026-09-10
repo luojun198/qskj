@@ -4,7 +4,7 @@
       <div class="report-header__left"><el-button link @click="router.back()"><el-icon><ArrowLeft /></el-icon>返回</el-button><span>/</span><b>物料收发明细账</b></div>
       <span class="report-header__note">{{ isFullHistoryView ? '单据直达 · 全历史库存流水' : '按已审核库存移动计算期初、本期收发与逐笔结存' }}</span>
     </div>
-    <div class="ledger-toolbar">
+    <div class="ledger-toolbar toolbar">
       <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期" style="width:240px" />
       <el-input v-model="filters.item_code" clearable placeholder="物料编码" style="width:140px" />
       <el-select v-model="filters.category_code" clearable filterable placeholder="物料分类" style="width:150px">

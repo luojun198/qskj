@@ -22,6 +22,24 @@ export function resolveAccountSetStartDate(
   return `${year}-01-01`
 }
 
+/**
+ * 只读获取建账日期，不写 account_sets / system_params。
+ * 账簿与报表取数是高频只读路径，不能用 readAccountSetStartDate（它每次都会回写 system_params）。
+ */
+export function peekAccountSetStartDate(
+  db: Pick<Database.Database, 'prepare'>,
+  accountSetId: string
+): string | undefined {
+  if (!accountSetId) return undefined
+  const row = db
+    .prepare('SELECT start_date, fiscal_year FROM account_sets WHERE id = ?')
+    .get(accountSetId) as { start_date?: string; fiscal_year?: number } | undefined
+  if (!row) return undefined
+  const fromTable = String(row.start_date || '').trim()
+  if (START_DATE_RE.test(fromTable)) return fromTable
+  return row.fiscal_year ? `${row.fiscal_year}-01-01` : undefined
+}
+
 function getTableColumns(db: Database.Database, table: string): Set<string> {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
   return new Set(rows.map(row => row.name))
@@ -185,6 +203,8 @@ export function bootstrapNewAccountSetDefaults(
     start_date?: string | null
     fiscal_year?: number | null
     unit_name?: string | null
+    /** 覆盖默认业务参数（如 ACD 导入时按源账套设置 require_audit / enable_cash_flow） */
+    params?: Record<string, string>
   } = {}
 ): string {
   const startDate = syncAccountSetStartDate(
@@ -193,27 +213,31 @@ export function bootstrapNewAccountSetDefaults(
     resolveAccountSetStartDate(options.start_date, options.fiscal_year)
   )
 
-  const defaultParams: Array<{ key: string; value: string }> = [
-    { key: 'require_audit', value: 'false' },
-    { key: 'direct_print', value: 'true' },
-    { key: 'voucher_time_control', value: 'false' },
-    { key: 'enable_cash_flow', value: 'false' },
-    // 兼容旧键名
-    { key: 'voucher_audit_required', value: 'false' },
-    { key: 'voucher_direct_print', value: 'true' },
-    { key: 'voucher_sequence_control', value: 'false' },
-  ]
+  const defaults: Record<string, string> = {
+    require_audit: 'false',
+    direct_print: 'true',
+    voucher_time_control: 'false',
+    enable_cash_flow: 'false',
+    enable_foreign_currency: 'false',
+    base_currency: 'RMB',
+    ...(options.params || {}),
+  }
+  // 兼容旧键名
+  defaults.voucher_audit_required = defaults.require_audit
+  defaults.voucher_direct_print = defaults.direct_print
+  defaults.voucher_sequence_control = defaults.voucher_time_control
 
   if (options.unit_name?.trim()) {
-    defaultParams.push({ key: 'unit_name', value: options.unit_name.trim() })
+    defaults.unit_name = options.unit_name.trim()
   }
 
-  for (const param of defaultParams) {
-    upsertAccountSetSystemParam(db, accountSetId, param.key, param.value)
+  for (const [key, value] of Object.entries(defaults)) {
+    upsertAccountSetSystemParam(db, accountSetId, key, value)
   }
 
   ensureDefaultPrintTemplateForAccountSet(db, accountSetId)
   ensureDefaultAssetDicts(db, accountSetId)
+  ensureBaseCurrency(db, accountSetId, defaults.base_currency || 'RMB')
 
   return startDate
 }
@@ -253,6 +277,36 @@ function hasTable(db: Database.Database, table: string): boolean {
   return !!db
     .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`)
     .get(table)
+}
+
+/** 新账套预置本位币行（幂等） */
+export function ensureBaseCurrency(
+  db: Database.Database,
+  accountSetId: string,
+  baseCode = 'RMB'
+): void {
+  if (!hasTable(db, 'currencies')) return
+  const code = (baseCode || 'RMB').trim().toUpperCase() || 'RMB'
+  const existing = db
+    .prepare(
+      `SELECT id FROM currencies WHERE account_set_id = ? AND (is_base = 1 OR UPPER(code) = ?) LIMIT 1`
+    )
+    .get(accountSetId, code) as { id?: string } | undefined
+  if (existing?.id) return
+
+  const nameMap: Record<string, string> = {
+    RMB: '人民币',
+    CNY: '人民币',
+    USD: '美元',
+    HKD: '港币',
+    EUR: '欧元',
+    JPY: '日元',
+  }
+  db.prepare(
+    `INSERT INTO currencies (
+      id, account_set_id, code, name, is_base, default_rate, rate_decimals, is_enabled, sort_order, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, 1, 1, 4, 1, 0, datetime('now'), datetime('now'))`
+  ).run(uuidv4(), accountSetId, code, nameMap[code] || code)
 }
 
 /**

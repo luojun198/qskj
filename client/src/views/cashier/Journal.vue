@@ -369,7 +369,7 @@
           <el-button size="small" @click="selectedJournalRow = null; selectedBankRow = null">取消选择</el-button>
         </template>
         <template v-else-if="pendingCancelRow">
-          <span style="font-size:13px;color:#606266">撤销「{{ pendingCancelRow.biz_date }}」的对账？</span>
+          <span style="font-size: var(--cw-text-base);color:#606266">撤销「{{ pendingCancelRow.biz_date }}」的对账？</span>
           <el-button type="danger" size="small" plain :loading="cancelReconciling" @click="handleCancelReconcile">确认撤销</el-button>
           <el-button size="small" @click="pendingCancelRow = null">取消</el-button>
         </template>
@@ -404,7 +404,7 @@
       </div>
 
       <template v-if="importRows.length">
-        <div style="margin-bottom:6px;font-size:13px">
+        <div style="margin-bottom:6px;font-size: var(--cw-text-base)">
           共解析 <b>{{ importRows.length }}</b> 条有效记录
           <span v-if="importErrors.length" style="color:#e6a23c">，{{ importErrors.length }} 条存在问题（将跳过）</span>
         </div>
@@ -460,7 +460,7 @@
         </el-table-column>
       </el-table>
       <div style="margin-top:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <span style="font-size:13px;white-space:nowrap">挂账科目：</span>
+        <span style="font-size: var(--cw-text-base);white-space:nowrap">挂账科目：</span>
         <el-select
           v-model="hangupAccount"
           filterable
@@ -1671,7 +1671,7 @@ watch(reconDate, () => { if (showReconcile.value) loadReconDialog() }, { deep: t
 <style scoped>
 .page-cashier-journal { display: flex; flex-direction: column; height: 100%; }
 .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.balance-summary { display: flex; gap: 24px; padding: 6px 16px; background: var(--el-fill-color-lighter); font-size: 13px; }
+.balance-summary { display: flex; gap: 24px; padding: 6px 16px; background: var(--el-fill-color-lighter); font-size: var(--cw-text-base); }
 .balance-summary b { font-weight: 600; }
 .debit { color: #409eff; }
 .credit { color: #f56c6c; }
@@ -1688,7 +1688,7 @@ watch(reconDate, () => { if (showReconcile.value) loadReconDialog() }, { deep: t
 .recon-columns { display: flex; gap: 12px; }
 .recon-col { flex: 1; min-width: 0; }
 .recon-col-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
-.recon-col-title { font-size: 13px; font-weight: 600; color: #303133; }
+.recon-col-title { font-size: var(--cw-text-base); font-weight: 600; color: #303133; }
 .recon-actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 8px 0; border-top: 1px solid var(--el-border-color-light); min-height: 40px; }
 
 .journal-attachments-section {
@@ -1697,7 +1697,7 @@ watch(reconDate, () => { if (showReconcile.value) loadReconDialog() }, { deep: t
   border-top: 1px dashed var(--el-border-color-light);
 }
 .journal-attachments-section .section-title {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   font-weight: 600;
   color: #606266;
   margin-bottom: 8px;

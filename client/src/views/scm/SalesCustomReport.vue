@@ -15,7 +15,7 @@
       </div>
     </header>
 
-    <section class="scheme-bar">
+    <section class="scheme-bar toolbar">
       <el-radio-group v-model="config.mode" size="small" @change="onModeChange">
         <el-radio-button value="detail">明细查询</el-radio-button>
         <el-radio-button value="summary">汇总分析</el-radio-button>
@@ -332,13 +332,13 @@ onUnmounted(() => { window.removeEventListener('resize', resizeChart); chart?.di
 <style scoped>
 .sales-workbench { height: 100%; padding: 14px 18px 18px; overflow: auto; background: #f4f7fb; }
 .workbench-header { display:flex; justify-content:space-between; align-items:center; gap:20px; padding:16px 18px; background:linear-gradient(120deg,#f5fbff,#f8fff9); border:1px solid #dce8f5; border-radius:10px; }
-.title-row { display:flex; align-items:center; gap:10px; } h2 { margin:0; font-size:15px; font-weight:600; } .workbench-header p { margin:5px 0 0; color:var(--el-text-color-secondary); font-size:13px; }
+.title-row { display:flex; align-items:center; gap:10px; } h2 { margin:0; font-size: var(--cw-text-lg); font-weight:600; } .workbench-header p { margin:5px 0 0; color:var(--el-text-color-secondary); font-size: var(--cw-text-base); }
 .header-actions,.scheme-bar,.result-head,.result-switch { display:flex; align-items:center; gap:8px; }
 .scheme-bar { margin-top:10px; padding:10px 12px; background:#fff; border:1px solid var(--el-border-color-lighter); border-radius:8px; }
-.bar-divider { width:1px; height:24px; background:var(--el-border-color); margin:0 4px; }.bar-label { font-size:13px; font-weight:600; }.scheme-tip { margin-left:auto; color:var(--el-text-color-secondary); font-size:12px; }.default-tag { margin-left:8px; }
+.bar-divider { width:1px; height:24px; background:var(--el-border-color); margin:0 4px; }.bar-label { font-size: var(--cw-text-base); font-weight:600; }.scheme-tip { margin-left:auto; color:var(--el-text-color-secondary); font-size:12px; }.default-tag { margin-left:8px; }
 .designer { margin-top:10px; padding:0 16px; background:#fff; border:1px solid var(--el-border-color-lighter); border-radius:8px; --el-collapse-border-color:transparent; }
 .panel-title { font-weight:600; color:var(--el-text-color-primary); }.panel-note { margin-left:12px; color:var(--el-text-color-secondary); font-size:12px; font-weight:400; }
-.design-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }.design-block { min-width:0; padding:12px; background:var(--el-fill-color-lighter); border-radius:8px; }.design-block label { display:block; margin-bottom:8px; font-size:13px; font-weight:600; }
+.design-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }.design-block { min-width:0; padding:12px; background:var(--el-fill-color-lighter); border-radius:8px; }.design-block label { display:block; margin-bottom:8px; font-size: var(--cw-text-base); font-weight:600; }
 :deep(.selected-order) { display:flex; gap:6px; flex-wrap:wrap; margin-top:9px; }:deep(.selected-chip) { display:inline-flex; align-items:center; gap:5px; padding:4px 6px; border:1px solid #d8e4f2; border-radius:5px; background:#fff; font-size:12px; }:deep(.selected-chip b) { color:#3578e5; }:deep(.selected-chip button) { border:0; background:transparent; padding:0 2px; color:#3578e5; cursor:pointer; }:deep(.selected-chip button:disabled) { color:#c0c4cc; cursor:not-allowed; }
 .sort-panel { display:grid; grid-template-columns:minmax(320px,.75fr) minmax(520px,1.25fr); gap:18px; }.sort-row { display:flex; gap:8px; margin-bottom:7px; }
 .result-card { margin-top:10px; background:#fff; border:1px solid var(--el-border-color-lighter); border-radius:8px; overflow:hidden; }.result-head { justify-content:space-between; padding:10px 12px; border-bottom:1px solid var(--el-border-color-lighter); }.result-count { margin-left:10px; color:var(--el-text-color-secondary); font-size:12px; }

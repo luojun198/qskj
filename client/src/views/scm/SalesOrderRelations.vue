@@ -294,8 +294,8 @@ onMounted(load)
 <style scoped>
 .sales-order-relations-page { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-.page-header h2 { margin: 0; font-size: 15px; font-weight: 600; color: var(--el-text-color-primary); }
-.page-header p { margin: 5px 0 0; color: var(--el-text-color-secondary); font-size: 13px; }
+.page-header h2 { margin: 0; font-size: var(--cw-text-lg); font-weight: 600; color: var(--el-text-color-primary); }
+.page-header p { margin: 5px 0 0; color: var(--el-text-color-secondary); font-size: var(--cw-text-base); }
 .filter-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .content-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; min-height: 0; }
 .table-panel { min-width: 0; }

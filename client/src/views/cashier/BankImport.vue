@@ -216,7 +216,7 @@ async function handleImport() {
 .page-bank-import { height: 100%; overflow: auto; padding: 16px; }
 .import-step { margin-bottom: 16px; }
 .step-body { max-width: 720px; }
-.upload-text { font-size: 13px; color: var(--el-text-color-secondary); margin-top: 8px; }
+.upload-text { font-size: var(--cw-text-base); color: var(--el-text-color-secondary); margin-top: 8px; }
 .tip { font-size: 12px; color: var(--el-text-color-secondary); margin-left: 8px; }
 .preview-table { overflow: auto; max-height: 320px; border: 1px solid var(--el-border-color); border-radius: 4px; }
 .preview-table table { border-collapse: collapse; width: max-content; min-width: 100%; font-size: 12px; }

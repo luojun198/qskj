@@ -1874,7 +1874,7 @@ watch(keyword, () => {
   flex-wrap: wrap;
 }
 .load-progress-bar__title {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   font-weight: 600;
   color: var(--el-color-primary);
 }
@@ -1972,7 +1972,7 @@ watch(keyword, () => {
 .category-tabs :deep(.el-tabs__item) {
   height: 32px;
   line-height: 32px;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
 }
 .aux-lines-table {
   margin-top: 6px;
@@ -1996,7 +1996,7 @@ watch(keyword, () => {
   color: var(--el-text-color-placeholder);
 }
 .import-upload-compact :deep(.el-upload__text) {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   line-height: 1.35;
 }
 .import-parsing {
@@ -2063,7 +2063,7 @@ watch(keyword, () => {
 }
 .import-summary-hint {
   margin: 6px 0 0;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   color: inherit;
   opacity: 0.92;
 }
@@ -2072,7 +2072,7 @@ watch(keyword, () => {
 }
 .import-issues-intro {
   margin: 0 0 12px;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   color: #606266;
   line-height: 1.6;
 }
@@ -2095,12 +2095,12 @@ watch(keyword, () => {
 }
 .import-issue-title {
   font-weight: 600;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   color: #c45656;
   margin-bottom: 4px;
 }
 .import-issue-detail {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   color: #606266;
   line-height: 1.55;
 }

@@ -920,7 +920,7 @@ function handleSetDefault(schemeId: string) {
       </el-form-item>
       <el-alert type="info" :closable="false" show-icon>
         <template #default>
-          <div style="font-size: 13px; line-height: 1.6">
+          <div style="font-size: var(--cw-text-base); line-height: 1.6">
             <p style="margin: 0">将保存当前所有筛选条件，包括：</p>
             <ul style="margin: 4px 0 0 0; padding-left: 20px">
               <li>关键词、状态、日期范围、年度/期间</li>
@@ -970,7 +970,7 @@ function handleSetDefault(schemeId: string) {
 .filter-toggle-btn {
   flex-shrink: 0;
   padding: 0 4px !important;
-  height: 26px !important;
+  height: 28px !important;
   font-size: 12px !important;
   color: #48484a !important;
   font-weight: 600;
@@ -998,7 +998,7 @@ function handleSetDefault(schemeId: string) {
 }
 
 .filter-keyword-inline :deep(.el-input__wrapper) {
-  min-height: 26px !important;
+  min-height: 28px !important;
 }
 
 .filter-summary-text {
@@ -1020,7 +1020,7 @@ function handleSetDefault(schemeId: string) {
 }
 
 .filter-bar-actions :deep(.el-button) {
-  height: 26px;
+  height: 28px;
   padding: 0 10px;
   font-size: 12px;
 }
@@ -1047,7 +1047,7 @@ function handleSetDefault(schemeId: string) {
   font-size: 11px;
   font-weight: 600;
   color: #6e6e73;
-  line-height: 26px;
+  line-height: 28px;
   text-align: right;
 }
 
@@ -1086,7 +1086,7 @@ function handleSetDefault(schemeId: string) {
 }
 
 .filter-date-btn {
-  height: 26px;
+  height: 28px;
   padding: 0 8px;
   font-size: 12px;
   min-width: 120px;

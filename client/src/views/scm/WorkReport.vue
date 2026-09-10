@@ -93,5 +93,5 @@ onActivated(() => { if (planId.value) onPlan() })
 .wr-page { display: flex; flex-direction: column; height: 100%; padding: 12px 16px; gap: 8px; }
 .filter-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .filter-row .title { font-weight: 600; }
-.filter-row .hint { margin-left: auto; font-size: 13px; color: var(--el-text-color-secondary); }
+.filter-row .hint { margin-left: auto; font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }
 </style>

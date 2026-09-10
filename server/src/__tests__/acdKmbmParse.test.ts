@@ -58,6 +58,27 @@ describe('acdKmbmParse', () => {
     expect(row?.isCustomerAux).toBe(false)
   })
 
+  it('fbs=1 且 bz=USD 时应标记外币科目并保留币种', () => {
+    const row = parseKmbmRow(
+      splitRow(
+        '1002\t银行存款-美元\t1\t0\t0\t1\t0\tUSD\t\t0\t0\t0\t0\t0\t1\t0\t银行存款-美元\t\t\t\t\t0\t1'
+      )
+    )
+    expect(row?.isForeign).toBe(true)
+    expect(row?.currencyCode).toBe('USD')
+    expect(row?.isBank).toBe(true)
+  })
+
+  it('fbs=0 时 isForeign 为 false，空 bz 为 null', () => {
+    const row = parseKmbmRow(
+      splitRow(
+        '1001\t库存现金\t1\t0\t0\t0\t0\t\t\t0\t0\t0\t0\t0\t1\t0\t库存现金\t\t\t\t\t0\t1'
+      )
+    )
+    expect(row?.isForeign).toBe(false)
+    expect(row?.currencyCode).toBeNull()
+  })
+
   it('应对真实 kmbm 样本文件保持低现金科目比例', () => {
     const filePath = join(process.cwd(), '..', '模版', '新企业会计准则', 'extracted', 'rhsj', 'kmbm_utf8.txt')
     const content = readFileSync(filePath, 'utf8')

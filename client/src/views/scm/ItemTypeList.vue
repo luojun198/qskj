@@ -176,7 +176,7 @@ onMounted(load)
   align-items: center;
   margin-bottom: 12px;
 }
-.item-title h3 { margin: 0; font-size: 15px; }
+.item-title h3 { margin: 0; font-size: var(--cw-text-lg); }
 .item-title span { font-size: 12px; color: #999; }
 .item-table { flex: 1; min-height: 0; border-radius: 4px; }
 </style>

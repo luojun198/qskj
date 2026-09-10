@@ -20,6 +20,10 @@ export type ParsedKmbmRow = {
   isCashFlow: boolean
   isCash: boolean
   isBank: boolean
+  /** fbs=1：外币核算科目 */
+  isForeign: boolean
+  /** bz 币种编码（大写）；空则 null */
+  currencyCode: string | null
 }
 
 export function mapDirectionFromYefx(yefx: string | undefined, accountCode: string): 'debit' | 'credit' {
@@ -77,6 +81,7 @@ export function parseKmbmRow(row: AcdKmbmRow): ParsedKmbmRow | null {
 
   const isCashClass = (row[22] || '0').trim() === '1'
   const { isCash, isBank } = resolveCashBankFlags(code, name, isCashClass)
+  const bz = (row[7] || '').trim().toUpperCase()
 
   return {
     code,
@@ -91,5 +96,7 @@ export function parseKmbmRow(row: AcdKmbmRow): ParsedKmbmRow | null {
     isCashFlow: isCashClass,
     isCash,
     isBank,
+    isForeign: (row[5] || '0').trim() === '1',
+    currencyCode: bz || null,
   }
 }

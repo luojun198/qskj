@@ -291,6 +291,8 @@ export function openPrintWindow(options: {
   itemSelector: string
   title?: string
   expandSelector?: string
+  /** 页边距（mm）；传入后写入 @page，并去掉固定 body padding，避免与模板边距叠加 */
+  marginsMm?: { top: number; right: number; bottom: number; left: number }
 }) {
   const printItems = document.querySelectorAll(options.itemSelector)
   if (!printItems.length) {
@@ -304,6 +306,9 @@ export function openPrintWindow(options: {
   const allStyles = Array.from(document.querySelectorAll('style, link[rel="stylesheet"]'))
     .map(el => el.outerHTML)
     .join('\n')
+
+  const m = options.marginsMm || { top: 0, right: 0, bottom: 0, left: 0 }
+  const pageMargin = `${Number(m.top) || 0}mm ${Number(m.right) || 0}mm ${Number(m.bottom) || 0}mm ${Number(m.left) || 0}mm`
 
   const printWindow = window.open('', '_blank', 'width=900,height=700')
   if (!printWindow) {
@@ -328,13 +333,19 @@ export function openPrintWindow(options: {
       <title>${options.title || '打印'}</title>
       ${allStyles}
       <style>
-        @page { margin: 0; }
-        body {
+        /* 物理页边距走 @page；预览纸面内 padding 清零，避免与模板边距双重叠加 */
+        @page { margin: ${pageMargin}; }
+        html, body {
           font-family: 'SimSun', 'STSong', serif;
           font-size: 12pt;
           margin: 0;
-          padding: 20px;
+          padding: 0;
           background: #fff;
+        }
+        .print-page {
+          padding: 0 !important;
+          box-shadow: none !important;
+          margin: 0 auto !important;
         }
         .preview-item {
           page-break-after: always;
@@ -348,7 +359,16 @@ export function openPrintWindow(options: {
     <body>
       ${contents}
       <script>
-        window.onload = function() { window.print(); window.close(); }
+        window.onload = function() {
+          window.focus();
+          window.print();
+          // 等系统打印对话框关闭后再关窗口，便于用户选择打印机
+          if ('onafterprint' in window) {
+            window.onafterprint = function() { window.close(); };
+          } else {
+            setTimeout(function() { window.close(); }, 1000);
+          }
+        };
       <\/script>
     </body>
     </html>

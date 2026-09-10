@@ -14,6 +14,7 @@ import {
   formatNumberByType,
   mergeStyleKey,
   parseStyleKey,
+  rowCenterOffsetPx,
   type CellStyle,
 } from '@/composables/useReportCellStyle'
 
@@ -56,6 +57,10 @@ export type GridCellView = {
   isEditing: boolean
   executionStatus: 'ok' | 'error' | null
   textAlign: string
+  /** align-row-center：从本格左边缘到整行中线的距离（px）；null 表示按格对齐 */
+  rowCenterOffset: number | null
+  /** 文字越过右侧格线铺开的总宽度（px，不含内边距）；null 表示不越线 */
+  softSpillWidth: number | null
   verticalAlign: string
   fontSize: number
   bold: boolean
@@ -362,10 +367,16 @@ export function useStandardReportGrid() {
     return covered
   })
 
+  /** 取数结果是否为数值 0：报表惯例是零值留白，不打印一堆 0 */
+  function isComputedZero(computedCell: { status: 'ok' | 'error'; numeric_value?: number | null } | undefined) {
+    return Boolean(computedCell && computedCell.status === 'ok' && computedCell.numeric_value === 0)
+  }
+
   /** 模板视图显示公式原文，计算视图显示取数结果 */
   function resolveDisplay(cell: RhStandardReportCell | undefined, key: string) {
     if (showComputed.value) {
       const computedCell = computedMap.value.get(key)
+      if (isComputedZero(computedCell)) return ''
       // 服务端可能已输出千分位，formatNumberByType 会先去掉分隔符再按格式重排
       if (computedCell) return formatNumberByType(computedCell.display_value, cell?.format_text)
       if (cell?.formula_text) return ''
@@ -375,13 +386,79 @@ export function useStandardReportGrid() {
     return cell.formula_text || cell.text_value || ''
   }
 
+  /** 估算文字渲染宽度（px）：中文按一个字号宽、其余按 0.6 字号，外加左右内边距 */
+  function estimateTextWidth(text: string, fontSize: number) {
+    let width = 12
+    for (const char of text) width += /[一-龥＀-￯]/.test(char) ? fontSize * 1.05 : fontSize * 0.6
+    return width
+  }
+
+  /**
+   * 只读（取数）视图下模拟 Excel 的文字溢出：左对齐文本装不下时，向右铺到空白且无边框的邻格。
+   * 表头「纳税人名称：xxx」「2018年01月01日」这类格子在 ACD 里本就没合并，靠溢出显示成一行；
+   * 若照列宽裁剪就会折成两行并被行高截掉。返回值为铺开后的 colSpan。
+   */
+  function resolveSpillColSpan(
+    rowIndex: number,
+    colIndex: number,
+    colSpan: number,
+    style: CellStyle,
+    displayValue: string,
+    isNumeric: boolean
+  ): { colSpan: number; softWidth: number | null } {
+    const own = { colSpan, softWidth: null }
+    if (!isReadonly.value) return own
+    if (!displayValue.trim() || isNumeric) return own
+    if (style.textAlign && style.textAlign !== 'left') return own
+
+    let width = 0
+    for (let c = colIndex; c < colIndex + colSpan; c += 1) width += getColWidth(c)
+    const need = estimateTextWidth(displayValue, style.fontSize || 13)
+    if (need <= width) return own
+
+    const covered = coveredKeys.value
+    let span = colSpan
+    while (width < need && colIndex + span < colCount.value) {
+      const nextKey = cellKey(rowIndex, colIndex + span)
+      if (covered.has(nextKey)) break
+      const neighbor = cellMap.value.get(nextKey)
+      const neighborStyle = parseStyleKey(neighbor?.style_key)
+      if (neighbor && (neighbor.text_value || neighbor.formula_text)) {
+        // 整行居中的格子（抬头日期）不算墙：文字只占中线附近一小段，
+        // 左侧「纳税人名称」可以越过格线继续铺到日期文字之前，但不再整列吞并（日期格还要渲染）
+        if (neighborStyle.rowCenter && neighborStyle.textAlign === 'center' && !neighborStyle.borderStyle) {
+          const center = rowCenterOffsetPx(getColWidth, dataColCount.value, colIndex)
+          const half = estimateTextWidth(resolveDisplay(neighbor, nextKey), neighborStyle.fontSize || 13) / 2
+          const limit = center - half - 8
+          if (limit > width) return { colSpan: span, softWidth: Math.min(need, limit) }
+        }
+        break
+      }
+      if (neighbor && neighborStyle.borderStyle) break
+      const neighborComputed = computedMap.value.get(nextKey)
+      if (neighborComputed && neighborComputed.display_value && !isComputedZero(neighborComputed)) break
+      width += getColWidth(colIndex + span)
+      span += 1
+    }
+    return { colSpan: span, softWidth: null }
+  }
+
   function buildCellView(rowIndex: number, colIndex: number): GridCellView {
     const key = cellKey(rowIndex, colIndex)
     const cell = cellMap.value.get(key)
-    const { rowSpan, colSpan } = parseMergeInfo(cell?.merge_info)
+    const { rowSpan, colSpan: mergedColSpan } = parseMergeInfo(cell?.merge_info)
     const displayValue = resolveDisplay(cell, key)
     const computedCell = computedMap.value.get(key)
     const style = parseStyleKey(cell?.style_key)
+    const isNumeric = showComputed.value && computedCell != null && computedCell.numeric_value != null
+    const { colSpan, softWidth } = resolveSpillColSpan(
+      rowIndex,
+      colIndex,
+      mergedColSpan,
+      style,
+      displayValue,
+      isNumeric
+    )
 
     return {
       key,
@@ -396,11 +473,15 @@ export function useStandardReportGrid() {
       isSelected: selectedRow.value === rowIndex && selectedCol.value === colIndex,
       isEditing: editingKey.value === key,
       executionStatus: showComputed.value ? (computedCell?.status ?? null) : null,
-      // 取数视图下数值右对齐（与旧的只读表格 num-cell 行为一致），否则按 style_key
-      textAlign:
-        showComputed.value && computedCell && computedCell.numeric_value !== null
-          ? 'right'
-          : style.textAlign || 'left',
+      // 对齐优先按 style_key（行次列在 ACD 里是居中的公式格，不能被数值右对齐盖掉）；
+      // 未设对齐的数值取数结果才默认右对齐
+      textAlign: style.textAlign || (isNumeric ? 'right' : 'left'),
+      // 整行居中按报表实际列数算中线，编辑视图右侧补的空白列不算
+      rowCenterOffset:
+        style.rowCenter && style.textAlign === 'center'
+          ? rowCenterOffsetPx(getColWidth, dataColCount.value, colIndex)
+          : null,
+      softSpillWidth: softWidth,
       verticalAlign: style.verticalAlign || 'middle',
       fontSize: style.fontSize || 13,
       bold: style.bold,
@@ -418,10 +499,18 @@ export function useStandardReportGrid() {
   function buildSheetVisibleCells() {
     const cells: GridCellView[] = []
     const covered = coveredKeys.value
+    /** 被左侧文字溢出铺过的格子，不再单独渲染（只读视图） */
+    const spilled = new Set<string>()
     for (let rowIndex = 0; rowIndex < rowCount.value; rowIndex += 1) {
       for (let colIndex = 0; colIndex < colCount.value; colIndex += 1) {
-        if (covered.has(cellKey(rowIndex, colIndex))) continue
-        cells.push(buildCellView(rowIndex, colIndex))
+        const key = cellKey(rowIndex, colIndex)
+        if (covered.has(key) || spilled.has(key)) continue
+        const view = buildCellView(rowIndex, colIndex)
+        const { colSpan: mergedColSpan } = parseMergeInfo(cellMap.value.get(key)?.merge_info)
+        for (let c = colIndex + mergedColSpan; c < colIndex + view.colSpan; c += 1) {
+          spilled.add(cellKey(rowIndex, c))
+        }
+        cells.push(view)
       }
     }
     return cells
@@ -714,6 +803,11 @@ export function useStandardReportGrid() {
     return trimmed.startsWith('=') || trimmed.startsWith('@') || trimmed.startsWith('＝')
   }
 
+  /** 与服务端 reportTemplateExecutor.isNumericValue 同口径：可带负号与小数的纯数字 */
+  function isNumericText(value: string) {
+    return /^-?\d+(\.\d+)?$/.test(value.trim())
+  }
+
   function applyInlineEdit() {
     if (!editingKey.value) return
     const key = editingKey.value
@@ -742,7 +836,8 @@ export function useStandardReportGrid() {
       col_index: colIndex,
       text_value: asFormula ? null : value || null,
       formula_text: asFormula ? value : null,
-      cell_type: value ? (asFormula ? 'formula' : 'text') : 'empty',
+      // 纯数字存为 number：行次列 =B12+1 这类引用要把它当数值算，存成 text 会被当作空格读成 0
+      cell_type: value ? (asFormula ? 'formula' : isNumericText(value) ? 'number' : 'text') : 'empty',
       format_text: existing?.format_text ?? null,
       style_key: existing?.style_key ?? null,
       side: existing?.side ?? null,

@@ -5,22 +5,13 @@ import {
   parseAcdTables,
   type ImportTemplateOptions,
 } from '../scripts/importAcdToCurrentAccountSet.js'
-import {
-  ACCOUNTING_STANDARD_PARAM_KEY,
-  DASHBOARD_CATEGORY_RULES_PARAM_KEY,
-  serializeDashboardRuleConfig,
-  type AccountingStandardParam,
-} from './accountingStandard.js'
+import { type AccountingStandardParam } from './accountingStandard.js'
 import {
   isValidAccountSetStartDate,
   normalizeAccountCodeConfig,
   syncAccountSetStartDate,
-  upsertAccountSetSystemParam,
 } from './accountSetDefaults.js'
-import {
-  buildPresetDashboardBudgetRules,
-  buildPresetDashboardCategoryRules,
-} from './dashboardCategoryConfig.js'
+import { applyAccountingStandardPreset } from './standardTemplateAccountSet.js'
 import type { StaticReportStandard } from './staticReportConfig.js'
 import {
   findStandardTemplateById,
@@ -329,21 +320,7 @@ function applyDashboardStandard(
   accountSetId: string,
   standard: StaticReportStandard
 ) {
-  upsertAccountSetSystemParam(db, accountSetId, ACCOUNTING_STANDARD_PARAM_KEY, standard, '会计准则')
-  const presetRules = buildPresetDashboardCategoryRules(db, accountSetId, standard)
-  const presetBudgetRules = buildPresetDashboardBudgetRules(db, accountSetId, standard)
-  upsertAccountSetSystemParam(
-    db,
-    accountSetId,
-    DASHBOARD_CATEGORY_RULES_PARAM_KEY,
-    serializeDashboardRuleConfig({
-      version: 2,
-      customized: false,
-      financial: presetRules,
-      budget: presetBudgetRules,
-    }),
-    '主页取数规则'
-  )
+  applyAccountingStandardPreset(db, accountSetId, standard)
 }
 
 export function reinitializeAccountSet(

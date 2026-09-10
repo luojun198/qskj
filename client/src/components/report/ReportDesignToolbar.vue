@@ -1,6 +1,6 @@
 <template>
   <div class="report-design-toolbar">
-    <div class="report-toolbar-row report-design-toolbar__primary">
+    <div class="report-toolbar-row report-design-toolbar__primary toolbar">
       <el-select
         v-model="selectedCodeModel"
         placeholder="请选择报表模板"
@@ -296,7 +296,7 @@ function handleTemplateCommand(command: string) {
   border: none;
   background: transparent;
   color: var(--el-color-primary);
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   cursor: pointer;
 }
 

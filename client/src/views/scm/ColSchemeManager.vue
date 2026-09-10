@@ -1,7 +1,7 @@
 <template>
   <div class="page cs-page">
     <!-- 顶部导航 -->
-    <div class="cs-header">
+    <div class="cs-header toolbar">
       <div class="cs-header__left">
         <el-button link size="small" @click="goBack"><el-icon><ArrowLeft /></el-icon>返回</el-button>
         <span class="cs-header__sep">/</span>
@@ -17,7 +17,7 @@
 
     <div class="cs-body">
       <!-- 筛选条件 -->
-      <div class="cs-toolbar">
+      <div class="cs-toolbar toolbar">
         <el-radio-group v-model="target" size="small" @change="onScopeChange">
           <el-radio-button value="line">单据明细表</el-radio-button>
           <el-radio-button value="header">单据表头</el-radio-button>
@@ -247,7 +247,7 @@ onMounted(async () => {
 }
 .cs-header__left { display: flex; align-items: center; }
 .cs-header__sep { margin: 0 8px; color: var(--el-text-color-placeholder); }
-.cs-header__title { font-weight: 600; font-size: 15px; }
+.cs-header__title { font-weight: 600; font-size: var(--cw-text-lg); }
 .cs-body { flex: 1; overflow: auto; padding: 14px 16px; }
 .cs-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
 .cs-toolbar__hint { font-size: 12px; color: var(--el-text-color-placeholder); }

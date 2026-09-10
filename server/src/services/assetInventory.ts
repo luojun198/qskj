@@ -9,6 +9,7 @@ import {
   resolveAssetAuxRefs,
   auxRefsForAccount,
   resolveAccounts,
+  assertPeriodOpen,
 } from './assetVoucherBuilder.js'
 import type { VoucherEntryInput } from './voucherEntry.js'
 
@@ -205,6 +206,20 @@ export function completeInventory(params: {
 }): { surplusCount: number; deficitCount: number; voucher?: any; voucherWarning?: string } {
   const { db, accountSetId, inventoryId, generateVoucher = false, accumAccount = '1602', surplusAccount = '6901', deficitAccount = '6901', operatorName = '系统' } = params
 
+  // FIX：完成盘点会写卡片、生成凭证，必须幂等且落在未结账期间，
+  // 否则重复调用会重复生成盘盈盘亏凭证、重复处置卡片。
+  const inv = db.prepare(
+    'SELECT * FROM fixed_asset_inventory WHERE id=? AND account_set_id=?'
+  ).get(inventoryId, accountSetId) as any
+  if (!inv) throw new Error('盘点记录不存在')
+  if (inv.status === 'completed') throw new Error('该盘点已完成，不能重复完成')
+
+  const invDate: string =
+    typeof inv.inventory_date === 'string' && /^\d{4}-\d{2}-\d{2}/.test(inv.inventory_date)
+      ? inv.inventory_date.slice(0, 10)
+      : new Date().toISOString().slice(0, 10)
+  assertPeriodOpen(db, accountSetId, parseInt(invDate.split('-')[0]), parseInt(invDate.split('-')[1]))
+
   // 更新汇总统计
   const stats = db.prepare(`
     SELECT
@@ -223,6 +238,13 @@ export function completeInventory(params: {
       updated_at = datetime('now')
     WHERE id = ?
   `).run(stats.match_cnt || 0, stats.surplus_cnt || 0, stats.deficit_cnt || 0, inventoryId)
+
+  // FIX（A3）：盘亏原先只生成凭证，卡片不动——资产仍在卡片上并继续计提折旧，
+  // 造成资产账与总账双计。这里按处置流程把盘亏资产置为报废状态并留下变动流水。
+  markDeficitAssetsDisposed({ db, accountSetId, inventoryId, inventoryDate: invDate, operatorName })
+
+  // FIX（A4）：盘盈是同卡片的数量差，同步调增卡片数量与原值，使资产账与凭证一致。
+  adjustSurplusAssets({ db, accountSetId, inventoryId, inventoryDate: invDate, operatorName })
 
   let voucherResult = null
   let voucherWarning: string | null = null
@@ -243,6 +265,127 @@ export function completeInventory(params: {
     deficitCount: stats.deficit_cnt || 0,
     voucher: voucherResult,
     voucherWarning,
+  }
+}
+
+// ── 盘亏资产卡片处置（A3） ───────────────────────────────────
+
+/**
+ * 把本次盘点中判定为盘亏的资产按「报废处置」处理。
+ *
+ * 与 assetDisposal.disposeAsset 保持同一套字段（status_code='04' + pre_scrap_status +
+ * scrap_date/scrap_reason），这样折旧取数（fixedAssetDepreciation 按 status.depreciable 过滤）
+ * 会自动跳过它们，且撤销处置的既有逻辑同样适用。
+ */
+function markDeficitAssetsDisposed(params: {
+  db: Database
+  accountSetId: string
+  inventoryId: string
+  inventoryDate: string
+  operatorName: string
+}): void {
+  const { db, accountSetId, inventoryId, inventoryDate, operatorName } = params
+
+  const items = db.prepare(`
+    SELECT i.asset_no, i.asset_name, fa.id AS asset_id, fa.status_code,
+           fa.original_value, fa.net_value, fa.scrap_date
+    FROM fixed_asset_inventory_item i
+    JOIN fixed_asset fa ON fa.account_set_id = i.account_set_id AND fa.asset_no = i.asset_no
+    WHERE i.inventory_id = ? AND i.account_set_id = ? AND i.actual_status = 'deficit'
+  `).all(inventoryId, accountSetId) as any[]
+
+  if (!items.length) return
+
+  const year = parseInt(inventoryDate.split('-')[0])
+  const period = parseInt(inventoryDate.split('-')[1])
+
+  const updCard = db.prepare(`
+    UPDATE fixed_asset SET
+      status_code = '04',
+      pre_scrap_status = ?,
+      scrap_date = ?, scrap_reason = ?,
+      updated_at = datetime('now')
+    WHERE id = ?
+  `)
+  const insChange = db.prepare(`
+    INSERT INTO fixed_asset_change
+      (id, account_set_id, asset_no, change_date, change_item, old_value, new_value, amount,
+       remark, operator, change_kind, year, period)
+    VALUES (?, ?, ?, ?, '盘亏处置', ?, 0, ?, ?, ?, 'dispose', ?, ?)
+  `)
+
+  for (const it of items) {
+    if (it.scrap_date) continue // 已处置的不重复处理
+    updCard.run(it.status_code || '01', inventoryDate, '盘亏', it.asset_id)
+    insChange.run(
+      uuidv4(), accountSetId, it.asset_no, inventoryDate,
+      Number(it.original_value || 0), Number(it.net_value || 0),
+      '固定资产盘亏', operatorName, year, period
+    )
+  }
+}
+
+// ── 盘盈卡片数量调整（A4） ───────────────────────────────────
+
+/**
+ * 盘盈按数量差调增卡片：qty 增加 difference_qty，原值按单位原值同比例调增。
+ * 折旧要素（use_months / depr_months_done）不动——盘盈只补数量，不重开折旧序列。
+ */
+function adjustSurplusAssets(params: {
+  db: Database
+  accountSetId: string
+  inventoryId: string
+  inventoryDate: string
+  operatorName: string
+}): void {
+  const { db, accountSetId, inventoryId, inventoryDate, operatorName } = params
+
+  const items = db.prepare(`
+    SELECT i.asset_no, i.book_qty, i.difference_qty, fa.id AS asset_id,
+           fa.qty, fa.original_value, fa.accum_depr, fa.impairment_amount, fa.salvage_rate
+    FROM fixed_asset_inventory_item i
+    JOIN fixed_asset fa ON fa.account_set_id = i.account_set_id AND fa.asset_no = i.asset_no
+    WHERE i.inventory_id = ? AND i.account_set_id = ? AND i.actual_status = 'surplus'
+  `).all(inventoryId, accountSetId) as any[]
+
+  if (!items.length) return
+
+  const year = parseInt(inventoryDate.split('-')[0])
+  const period = parseInt(inventoryDate.split('-')[1])
+
+  const insChange = db.prepare(`
+    INSERT INTO fixed_asset_change
+      (id, account_set_id, asset_no, change_date, change_item, old_value, new_value, amount,
+       remark, operator, change_kind, year, period)
+    VALUES (?, ?, ?, ?, '盘盈调增', ?, ?, ?, ?, ?, 'original_value', ?, ?)
+  `)
+
+  for (const it of items) {
+    const bookQty = Number(it.book_qty || 0)
+    const diffQty = Number(it.difference_qty || 0)
+    if (!(bookQty > 0) || !(diffQty > 0)) continue
+
+    const oldOriginal = Number(it.original_value || 0)
+    const addValue = Math.round((oldOriginal / bookQty) * diffQty * 100) / 100
+    const newOriginal = Math.round((oldOriginal + addValue) * 100) / 100
+    const newQty = Number(it.qty || bookQty) + diffQty
+    const newSalvage = Math.round(newOriginal * Number(it.salvage_rate || 0) * 100) / 100
+    const newNet = Math.round(
+      (newOriginal - Number(it.accum_depr || 0) - Number(it.impairment_amount || 0)) * 100
+    ) / 100
+
+    db.prepare(`
+      UPDATE fixed_asset SET
+        qty = ?, original_value = ?, salvage_value = ?, net_value = ?,
+        updated_at = datetime('now')
+      WHERE id = ?
+    `).run(newQty, newOriginal, newSalvage, newNet, it.asset_id)
+
+    insChange.run(
+      uuidv4(), accountSetId, it.asset_no, inventoryDate,
+      oldOriginal, newOriginal, addValue,
+      `固定资产盘盈（数量 +${diffQty}）`, operatorName, year, period
+    )
   }
 }
 
@@ -332,11 +475,21 @@ function generateInventoryVoucher(params: {
     })
   }
 
-  // 盘盈：借 固定资产 / 贷 盘盈对应科目
+  /**
+   * 盘盈：借 固定资产 / 贷 盘盈对应科目
+   *
+   * FIX（A4）：盘点明细只能由现有卡片生成（createInventory），所以盘盈必然是
+   * 「同一张卡片实盘数 > 账面数」，而不是账外资产。原实现按 book_net_value 全额入账，
+   * 等于把一张已经在账的资产再入一次原值。改为只就数量差部分入账。
+   */
   for (const item of surplusItems) {
     const label = `盘盈：${item.asset_name}（${item.asset_no}）`
-    push(item, item.asset_account || '1601', 'debit', item.book_net_value, label)
-    push(item, surplusAccCode, 'credit', item.book_net_value, label)
+    const bookQty = Number(item.book_qty || 0)
+    const diffQty = Number(item.difference_qty || 0)
+    if (!(bookQty > 0) || !(diffQty > 0)) continue
+    const surplusValue = Math.round((Number(item.book_net_value || 0) / bookQty) * diffQty * 100) / 100
+    push(item, item.asset_account || '1601', 'debit', surplusValue, label)
+    push(item, surplusAccCode, 'credit', surplusValue, label)
   }
 
   // 盘亏：借 盘亏对应科目（净值） + 借 累计折旧 / 贷 固定资产（原值）

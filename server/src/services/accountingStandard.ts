@@ -354,6 +354,8 @@ export function getDashboardRuleConfigParam(
 export function inferAccountingStandardFromTemplateId(templateId: string): AccountingStandardParam {
   const normalized = templateId.trim()
   if (normalized.includes('行政事业') || normalized.includes('政府')) return 'government'
+  // 已停用的旧准则科目编码体系与现行预设不符，交给运行时按科目自动识别
+  if (/停用|^旧/.test(normalized)) return 'auto'
   if (normalized.includes('小企业')) return 'small_business'
   if (normalized.includes('新企业') || normalized.includes('企业会计')) return 'enterprise'
   return 'auto'

@@ -150,6 +150,70 @@ describe('固定资产盘点', () => {
     expect(entry.dept_id).toBe('auxitem-d1')
   })
 
+  // ── A3 / A4 / A9 回归 ─────────────────────────────────────
+
+  it('A3：盘亏完成后资产卡片置为处置状态，不再留在账上', () => {
+    markAs('deficit', 0)
+    complete()
+    const asset = db.prepare("SELECT * FROM fixed_asset WHERE asset_no='A1'").get() as any
+    expect(asset.status_code).toBe('04')
+    expect(asset.scrap_date).toBe('2026-06-30')
+    expect(asset.scrap_reason).toBe('盘亏')
+    expect(asset.pre_scrap_status).toBe('01')
+  })
+
+  it('A3：盘亏资产写入 dispose 变动流水，便于追溯与撤销', () => {
+    markAs('deficit', 0)
+    complete()
+    const change = db
+      .prepare("SELECT * FROM fixed_asset_change WHERE asset_no='A1' AND change_kind='dispose'")
+      .get() as any
+    expect(change).toBeTruthy()
+    expect(change.change_item).toBe('盘亏处置')
+    expect(change.year).toBe(2026)
+    expect(change.period).toBe(6)
+  })
+
+  it('A3：盘亏资产不再进入折旧取数（status 04 不可折旧）', () => {
+    markAs('deficit', 0)
+    complete()
+    const row = db
+      .prepare(
+        `SELECT COUNT(*) c FROM fixed_asset fa
+         LEFT JOIN fixed_asset_status fs
+           ON fs.account_set_id = fa.account_set_id AND fs.code = fa.status_code
+         WHERE fa.account_set_id=? AND (fs.depreciable = 1 OR fa.status_code IS NULL)`
+      )
+      .get(SET_ID) as any
+    expect(row.c).toBe(0)
+  })
+
+  it('A4：盘盈只就数量差入账，不重复计一整张卡片的净值', () => {
+    // 账面 1 台、实盘 3 台 → 盘盈 2 台，单位净值 6000
+    markAs('surplus', 3)
+    complete()
+    const totals = totalsOf(latestVoucher().id)
+    expect(totals.debit).toBe(12000)
+    expect(totals.credit).toBe(12000)
+  })
+
+  it('A4：盘盈同步调增卡片数量与原值', () => {
+    markAs('surplus', 3)
+    complete()
+    const asset = db.prepare("SELECT * FROM fixed_asset WHERE asset_no='A1'").get() as any
+    expect(asset.qty).toBe(3)
+    expect(asset.original_value).toBe(30000)
+    // 累折不变，净值随原值同步调增
+    expect(asset.net_value).toBe(26000)
+  })
+
+  it('A9：已完成的盘点不能重复完成（避免重复生成凭证 / 重复处置卡片）', () => {
+    markAs('deficit', 0)
+    complete()
+    expect(() => complete()).toThrow(/已完成/)
+    expect(db.prepare('SELECT COUNT(*) c FROM vouchers').get()).toEqual({ c: 1 })
+  })
+
   it('完成盘点后统计数写回主表且状态变为 completed', () => {
     markAs('deficit', 0)
     complete()

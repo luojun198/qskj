@@ -37,7 +37,7 @@ const emit = defineEmits<{ 'view-issues': [] }>()
 }
 .import-summary-hint {
   margin: 8px 0 0;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   color: #606266;
   line-height: 1.55;
 }

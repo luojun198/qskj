@@ -10,7 +10,11 @@ import {
 } from '@/utils/exportLedgerHelpers'
 import {
   buildAuxBalanceExportSummaryValues,
+  buildAuxForeignBalanceExportSummaryValues,
+  buildAuxForeignBalanceSubtotalRows,
   buildBalanceSheetSummaryValues,
+  buildForeignBalanceExportSummaryValues,
+  buildForeignBalanceSubtotalRows,
   buildGeneralLedgerSummaryValues,
 } from '@/utils/ledgerExportBuilders'
 import { ensureWorksheetGridLines } from '@/utils/exportStyledExcel'
@@ -117,5 +121,164 @@ describe('ledgerExportBuilders summary', () => {
     expect(values[6]).toBe(20)
     expect(values[7]).toBe('借')
     expect(values[8]).toBe(130)
+  })
+
+  it('buildAuxForeignBalanceExportSummaryValues 单一币种时填写原币合计', () => {
+    const values = buildAuxForeignBalanceExportSummaryValues(
+      1,
+      { init_balance: 700, current_debit: 350, current_credit: 140, end_balance: 910 },
+      {
+        USD: {
+          foreign_init_balance: 100,
+          foreign_current_debit: 50,
+          foreign_current_credit: 20,
+          foreign_end_balance: 130,
+        },
+      }
+    )
+    // 科目编码、科目名称、1 个辅助列、币种、汇率、期初 3 列、本期 4 列、期末 3 列
+    expect(values).toHaveLength(15)
+    expect(values[3]).toBe('USD')
+    expect(values[4]).toBe('') // 汇率由小计行给出，合计行留空
+    expect(values[5]).toBe('借')
+    expect(values[6]).toBe(100)
+    expect(values[7]).toBe(700)
+    expect(values[8]).toBe(50)
+    expect(values[9]).toBe(350)
+    expect(values[10]).toBe(20)
+    expect(values[11]).toBe(140)
+    expect(values[12]).toBe('借')
+    expect(values[13]).toBe(130)
+    expect(values[14]).toBe(910)
+  })
+
+  it('buildAuxForeignBalanceExportSummaryValues 多币种时原币合计留空、本位币仍汇总', () => {
+    const values = buildAuxForeignBalanceExportSummaryValues(
+      0,
+      { init_balance: 880, current_debit: 0, current_credit: 140, end_balance: 1090 },
+      {
+        USD: { foreign_init_balance: 150, foreign_current_debit: 0, foreign_current_credit: 20, foreign_end_balance: 130 },
+        HKD: { foreign_init_balance: 200, foreign_current_debit: 0, foreign_current_credit: 0, foreign_end_balance: 200 },
+      }
+    )
+    expect(values).toHaveLength(14)
+    expect(values[2]).toBe('多币种')
+    expect(values[5]).toBe('') // 原币期初：多币种不能相加
+    expect(values[6]).toBe(880)
+    expect(values[7]).toBe('')
+    expect(values[9]).toBe('')
+    expect(values[10]).toBe(140)
+    expect(values[12]).toBe('')
+    expect(values[13]).toBe(1090)
+  })
+})
+
+describe('外币余额表导出行', () => {
+  const usd = {
+    foreign_init_balance: 100,
+    init_balance: 700,
+    foreign_current_debit: 50,
+    current_debit: 350,
+    foreign_current_credit: 20,
+    current_credit: 140,
+    foreign_year_debit: 60,
+    year_debit: 420,
+    foreign_year_credit: 20,
+    year_credit: 140,
+    foreign_end_balance: 130,
+    end_balance: 910,
+  }
+  const hkd = {
+    foreign_init_balance: 200,
+    init_balance: 180,
+    foreign_current_debit: 0,
+    current_debit: 0,
+    foreign_current_credit: 0,
+    current_credit: 0,
+    foreign_year_debit: 0,
+    year_debit: 0,
+    foreign_year_credit: 0,
+    year_credit: 0,
+    foreign_end_balance: 200,
+    end_balance: 180,
+  }
+
+  it('单一币种：原币合计照填，18 个叶子列一一对应', () => {
+    const values = buildForeignBalanceExportSummaryValues({ USD: usd })
+    expect(values).toHaveLength(18)
+    expect(values[2]).toBe('USD')
+    expect(values[4]).toBe('借')
+    expect(values[5]).toBe(100)
+    expect(values[6]).toBe(700)
+    expect(values[7]).toBe(50)
+    expect(values[8]).toBe(350)
+    expect(values[11]).toBe(60)
+    expect(values[12]).toBe(420)
+    expect(values[15]).toBe('借')
+    expect(values[16]).toBe(130)
+    expect(values[17]).toBe(910)
+  })
+
+  it('多币种：原币留空、币种列标注「多币种」，本位币仍汇总', () => {
+    const values = buildForeignBalanceExportSummaryValues({ USD: usd, HKD: hkd })
+    expect(values[2]).toBe('多币种')
+    expect(values[5]).toBe('')
+    expect(values[6]).toBe(880)
+    expect(values[8]).toBe(350)
+    expect(values[16]).toBe('')
+    expect(values[17]).toBe(1090)
+  })
+
+  it('小计行：单币种不输出，多币种每个币种一行并带汇率', () => {
+    expect(buildForeignBalanceSubtotalRows({ USD: usd })).toEqual([])
+    const rows = buildForeignBalanceSubtotalRows({ USD: usd, HKD: hkd }, { USD: 7.25 })
+    expect(rows).toHaveLength(2)
+    expect(rows[0][0]).toBe('USD 小计')
+    expect(rows[0][2]).toBe('USD')
+    expect(rows[0][3]).toBe('7.2500')
+    expect(rows[0][6]).toBe(700)
+    expect(rows[0][17]).toBe(910)
+    // 没配汇率的币种留空，不能编一个 1 出来
+    expect(rows[1][3]).toBe('')
+  })
+})
+
+describe('辅助项目外币余额表小计行', () => {
+  it('多币种时每个币种一行，本位币取后端按币种分桶的合计', () => {
+    const rows = buildAuxForeignBalanceSubtotalRows(
+      1,
+      {
+        USD: {
+          foreign_init_balance: 100,
+          foreign_current_debit: 50,
+          foreign_current_credit: 20,
+          foreign_end_balance: 130,
+          init_balance: 700,
+          current_debit: 350,
+          current_credit: 140,
+          end_balance: 910,
+        },
+        HKD: {
+          foreign_init_balance: 200,
+          foreign_current_debit: 0,
+          foreign_current_credit: 0,
+          foreign_end_balance: 200,
+          init_balance: 180,
+          current_debit: 0,
+          current_credit: 0,
+          end_balance: 180,
+        },
+      },
+      { USD: 7.25, HKD: 0.92 }
+    )
+    expect(rows).toHaveLength(2)
+    // 科目编码、科目名称、1 个辅助列、币种、汇率、期初 3、本期 4、期末 3
+    expect(rows[0]).toHaveLength(15)
+    expect(rows[0][0]).toBe('USD 小计')
+    expect(rows[0][3]).toBe('USD')
+    expect(rows[0][4]).toBe('7.2500')
+    expect(rows[0][6]).toBe(100)
+    expect(rows[0][7]).toBe(700)
+    expect(rows[0][14]).toBe(910)
   })
 })

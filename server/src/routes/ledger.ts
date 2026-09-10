@@ -1,5 +1,26 @@
 import { Router } from 'express'
-import { authMiddleware, AuthRequest } from '../middleware/index.js'
+import { v4 as uuidv4 } from 'uuid'
+import { authMiddleware, AuthRequest, requirePermission, operationLog } from '../middleware/index.js'
+import {
+  findVatParentAccount,
+  queryVatLedger,
+  resolveVatColumns,
+  saveVatColumnSettings,
+} from '../services/vatLedgerQuery.js'
+import {
+  queryMultiColumnLedger,
+  readMultiColumnSettings,
+  resolveMultiColumnAccounts,
+  saveMultiColumnSettings,
+  type MultiColumnSetting,
+} from '../services/multiColumnLedgerQuery.js'
+import {
+  queryAuxMultiColumnLedger,
+  resolveAuxMultiColumnColumnSources,
+  saveAuxMultiColumnSettings,
+  type AuxMultiColumnMode,
+  type AuxMultiColumnSetting,
+} from '../services/auxMultiColumnLedgerQuery.js'
 import { getDb } from '../db/index.js'
 import {
   buildCashJournalQuery,
@@ -8,6 +29,10 @@ import {
   buildLedgerBalanceQuery,
   buildLedgerDetailQuery,
   buildLedgerGeneralQuery,
+  buildForeignBalanceQuery,
+  buildQuantityBalanceQuery,
+  buildVoucherSummaryQuery,
+  buildVoucherSummaryNoRangeQuery,
   supplementMissingParents,
   accumulateParentBalances,
   accumulateParentBalancesWithMonths,
@@ -39,9 +64,71 @@ import {
   appendAccountScopeCondition,
   assertAccountCodePrefixInScope,
   assertAccountIdInScope,
+  assertAccountIdsInScope,
   filterLedgerRowsByScope,
 } from '../services/accountAuthorization.js'
 import { AUX_BALANCE_ITEM_BATCH, MAX_PAGE_SIZE, parsePageSizeParam } from '../utils/listLimits.js'
+import { peekAccountSetStartDate } from '../services/accountSetDefaults.js'
+import { hasPreBookColumns, hasForeignPreBookColumns } from '../services/initBalanceScope.js'
+import { resolveClosingExchangeRate } from '../services/fxRevaluation.js'
+
+/** 外币余额表一行：本位币与原币成对，与 buildForeignBalanceQuery 的 SELECT 列一一对应 */
+interface ForeignBalanceTotals {
+  foreign_init_balance: number
+  init_balance: number
+  foreign_current_debit: number
+  current_debit: number
+  foreign_current_credit: number
+  current_credit: number
+  foreign_year_debit: number
+  year_debit: number
+  foreign_year_credit: number
+  year_credit: number
+  foreign_end_balance: number
+  end_balance: number
+}
+
+/**
+ * 账套内各外币币种的期末汇率（本位币不返回）。
+ * 外币余额表与辅助项目外币余额表共用，回退链完全交给 `resolveClosingExchangeRate`，
+ * 不在这里另写一套优先级。
+ */
+function loadClosingRates(
+  db: ReturnType<typeof getDb>,
+  accountSetId: string,
+  year: number,
+  period: number
+): Record<string, number> {
+  // 汇率只是展示列，老库缺 currencies 表时返回空对象即可，不能让整张余额表 500
+  let rows: Array<{ code: string }> = []
+  try {
+    rows = db
+      .prepare(
+        `SELECT UPPER(code) AS code FROM currencies
+         WHERE account_set_id = ? AND is_enabled = 1 AND COALESCE(is_base, 0) = 0`
+      )
+      .all(accountSetId) as Array<{ code: string }>
+  } catch (error) {
+    console.warn('读取币种期末汇率失败，汇率列将为空：', error)
+    return {}
+  }
+  const rates: Record<string, number> = {}
+  for (const row of rows) {
+    const code = String(row.code || '').trim().toUpperCase()
+    if (!code) continue
+    rates[code] = resolveClosingExchangeRate(db, accountSetId, code, year, period)
+  }
+  return rates
+}
+
+interface ForeignBalanceRow extends ForeignBalanceTotals {
+  account_id: string
+  account_code: string
+  account_name: string
+  direction: 'debit' | 'credit'
+  level: number
+  currency_code: string | null
+}
 
 const router = Router()
 router.use(authMiddleware)
@@ -79,6 +166,8 @@ router.get('/general', (req: AuthRequest, res) => {
     filterTypes: undefined,
     includeUnposted: include_unposted === 'true',
     accountScope: req.accountScope,
+    accountSetStartDate: peekAccountSetStartDate(db, req.accountSetId || ''),
+    preBookEnabled: hasPreBookColumns(db),
   })
 
   let list = db.prepare(query.sql).all(...query.params) as any[]
@@ -175,18 +264,316 @@ router.get('/detail', (req: AuthRequest, res) => {
     page: Number(page),
     pageSize: Number(pageSize),
     accountScope: req.accountScope,
+    accountSetStartDate: peekAccountSetStartDate(db, req.accountSetId || ''),
+    preBookEnabled: hasPreBookColumns(db),
   })
 
   const initBal = db.prepare(query.initBalanceSql).get(...query.initBalanceParams) as any
   const total = (db.prepare(query.countSql).get(...query.countParams) as any).count
   const entries = db.prepare(query.listSql).all(...query.listParams)
+  const preBook = db.prepare(query.preBookSql).get(...query.preBookParams) as
+    | { pre_book_debit?: number; pre_book_credit?: number }
+    | undefined
+
+  let foreignInitBalance = 0
+  if (account_id && typeof account_id === 'string') {
+    const y = Number(year) || (start_date ? new Date(String(start_date)).getFullYear() : new Date().getFullYear())
+    const fxInit = db
+      .prepare(
+        `SELECT COALESCE(SUM(foreign_init_balance), 0) AS foreign_init_balance
+         FROM init_balances
+         WHERE account_set_id = ? AND account_id = ? AND year = ? AND COALESCE(aux_item_id, '') = ''`
+      )
+      .get(req.accountSetId, account_id, y) as { foreign_init_balance?: number } | undefined
+    foreignInitBalance = Number(fxInit?.foreign_init_balance) || 0
+  }
 
   res.json({
     code: 0,
     data: entries,
     initBalance: initBal?.init_balance || 0,
+    foreignInitBalance,
+    // 账前发生额：中途启用账套在启用前的累计发生额，无凭证明细，供「本年累计」行累加
+    preBookDebit: Number(preBook?.pre_book_debit) || 0,
+    preBookCredit: Number(preBook?.pre_book_credit) || 0,
     total
   })
+})
+
+// ===================== 凭证汇总表 =====================
+
+/** 指定年月/类型下实际存在的凭证号区间，供条件窗自动填充默认值 */
+router.get('/voucher-summary/no-range', (req: AuthRequest, res) => {
+  const db = getDb()
+  const { year, period, voucher_type_id, scope } = req.query
+  const query = buildVoucherSummaryNoRangeQuery({
+    accountSetId: req.accountSetId || '',
+    year: Number(year) || new Date().getFullYear(),
+    period: Number(period) || new Date().getMonth() + 1,
+    voucherTypeId: (voucher_type_id as string) || undefined,
+    scope: scope === 'posted' || scope === 'unposted' ? scope : 'all',
+  })
+  const range = db.prepare(query.sql).get(...query.params) as
+    | { min_no?: number; max_no?: number; voucher_count?: number }
+    | undefined
+  res.json({
+    code: 0,
+    data: {
+      min_voucher_no: Number(range?.min_no) || 0,
+      max_voucher_no: Number(range?.max_no) || 0,
+      voucher_count: Number(range?.voucher_count) || 0,
+    },
+  })
+})
+
+router.get('/voucher-summary', (req: AuthRequest, res) => {
+  const db = getDb()
+  const accountSetId = req.accountSetId || ''
+  const { year, period, voucher_type_id, voucher_no_start, voucher_no_end, level, scope } = req.query
+
+  const y = Number(year) || new Date().getFullYear()
+  const p = Number(period) || new Date().getMonth() + 1
+  const summaryScope = scope === 'posted' || scope === 'unposted' ? scope : 'all'
+  const byDetail = level === 'detail'
+
+  const toVoucherNo = (v: unknown) => {
+    const n = Number(v)
+    return Number.isFinite(n) ? n : undefined
+  }
+
+  const query = buildVoucherSummaryQuery({
+    accountSetId,
+    year: y,
+    period: p,
+    voucherTypeId: (voucher_type_id as string) || undefined,
+    voucherNoStart: toVoucherNo(voucher_no_start),
+    voucherNoEnd: toVoucherNo(voucher_no_end),
+    scope: summaryScope,
+    accountScope: req.accountScope,
+  })
+
+  const entryRows = db.prepare(query.sql).all(...query.params) as any[]
+  const scoped = filterLedgerRowsByScope(req.accountScope, entryRows)
+
+  let list: any[]
+  if (byDetail) {
+    list = scoped.map(row => ({
+      account_code: row.account_code,
+      account_name: row.account_name,
+      direction: row.direction,
+      level: row.level,
+      debit_amount: Number(row.debit_amount) || 0,
+      credit_amount: Number(row.credit_amount) || 0,
+    }))
+  } else {
+    // 一级科目：按编码前 N 位归并，科目名取一级科目档案名（缺失时退回明细行的名字）
+    const topLength = getCodeLengths(db, accountSetId)[0] || 4
+    const grouped = new Map<string, any>()
+    for (const row of scoped) {
+      const topCode = String(row.account_code || '').slice(0, topLength)
+      if (!topCode) continue
+      let target = grouped.get(topCode)
+      if (!target) {
+        const topAccount = db
+          .prepare('SELECT name, direction FROM accounts WHERE account_set_id = ? AND code = ?')
+          .get(accountSetId, topCode) as { name?: string; direction?: string } | undefined
+        target = {
+          account_code: topCode,
+          account_name: topAccount?.name || row.account_name,
+          direction: topAccount?.direction || row.direction,
+          level: 1,
+          debit_amount: 0,
+          credit_amount: 0,
+        }
+        grouped.set(topCode, target)
+      }
+      target.debit_amount += Number(row.debit_amount) || 0
+      target.credit_amount += Number(row.credit_amount) || 0
+    }
+    list = [...grouped.values()].sort((a, b) => a.account_code.localeCompare(b.account_code))
+  }
+
+  // 表头号段必须反映「实际汇总了哪些凭证」：本期全量号段先查出来，
+  // 再与用户填的区间求交集，否则填了 1~1 却显示 1~86，数据对不上也看不出来
+  const rangeQuery = buildVoucherSummaryNoRangeQuery({
+    accountSetId,
+    year: y,
+    period: p,
+    voucherTypeId: (voucher_type_id as string) || undefined,
+    scope: summaryScope,
+  })
+  const range = db.prepare(rangeQuery.sql).get(...rangeQuery.params) as
+    | { min_no?: number; max_no?: number; voucher_count?: number }
+    | undefined
+
+  const periodMin = Number(range?.min_no) || 0
+  const periodMax = Number(range?.max_no) || 0
+  const askedStart = toVoucherNo(voucher_no_start)
+  const askedEnd = toVoucherNo(voucher_no_end)
+
+  res.json({
+    code: 0,
+    data: list,
+    meta: {
+      year: y,
+      period: p,
+      min_voucher_no: askedStart != null ? Math.max(askedStart, periodMin) : periodMin,
+      max_voucher_no: askedEnd != null ? Math.min(askedEnd, periodMax) : periodMax,
+      period_min_voucher_no: periodMin,
+      period_max_voucher_no: periodMax,
+      voucher_count: Number(range?.voucher_count) || 0,
+    },
+  })
+})
+
+// ===================== 库存数量金额表 =====================
+
+router.get('/quantity-balance', requirePermission('ledger:qty'), (req: AuthRequest, res) => {
+  const db = getDb()
+  const { start_date, end_date, account_code, include_unposted } = req.query
+
+  if (account_code) {
+    const codeErr = assertAccountCodePrefixInScope(
+      db,
+      req.accountScope,
+      req.accountSetId || '',
+      String(account_code)
+    )
+    if (codeErr) {
+      return res.status(403).json({ code: 403, message: codeErr })
+    }
+  }
+
+  const query = buildQuantityBalanceQuery({
+    accountSetId: req.accountSetId || '',
+    startDate: start_date as string | undefined,
+    endDate: end_date as string | undefined,
+    accountCode: account_code as string | undefined,
+    includeUnposted: include_unposted === 'true' || include_unposted === '1',
+    accountScope: req.accountScope,
+    accountSetStartDate: peekAccountSetStartDate(db, req.accountSetId || ''),
+    preBookEnabled: hasPreBookColumns(db),
+  })
+
+  // 数量核算科目按 is_quantity 平铺，不补父科目、不向上汇总
+  // （不同子科目计量单位可能不同，数量相加没有业务含义）
+  const list = filterLedgerRowsByScope(req.accountScope, db.prepare(query.sql).all(...query.params) as any[])
+
+  const summary = {
+    totalQtyCurrentDebit: 0,
+    totalCurrentDebit: 0,
+    totalQtyCurrentCredit: 0,
+    totalCurrentCredit: 0,
+    totalQtyYearDebit: 0,
+    totalYearDebit: 0,
+    totalQtyYearCredit: 0,
+    totalYearCredit: 0,
+    totalInitBalance: 0,
+    totalEndBalance: 0,
+  }
+  for (const row of list as any[]) {
+    summary.totalQtyCurrentDebit += Number(row.qty_current_debit) || 0
+    summary.totalCurrentDebit += Number(row.current_debit) || 0
+    summary.totalQtyCurrentCredit += Number(row.qty_current_credit) || 0
+    summary.totalCurrentCredit += Number(row.current_credit) || 0
+    summary.totalQtyYearDebit += Number(row.qty_year_debit) || 0
+    summary.totalYearDebit += Number(row.year_debit) || 0
+    summary.totalQtyYearCredit += Number(row.qty_year_credit) || 0
+    summary.totalYearCredit += Number(row.year_credit) || 0
+    summary.totalInitBalance += Number(row.init_balance) || 0
+    summary.totalEndBalance += Number(row.end_balance) || 0
+  }
+
+  res.json({ code: 0, data: list, summary })
+})
+
+// ===================== 外币余额表 =====================
+
+/**
+ * 外币余额表。
+ *
+ * 支持两种时间入参：
+ *  - `start_date` / `end_date`：与科目余额表同款日期区间（前端默认走这套）；
+ *  - `year` + `period`：旧调用方式，内部换算成该期间的首末日。
+ *
+ * 响应除数据行外还带：
+ *  - `summary`：按币种分桶的合计（结构与辅助外币表的 `foreign_totals` 一致）；
+ *  - `rates`：各币种期末汇率，复用期末调汇的 `resolveClosingExchangeRate` 回退链。
+ */
+router.get('/foreign-balance', (req: AuthRequest, res) => {
+  const db = getDb()
+  const {
+    year,
+    period,
+    start_date,
+    end_date,
+    account_code,
+    currency_code,
+    filter_types,
+    include_unposted,
+  } = req.query
+
+  const now = new Date()
+  const y = Number(year) || now.getFullYear()
+  const p = Number(period) || now.getMonth() + 1
+  const periodStart = `${y}-${String(p).padStart(2, '0')}-01`
+  const periodEnd = `${y}-${String(p).padStart(2, '0')}-${String(new Date(y, p, 0).getDate()).padStart(2, '0')}`
+
+  const startDate = (start_date as string | undefined) || periodStart
+  const endDate = (end_date as string | undefined) || periodEnd
+
+  let filterTypesArray: string[] | undefined
+  if (filter_types && typeof filter_types === 'string') {
+    filterTypesArray = filter_types.split(',').filter(t => t.trim())
+  }
+
+  const query = buildForeignBalanceQuery({
+    accountSetId: req.accountSetId || '',
+    startDate,
+    endDate,
+    accountCode: account_code as string | undefined,
+    currencyCode: currency_code as string | undefined,
+    filterTypes: filterTypesArray,
+    includeUnposted: include_unposted === 'true',
+    accountScope: req.accountScope,
+    accountSetStartDate: peekAccountSetStartDate(db, req.accountSetId || ''),
+    preBookEnabled: hasPreBookColumns(db),
+    foreignPreBookEnabled: hasForeignPreBookColumns(db),
+  })
+  const list = db.prepare(query.sql).all(...query.params) as ForeignBalanceRow[]
+
+  // 期末汇率按 endDate 所在年月取（区间查询时以结束期间为准，与调汇一致）
+  const rateYear = new Date(endDate).getFullYear() || y
+  const rateMonth = new Date(endDate).getMonth() + 1 || p
+  const rates = loadClosingRates(db, req.accountSetId || '', rateYear, rateMonth)
+  const summary: Record<string, ForeignBalanceTotals> = {}
+
+  for (const row of list) {
+    const code = String(row.currency_code || '').trim().toUpperCase()
+    if (!code) continue
+    if (!summary[code]) {
+      summary[code] = {
+        foreign_init_balance: 0,
+        init_balance: 0,
+        foreign_current_debit: 0,
+        current_debit: 0,
+        foreign_current_credit: 0,
+        current_credit: 0,
+        foreign_year_debit: 0,
+        year_debit: 0,
+        foreign_year_credit: 0,
+        year_credit: 0,
+        foreign_end_balance: 0,
+        end_balance: 0,
+      }
+    }
+    const bucket = summary[code]
+    for (const key of Object.keys(bucket) as Array<keyof ForeignBalanceTotals>) {
+      bucket[key] += Number(row[key]) || 0
+    }
+  }
+
+  res.json({ code: 0, data: list, summary, rates })
 })
 
 // ===================== 余额表 =====================
@@ -259,32 +646,41 @@ router.get('/balance', (req: AuthRequest, res) => {
 
 // ===================== 总分类账（带月度汇总） =====================
 
-router.get('/general-ledger', (req: AuthRequest, res) => {
-  const db = getDb()
-  const { year, account_code, account_level, include_unposted } = req.query
-  const maxLevel = account_level ? Number(account_level) : undefined
-
+/**
+ * 查询按月透视的科目发生额，并补齐父科目、向上汇总、计算本年累计与期末余额。
+ * 总分类账与财务分析（科目分析）共用；后者以 excludeTransfer 排除结转凭证。
+ */
+function queryMonthlyLedgerRows(
+  req: AuthRequest,
+  db: ReturnType<typeof getDb>,
+  options: {
+    year?: string | number
+    accountCode?: string
+    includeUnposted: boolean
+    excludeTransfer?: boolean
+  }
+) {
   // 注意：不传 accountLevel 给 SQL 查询，确保所有级次的科目都被查询到
   // 这样才能正确汇总子科目到父科目，级次过滤在汇总计算完成后进行
   const query = buildGeneralLedgerQuery({
     accountSetId: req.accountSetId || '',
-    year: year as string | number | undefined,
-    accountCode: account_code as string | undefined,
-    accountLevel: undefined, // 不限制级次，查询所有科目用于汇总计算
-    includeUnposted: include_unposted === 'true',
+    year: options.year,
+    accountCode: options.accountCode,
+    accountLevel: undefined,
+    includeUnposted: options.includeUnposted,
+    excludeTransfer: options.excludeTransfer,
     accountScope: req.accountScope,
+    accountSetStartDate: peekAccountSetStartDate(db, req.accountSetId || ''),
+    preBookEnabled: hasPreBookColumns(db),
   })
 
-  let list = db.prepare(query.sql).all(...query.params)
+  let list = db.prepare(query.sql).all(...query.params) as any[]
 
-  // 去重：如果同一个科目出现多次，合并它们的金额
   const deduplicatedMap = new Map<string, any>()
   ;(list as any[]).forEach(row => {
     if (deduplicatedMap.has(row.account_code)) {
-      // 如果已存在，合并金额
       const existing = deduplicatedMap.get(row.account_code)
       existing.init_balance = (existing.init_balance || 0) + (row.init_balance || 0)
-      // 合并12个月的借贷方发生额
       for (let m = 1; m <= 12; m++) {
         existing[`month${m}_debit`] = (existing[`month${m}_debit`] || 0) + (row[`month${m}_debit`] || 0)
         existing[`month${m}_credit`] = (existing[`month${m}_credit`] || 0) + (row[`month${m}_credit`] || 0)
@@ -300,30 +696,75 @@ router.get('/general-ledger', (req: AuthRequest, res) => {
   list = accumulateParentBalancesWithMonths(list, codeLengths)
   list = filterLedgerRowsByScope(req.accountScope, list)
 
-  // 计算累计和期末余额
-  const result = (list as any[]).map(row => {
-    // 计算本年累计借方和贷方
+  return (list as any[]).map(row => {
     let yearDebit = 0
     let yearCredit = 0
     for (let m = 1; m <= 12; m++) {
       yearDebit += (row[`month${m}_debit`] || 0)
       yearCredit += (row[`month${m}_credit`] || 0)
     }
-
-    // 计算期末余额
     let endBalance = row.init_balance
-    if (row.direction === 'debit') {
-      endBalance += yearDebit - yearCredit
-    } else {
-      endBalance += yearCredit - yearDebit
-    }
+    if (row.direction === 'debit') endBalance += yearDebit - yearCredit
+    else endBalance += yearCredit - yearDebit
+    return { ...row, year_debit: yearDebit, year_credit: yearCredit, end_balance: endBalance }
+  })
+}
 
-    return {
-      ...row,
-      year_debit: yearDebit,
-      year_credit: yearCredit,
-      end_balance: endBalance,
-    }
+// ===================== 财务分析：科目分析（排除损益结转） =====================
+
+router.get('/subject-analysis', (req: AuthRequest, res) => {
+  const db = getDb()
+  const { year, account_code, include_unposted } = req.query
+  const code = String(account_code || '').trim()
+  if (!code) {
+    res.status(400).json({ code: 1, message: '请指定分析科目' })
+    return
+  }
+
+  const rows = queryMonthlyLedgerRows(req, db, {
+    year: year as string | number | undefined,
+    accountCode: code,
+    includeUnposted: include_unposted === 'true',
+    excludeTransfer: true,
+  })
+
+  // 只返回所选科目及其子孙；父级金额已由子级汇总
+  const data = rows
+    .filter(row => String(row.account_code).startsWith(code))
+    .map(row => {
+      const months = Array.from({ length: 12 }, (_, i) => ({
+        debit: Number(row[`month${i + 1}_debit`]) || 0,
+        credit: Number(row[`month${i + 1}_credit`]) || 0,
+      }))
+      return {
+        account_id: row.account_id,
+        account_code: row.account_code,
+        account_name: row.account_name,
+        direction: row.direction,
+        level: row.level,
+        is_leaf: !rows.some(
+          r => r.account_code !== row.account_code && String(r.account_code).startsWith(row.account_code)
+        ),
+        init_balance: Number(row.init_balance) || 0,
+        months,
+        year_debit: row.year_debit,
+        year_credit: row.year_credit,
+        end_balance: row.end_balance,
+      }
+    })
+
+  res.json({ code: 0, data })
+})
+
+router.get('/general-ledger', (req: AuthRequest, res) => {
+  const db = getDb()
+  const { year, account_code, account_level, include_unposted } = req.query
+  const maxLevel = account_level ? Number(account_level) : undefined
+
+  const result = queryMonthlyLedgerRows(req, db, {
+    year: year as string | number | undefined,
+    accountCode: account_code as string | undefined,
+    includeUnposted: include_unposted === 'true',
   })
 
   // 如果指定了科目级次，在汇总计算完成后过滤展示
@@ -535,8 +976,39 @@ router.post('/aux-balance', (req: AuthRequest, res) => {
     item_limit,
     summary_only,
     skip_summary,
+    with_foreign,
+    currency_code,
+    with_quantity,
   } = req.body
   const accountSetId = req.accountSetId!
+
+  // 外币模式（辅助项目外币余额表）：只统计外币核算科目，附加原币期初/发生/期末，并按币种给出合计
+  const withForeign = with_foreign === true || with_foreign === 'true'
+  const currencyFilter = withForeign && currency_code ? String(currency_code).trim().toUpperCase() : ''
+  // 分录币种优先取分录自身，缺失时回退科目档案币种
+  const entryCurrencyExpr = `UPPER(COALESCE(NULLIF(ve.currency_code, ''), a.currency_code, ''))`
+  const accountCurrencyExpr = `UPPER(COALESCE(a.currency_code, ''))`
+  const appendForeignEntryConditions = (conditions: string[], params: any[]) => {
+    if (!withForeign) return
+    conditions.push('a.is_foreign = 1')
+    if (currencyFilter) {
+      conditions.push(`${entryCurrencyExpr} = ?`)
+      params.push(currencyFilter)
+    }
+  }
+  const foreignAccountJoin = withForeign ? 'JOIN accounts a ON a.id = ve.account_id' : ''
+
+  // 数量模式（辅助项目库存数量金额表）：只统计数量核算科目，附加数量期初/发生/结余。
+  // 数量不进 account_balances，与外币一样直接聚合 voucher_entries.quantity。
+  const withQuantity = with_quantity === true || with_quantity === 'true'
+  const appendQuantityEntryConditions = (conditions: string[], _params: any[]) => {
+    if (!withQuantity) return
+    conditions.push('a.is_quantity = 1')
+  }
+  const quantityAccountJoin =
+    !withForeign && withQuantity ? 'JOIN accounts a ON a.id = ve.account_id' : ''
+  /** 需要 accounts 别名 a 的场景：外币或数量模式各自的 JOIN（两者互斥，不会重复 JOIN） */
+  const scopedAccountJoin = foreignAccountJoin || quantityAccountJoin
 
   const itemOffset = Math.max(0, Number(item_offset) || 0)
   const itemLimitProvided = item_limit !== undefined && item_limit !== null && item_limit !== ''
@@ -701,17 +1173,28 @@ router.post('/aux-balance', (req: AuthRequest, res) => {
       field_values_json TEXT,
       category_code TEXT,
       category_name TEXT,
+      currency_code TEXT DEFAULT '',
       init_balance REAL DEFAULT 0,
       current_debit REAL DEFAULT 0,
       current_credit REAL DEFAULT 0,
-      end_balance REAL DEFAULT 0
+      end_balance REAL DEFAULT 0,
+      foreign_init_balance REAL DEFAULT 0,
+      foreign_current_debit REAL DEFAULT 0,
+      foreign_current_credit REAL DEFAULT 0,
+      foreign_end_balance REAL DEFAULT 0,
+      qty_init_balance REAL DEFAULT 0,
+      qty_current_debit REAL DEFAULT 0,
+      qty_current_credit REAL DEFAULT 0,
+      qty_end_balance REAL DEFAULT 0
     )`)
     const upsertAuxBalanceRow = db.prepare(`
       INSERT INTO _tmp_aux_balance_rows (
         row_key, account_code, account_name, account_direction,
-        aux_id, aux_name, field_values_json, category_code, category_name,
-        init_balance, current_debit, current_credit, end_balance
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        aux_id, aux_name, field_values_json, category_code, category_name, currency_code,
+        init_balance, current_debit, current_credit, end_balance,
+        foreign_init_balance, foreign_current_debit, foreign_current_credit, foreign_end_balance,
+        qty_init_balance, qty_current_debit, qty_current_credit, qty_end_balance
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(row_key) DO UPDATE SET
         account_name=excluded.account_name,
         account_direction=excluded.account_direction,
@@ -721,14 +1204,24 @@ router.post('/aux-balance', (req: AuthRequest, res) => {
         init_balance=_tmp_aux_balance_rows.init_balance + excluded.init_balance,
         current_debit=_tmp_aux_balance_rows.current_debit + excluded.current_debit,
         current_credit=_tmp_aux_balance_rows.current_credit + excluded.current_credit,
-        end_balance=_tmp_aux_balance_rows.end_balance + excluded.end_balance
+        end_balance=_tmp_aux_balance_rows.end_balance + excluded.end_balance,
+        foreign_init_balance=_tmp_aux_balance_rows.foreign_init_balance + excluded.foreign_init_balance,
+        foreign_current_debit=_tmp_aux_balance_rows.foreign_current_debit + excluded.foreign_current_debit,
+        foreign_current_credit=_tmp_aux_balance_rows.foreign_current_credit + excluded.foreign_current_credit,
+        foreign_end_balance=_tmp_aux_balance_rows.foreign_end_balance + excluded.foreign_end_balance,
+        qty_init_balance=_tmp_aux_balance_rows.qty_init_balance + excluded.qty_init_balance,
+        qty_current_debit=_tmp_aux_balance_rows.qty_current_debit + excluded.qty_current_debit,
+        qty_current_credit=_tmp_aux_balance_rows.qty_current_credit + excluded.qty_current_credit,
+        qty_end_balance=_tmp_aux_balance_rows.qty_end_balance + excluded.qty_end_balance
     `)
     const writeAuxBalanceRows = db.transaction((rows: any[]) => {
       for (const row of rows) {
         const auxId = String(row.aux_id || '')
         if (!auxId) continue
+        // 外币模式下同一科目+项目可能出现多个币种（分录币种与科目档案不一致的历史数据），按币种分行
+        const rowCurrency = withForeign ? String(row.currency_code || '').toUpperCase() : ''
         upsertAuxBalanceRow.run(
-          `${row.account_code}|${row.category_code}|${auxId}`,
+          `${row.account_code}|${row.category_code}|${auxId}|${rowCurrency}`,
           row.account_code,
           row.account_name,
           row.account_direction,
@@ -737,10 +1230,19 @@ router.post('/aux-balance', (req: AuthRequest, res) => {
           row.field_values_json || null,
           row.category_code,
           row.category_name || '',
+          rowCurrency,
           Number(row.init_balance || 0),
           Number(row.current_debit || 0),
           Number(row.current_credit || 0),
-          Number(row.end_balance || 0)
+          Number(row.end_balance || 0),
+          Number(row.foreign_init_balance || 0),
+          Number(row.foreign_current_debit || 0),
+          Number(row.foreign_current_credit || 0),
+          Number(row.foreign_end_balance || 0),
+          Number(row.qty_init_balance || 0),
+          Number(row.qty_current_debit || 0),
+          Number(row.qty_current_credit || 0),
+          Number(row.qty_end_balance || 0)
         )
       }
     })
@@ -776,39 +1278,57 @@ router.post('/aux-balance', (req: AuthRequest, res) => {
         }
 
         appendAccountScopeCondition(req.accountScope, 've.account_id', baseConditions, baseParams)
+        appendForeignEntryConditions(baseConditions, baseParams)
+        appendQuantityEntryConditions(baseConditions, baseParams)
 
-        const signedEntryAmount = buildSignedEntryAmountSql('a.direction', 've.direction', 've.amount')
+        const buildPeriodAmountSelects = (amountRef: string, prefix: string) => `
+            COALESCE(SUM(CASE
+              WHEN v.voucher_date >= ? AND v.voucher_date < ? THEN ${buildSignedEntryAmountSql('a.direction', 've.direction', amountRef)}
+              ELSE 0
+            END), 0) as ${prefix}init_balance,
+            COALESCE(SUM(CASE
+              WHEN v.voucher_date >= ? AND v.voucher_date <= ? AND ve.direction = 'debit'
+              THEN ${amountRef} ELSE 0
+            END), 0) as ${prefix}current_debit,
+            COALESCE(SUM(CASE
+              WHEN v.voucher_date >= ? AND v.voucher_date <= ? AND ve.direction = 'credit'
+              THEN ${amountRef} ELSE 0
+            END), 0) as ${prefix}current_credit,
+            COALESCE(SUM(CASE
+              WHEN v.voucher_date >= ? AND v.voucher_date <= ? THEN ${buildSignedEntryAmountSql('a.direction', 've.direction', amountRef)}
+              ELSE 0
+            END), 0) as ${prefix}end_balance`
+        const foreignSelects = withForeign
+          ? `,${buildPeriodAmountSelects('COALESCE(ve.foreign_amount, 0)', 'foreign_')}`
+          : ''
+        const foreignHaving = withForeign
+          ? ' OR foreign_init_balance != 0 OR foreign_current_debit != 0 OR foreign_current_credit != 0 OR foreign_end_balance != 0'
+          : ''
+        const quantitySelects = withQuantity
+          ? `,${buildPeriodAmountSelects('COALESCE(ve.quantity, 0)', 'qty_')}`
+          : ''
+        const quantityHaving = withQuantity
+          ? ' OR qty_init_balance != 0 OR qty_current_debit != 0 OR qty_current_credit != 0 OR qty_end_balance != 0'
+          : ''
         const sql = `
           SELECT
             ve.account_code,
             ve.account_name,
             a.direction as account_direction,
+            ${withForeign ? entryCurrencyExpr : "''"} as currency_code,
             ${buildAuxIdSelect(categoryCode, categoryIdByCode.get(categoryCode))} as aux_id,
             ${buildAuxNameSelect(categoryCode, categoryIdByCode.get(categoryCode))} as aux_name,
             MAX(${buildAuxFieldValuesSelect(categoryCode, categoryIdByCode.get(categoryCode))}) as field_values_json,
             '${categoryCode}' as category_code,
-            COALESCE(SUM(CASE
-              WHEN v.voucher_date >= ? AND v.voucher_date < ? THEN ${signedEntryAmount}
-              ELSE 0
-            END), 0) as init_balance,
-            COALESCE(SUM(CASE
-              WHEN v.voucher_date >= ? AND v.voucher_date <= ? AND ve.direction = 'debit'
-              THEN ve.amount ELSE 0
-            END), 0) as current_debit,
-            COALESCE(SUM(CASE
-              WHEN v.voucher_date >= ? AND v.voucher_date <= ? AND ve.direction = 'credit'
-              THEN ve.amount ELSE 0
-            END), 0) as current_credit,
-            COALESCE(SUM(CASE
-              WHEN v.voucher_date >= ? AND v.voucher_date <= ? THEN ${signedEntryAmount}
-              ELSE 0
-            END), 0) as end_balance
+            ${buildPeriodAmountSelects('ve.amount', '')}
+            ${foreignSelects}
+            ${quantitySelects}
           FROM voucher_entries ve
           JOIN vouchers v ON v.id = ve.voucher_id
           JOIN accounts a ON a.id = ve.account_id
           WHERE ${baseConditions.join(' AND ')}
-          GROUP BY ve.account_code, ve.account_name, a.direction, aux_id, aux_name
-          HAVING init_balance != 0 OR current_debit != 0 OR current_credit != 0 OR end_balance != 0
+          GROUP BY ve.account_code, ve.account_name, a.direction, ${withForeign ? entryCurrencyExpr : "''"}, aux_id, aux_name
+          HAVING init_balance != 0 OR current_debit != 0 OR current_credit != 0 OR end_balance != 0${foreignHaving}${quantityHaving}
           ORDER BY ve.account_code, aux_name
         `
 
@@ -817,7 +1337,7 @@ router.post('/aux-balance', (req: AuthRequest, res) => {
         const auxYearStartDate = start_date
           ? `${new Date(start_date).getFullYear()}-01-01`
           : '1900-01-01'
-        const balanceParams = [
+        const periodDateParams = [
           auxYearStartDate,                 // init 下限：当年年初
           start_date || '1900-01-01',       // init 上限：< start_date
           start_date || '1900-01-01',       // current_debit >=
@@ -826,6 +1346,11 @@ router.post('/aux-balance', (req: AuthRequest, res) => {
           end_date || '9999-12-31',         // current_credit <=
           auxYearStartDate,                 // end_balance 下限：当年年初
           end_date || '9999-12-31',         // end_balance 上限：<= end_date
+        ]
+        const balanceParams = [
+          ...periodDateParams,
+          ...(withForeign ? periodDateParams : []),
+          ...(withQuantity ? periodDateParams : []),
           ...baseParams,
         ]
 
@@ -864,6 +1389,8 @@ router.post('/aux-balance', (req: AuthRequest, res) => {
           params.push(`${account_code}%`)
         }
         appendAccountScopeCondition(req.accountScope, 've.account_id', conditions, params)
+        appendForeignEntryConditions(conditions, params)
+        appendQuantityEntryConditions(conditions, params)
         const rows = db
           .prepare(
             `SELECT DISTINCT matched_ai.id, matched_ai.code, matched_ai.name,
@@ -871,6 +1398,7 @@ router.post('/aux-balance', (req: AuthRequest, res) => {
                     ? as category_code, ? as category_name
              FROM voucher_entries ve
              JOIN vouchers v ON v.id=ve.voucher_id
+             ${scopedAccountJoin}
              JOIN aux_items matched_ai
                ON matched_ai.account_set_id=? AND matched_ai.type=?
               AND (matched_ai.id=(${rawAuxId}) OR matched_ai.code=(${rawAuxId}))
@@ -907,16 +1435,24 @@ router.post('/aux-balance', (req: AuthRequest, res) => {
     // ===== 合并 init_balances 表中的辅助期初 =====
     const initYear = start_date ? new Date(start_date).getFullYear() : new Date().getFullYear()
     const accountCodeFilter = account_code ? ` AND a.code LIKE ?` : ''
+    const initForeignFilter = withForeign
+      ? ` AND a.is_foreign = 1${currencyFilter ? ` AND ${accountCurrencyExpr} = ?` : ''}`
+      : ''
+    const initQuantityFilter = withQuantity ? ' AND a.is_quantity = 1' : ''
     const initBalanceSql = `
       SELECT a.code as account_code, a.name as account_name, a.direction,
-             ib.aux_item_id, ib.init_balance, ib.init_debit, ib.init_credit
+             ${withForeign ? accountCurrencyExpr : "''"} as currency_code,
+             ib.aux_item_id, ib.init_balance, ib.init_debit, ib.init_credit,
+             COALESCE(ib.foreign_init_balance, 0) as foreign_init_balance,
+             COALESCE(ib.qty_init_balance, 0) as qty_init_balance
       FROM init_balances ib
       JOIN accounts a ON a.id = ib.account_id
       WHERE ib.account_set_id = ? AND ib.year = ? AND ib.aux_item_id != ''
-      ${accountCodeFilter}
+      ${accountCodeFilter}${initForeignFilter}${initQuantityFilter}
     `
     const initBalanceParams: any[] = [accountSetId, initYear]
     if (account_code) initBalanceParams.push(`${account_code}%`)
+    if (withForeign && currencyFilter) initBalanceParams.push(currencyFilter)
     const auxInitStatement = db.prepare(initBalanceSql)
     const iterateAuxInitRows = () => auxInitStatement.iterate(...initBalanceParams) as Iterable<any>
     const auxInitRowCount = (
@@ -975,10 +1511,13 @@ router.post('/aux-balance', (req: AuthRequest, res) => {
           initCredit,
           row.init_balance
         )
+        const foreignInitBalance = withForeign ? Number(row.foreign_init_balance) || 0 : 0
+        const qtyInitBalance = withQuantity ? Number(row.qty_init_balance) || 0 : 0
         initBalanceWriteBuffer.push({
           account_code: row.account_code,
           account_name: row.account_name,
           account_direction: row.direction === 'credit' ? 'credit' : 'debit',
+          currency_code: row.currency_code || '',
           aux_id: itemId,
           aux_name: resolvedItem.name || '',
           field_values_json: null,
@@ -988,6 +1527,14 @@ router.post('/aux-balance', (req: AuthRequest, res) => {
           current_debit: 0,
           current_credit: 0,
           end_balance: initBalance,
+          foreign_init_balance: foreignInitBalance,
+          foreign_current_debit: 0,
+          foreign_current_credit: 0,
+          foreign_end_balance: foreignInitBalance,
+          qty_init_balance: qtyInitBalance,
+          qty_current_debit: 0,
+          qty_current_credit: 0,
+          qty_end_balance: qtyInitBalance,
         })
         if (initBalanceWriteBuffer.length >= 500) {
           writeAuxBalanceRows(initBalanceWriteBuffer)
@@ -1008,7 +1555,24 @@ router.post('/aux-balance', (req: AuthRequest, res) => {
       current_debit: 0,
       current_credit: 0,
       end_balance: 0,
+      qty_init_balance: 0,
+      qty_current_debit: 0,
+      qty_current_credit: 0,
+      qty_end_balance: 0,
     }
+    // 原币与本位币成对：多币种时前端要按币种出小计行，只有原币不够
+    type ForeignTotals = {
+      foreign_init_balance: number
+      init_balance: number
+      foreign_current_debit: number
+      current_debit: number
+      foreign_current_credit: number
+      current_credit: number
+      foreign_end_balance: number
+      end_balance: number
+    }
+    // 外币模式：不同币种的原币不能相加，按币种分别合计
+    const foreignTotalsByCurrency: Record<string, ForeignTotals> = {}
 
     if (!skipSummary) {
     // ===== 独立查询科目汇总行余额（临时表去重，避免多类目重复计算同一分录）=====
@@ -1043,11 +1607,14 @@ router.post('/aux-balance', (req: AuthRequest, res) => {
           params.push(`${account_code}%`)
         }
         appendAccountScopeCondition(req.accountScope, 've.account_id', conds, params)
+        appendForeignEntryConditions(conds, params)
+        appendQuantityEntryConditions(conds, params)
 
         const selectSql = `
           SELECT DISTINCT ve.id
           FROM voucher_entries ve
           JOIN vouchers v ON v.id = ve.voucher_id
+          ${scopedAccountJoin}
           WHERE ${conds.join(' AND ')}
         `
         const entryRows = db.prepare(selectSql).all(...params) as { id: string }[]
@@ -1064,35 +1631,42 @@ router.post('/aux-balance', (req: AuthRequest, res) => {
       fillTempTableForCategoryItems(catCode, catItems)
     }
 
-    const signedAmtSqlSummary = buildSignedEntryAmountSql('a.direction', 've.direction', 've.amount')
+    const buildSummaryAmountSelects = (amountRef: string, prefix: string) => {
+      const signed = buildSignedEntryAmountSql('a.direction', 've.direction', amountRef)
+      return `
+        COALESCE(SUM(CASE
+          WHEN v.voucher_date < ? THEN ${signed}
+          ELSE 0
+        END), 0) as ${prefix}init_balance,
+        COALESCE(SUM(CASE
+          WHEN v.voucher_date >= ? AND v.voucher_date <= ? AND ve.direction = 'debit'
+          THEN ${amountRef} ELSE 0
+        END), 0) as ${prefix}current_debit,
+        COALESCE(SUM(CASE
+          WHEN v.voucher_date >= ? AND v.voucher_date <= ? AND ve.direction = 'credit'
+          THEN ${amountRef} ELSE 0
+        END), 0) as ${prefix}current_credit,
+        COALESCE(SUM(CASE
+          WHEN v.voucher_date <= ? THEN ${signed}
+          ELSE 0
+        END), 0) as ${prefix}end_balance`
+    }
     const accountSummarySql = `
       SELECT
         ve.account_code,
         ve.account_name,
         a.direction as account_direction,
-        COALESCE(SUM(CASE
-          WHEN v.voucher_date < ? THEN ${signedAmtSqlSummary}
-          ELSE 0
-        END), 0) as init_balance,
-        COALESCE(SUM(CASE
-          WHEN v.voucher_date >= ? AND v.voucher_date <= ? AND ve.direction = 'debit'
-          THEN ve.amount ELSE 0
-        END), 0) as current_debit,
-        COALESCE(SUM(CASE
-          WHEN v.voucher_date >= ? AND v.voucher_date <= ? AND ve.direction = 'credit'
-          THEN ve.amount ELSE 0
-        END), 0) as current_credit,
-        COALESCE(SUM(CASE
-          WHEN v.voucher_date <= ? THEN ${signedAmtSqlSummary}
-          ELSE 0
-        END), 0) as end_balance
+        ${withForeign ? entryCurrencyExpr : "''"} as currency_code,
+        ${buildSummaryAmountSelects('ve.amount', '')}
+        ${withForeign ? `,${buildSummaryAmountSelects('COALESCE(ve.foreign_amount, 0)', 'foreign_')}` : ''}
+        ${withQuantity ? `,${buildSummaryAmountSelects('COALESCE(ve.quantity, 0)', 'qty_')}` : ''}
       FROM voucher_entries ve
       JOIN vouchers v ON v.id = ve.voucher_id
       JOIN accounts a ON a.id = ve.account_id
       WHERE ve.id IN (SELECT DISTINCT entry_id FROM _tmp_aux_entry_ids)
-      GROUP BY ve.account_code, ve.account_name, a.direction
+      GROUP BY ve.account_code, ve.account_name, a.direction, ${withForeign ? entryCurrencyExpr : "''"}
     `
-    const accountSummaryBalanceParams = [
+    const summaryDateParams = [
       start_date || '1900-01-01',
       start_date || '1900-01-01',
       end_date || '9999-12-31',
@@ -1100,19 +1674,51 @@ router.post('/aux-balance', (req: AuthRequest, res) => {
       end_date || '9999-12-31',
       end_date || '9999-12-31',
     ]
+    const accountSummaryBalanceParams = [
+      ...summaryDateParams,
+      ...(withForeign ? summaryDateParams : []),
+      ...(withQuantity ? summaryDateParams : []),
+    ]
     const accountSummaryRows = db.prepare(accountSummarySql).all(...accountSummaryBalanceParams) as any[]
 
     // 清理临时表
     db.exec('DROP TABLE IF EXISTS _tmp_aux_entry_ids')
 
-    // 科目汇总余额 Map（来自凭证，不含 init_balances 期初）
-    const accountSummaryMap = new Map<string, { init_balance: number; current_debit: number; current_credit: number; end_balance: number; account_direction: 'debit' | 'credit' }>()
+    // 科目汇总余额 Map（来自凭证，不含 init_balances 期初）；外币模式按「科目|币种」分键
+    type AccountSummary = {
+      init_balance: number
+      current_debit: number
+      current_credit: number
+      end_balance: number
+      foreign_init_balance: number
+      foreign_current_debit: number
+      foreign_current_credit: number
+      foreign_end_balance: number
+      qty_init_balance: number
+      qty_current_debit: number
+      qty_current_credit: number
+      qty_end_balance: number
+      currency_code: string
+      account_direction: 'debit' | 'credit'
+    }
+    const summaryKey = (acctCode: string, currency: string) => `${acctCode}|${withForeign ? currency : ''}`
+    const accountSummaryMap = new Map<string, AccountSummary>()
     for (const row of accountSummaryRows) {
-      accountSummaryMap.set(row.account_code, {
+      const currency = String(row.currency_code || '').toUpperCase()
+      accountSummaryMap.set(summaryKey(row.account_code, currency), {
         init_balance: row.init_balance || 0,
         current_debit: row.current_debit || 0,
         current_credit: row.current_credit || 0,
         end_balance: row.end_balance || 0,
+        foreign_init_balance: row.foreign_init_balance || 0,
+        foreign_current_debit: row.foreign_current_debit || 0,
+        foreign_current_credit: row.foreign_current_credit || 0,
+        foreign_end_balance: row.foreign_end_balance || 0,
+        qty_init_balance: row.qty_init_balance || 0,
+        qty_current_debit: row.qty_current_debit || 0,
+        qty_current_credit: row.qty_current_credit || 0,
+        qty_end_balance: row.qty_end_balance || 0,
+        currency_code: currency,
         account_direction: row.account_direction === 'credit' ? 'credit' : 'debit',
       })
     }
@@ -1121,7 +1727,17 @@ router.post('/aux-balance', (req: AuthRequest, res) => {
     // （辅助期初已合并到临时结果表，这里对科目汇总单独加一遍）
     // 修复：一行 aux_item_id 可能形如 "cash_flow:xxx|person:yyy"（组合），
     // 按 parts 累加会把同一行算多次，应"命中即一次"。
-    const accountInitMap = new Map<string, { initBalance: number; account_direction: 'debit' | 'credit' }>()
+    const accountInitMap = new Map<
+      string,
+      {
+        account_code: string
+        currency_code: string
+        initBalance: number
+        foreignInitBalance: number
+        qtyInitBalance: number
+        account_direction: 'debit' | 'credit'
+      }
+    >()
     for (const row of iterateAuxInitRows()) {
       let hit = false
       for (const part of String(row.aux_item_id).split('|')) {
@@ -1153,25 +1769,46 @@ router.post('/aux-balance', (req: AuthRequest, res) => {
           row.init_credit || 0,
           row.init_balance
         )
-        const existing = accountInitMap.get(row.account_code)
-        accountInitMap.set(row.account_code, {
+        const currency = String(row.currency_code || '').toUpperCase()
+        const key = summaryKey(row.account_code, currency)
+        const existing = accountInitMap.get(key)
+        accountInitMap.set(key, {
+          account_code: row.account_code,
+          currency_code: currency,
           initBalance: (existing?.initBalance || 0) + initBalance,
+          foreignInitBalance:
+            (existing?.foreignInitBalance || 0) + (withForeign ? Number(row.foreign_init_balance) || 0 : 0),
+          qtyInitBalance:
+            (existing?.qtyInitBalance || 0) + (withQuantity ? Number(row.qty_init_balance) || 0 : 0),
           account_direction: row.direction === 'credit' ? 'credit' : 'debit',
         })
       }
     }
-    for (const [acctCode, initInfo] of accountInitMap) {
-      const existing = accountSummaryMap.get(acctCode)
+    for (const [key, initInfo] of accountInitMap) {
+      const existing = accountSummaryMap.get(key)
       if (existing) {
         existing.init_balance += initInfo.initBalance
         existing.end_balance += initInfo.initBalance
+        existing.foreign_init_balance += initInfo.foreignInitBalance
+        existing.foreign_end_balance += initInfo.foreignInitBalance
+        existing.qty_init_balance += initInfo.qtyInitBalance
+        existing.qty_end_balance += initInfo.qtyInitBalance
       } else {
         // 只有期初、无凭证的科目
-        accountSummaryMap.set(acctCode, {
+        accountSummaryMap.set(key, {
           init_balance: initInfo.initBalance,
           current_debit: 0,
           current_credit: 0,
           end_balance: initInfo.initBalance,
+          foreign_init_balance: initInfo.foreignInitBalance,
+          foreign_current_debit: 0,
+          foreign_current_credit: 0,
+          foreign_end_balance: initInfo.foreignInitBalance,
+          qty_init_balance: initInfo.qtyInitBalance,
+          qty_current_debit: 0,
+          qty_current_credit: 0,
+          qty_end_balance: initInfo.qtyInitBalance,
+          currency_code: initInfo.currency_code,
           account_direction: initInfo.account_direction,
         })
       }
@@ -1182,8 +1819,39 @@ router.post('/aux-balance', (req: AuthRequest, res) => {
       grandTotals.current_debit += accSum.current_debit || 0
       grandTotals.current_credit += accSum.current_credit || 0
       grandTotals.end_balance += accSum.end_balance || 0
+      grandTotals.qty_init_balance += accSum.qty_init_balance || 0
+      grandTotals.qty_current_debit += accSum.qty_current_debit || 0
+      grandTotals.qty_current_credit += accSum.qty_current_credit || 0
+      grandTotals.qty_end_balance += accSum.qty_end_balance || 0
+      if (withForeign) {
+        const currency = accSum.currency_code || ''
+        const bucket = (foreignTotalsByCurrency[currency] ||= {
+          foreign_init_balance: 0,
+          init_balance: 0,
+          foreign_current_debit: 0,
+          current_debit: 0,
+          foreign_current_credit: 0,
+          current_credit: 0,
+          foreign_end_balance: 0,
+          end_balance: 0,
+        })
+        bucket.foreign_init_balance += accSum.foreign_init_balance || 0
+        bucket.init_balance += accSum.init_balance || 0
+        bucket.foreign_current_debit += accSum.foreign_current_debit || 0
+        bucket.current_debit += accSum.current_debit || 0
+        bucket.foreign_current_credit += accSum.foreign_current_credit || 0
+        bucket.current_credit += accSum.current_credit || 0
+        bucket.foreign_end_balance += accSum.foreign_end_balance || 0
+        bucket.end_balance += accSum.end_balance || 0
+      }
     }
     }
+    const foreignTotals = withForeign ? foreignTotalsByCurrency : undefined
+    // 汇率列数据源：与外币余额表同一条回退链，按结束日期所在年月取期末汇率
+    const rateBase = new Date(String(end_date || '') || Date.now())
+    const foreignRates = withForeign
+      ? loadClosingRates(db, accountSetId, rateBase.getFullYear(), rateBase.getMonth() + 1)
+      : undefined
 
     if (summaryOnly) {
       const queryTime = Date.now() - startTime
@@ -1194,6 +1862,8 @@ router.post('/aux-balance', (req: AuthRequest, res) => {
         total: 0,
         items_total: itemsTotal,
         totals: grandTotals,
+        foreign_totals: foreignTotals,
+        rates: foreignRates,
         categoryFields,
       })
     }
@@ -1224,7 +1894,7 @@ router.post('/aux-balance', (req: AuthRequest, res) => {
       const flatRows = hydrateRows(
         db.prepare(
           `SELECT * FROM _tmp_aux_balance_rows
-           ORDER BY account_code, category_code, aux_name, aux_id`
+           ORDER BY account_code, category_code, aux_name, aux_id, currency_code`
         ).all() as any[]
       )
       console.log(
@@ -1238,6 +1908,8 @@ router.post('/aux-balance', (req: AuthRequest, res) => {
         items_total: itemsTotal,
         items_processed: itemsProcessed,
         totals: skipSummary ? null : grandTotals,
+        foreign_totals: skipSummary ? undefined : foreignTotals,
+        rates: foreignRates,
         categoryFields,
       })
     }
@@ -1251,7 +1923,7 @@ router.post('/aux-balance', (req: AuthRequest, res) => {
     const pagedResults = hydrateRows(
       db.prepare(
         `SELECT * FROM _tmp_aux_balance_rows
-         ORDER BY account_code, category_code, aux_name, aux_id
+         ORDER BY account_code, category_code, aux_name, aux_id, currency_code
          LIMIT ? OFFSET ?`
       ).all(pageSizeNum, offset) as any[]
     )
@@ -1266,6 +1938,8 @@ router.post('/aux-balance', (req: AuthRequest, res) => {
       total: totalRows,
       items_total: itemsTotal,
       totals: skipSummary ? null : grandTotals,
+      foreign_totals: skipSummary ? undefined : foreignTotals,
+      rates: foreignRates,
       categoryFields,
     })
   } catch (error: any) {
@@ -1949,6 +2623,266 @@ router.get('/cash-flow-voucher-check', (req: AuthRequest, res) => {
     res.json({ code: 0, data })
   } catch (error: any) {
     console.error('现金流量凭证检查失败:', error)
+    res.status(500).json({ code: 500, message: error.message || '查询失败' })
+  }
+})
+
+// ===================== 通用多栏账 =====================
+
+router.get('/multi-column/settings', requirePermission('ledger:multirow'), (req: AuthRequest, res) => {
+  try {
+    const db = getDb()
+    const accountSetId = req.accountSetId || ''
+    const accountId = typeof req.query.account_id === 'string' ? req.query.account_id : ''
+    const resolved = resolveMultiColumnAccounts(db, accountSetId, accountId)
+    const scopeErr = assertAccountIdsInScope(
+      req.accountScope,
+      [accountId, ...resolved.columns.map(column => column.accountId)].filter(Boolean)
+    )
+    if (scopeErr) return res.status(403).json({ code: 403, message: scopeErr })
+    res.json({ code: 0, data: { main: resolved.main, columns: resolved.columns } })
+  } catch (error: any) {
+    res.status(500).json({ code: 500, message: error.message || '读取多栏账设置失败' })
+  }
+})
+
+router.put(
+  '/multi-column/settings',
+  requirePermission('ledger:multirow'),
+  operationLog('保存多栏账设置', '账簿'),
+  (req: AuthRequest, res) => {
+    try {
+      const db = getDb()
+      const accountSetId = req.accountSetId || ''
+      const mainAccountId = String(req.body?.accountId || '')
+      const resolved = resolveMultiColumnAccounts(db, accountSetId, mainAccountId)
+      const scopeErr = assertAccountIdsInScope(
+        req.accountScope,
+        [mainAccountId, ...resolved.columns.map(column => column.accountId)].filter(Boolean)
+      )
+      if (scopeErr) return res.status(403).json({ code: 403, message: scopeErr })
+      const allowed = new Set(resolved.columns.map(column => column.accountId))
+      const settings = (Array.isArray(req.body?.columns) ? req.body.columns : [])
+        .filter((item: any) => allowed.has(String(item?.accountId)))
+        .map((item: any, index: number): MultiColumnSetting => ({
+          accountId: String(item.accountId),
+          enabled: item.enabled !== false,
+          printName: String(item.printName ?? '').trim(),
+          printNameEn: String(item.printNameEn ?? '').trim(),
+          sortOrder: Number.isFinite(Number(item.sortOrder)) ? Number(item.sortOrder) : index,
+        }))
+      saveMultiColumnSettings(db, accountSetId, mainAccountId, settings, () => uuidv4())
+      const next = resolveMultiColumnAccounts(db, accountSetId, mainAccountId)
+      res.json({ code: 0, data: { main: next.main, columns: next.columns } })
+    } catch (error: any) {
+      res.status(500).json({ code: 500, message: error.message || '保存多栏账设置失败' })
+    }
+  }
+)
+
+router.get('/multi-column', requirePermission('ledger:multirow'), (req: AuthRequest, res) => {
+  try {
+    const db = getDb()
+    const accountSetId = req.accountSetId || ''
+    const mainAccountId = typeof req.query.account_id === 'string' ? req.query.account_id : ''
+    const resolved = resolveMultiColumnAccounts(db, accountSetId, mainAccountId)
+    const scopeErr = assertAccountIdsInScope(
+      req.accountScope,
+      [mainAccountId, ...resolved.columns.map(column => column.accountId)].filter(Boolean)
+    )
+    if (scopeErr) return res.status(403).json({ code: 403, message: scopeErr })
+    const data = queryMultiColumnLedger(db, {
+      accountSetId,
+      mainAccountId,
+      year: Number(req.query.year) || new Date().getFullYear(),
+      startMonth: Number(req.query.start_month) || 1,
+      endMonth: Number(req.query.end_month) || 12,
+      includeUnposted: req.query.include_unposted === 'true',
+      accountSetStartDate: peekAccountSetStartDate(db, accountSetId),
+      preBookEnabled: hasPreBookColumns(db),
+    })
+    res.json({ code: 0, data })
+  } catch (error: any) {
+    console.error('多栏账查询失败:', error)
+    res.status(500).json({ code: 500, message: error.message || '多栏账查询失败' })
+  }
+})
+
+function parseAuxItemIdsParam(raw: unknown): string[] {
+  if (Array.isArray(raw)) {
+    return raw.map(value => String(value)).filter(value => value.trim())
+  }
+  if (typeof raw === 'string') {
+    return raw.split(',').map(value => value.trim()).filter(Boolean)
+  }
+  return []
+}
+
+function parseAuxMultiColumnInput(req: AuthRequest, source: 'query' | 'body') {
+  const raw: any = source === 'query' ? req.query : req.body || {}
+  const pick = (queryKey: string, bodyKey: string) =>
+    source === 'query' ? raw[queryKey] : raw[bodyKey] ?? raw[queryKey]
+  const modeRaw = String(pick('mode', 'mode') || 'counter')
+  return {
+    accountSetId: req.accountSetId || '',
+    mode: (modeRaw === 'aux_item' ? 'aux_item' : 'counter') as AuxMultiColumnMode,
+    categoryId: String(pick('aux_category_id', 'categoryId') || ''),
+    auxItemIds: parseAuxItemIdsParam(pick('aux_item_ids', 'auxItemIds')),
+    accountId: String(pick('account_id', 'accountId') || '') || undefined,
+    year: Number(pick('year', 'year')) || new Date().getFullYear(),
+    startMonth: Number(pick('start_month', 'startMonth')) || 1,
+    endMonth: Number(pick('end_month', 'endMonth')) || 12,
+    includeUnposted: String(pick('include_unposted', 'includeUnposted') ?? '') === 'true'
+      || pick('include_unposted', 'includeUnposted') === true,
+    accountCode: (() => {
+      const value = pick('account_code', 'accountCode')
+      return typeof value === 'string' && value.trim() ? value.trim() : undefined
+    })(),
+    accountScope: req.accountScope,
+  }
+}
+
+/** 栏目 key 形如 d_<sourceId> / c_<sourceId>，模式 counter 下 sourceId 即对方科目 ID */
+function auxMultiColumnScopeIds(input: { mode: AuxMultiColumnMode; accountId?: string }, columns: Array<{ key: string }>) {
+  const ids = new Set<string>()
+  if (input.accountId) ids.add(input.accountId)
+  if (input.mode === 'counter') {
+    for (const column of columns) {
+      const sourceId = column.key.replace(/^[dc]_/, '')
+      if (sourceId) ids.add(sourceId)
+    }
+  }
+  return Array.from(ids)
+}
+
+router.get('/aux-multi-column/settings', requirePermission('ledger:aux'), (req: AuthRequest, res) => {
+  try {
+    const db = getDb()
+    const input = parseAuxMultiColumnInput(req, 'query')
+    const resolved = resolveAuxMultiColumnColumnSources(db, input)
+    const scopeErr = assertAccountIdsInScope(req.accountScope, auxMultiColumnScopeIds(input, resolved.columns))
+    if (scopeErr) return res.status(403).json({ code: 403, message: scopeErr })
+    res.json({
+      code: 0,
+      data: {
+        mode: resolved.mode,
+        category: resolved.category,
+        account: resolved.account,
+        columns: resolved.columns,
+      },
+    })
+  } catch (error: any) {
+    res.status(500).json({ code: 500, message: error.message || '读取辅助多栏账设置失败' })
+  }
+})
+
+router.put(
+  '/aux-multi-column/settings',
+  requirePermission('ledger:aux'),
+  operationLog('保存辅助多栏账设置', '账簿'),
+  (req: AuthRequest, res) => {
+    try {
+      const db = getDb()
+      const input = parseAuxMultiColumnInput(req, 'body')
+      const resolved = resolveAuxMultiColumnColumnSources(db, input)
+      const scopeErr = assertAccountIdsInScope(req.accountScope, auxMultiColumnScopeIds(input, resolved.columns))
+      if (scopeErr) return res.status(403).json({ code: 403, message: scopeErr })
+      // 已保存但被禁用的栏目不在 resolved.columns 里，需一并放行，否则禁用后再也改不回来
+      const previous = new Set(
+        (Array.isArray(req.body?.columns) ? req.body.columns : []).map((item: any) => String(item?.accountId))
+      )
+      const allowed = new Set([...resolved.columns.map(column => column.key), ...previous])
+      const settings = (Array.isArray(req.body?.columns) ? req.body.columns : [])
+        .filter((item: any) => allowed.has(String(item?.accountId)))
+        .map((item: any, index: number): AuxMultiColumnSetting => ({
+          accountId: String(item.accountId),
+          enabled: item.enabled !== false,
+          printName: String(item.printName ?? '').trim(),
+          sortOrder: Number.isFinite(Number(item.sortOrder)) ? Number(item.sortOrder) : index,
+        }))
+      saveAuxMultiColumnSettings(db, input.accountSetId, resolved.settingsKey, settings, () => uuidv4())
+      const refreshed = resolveAuxMultiColumnColumnSources(db, input)
+      res.json({ code: 0, data: { mode: refreshed.mode, columns: refreshed.columns } })
+    } catch (error: any) {
+      res.status(500).json({ code: 500, message: error.message || '保存辅助多栏账设置失败' })
+    }
+  }
+)
+
+router.get('/aux-multi-column', requirePermission('ledger:aux'), (req: AuthRequest, res) => {
+  try {
+    const db = getDb()
+    const input = parseAuxMultiColumnInput(req, 'query')
+    if (input.mode === 'aux_item' && !input.accountId) {
+      return res.status(400).json({ code: 1, message: '按辅助项目分栏时必须选择科目' })
+    }
+    const scopeErr = assertAccountIdsInScope(req.accountScope, input.accountId ? [input.accountId] : [])
+    if (scopeErr) return res.status(403).json({ code: 403, message: scopeErr })
+    const data = queryAuxMultiColumnLedger(db, input)
+    res.json({ code: 0, data })
+  } catch (error: any) {
+    console.error('辅助多栏账查询失败:', error)
+    res.status(500).json({ code: 500, message: error.message || '辅助多栏账查询失败' })
+  }
+})
+
+// ===================== 应交税金(增值税)明细账 =====================
+
+router.get('/vat-detail/settings', requirePermission('ledger:detail'), (req: AuthRequest, res) => {
+  try {
+    const db = getDb()
+    const accountSetId = req.accountSetId || ''
+    const parent = findVatParentAccount(db, accountSetId)
+    res.json({
+      code: 0,
+      data: {
+        columns: resolveVatColumns(db, accountSetId),
+        parent: parent ? { code: parent.code, name: parent.name } : null,
+      },
+    })
+  } catch (error: any) {
+    res.status(500).json({ code: 500, message: error.message || '读取设置失败' })
+  }
+})
+
+router.put(
+  '/vat-detail/settings',
+  requirePermission('ledger:detail'),
+  operationLog('保存增值税明细账设置', '账簿'),
+  (req: AuthRequest, res) => {
+    try {
+      const db = getDb()
+      const accountSetId = req.accountSetId || ''
+      const settings = Array.isArray(req.body?.columns) ? req.body.columns : []
+      saveVatColumnSettings(db, accountSetId, settings, () => uuidv4())
+      res.json({ code: 0, data: { columns: resolveVatColumns(db, accountSetId) } })
+    } catch (error: any) {
+      res.status(500).json({ code: 500, message: error.message || '保存设置失败' })
+    }
+  }
+)
+
+router.get('/vat-detail', requirePermission('ledger:detail'), (req: AuthRequest, res) => {
+  try {
+    const db = getDb()
+    const accountSetId = req.accountSetId || ''
+    const data = queryVatLedger(db, {
+      accountSetId,
+      year: Number(req.query.year) || new Date().getFullYear(),
+      startMonth: Number(req.query.start_month) || 1,
+      endMonth: Number(req.query.end_month) || 12,
+      includeUnposted: req.query.include_unposted === 'true',
+      accountSetStartDate: peekAccountSetStartDate(db, accountSetId),
+      preBookEnabled: hasPreBookColumns(db),
+    })
+    const scopeErr = assertAccountIdsInScope(
+      req.accountScope,
+      data.columns.filter(c => c.accountId).map(c => c.accountId)
+    )
+    if (scopeErr) return res.status(403).json({ code: 403, message: scopeErr })
+    res.json({ code: 0, data })
+  } catch (error: any) {
+    console.error('增值税明细账查询失败:', error)
     res.status(500).json({ code: 500, message: error.message || '查询失败' })
   }
 })

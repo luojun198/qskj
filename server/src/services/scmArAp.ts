@@ -1,8 +1,12 @@
 /**
  * 供应链往来/收付款 & 出纳联动服务（P4）
  *
- * 收付款单（PAY/RCV）审核时：写入 wldj 往来台账、生成出纳日记账。
- * 采购/销售发票（RP/RS）审核时：生成应收应付分录。
+ * 收付款单（PAY/RCV）审核时：写入往来台账、生成出纳日记账。
+ * 销售发货（SO）/ 采购入库（PI）审核时：按**价税合计**挂应收/应付暂估，
+ *   口径与凭证的应收/应付分录一致——不含税挂账会让总账余额与往来余额差一个税额，
+ *   且含税收款永远核销不平。
+ * 采购/销售发票（RP/RS）审核时：有来源单据的校正该单暂估额（不新增，避免双计），
+ *   独立录入的新挂一条。见 applyInvoice / reverseInvoice。
  */
 import type Database from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
@@ -73,30 +77,109 @@ export function applyPayment(db: Database.Database, accountSetId: string, doc: a
   return { verify_no: '', count: 0 }
 }
 
-/** 审核采购/销售发票（RP/RS）：生成应收应付台账（不产生出纳流水） */
-export function applyInvoice(db: Database.Database, accountSetId: string, doc: any, lines: any[]) {
-  const partner = db.prepare('SELECT * FROM scm_partner WHERE account_set_id=? AND code=?').get(accountSetId, doc.partner_code) as any
-  // 价税合计 = Σ(行金额 + 行税额)
+/** 单据价税合计 = Σ(行金额 + 行税额)。往来台账与凭证统一取这个口径。 */
+export function sumGrossAmount(lines: any[]): number {
   let total = 0
   for (const l of lines) total += Math.round((Number(l.amount || 0) + Number(l.tax_amount || 0)) * 100) / 100
-  total = Math.round(total * 100) / 100
-  if (total <= 0) return
+  return Math.round(total * 100) / 100
+}
 
+/**
+ * 审核采购/销售发票（RP/RS）：维护应收应付台账（不产生出纳流水）。
+ *
+ * 两种情形：
+ *  1. **由来源单据下推的发票**（有 source_doc_id）——发货/入库时已按价税合计挂了暂估往来，
+ *     此处不能再挂一次，否则同一笔业务被双计。改为把来源单据那条台账的金额**校正**为
+ *     发票金额（开票金额与发货金额不一致时以发票为准），并在备注里留下发票号。
+ *  2. **独立录入的发票**（无来源单据）——按发票价税合计新挂一条台账。
+ *
+ * 返回本次实际动作，供审核接口回显。
+ */
+export function applyInvoice(
+  db: Database.Database, accountSetId: string, doc: any, lines: any[]
+): { mode: 'adjust' | 'create' | 'skip'; amount: number; sourceDocNo?: string } {
+  const total = sumGrossAmount(lines)
+  if (total <= 0 || !doc.partner_code) return { mode: 'skip', amount: 0 }
+
+  // ① 有来源单据：校正来源单据的暂估台账，不新增
+  const srcLog = doc.source_doc_id ? findSourceArApLog(db, accountSetId, doc.source_doc_id) : null
+  if (srcLog) {
+    if (total < Math.round(Number(srcLog.verified_amount || 0) * 100) / 100 - 0.005) {
+      throw new Error(
+        `发票金额 ${total} 小于来源单据「${srcLog.doc_no}」已核销金额 ${srcLog.verified_amount}，请先反核销`
+      )
+    }
+    db.prepare(
+      `UPDATE scm_ar_ap_log SET amount=?, remark=? WHERE id=?`
+    ).run(total, `${srcLog.remark ? srcLog.remark + ' ' : ''}[发票 ${doc.doc_no}]`, srcLog.id)
+    return { mode: 'adjust', amount: total, sourceDocNo: srcLog.doc_no }
+  }
+
+  // ② 独立发票：新挂一条
+  applyInvoiceLog(db, accountSetId, doc, total)
+  return { mode: 'create', amount: total }
+}
+
+/** 取来源单据（SO/PI 等）挂出的那条应收应付台账 */
+function findSourceArApLog(db: Database.Database, accountSetId: string, sourceDocId: string): any {
+  const src = db.prepare(
+    'SELECT doc_type, doc_no FROM scm_doc WHERE id=? AND account_set_id=?'
+  ).get(sourceDocId, accountSetId) as any
+  if (!src) return null
+  return db.prepare(
+    `SELECT * FROM scm_ar_ap_log
+      WHERE account_set_id=? AND doc_type=? AND doc_no=? AND direction='in'
+      ORDER BY rowid LIMIT 1`
+  ).get(accountSetId, src.doc_type, src.doc_no) as any
+}
+
+/**
+ * 撤销发票对往来台账的影响（反审核 / 删单）。
+ * 校正过来源单据的，按来源单据的行重算价税合计还原；独立发票的直接删除自己的台账。
+ */
+export function reverseInvoice(db: Database.Database, accountSetId: string, doc: any): void {
+  const srcLog = doc.source_doc_id ? findSourceArApLog(db, accountSetId, doc.source_doc_id) : null
+  if (srcLog) {
+    const srcLines = db.prepare('SELECT amount, tax_amount FROM scm_doc_line WHERE doc_id=?')
+      .all(doc.source_doc_id) as any[]
+    const restored = sumGrossAmount(srcLines)
+    if (restored < Math.round(Number(srcLog.verified_amount || 0) * 100) / 100 - 0.005) {
+      throw new Error(
+        `还原后的来源单据金额 ${restored} 小于已核销金额 ${srcLog.verified_amount}，请先反核销`
+      )
+    }
+    db.prepare('UPDATE scm_ar_ap_log SET amount=?, remark=? WHERE id=?')
+      .run(restored, srcLog.remark ? String(srcLog.remark).replace(/\s*\[发票 [^\]]*\]$/, '') || null : null, srcLog.id)
+    return
+  }
+  reversePayment(db, accountSetId, doc)
+}
+
+/** 新挂一条发票往来台账 */
+function applyInvoiceLog(db: Database.Database, accountSetId: string, doc: any, total: number) {
+  const partner = db.prepare('SELECT * FROM scm_partner WHERE account_set_id=? AND code=?').get(accountSetId, doc.partner_code) as any
   db.prepare(`INSERT INTO scm_ar_ap_log
     (id, account_set_id, partner_code, doc_type, doc_no, doc_date, due_date, direction, amount, ar_account, ap_account, cashier_journal_id, remark)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     uuidv4(), accountSetId, doc.partner_code, doc.doc_type, doc.doc_no, doc.doc_date, computeDueDate(doc, partner),
-    'in', total, partner?.ar_account || null, partner?.ap_account || null, null, doc.remark
+    'in', total,
+    doc.doc_type === 'RS' ? (partner?.ar_account || '1131') : null,
+    doc.doc_type === 'RP' ? (partner?.ap_account || '2121') : null,
+    null, doc.remark
   )
 }
 
-/** 审核销售发货单（SO 销售出库）：按发货金额生成应收账款台账（无出纳流水、无税） */
+/**
+ * 审核销售发货单（SO 销售出库）：按价税合计生成应收账款台账（无出纳流水）。
+ *
+ * 口径为**含税**——与凭证借方应收（amt + tax，见 scmDoc.ts 的 sale 分支）一致。
+ * 原实现只挂不含税金额，导致：① 总账应收余额 ≠ 往来余额表/账龄/对账单；
+ * ② 客户按含税额付款时，税额部分永远核销不掉，堆在「未核销收款」里污染预收统计。
+ */
 export function applyReceivableFromShipment(db: Database.Database, accountSetId: string, doc: any, lines: any[]) {
   if (!doc.partner_code) return  // 无客户则不挂应收
   const partner = db.prepare('SELECT * FROM scm_partner WHERE account_set_id=? AND code=?').get(accountSetId, doc.partner_code) as any
-  let total = 0
-  for (const l of lines) total += Math.round(Number(l.amount || 0) * 100) / 100
-  total = Math.round(total * 100) / 100
+  const total = sumGrossAmount(lines)
   if (total <= 0) return
 
   db.prepare(`INSERT INTO scm_ar_ap_log
@@ -107,13 +190,11 @@ export function applyReceivableFromShipment(db: Database.Database, accountSetId:
   )
 }
 
-/** 审核采购入库单（PI 采购入库）：按入库金额生成应付账款台账（无出纳流水、无税） */
+/** 审核采购入库单（PI 采购入库）：按价税合计生成应付账款台账（无出纳流水）。口径同 applyReceivableFromShipment。 */
 export function applyPayableFromReceipt(db: Database.Database, accountSetId: string, doc: any, lines: any[]) {
   if (!doc.partner_code) return  // 无供应商（如现购/无往来）则不挂应付
   const partner = db.prepare('SELECT * FROM scm_partner WHERE account_set_id=? AND code=?').get(accountSetId, doc.partner_code) as any
-  let total = 0
-  for (const l of lines) total += Math.round(Number(l.amount || 0) * 100) / 100
-  total = Math.round(total * 100) / 100
+  const total = sumGrossAmount(lines)
   if (total <= 0) return
 
   db.prepare(`INSERT INTO scm_ar_ap_log

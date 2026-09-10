@@ -9,7 +9,9 @@ import {
   resolveAccessiblePath,
 } from '@/config/navigation'
 import { REMEMBER_ME_KEY, clearRememberedLogin } from '@/utils/rememberedLogin'
+import { getStoredHomePage } from '@/utils/homePreference'
 import { setupRouteSwitchingIndicator } from '@/composables/useRouteSwitching'
+import { ElMessage } from 'element-plus'
 
 const routes: RouteRecordRaw[] = [
   {
@@ -27,7 +29,8 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/',
     component: () => import('@/views/Layout.vue'),
-    redirect: '/dashboard',
+    // 用户可把任意模块主页设为默认主页；无效路径由下方守卫的 resolveAccessiblePath 兜底
+    redirect: () => getStoredHomePage() || '/dashboard',
     meta: { requiresAuth: true },
     children: [
       {
@@ -85,6 +88,12 @@ const routes: RouteRecordRaw[] = [
         name: 'Account',
         component: () => import('@/views/base/Account.vue'),
         meta: { title: '会计科目', icon: 'Notebook', parent: '基础设置' },
+      },
+      {
+        path: 'base/account-set-info',
+        name: 'AccountSetInfo',
+        component: () => import('@/views/base/AccountSetInfo.vue'),
+        meta: { title: '套账信息', icon: 'InfoFilled', parent: '基础设置' },
       },
       {
         path: 'base/voucher-type',
@@ -147,10 +156,27 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '打印模版', icon: 'Printer', parent: '基础设置' },
       },
       {
+        path: 'base/print-template/design/:id?',
+        name: 'PrintTemplateDesigner',
+        component: () => import('@/views/base/PrintTemplateDesigner.vue'),
+        meta: { title: '设计打印模版', icon: 'Printer', parent: '基础设置' },
+      },
+      {
         path: 'base/cash-flow-items',
         name: 'CashFlowItems',
         component: () => import('@/views/base/CashFlowItems.vue'),
         meta: { title: '现金流量项目', icon: 'Money', parent: '基础设置', requiresCashFlow: true },
+      },
+      {
+        path: 'base/currency',
+        name: 'Currency',
+        component: () => import('@/views/base/Currency.vue'),
+        meta: {
+          title: '外币类型',
+          icon: 'Coins',
+          parent: '基础设置',
+          requiresForeignCurrency: true,
+        },
       },
       {
         path: 'base/fund-source',
@@ -170,6 +196,12 @@ const routes: RouteRecordRaw[] = [
         name: 'VoucherAudit',
         component: () => import('@/views/voucher/Audit.vue'),
         meta: { title: '凭证管理', icon: 'CircleCheck', parent: '凭证管理' },
+      },
+      {
+        path: 'voucher/fx-reval',
+        name: 'VoucherFxReval',
+        component: () => import('@/views/voucher/FxReval.vue'),
+        meta: { title: '期末调汇', icon: 'Coins', parent: '凭证管理', requiresForeignCurrency: true },
       },
       {
         path: 'voucher/auto-transfer',
@@ -209,6 +241,18 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '明细账', icon: 'Document', parent: '账簿管理' },
       },
       {
+        path: 'ledger/vat-detail',
+        name: 'VatDetailLedger',
+        component: () => import('@/views/ledger/VatDetail.vue'),
+        meta: { title: '增值税明细账', icon: 'Document', parent: '账簿管理' },
+      },
+      {
+        path: 'ledger/multi-column',
+        name: 'MultiColumnLedger',
+        component: () => import('@/views/ledger/MultiColumn.vue'),
+        meta: { title: '多栏账', icon: 'Document', parent: '账簿管理' },
+      },
+      {
         path: 'ledger/balance',
         name: 'BalanceTable',
         component: () => import('@/views/ledger/Balance.vue'),
@@ -232,6 +276,39 @@ const routes: RouteRecordRaw[] = [
         },
       },
       {
+        path: 'ledger/foreign-balance',
+        name: 'ForeignBalance',
+        component: () => import('@/views/ledger/ForeignBalance.vue'),
+        meta: {
+          title: '外币余额表',
+          icon: 'Coins',
+          parent: '账簿管理',
+          requiresForeignCurrency: true,
+        },
+      },
+      {
+        path: 'ledger/quantity-balance',
+        name: 'QuantityBalance',
+        component: () => import('@/views/ledger/QuantityBalance.vue'),
+        meta: {
+          title: '库存数量金额表',
+          icon: 'Goods',
+          parent: '账簿管理',
+        },
+      },
+      {
+        path: 'ledger/voucher-summary',
+        name: 'VoucherSummary',
+        component: () => import('@/views/ledger/VoucherSummary.vue'),
+        meta: { title: '凭证汇总表', icon: 'DataAnalysis', parent: '账簿管理' },
+      },
+      {
+        path: 'ledger/subject-analysis',
+        name: 'SubjectAnalysis',
+        component: () => import('@/views/ledger/SubjectAnalysis.vue'),
+        meta: { title: '财务分析', icon: 'TrendCharts', parent: '财务报表' },
+      },
+      {
         path: 'ledger/chronological',
         name: 'Chronological',
         component: () => import('@/views/ledger/Chronological.vue'),
@@ -250,10 +327,39 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '辅助项目余额表', icon: 'DataAnalysis', parent: '账簿管理' },
       },
       {
+        path: 'ledger/aux-foreign-balance',
+        name: 'LedgerAuxForeignBalance',
+        component: () => import('@/views/ledger/AuxBalance.vue'),
+        props: { foreign: true },
+        meta: {
+          title: '辅助项目外币余额表',
+          icon: 'Coins',
+          parent: '账簿管理',
+          requiresForeignCurrency: true,
+        },
+      },
+      {
+        path: 'ledger/aux-quantity-balance',
+        name: 'LedgerAuxQuantityBalance',
+        component: () => import('@/views/ledger/AuxBalance.vue'),
+        props: { quantity: true },
+        meta: {
+          title: '辅助项目库存数量金额表',
+          icon: 'Goods',
+          parent: '账簿管理',
+        },
+      },
+      {
         path: 'ledger/aux-detail',
         name: 'LedgerAuxDetail',
         component: () => import('@/views/ledger/AuxDetail.vue'),
         meta: { title: '辅助项目明细账', icon: 'Document', parent: '账簿管理' },
+      },
+      {
+        path: 'ledger/aux-multi-column',
+        name: 'LedgerAuxMultiColumn',
+        component: () => import('@/views/ledger/AuxMultiColumn.vue'),
+        meta: { title: '辅助项目多栏明细账', icon: 'Document', parent: '账簿管理' },
       },
       // 辅助核算
       {
@@ -982,10 +1088,35 @@ router.beforeEach(async (to, _from, next) => {
     next('/login')
   } else if (to.path === '/login' && userStore.token) {
     await systemParamsStore.load()
-    next(getDefaultLandingPath(userStore.permissions, systemParamsStore.enableCashFlow, licensedModules))
+    next(
+      getDefaultLandingPath(
+        userStore.permissions,
+        systemParamsStore.enableCashFlow,
+        licensedModules,
+        getStoredHomePage()
+      )
+    )
   } else if (to.meta.requiresCashFlow) {
     await systemParamsStore.load()
     if (!systemParamsStore.enableCashFlow) {
+      // 直接跳走会让人以为「点了没反应」，说明原因再跳
+      ElMessage.warning('该账套未启用现金流核算，请先在账套参数中开启')
+      next('/system/param')
+    } else if (!canAccessRoute(to.fullPath, userStore.permissions, licensedModules)) {
+      const landing = resolveAccessiblePath(
+        to.fullPath,
+        userStore.permissions,
+        systemParamsStore.enableCashFlow,
+        licensedModules
+      )
+      next(landing === normalizePath(to.path) ? '/forbidden' : { path: landing, replace: true })
+    } else {
+      next()
+    }
+  } else if (to.meta.requiresForeignCurrency) {
+    await systemParamsStore.load()
+    if (!systemParamsStore.enableForeignCurrency) {
+      ElMessage.warning('该账套未启用外币核算，请先在账套参数中开启')
       next('/system/param')
     } else if (!canAccessRoute(to.fullPath, userStore.permissions, licensedModules)) {
       const landing = resolveAccessiblePath(

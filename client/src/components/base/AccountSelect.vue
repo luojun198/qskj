@@ -340,7 +340,7 @@ function triggerKeywordSearch() {
 .account-select-search-btn {
   cursor: pointer;
   color: var(--el-color-primary);
-  font-size: 14px;
+  font-size: var(--cw-text-base);
   transition: opacity 0.15s;
 }
 .account-select-search-btn:hover {

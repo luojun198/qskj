@@ -14,10 +14,15 @@
  * 本文件新增两个 token（动态报表的解析器不认识它们，但会安全忽略，不影响兼容）：
  *   text-color-RRGGBB                文字颜色
  *   bg-color-RRGGBB                  单元格底色
+ *   align-row-center                 整行居中：文字以整张报表的横向中线为准居中，而不是所在格/合并区的中线。
+ *                                    报表抬头的日期（左有「纳税人名称」、右有「会企01表」）只能落在中间几列里，
+ *                                    按格居中必然偏离标题的中线，用它来对齐。解析成 textAlign=center + rowCenter=true。
  */
 
 export type CellStyle = {
   textAlign: '' | 'left' | 'center' | 'right'
+  /** 见 align-row-center；仅在 textAlign 为 center 时有意义 */
+  rowCenter: boolean
   verticalAlign: '' | 'top' | 'middle' | 'bottom'
   fontSize: number
   bold: boolean
@@ -72,6 +77,7 @@ export const NUMBER_FORMAT_OPTIONS = [
 
 const DEFAULT_STYLE: CellStyle = {
   textAlign: '',
+  rowCenter: false,
   verticalAlign: '',
   fontSize: 0,
   bold: false,
@@ -93,8 +99,12 @@ function normalizeColor(value: string | null | undefined) {
 export function parseStyleKey(styleKey: string | null | undefined): CellStyle {
   const style: CellStyle = { ...DEFAULT_STYLE }
   for (const token of String(styleKey || '').split(/\s+/).filter(Boolean)) {
-    if (token.startsWith('align-')) {
+    if (token === 'align-row-center') {
+      style.textAlign = 'center'
+      style.rowCenter = true
+    } else if (token.startsWith('align-')) {
       style.textAlign = token.slice(6) as CellStyle['textAlign']
+      style.rowCenter = false
     } else if (token.startsWith('valign-')) {
       style.verticalAlign = token.slice(7) as CellStyle['verticalAlign']
     } else if (token.startsWith('font-size-')) {
@@ -123,7 +133,9 @@ export function parseStyleKey(styleKey: string | null | undefined): CellStyle {
 
 export function buildStyleKey(style: Partial<CellStyle>): string {
   const tokens: string[] = []
-  if (style.textAlign) tokens.push(`align-${style.textAlign}`)
+  // 用户在工具栏改成左/右对齐时，整行居中随之失效
+  if (style.textAlign === 'center' && style.rowCenter) tokens.push('align-row-center')
+  else if (style.textAlign) tokens.push(`align-${style.textAlign}`)
   if (style.verticalAlign) tokens.push(`valign-${style.verticalAlign}`)
   if (style.fontSize) tokens.push(`font-size-${style.fontSize}`)
   if (style.bold) tokens.push('font-bold')
@@ -135,6 +147,25 @@ export function buildStyleKey(style: Partial<CellStyle>): string {
   if (style.textColor) tokens.push(`text-color-${normalizeColor(style.textColor)}`)
   if (style.bgColor) tokens.push(`bg-color-${normalizeColor(style.bgColor)}`)
   return tokens.join(' ')
+}
+
+/**
+ * align-row-center 用：从该格左边缘到整张报表横向中线的距离（px）。
+ * 网格与打印各自按自己的列宽来源调用，保证两边算出的位置一致。
+ */
+export function rowCenterOffsetPx(
+  getColWidth: (colIndex: number) => number,
+  colCount: number,
+  colIndex: number
+) {
+  let total = 0
+  let before = 0
+  for (let index = 0; index < colCount; index += 1) {
+    const width = getColWidth(index) || 0
+    total += width
+    if (index < colIndex) before += width
+  }
+  return total / 2 - before
 }
 
 /** 在既有 style_key 上合并若干改动，返回新的 style_key */

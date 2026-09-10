@@ -191,7 +191,7 @@ onMounted(async () => {
 .account-scope-loading,
 .account-scope-disabled {
   color: #909399;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   padding: 8px 0;
 }
 

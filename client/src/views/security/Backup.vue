@@ -151,7 +151,7 @@
       <template #header>
         <div class="card-header">
           <span>备份记录</span>
-          <div style="display: flex; gap: 8px; align-items: center">
+          <div class="toolbar" style="display: flex; gap: 8px; align-items: center">
             <el-date-picker
               v-model="dateRange"
               type="daterange"
@@ -773,7 +773,7 @@ onMounted(fetchData)
   margin-bottom: 4px;
 }
 .stat-label {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   color: #909399;
 }
 
@@ -794,7 +794,7 @@ onMounted(fetchData)
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   color: #67c23a;
   padding: 8px 12px;
   background: #f0f9eb;

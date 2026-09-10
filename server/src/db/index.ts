@@ -326,7 +326,11 @@ export function getDb(): Database.Database {
       mkdirSync(dbFileDir, { recursive: true })
     }
     db = new Database(DB_PATH)
-    db.pragma('journal_mode = WAL')
+    // 日志模式可用 DB_JOURNAL_MODE 覆盖：部署包设为 DELETE，保证数据库是单文件，
+    // 整包拷贝时不会因遗漏 -wal/-shm 而出现 malformed database schema。
+    const journalMode = (process.env.DB_JOURNAL_MODE || 'WAL').trim().toUpperCase()
+    const allowedJournalModes = ['WAL', 'DELETE', 'TRUNCATE', 'PERSIST', 'MEMORY', 'OFF']
+    db.pragma(`journal_mode = ${allowedJournalModes.includes(journalMode) ? journalMode : 'WAL'}`)
     db.pragma('foreign_keys = ON')
     db.pragma('synchronous = NORMAL')
     db.pragma('busy_timeout = 30000')

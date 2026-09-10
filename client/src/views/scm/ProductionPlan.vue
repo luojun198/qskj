@@ -17,7 +17,7 @@
         <ScmPushMenu v-if="actionState.push.enabled && selectedRow?.id" :source-kind="selectedRow.plan_type === 'outsource' ? 'outsource_plan' : 'production_plan'"
           :source-id="selectedRow.id" :auto-load="false" @changed="load" />
       </template>
-      <span style="margin-left:auto;font-size:13px;color:var(--el-text-color-secondary)">共 {{ displayList.length }} 条</span>
+      <span style="margin-left:auto;font-size: var(--cw-text-base);color:var(--el-text-color-secondary)">共 {{ displayList.length }} 条</span>
     </div>
 
     <div class="page-body">
@@ -194,5 +194,5 @@ onMounted(() => {
 <style scoped>
 .scm-pp-page { display: flex; flex-direction: column; height: 100%; }
 .page-body { flex: 1; overflow: hidden; padding: 12px 16px; }
-.selection-hint { font-size: 13px; color: var(--el-color-primary); white-space: nowrap; }
+.selection-hint { font-size: var(--cw-text-base); color: var(--el-color-primary); white-space: nowrap; }
 </style>

@@ -48,7 +48,7 @@
   align-items: center;
   gap: 8px;
   margin: 0;
-  font-size: 14px;
+  font-size: var(--cw-text-base);
   font-weight: 600;
   line-height: 1.3;
   color: var(--wb-text);
@@ -69,7 +69,7 @@
 
 .wb-card__desc {
   margin: 3px 0 0 10px;
-  font-size: 12px;
+  font-size: var(--cw-text-sm);
   color: var(--wb-text-3);
 }
 
@@ -80,7 +80,7 @@
 }
 
 .wb-card__note {
-  font-size: 12px;
+  font-size: var(--cw-text-sm);
   color: var(--wb-text-3);
 }
 
@@ -115,7 +115,7 @@
   border-radius: var(--wb-radius-sm);
   background: transparent;
   color: var(--wb-text-2);
-  font-size: 12px;
+  font-size: var(--cw-text-sm);
   cursor: pointer;
   text-decoration: none;
   transition: background 0.16s ease, color 0.16s ease;
@@ -150,7 +150,7 @@
   border-radius: 999px;
   background: var(--danger);
   color: #fff;
-  font-size: 11px;
+  font-size: var(--cw-text-xs);
   font-weight: 600;
   line-height: 1;
 }
@@ -164,7 +164,7 @@
   border-radius: var(--wb-radius);
   background: var(--wb-card);
   border: 1px solid var(--wb-line);
-  font-size: 12px;
+  font-size: var(--cw-text-sm);
   color: var(--wb-text-2);
   max-width: 320px;
 }
@@ -189,7 +189,7 @@
 .wb-empty {
   padding: 26px 0;
   text-align: center;
-  font-size: 12.5px;
+  font-size: var(--cw-text-sm);
   color: var(--wb-text-3);
 }
 
@@ -211,7 +211,7 @@
   border-radius: 5px;
   background: transparent;
   color: var(--wb-text-2);
-  font-size: 12px;
+  font-size: var(--cw-text-sm);
   cursor: pointer;
   transition: all 0.16s ease;
 }
@@ -311,7 +311,7 @@
 
 /* 标题：一行放不下就换行，相对图标水平居中；不再用省略号截断 */
 .app-tile__label {
-  font-size: 12px;
+  font-size: var(--cw-text-sm);
   line-height: 1.3;
   color: var(--wb-text);
   text-align: center;
@@ -323,7 +323,7 @@
 
 /* 副标：一句话说明用途，模块首页用（工作台保持紧凑不加副标） */
 .app-tile__sub {
-  font-size: 11px;
+  font-size: var(--cw-text-xs);
   line-height: 1.35;
   color: var(--wb-text-3);
   text-align: center;

@@ -316,14 +316,14 @@ onMounted(async () => {
 <style scoped>
 .scm-verify-page { display: flex; flex-direction: column; height: 100%; padding: 12px 16px; gap: 8px; }
 .filter-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.hint { margin-left: auto; font-size: 13px; color: var(--el-text-color-secondary); }
+.hint { margin-left: auto; font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }
 .hint .adv { color: var(--el-color-warning); }
-.verify-bar { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: var(--el-fill-color-light); border-radius: 6px; font-size: 13px; }
+.verify-bar { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: var(--el-fill-color-light); border-radius: 6px; font-size: var(--cw-text-base); }
 .verify-bar .match { color: var(--el-color-success); }
 .two-col { flex: 1; min-height: 0; display: flex; gap: 12px; }
 .two-col .col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.col-hd { font-size: 13px; font-weight: 600; margin-bottom: 4px; color: var(--el-text-color-primary); }
+.col-hd { font-size: var(--cw-text-base); font-weight: 600; margin-bottom: 4px; color: var(--el-text-color-primary); }
 .overdue { color: var(--el-color-danger); font-weight: 600; }
 .history { margin-top: 4px; }
-.h-title { font-size: 13px; color: var(--el-text-color-secondary); }
+.h-title { font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }
 </style>

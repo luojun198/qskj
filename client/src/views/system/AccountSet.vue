@@ -83,20 +83,28 @@
             <el-radio :label="true">标准模版</el-radio>
             <el-radio :label="false">空账套</el-radio>
           </el-radio-group>
-          <el-select
+          <StandardTemplateSelect
             v-if="form.use_template"
             v-model="form.standard_template_id"
-            placeholder="选择标准模版"
+            :templates="standardTemplates"
+            :groups="standardTemplateGroups"
+            placeholder="选择会计准则 / 科目体系模版"
             clearable
             class="template-select"
-          >
-            <el-option
-              v-for="tpl in standardTemplates"
-              :key="tpl.id"
-              :label="tpl.name"
-              :value="tpl.id"
-            />
-          </el-select>
+          />
+          <div v-if="form.use_template" class="template-hint">
+            <span v-if="selectedTemplate">{{ selectedTemplate.description }}</span>
+            <el-button
+              link
+              type="primary"
+              size="small"
+              :loading="templateRefreshing"
+              class="template-refresh"
+              @click="reloadStandardTemplates"
+            >
+              刷新模版目录
+            </el-button>
+          </div>
         </el-form-item>
         <el-form-item label="统一社会信用代码">
           <el-input v-model="form.credit_code" maxlength="18" />
@@ -177,6 +185,15 @@ import { logout } from '@/api/auth'
 import { useUserStore } from '@/stores/user'
 import { getAccountSetDefaultStartDate } from '@/utils/format'
 import { useListColumnWidth } from '@/composables/useColumnWidthMemory'
+import StandardTemplateSelect from '@/components/system/StandardTemplateSelect.vue'
+import {
+  fetchStandardTemplates as requestStandardTemplates,
+  refreshStandardTemplates,
+} from '@/api/standardTemplates'
+import {
+  pickDefaultStandardTemplate,
+  type StandardTemplateItem,
+} from '@/utils/standardTemplateGroups'
 
 const { tableRef, onDragEnd, colWidth } = useListColumnWidth('system_account_set')
 
@@ -185,14 +202,6 @@ interface Template {
   name: string
   file: string
   description: string
-}
-
-interface StandardTemplate {
-  id: string
-  name: string
-  description: string
-  acdFile: string
-  excelFiles: Array<{ name: string; path: string }>
 }
 
 const router = useRouter()
@@ -205,7 +214,11 @@ const dialogType = ref('add')
 const saving = ref(false)
 const dialogTitle = computed(() => dialogType.value === 'add' ? '新增账套' : '编辑账套')
 const templates = ref<Template[]>([])
-const standardTemplates = ref<StandardTemplate[]>([])
+const standardTemplates = ref<StandardTemplateItem[]>([])
+const standardTemplateGroups = ref<string[]>([])
+const selectedTemplate = computed(
+  () => standardTemplates.value.find(item => item.id === form.value?.standard_template_id) || null
+)
 
 const formRef = ref<FormInstance>()
 const formRules: FormRules = {
@@ -231,10 +244,29 @@ async function fetchTemplates() {
 
 async function fetchStandardTemplates() {
   try {
-    const res = await request.get<StandardTemplate[]>('/system/standard-account-set-templates')
-    standardTemplates.value = res.data || []
+    const result = await requestStandardTemplates('system')
+    standardTemplates.value = result.templates
+    standardTemplateGroups.value = result.groups
   } catch {
     standardTemplates.value = []
+    standardTemplateGroups.value = []
+  }
+}
+
+const templateRefreshing = ref(false)
+
+/** 替换「标准模版/catalog.json」或 ACD 文件后，重新扫描目录（无需重启后端） */
+async function reloadStandardTemplates() {
+  templateRefreshing.value = true
+  try {
+    const result = await refreshStandardTemplates()
+    standardTemplates.value = result.templates
+    standardTemplateGroups.value = result.groups
+    ElMessage.success(`已刷新，共 ${result.templates.length} 个标准模版`)
+  } catch {
+    // 请求层已提示错误
+  } finally {
+    templateRefreshing.value = false
   }
 }
 
@@ -268,7 +300,7 @@ function openDialog(type: string, row?: any) {
       chief_accountant: '',
       status: 'active',
       use_template: true,
-      standard_template_id: standardTemplates.value[0]?.id || '',
+      standard_template_id: pickDefaultStandardTemplate(standardTemplates.value),
       account_levels: 6,
       account_code_lengths: [4,2,2,2,2,2,2,2,2,2],
     }
@@ -383,7 +415,7 @@ onMounted(() => {
   padding: 12px 16px !important;
 }
 .create-account-dialog :deep(.el-dialog__title) {
-  font-size: 15px !important;
+  font-size: var(--cw-text-lg) !important;
 }
 .create-account-dialog :deep(.el-dialog__body) {
   padding: 12px 16px 4px !important;
@@ -418,10 +450,11 @@ onMounted(() => {
   width: 56px;
 }
 
-.template-hint { color: var(--el-text-color-secondary); font-size: 12px; margin-top: 4px; line-height: 1.4; }
-.readonly-value { color: #606266; font-size: 14px; line-height: 32px; }
+.template-hint { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--el-text-color-secondary); font-size: 12px; margin-top: 4px; line-height: 1.4; }
+.template-refresh { flex: none; }
+.readonly-value { color: #606266; font-size: var(--cw-text-base); line-height: 32px; }
 .code-lengths-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.lengths-sep { color: #86868b; font-size: 14px; }
+.lengths-sep { color: #86868b; font-size: var(--cw-text-base); }
 
 /* 状态列：紧凑表行高较矮，标签横排以免撑破行 */
 .status-cell {

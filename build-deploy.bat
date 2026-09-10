@@ -141,6 +141,8 @@ echo # Packaged with development database and existing activation from data/fina
 echo SEED_DEFAULT_ACCOUNT_SET=false >> "%DEPLOY%\server\.env"
 echo # cw0523 分支独立端口/数据库（与原项目 cw 同时运行）>> "%DEPLOY%\server\.env"
 echo PORT=3105 >> "%DEPLOY%\server\.env"
+echo # 单文件库模式：整包拷贝时不会因遗漏 -wal/-shm 导致数据库损坏>> "%DEPLOY%\server\.env"
+echo DB_JOURNAL_MODE=DELETE >> "%DEPLOY%\server\.env"
 
 if exist "%ROOT%\%DEPLOY%\client\dist" rmdir /s /q "%ROOT%\%DEPLOY%\client\dist"
 mkdir "%ROOT%\%DEPLOY%\client\dist"

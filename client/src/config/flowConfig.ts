@@ -1,4 +1,8 @@
-export type LayoutType = 'flow' | 'bento' | 'grid'
+/**
+ * flow：核心流程卡 + 辅助操作宫格；bento/grid：按分组宫格；
+ * gl-workspace：财务总账专用工作页面（流程图 + 账簿链接列，配置见 glWorkspace.ts）
+ */
+export type LayoutType = 'flow' | 'bento' | 'grid' | 'gl-workspace'
 
 export interface FlowNode {
   id: string
@@ -108,57 +112,8 @@ export const groupFlowMap: Record<string, ModuleFlowConfig> = {
       { id: 'custom', path: '/scm/report/buysell?kind=purchase', color: 'cyan' },
     ],
   },
-  财务总账: {
-    layout: 'flow',
-    mainNodes: [
-      {
-        id: 'account',
-        path: '/base/account',
-        title: '科目与基础资料',
-        color: 'cyan',
-        next: ['init'],
-        branches: [
-          { id: 'voucherType', path: '/base/voucher-type', color: 'cyan' },
-          { id: 'template', path: '/voucher/template', color: 'cyan' },
-        ],
-      },
-      { id: 'init', path: '/base/init-balance', color: 'orange', next: ['entry'] },
-      { id: 'entry', path: '/voucher/entry', color: 'blue', next: ['audit'] },
-      { id: 'audit', path: '/voucher/audit', color: 'blue', next: ['ledgerCheck'] },
-      {
-        id: 'ledgerCheck',
-        path: '/ledger/general',
-        title: '账簿核对',
-        color: 'green',
-        next: ['transfer'],
-        branches: [
-          { id: 'detail', path: '/ledger/detail', color: 'green' },
-          { id: 'chronological', path: '/ledger/chronological', color: 'green' },
-        ],
-      },
-      {
-        id: 'transfer',
-        path: '/voucher/auto-transfer',
-        title: '期末结转',
-        color: 'purple',
-        next: ['report'],
-        branches: [{ id: 'transferType', path: '/base/transfer-type', color: 'purple' }],
-      },
-      { id: 'report', path: '/ledger/standard-report', color: 'purple', next: ['close'] },
-      { id: 'close', path: '/voucher/period-close', color: 'red' },
-    ],
-    auxNodes: [
-      { id: 'query', path: '/voucher/query', color: 'cyan' },
-      { id: 'balance', path: '/ledger/balance', color: 'green' },
-      { id: 'cashJournal', path: '/ledger/cash-journal', color: 'green' },
-      { id: 'auxProject', path: '/base/project', color: 'orange' },
-      { id: 'auxBalance', path: '/ledger/aux-balance', color: 'orange' },
-      { id: 'auxDetail', path: '/ledger/aux-detail', color: 'orange' },
-      { id: 'cashFlowTrial', path: '/ledger/cash-flow-trial-balance', color: 'blue' },
-      { id: 'reportMaintain', path: '/report/dynamic', color: 'purple' },
-      { id: 'printTemplate', path: '/base/print-template', color: 'cyan' },
-    ],
-  },
+  // 财务总账：流程图 + 账簿链接列的专用工作页面，节点与链接见 glWorkspace.ts
+  财务总账: { layout: 'gl-workspace' },
   生产制造: {
     layout: 'flow',
     mainNodes: [

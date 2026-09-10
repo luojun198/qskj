@@ -22,7 +22,7 @@
       <el-table :data="detail.entries" border size="small" class="paper-table">
         <el-table-column prop="summary" label="摘要" min-width="180" />
         <el-table-column label="会计科目" min-width="200">
-          <template #default="{ row }">{{ row.account_code }} {{ row.account_name }}</template>
+          <template #default="{ row }">{{ getAccountDisplay(row) }}</template>
         </el-table-column>
         <el-table-column label="借方金额" width="140" align="right">
           <template #default="{ row }">
@@ -73,6 +73,7 @@ import { ref, computed, watch } from 'vue'
 import { formatMoney } from '@/composables/useVoucherAuditData'
 import request from '@/api/request'
 import { filterAuxCategoriesForAccount } from '@/utils/accountCashFlow'
+import { accountLabelByMode } from '@/utils/voucherAccountDisplay'
 
 interface Props {
   modelValue: boolean
@@ -94,6 +95,8 @@ const emit = defineEmits<{
 
 const visible = ref(props.modelValue)
 const auxCategories = ref<any[]>([])
+/** 与凭证窗口共用「科目显示方式」开关 */
+const getAccountDisplay = accountLabelByMode
 
 watch(() => props.modelValue, val => { visible.value = val })
 watch(visible, val => { emit('update:modelValue', val) })
@@ -181,11 +184,11 @@ function handleEdit() { emit('edit', props.detail) }
 .meta-label {
   white-space: nowrap;
   color: #606266;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
 }
 .meta-text {
   color: #303133;
-  font-size: 14px;
+  font-size: var(--cw-text-base);
 }
 .voucher-paper-signatures {
   display: flex;
@@ -201,12 +204,12 @@ function handleEdit() { emit('edit', props.detail) }
   color: #606266;
 }
 .signature-item span {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   white-space: nowrap;
 }
 .signature-item em {
   font-style: normal;
-  font-size: 14px;
+  font-size: var(--cw-text-base);
   min-width: 80px;
   border-bottom: 1px solid #909399;
   padding: 0 4px 2px;

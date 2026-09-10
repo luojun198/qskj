@@ -58,7 +58,13 @@ export function getDictDeleteBlockReason(params: {
 
 // ── 卡片更新 ───────────────────────────────────────────────
 
-/** 允许通过 PUT /asset/cards/:id 直接改写的列 */
+/**
+ * 允许通过 PUT /asset/cards/:id 直接改写的列。
+ *
+ * FIX（A6）：scrap_date / scrap_reason 只能由处置流程（assetDisposal）写入——直改会绕过
+ * 期间校验与 pre_scrap_status 快照，使处置无法撤销；depr_months_done 是折旧序列的游标，
+ * 只能由计提/反计提维护，直改会让折旧额与已提月数脱节。三者一律不开放手工修改。
+ */
 export const UPDATABLE_CARD_FIELDS = [
   'asset_name',
   'category_code',
@@ -72,7 +78,6 @@ export const UPDATABLE_CARD_FIELDS = [
   'use_months',
   'use_years',
   'total_workload',
-  'depr_months_done',
   'card_no',
   'qty',
   'unit',
@@ -81,8 +86,6 @@ export const UPDATABLE_CARD_FIELDS = [
   'source',
   'install_place',
   'remark',
-  'scrap_reason',
-  'scrap_date',
 ] as const
 
 export interface CardSnapshot {

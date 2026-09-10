@@ -1,4 +1,5 @@
 import request from '@/api/request'
+import type { StandardTemplateItem } from '@/utils/standardTemplateGroups'
 
 export type ReinitMode = 'voucher_only' | 'full_reinit'
 
@@ -35,13 +36,7 @@ export type ReinitPreviewResult = {
   warnings: string[]
 }
 
-export type StandardTemplateItem = {
-  id: string
-  name: string
-  description: string
-  acdFile: string
-  excelFiles: Array<{ name: string; path: string }>
-}
+export type { StandardTemplateItem } from '@/utils/standardTemplateGroups'
 
 export type ReinitRequestPayload = {
   mode: ReinitMode
@@ -75,7 +70,9 @@ function buildPreviewParams(payload: Omit<ReinitRequestPayload, 'password' | 'co
 }
 
 export function fetchStandardTemplates() {
-  return request.get<StandardTemplateItem[]>('/system/standard-account-set-templates')
+  return request.get<StandardTemplateItem[]>('/system/standard-account-set-templates') as Promise<
+    { data: StandardTemplateItem[]; groups?: string[] }
+  >
 }
 
 export function previewSystemReinitialize(

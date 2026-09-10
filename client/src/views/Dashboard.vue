@@ -47,6 +47,15 @@
       </div>
     </header>
 
+    <!-- 功能搜索（原二级导航面板的搜索，面板取消后搬到工作台与模块首页；Ctrl+K 聚焦） -->
+    <section class="wb-card wb-search">
+      <div class="wb-card__head">
+        <h3 class="wb-card__title">功能搜索</h3>
+        <span class="wb-card__note">Ctrl+K 快速定位</span>
+      </div>
+      <NavFunctionSearch ref="searchRef" :apps="navApps" />
+    </section>
+
     <!-- 常用功能 -->
     <section class="wb-card wb-quick">
       <div class="wb-card__head">
@@ -150,7 +159,8 @@
 
     <!-- 财务数据组件（保留图表 DOM，用 v-show 以便 ECharts 复用） -->
     <div v-show="financeWidgetsVisible" class="wb-widgets">
-      <section class="wb-card wb-trend">
+      <!-- ① 收支趋势：摘要条 + 堆叠柱/结余线 -->
+      <section class="wb-card wb-card--accent-blue wb-trend">
         <div class="wb-card__head">
           <div class="wb-card__heading">
             <h3 class="wb-card__title">近 6 期{{ trendMode === 'budget' ? '预算' : '财务' }}收支结构</h3>
@@ -159,47 +169,91 @@
               <router-link v-if="canConfigureDashboardRules" class="wb-inline-link" to="/system/dashboard-rules">配置取数规则</router-link>
             </p>
           </div>
-          <div class="chart-legend">
-            <el-radio-group v-if="hasBudgetAccounting" v-model="trendMode" size="small">
-              <el-radio-button value="financial">财务会计</el-radio-button>
-              <el-radio-button value="budget">预算会计</el-radio-button>
-            </el-radio-group>
-            <template v-if="trendMode === 'financial'">
-              <span class="legend-item"><i class="legend-dot income"></i>财务收入</span>
-              <span class="legend-item"><i class="legend-dot expense"></i>财务支出</span>
-              <span class="legend-item"><i class="legend-dot fee"></i>费用</span>
-              <span class="legend-item"><i class="legend-dot cost"></i>成本</span>
-              <span class="legend-item"><i class="legend-dot surplus"></i>本期盈余</span>
-            </template>
-            <template v-else>
-              <span class="legend-item"><i class="legend-dot income"></i>预算收入</span>
-              <span class="legend-item"><i class="legend-dot expense"></i>预算支出</span>
-              <span class="legend-item"><i class="legend-dot surplus"></i>预算结余</span>
-            </template>
+          <div class="wb-card__actions">
+            <div v-if="hasBudgetAccounting" class="wb-tabs" role="tablist">
+              <button type="button" class="wb-tab" :class="{ 'is-active': trendMode === 'financial' }" @click="trendMode = 'financial'">财务会计</button>
+              <button type="button" class="wb-tab" :class="{ 'is-active': trendMode === 'budget' }" @click="trendMode = 'budget'">预算会计</button>
+            </div>
           </div>
         </div>
-        <div ref="trendChartRef" class="chart-container"></div>
+
+        <div class="trend-summary">
+          <div v-for="s in trendSummary" :key="s.key" class="trend-stat" :class="`is-${s.key}`">
+            <span class="trend-stat__label">{{ s.label }}</span>
+            <span class="trend-stat__value" :class="{ negative: s.value < 0 }">{{ formatMoney(s.value) }}</span>
+            <span class="trend-stat__delta" :class="{ up: s.delta > 0, down: s.delta < 0 }">
+              <TrendingUp v-if="s.delta > 0" :size="12" :stroke-width="2" />
+              <TrendingDown v-else-if="s.delta < 0" :size="12" :stroke-width="2" />
+              <Minus v-else :size="12" :stroke-width="2" />
+              {{ s.deltaText }}
+            </span>
+          </div>
+        </div>
+
+        <div class="trend-chart-wrap">
+          <div ref="trendChartRef" class="chart-container"></div>
+          <div v-if="!trendHasData" class="chart-empty">
+            <span class="chart-empty__icon"><component :is="resolveNavIcon('FileText')" :size="20" :stroke-width="1.6" /></span>
+            近 6 期暂无已记账发生额
+          </div>
+        </div>
       </section>
 
-      <section class="wb-card wb-activity">
+      <!-- ② 现金银行结构：合计 + 占比条 + 双环形图 -->
+      <section class="wb-card wb-card--accent-amber wb-cash">
         <div class="wb-card__head">
-          <h3 class="wb-card__title">本期发生额 Top 5</h3>
+          <h3 class="wb-card__title">现金银行结构</h3>
+          <span class="wb-card__note">科目余额口径</span>
         </div>
-        <div class="activity-list">
-          <div v-for="item in activityTopWithRatio" :key="item.code" class="activity-item">
-            <div class="activity-header">
-              <span class="activity-name">{{ item.code }} {{ item.name }}</span>
-              <span class="activity-amount">{{ formatMoney(item.amount) }}</span>
+
+        <template v-if="cashStructureWithRatio.length">
+          <div class="cash-total-bar">
+            <div class="cash-total-bar__main">
+              <span class="cash-total-bar__label">货币资金合计</span>
+              <span class="cash-total-bar__value" :class="{ negative: cashGrandTotal < 0 }">{{ formatMoney(cashGrandTotal) }}</span>
             </div>
-            <div class="activity-bar">
-              <span class="activity-bar-fill" :style="{ width: `${item.ratio}%` }"></span>
+            <div class="cash-total-bar__track">
+              <span
+                v-for="seg in cashGroupShares"
+                :key="seg.name"
+                class="cash-total-bar__seg"
+                :style="{ width: `${seg.share}%`, background: seg.color }"
+                :title="`${seg.name} ${formatMoney(seg.balance)}`"
+              ></span>
+            </div>
+            <div class="cash-total-bar__legend">
+              <span v-for="seg in cashGroupShares" :key="seg.name" class="cash-total-bar__legend-item">
+                <i :style="{ background: seg.color }"></i>{{ seg.name }} {{ Math.round(seg.share) }}%
+              </span>
             </div>
           </div>
-          <div v-if="!activityTopWithRatio.length" class="wb-empty">暂无本期发生额数据</div>
-        </div>
+
+          <div class="cash-groups">
+            <div v-for="item in cashStructureWithRatio" :key="item.name" class="cash-group">
+              <div class="cash-group__head">
+                <span class="cash-group__name">{{ item.name }}</span>
+                <span class="cash-group__total" :class="{ negative: item.balance < 0 }">{{ formatMoney(item.balance) }}</span>
+              </div>
+              <div class="cash-group__pie">
+                <div :ref="el => setCashPieRef(el, item.name)" class="cash-pie"></div>
+              </div>
+              <ul class="cash-group__list">
+                <li v-for="child in item.visibleChildren" :key="child.code" class="cash-item" :title="`${child.code} ${child.name}`">
+                  <i class="cash-item__dot" :style="{ background: child.color }"></i>
+                  <span class="cash-item__name">{{ child.name }}</span>
+                  <span class="cash-item__value" :class="{ negative: child.balance < 0 }">{{ formatMoney(child.balance) }}</span>
+                  <span class="cash-item__pct">{{ formatSignedPercent(child.ratio) }}</span>
+                </li>
+                <li v-if="!item.visibleChildren.length" class="cash-item cash-item--empty">暂无余额</li>
+              </ul>
+            </div>
+          </div>
+        </template>
+        <div v-else class="wb-empty">暂无现金/银行数据</div>
       </section>
 
-      <section class="wb-card wb-recent">
+      <!-- ③ 近期凭证：日期徽标 + 状态色条列表 -->
+      <section class="wb-card wb-card--accent-foam wb-recent">
         <div class="wb-card__head">
           <h3 class="wb-card__title">近期凭证</h3>
           <button type="button" class="wb-link-btn" @click="router.push('/voucher/query')">
@@ -207,62 +261,56 @@
             <el-icon><component :is="resolveNavIcon('ChevronRight')" /></el-icon>
           </button>
         </div>
-        <div class="voucher-list">
-          <div v-if="recentVouchers.length" class="voucher-table-head">
-            <span>日期</span>
-            <span>凭证号</span>
-            <span>摘要</span>
-            <span>状态</span>
-            <span>金额</span>
-          </div>
+        <div v-if="recentVouchers.length" class="voucher-feed">
           <button
             v-for="row in recentVouchers"
             :key="row.id"
             type="button"
-            class="voucher-item"
+            class="voucher-card"
+            :class="`is-${row.status}`"
             @click="router.push('/voucher/query')"
           >
-            <span class="voucher-date">{{ formatShortDate(row.voucherDate) }}</span>
-            <span class="voucher-no">{{ row.voucherNo }}</span>
-            <span class="voucher-abstract" :title="row.abstract || ''">{{ row.abstract || '—' }}</span>
-            <span class="voucher-status" :class="row.status">{{ getStatusText(row.status) }}</span>
-            <span class="voucher-amount">{{ formatMoney(row.totalAmount) }}</span>
+            <span class="voucher-card__date">
+              <b>{{ formatDayOfMonth(row.voucherDate) }}</b>
+              <small>{{ formatMonthLabel(row.voucherDate) }}</small>
+            </span>
+            <span class="voucher-card__body">
+              <span class="voucher-card__line">
+                <span class="voucher-card__no">{{ row.voucherNo }}</span>
+                <span class="voucher-card__status">{{ getStatusText(row.status) }}</span>
+              </span>
+              <span class="voucher-card__abstract" :title="row.abstract || ''">{{ row.abstract || '—' }}</span>
+            </span>
+            <span class="voucher-card__amount">{{ formatMoney(row.totalAmount) }}</span>
           </button>
-          <div v-if="!recentVouchers.length" class="wb-empty">暂无近期凭证</div>
         </div>
+        <div v-else class="wb-empty">暂无近期凭证</div>
       </section>
 
-      <section class="wb-card wb-cash">
+      <!-- ④ 本期发生额 Top 5：排名榜 -->
+      <section class="wb-card wb-card--accent-lilac wb-activity">
         <div class="wb-card__head">
-          <h3 class="wb-card__title">现金银行结构</h3>
+          <h3 class="wb-card__title">本期发生额 Top 5</h3>
+          <span class="wb-card__note">按借贷发生额绝对值排序</span>
         </div>
-        <div class="cash-structure">
-          <div v-for="item in cashStructureWithRatio" :key="item.name" class="cash-group">
-            <div class="cash-header">
-              <span class="cash-name">{{ item.name }}</span>
-              <span class="cash-total">{{ formatMoney(item.balance) }}</span>
-            </div>
-            <div class="cash-body">
-              <div class="cash-pie-wrap">
-                <div :ref="el => setCashPieRef(el, item.name)" class="cash-pie"></div>
-              </div>
-              <div class="cash-children">
-                <div v-for="child in item.children" :key="child.code" class="cash-row">
-                  <span class="cash-row-name">
-                    <i class="cash-row-dot" :style="{ background: child.color }"></i>
-                    <span :title="`${child.code} ${child.name}`">{{ child.code }} {{ child.name }}</span>
-                  </span>
-                  <span class="cash-row-value" :class="{ negative: child.balance < 0 }">
-                    <strong>{{ formatMoney(child.balance) }}</strong>
-                    <em>{{ formatSignedPercent(child.ratio) }}</em>
-                  </span>
-                </div>
-                <div v-if="!item.children.length" class="cash-empty">暂无{{ item.name }}子科目</div>
-              </div>
-            </div>
-          </div>
-          <div v-if="!cashStructureWithRatio.length" class="wb-empty">暂无现金/银行数据</div>
-        </div>
+        <ol v-if="activityTopWithRatio.length" class="rank-list">
+          <li v-for="(item, index) in activityTopWithRatio" :key="item.code" class="rank-item" :class="`is-rank-${index + 1}`">
+            <span class="rank-item__badge">{{ index + 1 }}</span>
+            <span class="rank-item__body">
+              <span class="rank-item__line">
+                <span class="rank-item__name" :title="`${item.code} ${item.name}`">
+                  {{ item.name }}<small>{{ item.code }}</small>
+                </span>
+                <span class="rank-item__amount">{{ formatMoney(item.amount) }}</span>
+              </span>
+              <span class="rank-item__track">
+                <span class="rank-item__fill" :style="{ width: `${item.ratio}%` }"></span>
+              </span>
+            </span>
+            <span class="rank-item__share">{{ item.share }}%</span>
+          </li>
+        </ol>
+        <div v-else class="wb-empty">暂无本期发生额数据</div>
       </section>
     </div>
 
@@ -320,6 +368,8 @@ import { NAV_ICONS, resolveNavIcon } from '@/config/navIcons'
 import { hasLicensedModule, type LicenseModuleKey } from '@/config/licenseModules'
 import { useBrandingStore } from '@/stores/branding'
 import { shouldUseLightMode } from '@/utils/performanceMode'
+import { TrendingUp, TrendingDown, Minus } from 'lucide-vue-next'
+import NavFunctionSearch from '@/components/layout/NavFunctionSearch.vue'
 
 interface TrendItem {
   month: string
@@ -622,26 +672,91 @@ const activeBoardCards = computed<MetricCard[]>(() => {
 })
 
 const cashStructure = computed(() => insights.value.cashStructure)
-const cashStructureWithRatio = computed<CashStructureDisplayItem[]>(() => {
+const cashStructureWithRatio = computed(() => {
   /* 饼图色板 — 薄荷 / 泡沫蓝 / 虹彩淡紫为主，语义色补充 */
   const palettes = [['#12C7AE', '#2E84F5', '#9C8FF5', '#F4A52E', '#F2545B', '#66E0CB'], ['#2E84F5', '#12C7AE', '#B8AEFF', '#F4A52E', '#F2545B', '#79B4FF']]
   return cashStructure.value.map((group, gi) => {
     const palette = palettes[gi % palettes.length]
     const totalAbs = group.children.reduce((s, c) => s + Math.abs(c.balance || 0), 0)
-    return { ...group, totalAbs, palette, children: group.children.map((c, ci) => ({ ...c, ratio: totalAbs > 0 ? (c.balance || 0) / totalAbs : 0, absRatio: totalAbs > 0 ? Math.abs(c.balance || 0) / totalAbs : 0, color: palette[ci % palette.length] })) }
+    const children = group.children.map((c, ci) => ({
+      ...c,
+      ratio: totalAbs > 0 ? (c.balance || 0) / totalAbs : 0,
+      absRatio: totalAbs > 0 ? Math.abs(c.balance || 0) / totalAbs : 0,
+      color: palette[ci % palette.length],
+    }))
+    const visibleChildren = children.filter(c => Math.abs(c.balance || 0) > 0)
+    return { ...group, totalAbs, palette, children, visibleChildren, nonZeroCount: visibleChildren.length }
   })
 })
 
+/* 货币资金合计与现金/银行两组占比（占比按绝对值，合计按有符号余额） */
+const cashGrandTotal = computed(() => cashStructureWithRatio.value.reduce((s, g) => s + (g.balance || 0), 0))
+const cashGroupShares = computed(() => {
+  const groups = cashStructureWithRatio.value
+  const totalAbs = groups.reduce((s, g) => s + Math.abs(g.balance || 0), 0)
+  return groups.map(g => ({
+    name: g.name,
+    balance: g.balance,
+    color: g.palette[0],
+    share: totalAbs > 0 ? (Math.abs(g.balance || 0) / totalAbs) * 100 : 0,
+  }))
+})
+
 const activityTopWithRatio = computed(() => {
-  const max = Math.max(...insights.value.activityTop.map(i => Math.abs(i.amount)), 1)
-  return insights.value.activityTop.map(i => ({ ...i, ratio: Math.round((Math.abs(i.amount) / max) * 100) }))
+  const list = [...insights.value.activityTop].sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount))
+  const max = Math.max(...list.map(i => Math.abs(i.amount)), 1)
+  const sum = list.reduce((s, i) => s + Math.abs(i.amount), 0) || 1
+  return list.slice(0, 5).map(i => ({
+    ...i,
+    ratio: Math.round((Math.abs(i.amount) / max) * 100),
+    share: Math.round((Math.abs(i.amount) / sum) * 100),
+  }))
+})
+
+/* 趋势卡顶部摘要：最近一期的收入 / 支出 / 结余，及与上一期的环比 */
+const trendHasData = computed(() =>
+  trend.value.some(i =>
+    trendMode.value === 'budget'
+      ? (i.budgetIncome || 0) !== 0 || (i.budgetExpense || 0) !== 0
+      : i.income !== 0 || i.pureExpense !== 0 || i.fee !== 0 || i.cost !== 0
+  )
+)
+const trendSummary = computed(() => {
+  const rows = trend.value
+  const cur = rows[rows.length - 1]
+  const prev = rows[rows.length - 2]
+  const isBudget = trendMode.value === 'budget'
+  const pick = (row: TrendItem | undefined) => {
+    if (!row) return { income: 0, expense: 0, surplus: 0 }
+    if (isBudget) {
+      const income = row.budgetIncome || 0
+      const expense = row.budgetExpense || 0
+      return { income, expense, surplus: row.budgetBalance ?? income - expense }
+    }
+    const expense = row.pureExpense + row.fee + row.cost
+    return { income: row.income, expense, surplus: row.income - expense }
+  }
+  const c = pick(cur)
+  const p = pick(prev)
+  const build = (key: 'income' | 'expense' | 'surplus', label: string) => {
+    const delta = c[key] - p[key]
+    const pct = p[key] !== 0 ? (delta / Math.abs(p[key])) * 100 : 0
+    const deltaText = !prev || (delta === 0) ? '与上期持平' : p[key] === 0 ? '上期为 0' : `${pct > 0 ? '+' : ''}${Math.round(pct * 10) / 10}% 环比`
+    return { key, label, value: c[key], delta, deltaText }
+  }
+  return [
+    build('income', isBudget ? '本期预算收入' : '本期收入'),
+    build('expense', isBudget ? '本期预算支出' : '本期支出'),
+    build('surplus', isBudget ? '本期预算结余' : '本期盈余'),
+  ]
 })
 
 function goMetric(path?: string) { if (path) router.push(path) }
 function formatMoney(val: number) { return '¥' + formatAmount(val || 0) }
 function formatSignedPercent(v: number) { if (!v) return '0%'; const a = `${Math.round(Math.abs(v) * 1000) / 10}%`; return v < 0 ? `-${a}` : a }
 function setCashPieRef(el: unknown, name: string) { if (el instanceof HTMLElement) cashPieRefs.set(name, el); else cashPieRefs.delete(name) }
-function formatShortDate(d?: string) { return d ? d.slice(5) : '--' }
+function formatDayOfMonth(d?: string) { return d ? d.slice(8, 10) : '--' }
+function formatMonthLabel(d?: string) { return d ? `${Number(d.slice(5, 7))}月` : '' }
 function getStatusText(s: string) { return ({ draft: '草稿', audited: '已审核', posted: '已记账' } as any)[s] || s }
 
 function showLastLoginNotice() {
@@ -700,117 +815,106 @@ async function renderTrendChart() {
   if (!chartsVisible || !trendChartRef.value) return
   if (!trendChart) trendChart = echarts.init(trendChartRef.value)
   const isBudget = trendMode.value === 'budget'
+  const grad = (top: string, bottom: string) =>
+    new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: top }, { offset: 1, color: bottom }])
+  const formatAxis = (v: number) => {
+    const abs = Math.abs(v)
+    if (abs >= 1e8) return `${Math.round(v / 1e7) / 10}亿`
+    if (abs >= 1e4) return `${Math.round(v / 1e3) / 10}万`
+    return `${v}`
+  }
+  const barBase = { type: 'bar', barWidth: 18, barGap: '35%', barCategoryGap: '45%' }
+  const lineBase = {
+    type: 'line',
+    smooth: 0.35,
+    symbol: 'circle',
+    symbolSize: 7,
+    lineStyle: { width: 2.5 },
+    itemStyle: { borderColor: '#fff', borderWidth: 2 },
+    emphasis: { focus: 'series', scale: 1.4 },
+    z: 5,
+  }
+  const legendData = isBudget ? ['预算收入', '预算支出', '预算结余'] : ['财务收入', '财务支出', '费用', '成本', '本期盈余']
   trendChart.setOption({
     animation: !lightMode,
+    animationDuration: 600,
     /* 收入薄荷 / 支出暖橙 / 费用珊瑚 / 成本淡紫 / 结余泡沫蓝 */
     color: ['#12C7AE', '#F4A52E', '#F2545B', '#9C8FF5', '#2E84F5'],
+    legend: {
+      data: legendData,
+      bottom: 0,
+      left: 'center',
+      icon: 'roundRect',
+      itemWidth: 10,
+      itemHeight: 10,
+      itemGap: 16,
+      textStyle: { color: '#4d6068', fontSize: 12 },
+    },
     tooltip: {
       trigger: 'axis',
-      backgroundColor: 'rgba(255,255,255,0.96)',
+      axisPointer: { type: 'shadow', shadowStyle: { color: 'rgba(18,199,174,0.06)' } },
+      backgroundColor: 'rgba(255,255,255,0.98)',
       borderColor: 'rgba(12,42,46,0.08)',
       borderWidth: 1,
-      borderRadius: 12,
-      padding: [12, 16],
-      textStyle: { color: '#0C2A2E', fontSize: 13 },
+      borderRadius: 10,
+      padding: [10, 14],
+      textStyle: { color: '#0C2A2E', fontSize: 12 },
+      extraCssText: 'box-shadow: 0 8px 24px rgba(12,42,46,0.12);',
       formatter: (params: any) => {
         const items = Array.isArray(params) ? params : [params]
-        const lines = items.map((item: any) => `${item.marker}${item.seriesName}：${formatMoney(item.value)}`)
+        const head = `<div style="font-weight:600;margin-bottom:6px">${items[0]?.axisValue ?? ''}</div>`
+        const lines = items.map((item: any) =>
+          `<div style="display:flex;justify-content:space-between;gap:18px;line-height:1.9">
+            <span>${item.marker}${item.seriesName}</span><b style="font-variant-numeric:tabular-nums">${formatMoney(item.value)}</b>
+          </div>`
+        )
         const monthIndex = items[0]?.dataIndex
         if (monthIndex != null && trend.value[monthIndex]) {
-          const row = trend.value[monthIndex]
-          const surplus = getTrendSurplus(row)
+          const surplus = getTrendSurplus(trend.value[monthIndex])
           const balanceName = isBudget ? '预算结余' : '本期盈余'
           if (!items.some((item: any) => item.seriesName === balanceName)) {
-            lines.push(`${balanceName}：${formatMoney(surplus)}`)
+            lines.push(`<div style="display:flex;justify-content:space-between;gap:18px;line-height:1.9;border-top:1px dashed rgba(12,42,46,0.1);margin-top:4px;padding-top:4px"><span>${balanceName}</span><b>${formatMoney(surplus)}</b></div>`)
           }
         }
-        return lines.join('<br/>')
+        return head + lines.join('')
       },
     },
-    grid: { left: 48, right: 24, top: 56, bottom: 32 },
+    grid: { left: 12, right: 16, top: 14, bottom: 34, containLabel: true },
     xAxis: {
       type: 'category',
       data: trend.value.map(i => i.month.slice(5) + '期'),
       axisLine: { lineStyle: { color: 'rgba(12,42,46,0.10)' } },
-      axisLabel: { color: '#62858A', fontSize: 12 },
+      axisLabel: { color: '#62858A', fontSize: 12, margin: 10 },
       axisTick: { show: false },
     },
     yAxis: {
       type: 'value',
-      axisLabel: {
-        color: '#62858A',
-        fontSize: 12,
-        formatter: (v: number) => `${Math.round(v / 10000)}万`,
-      },
+      axisLabel: { show: trendHasData.value, color: '#8a9aa1', fontSize: 11, formatter: formatAxis },
       splitLine: { lineStyle: { color: 'rgba(12,42,46,0.06)', type: 'dashed' } },
+      splitNumber: 4,
       axisTick: { show: false },
       axisLine: { show: false },
     },
     series: isBudget ? [
+      { ...barBase, name: '预算收入', data: trend.value.map(i => i.budgetIncome || 0), itemStyle: { borderRadius: [5, 5, 0, 0], color: grad('#2DCFB5', '#0AA694') } },
+      { ...barBase, name: '预算支出', data: trend.value.map(i => i.budgetExpense || 0), itemStyle: { borderRadius: [5, 5, 0, 0], color: grad('#F8C26A', '#F4A52E') } },
       {
-        name: '预算收入',
-        type: 'bar',
-        data: trend.value.map(i => i.budgetIncome || 0),
-        barWidth: 20,
-        itemStyle: { borderRadius: [6, 6, 0, 0] },
-      },
-      {
-        name: '预算支出',
-        type: 'bar',
-        data: trend.value.map(i => i.budgetExpense || 0),
-        barWidth: 20,
-        itemStyle: { borderRadius: [6, 6, 0, 0] },
-      },
-      {
+        ...lineBase,
         name: '预算结余',
-        type: 'line',
         data: trend.value.map(i => getTrendSurplus(i)),
-        smooth: true,
-        symbolSize: 8,
-        lineStyle: { width: 3, type: 'dashed' },
+        areaStyle: { color: grad('rgba(46,132,245,0.16)', 'rgba(46,132,245,0)') },
       },
     ] : [
+      { ...barBase, name: '财务收入', data: trend.value.map(i => i.income), itemStyle: { borderRadius: [5, 5, 0, 0], color: grad('#2DCFB5', '#0AA694') } },
+      /* 支出三项堆叠成一根柱，直观对比收入与总支出 */
+      { ...barBase, name: '财务支出', stack: 'expense', data: trend.value.map(i => i.pureExpense), itemStyle: { color: grad('#F8C26A', '#F4A52E') } },
+      { ...barBase, name: '费用', stack: 'expense', data: trend.value.map(i => i.fee), itemStyle: { color: '#F2545B' } },
+      { ...barBase, name: '成本', stack: 'expense', data: trend.value.map(i => i.cost), itemStyle: { borderRadius: [5, 5, 0, 0], color: '#9C8FF5' } },
       {
-        name: '财务收入',
-        type: 'bar',
-        data: trend.value.map(i => i.income),
-        barWidth: 14,
-        itemStyle: { borderRadius: [6, 6, 0, 0] },
-      },
-      {
-        name: '财务支出',
-        type: 'bar',
-        data: trend.value.map(i => i.pureExpense),
-        barWidth: 14,
-        itemStyle: { borderRadius: [6, 6, 0, 0] },
-      },
-      {
-        name: '费用',
-        type: 'bar',
-        data: trend.value.map(i => i.fee),
-        barWidth: 14,
-        itemStyle: { borderRadius: [6, 6, 0, 0] },
-      },
-      {
-        name: '成本',
-        type: 'bar',
-        data: trend.value.map(i => i.cost),
-        barWidth: 14,
-        itemStyle: { borderRadius: [6, 6, 0, 0] },
-      },
-      {
+        ...lineBase,
         name: '本期盈余',
-        type: 'line',
         data: trend.value.map(i => getTrendSurplus(i)),
-        smooth: true,
-        symbolSize: 8,
-        lineStyle: { width: 3, type: 'dashed' },
-        areaStyle: {
-          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: 'rgba(46,132,245,0.12)' },
-            { offset: 1, color: 'rgba(46,132,245,0)' },
-          ]),
-        },
+        areaStyle: { color: grad('rgba(46,132,245,0.16)', 'rgba(46,132,245,0)') },
       },
     ],
   }, true)
@@ -821,18 +925,115 @@ async function renderCashPieCharts() {
   const echarts = await ensurePieEcharts()
   if (!chartsVisible) return
   cashStructureWithRatio.value.forEach(group => {
+    // 只要有非零子科目就渲染饼图，哪怕只有1个
+    if (group.nonZeroCount === 0) return
     const el = cashPieRefs.get(group.name)
     if (!el) return
     let chart = cashPieCharts.get(group.name)
     if (!chart) { chart = echarts.init(el); cashPieCharts.set(group.name, chart) }
-    const data = group.children.filter(c => Math.abs(c.balance) > 0).map(c => ({ name: `${c.code} ${c.name}`, value: Math.abs(c.balance), rawBalance: c.balance, signedRatio: c.ratio, itemStyle: { color: c.color } }))
+    const data = group.visibleChildren.map(c => ({
+      name: c.name || c.code,
+      fullName: `${c.code} ${c.name}`,
+      value: Math.abs(c.balance),
+      rawBalance: c.balance,
+      signedRatio: c.ratio,
+      itemStyle: { color: c.color },
+    }))
+
+    const accent = group.palette[0]
+    const shareOfTotal = (() => {
+      const totalAbs = cashStructureWithRatio.value.reduce((s, g) => s + Math.abs(g.balance || 0), 0)
+      return totalAbs > 0 ? Math.round((Math.abs(group.balance || 0) / totalAbs) * 100) : 0
+    })()
     chart.setOption({
       animation: !lightMode,
+      animationDuration: 700,
+      animationEasing: 'cubicOut',
       color: group.palette,
-      tooltip: { trigger: 'item', backgroundColor: 'rgba(255,255,255,0.96)', borderColor: 'rgba(12,42,46,0.08)', borderWidth: 1, borderRadius: 12, padding: [10, 14], textStyle: { color: '#0C2A2E', fontSize: 12 }, formatter: (p: any) => `${p.name}<br/>${formatMoney(p.data?.rawBalance || 0)} · ${formatSignedPercent(p.data?.signedRatio || 0)}` },
-      title: { text: group.name, subtext: formatMoney(group.balance), left: 'center', top: 'center', textStyle: { color: '#0C2A2E', fontSize: 13, fontWeight: 600 }, subtextStyle: { color: '#62858A', fontSize: 11, fontWeight: 500 }, itemGap: 4 },
-      series: [{ type: 'pie', radius: ['60%', '80%'], center: ['50%', '50%'], minAngle: 6, avoidLabelOverlap: true, label: { show: false }, itemStyle: { borderColor: '#fff', borderWidth: 3, borderRadius: 8 }, emphasis: { scaleSize: 6, itemStyle: { shadowBlur: 20, shadowColor: 'rgba(12,42,46,0.18)' } }, data: data.length ? data : [{ name: '暂无数据', value: 1, itemStyle: { color: '#ECF6F4' } }] }],
-    })
+      tooltip: {
+        trigger: 'item',
+        backgroundColor: 'rgba(12,42,46,0.92)',
+        borderColor: 'rgba(18,199,174,0.35)',
+        borderWidth: 1,
+        borderRadius: 8,
+        padding: [8, 12],
+        textStyle: { color: '#E8FBF7', fontSize: 12 },
+        formatter: (p: any) =>
+          `${p.data?.fullName || p.name}<br/><b>${formatMoney(p.data?.rawBalance || 0)}</b> · ${formatSignedPercent(p.data?.signedRatio || 0)}`,
+      },
+      /* 圆心只放一个短占比数字，长文字全部在圈外 */
+      title: {
+        text: `${shareOfTotal}%`,
+        subtext: '占货币资金',
+        left: 'center',
+        top: '40%',
+        textStyle: { color: '#1f2d33', fontSize: 16, fontWeight: 700, fontFamily: 'inherit' },
+        subtextStyle: { color: '#8a9aa1', fontSize: 10 },
+        itemGap: 0,
+      },
+      series: [
+        /* 外侧发光细环 */
+        {
+          type: 'pie',
+          radius: ['83%', '85%'],
+          center: ['50%', '50%'],
+          silent: true,
+          label: { show: false },
+          labelLine: { show: false },
+          itemStyle: { color: accent, opacity: 0.22 },
+          data: [{ value: 1 }],
+        },
+        /* 内侧刻度环 */
+        {
+          type: 'pie',
+          radius: ['44%', '45%'],
+          center: ['50%', '50%'],
+          silent: true,
+          label: { show: false },
+          labelLine: { show: false },
+          itemStyle: { color: accent, opacity: 0.18 },
+          data: [{ value: 1 }],
+        },
+        /* 主环：文字在圈外，细线引出 */
+        {
+          type: 'pie',
+          radius: ['52%', '74%'],
+          center: ['50%', '50%'],
+          minAngle: 10,
+          avoidLabelOverlap: true,
+          padAngle: 2,
+          label: {
+            show: data.length <= 4,
+            position: 'outside',
+            formatter: '{b}',
+            fontSize: 11,
+            color: '#4d6068',
+            distanceToLabelLine: 3,
+          },
+          labelLine: {
+            show: data.length <= 4,
+            length: 6,
+            length2: 10,
+            smooth: 0.3,
+            lineStyle: { color: 'rgba(12,42,46,0.22)', width: 1 },
+          },
+          labelLayout: { hideOverlap: true },
+          itemStyle: {
+            borderColor: '#fff',
+            borderWidth: 2,
+            borderRadius: 5,
+            shadowBlur: 10,
+            shadowColor: 'rgba(12,42,46,0.10)',
+          },
+          emphasis: {
+            scale: true,
+            scaleSize: 5,
+            itemStyle: { shadowBlur: 18, shadowColor: 'rgba(18,199,174,0.35)' },
+          },
+          data,
+        },
+      ],
+    }, true)
   })
 }
 
@@ -893,7 +1094,16 @@ watch(
   }
 )
 
+/** Ctrl+K 带 ?focus=search 跳到工作台时自动聚焦功能搜索 */
+const searchRef = ref<InstanceType<typeof NavFunctionSearch> | null>(null)
+function focusSearchIfRequested() {
+  if (!String(router?.currentRoute?.value?.query?.focus || '').startsWith('search')) return
+  nextTick(() => searchRef.value?.focus())
+}
+watch(() => router?.currentRoute?.value?.query?.focus, focusSearchIfRequested)
+
 onMounted(() => {
+  focusSearchIfRequested()
   clockTimer = window.setInterval(() => { currentTime.value = new Date() }, 30000)
   showLastLoginNotice()
   window.addEventListener('resize', resizeCharts)
@@ -907,6 +1117,7 @@ onMounted(() => {
 })
 
 onActivated(() => {
+  focusSearchIfRequested()
   if (userStore.token && userStore.accountSetId) {
     const stale = Date.now() - lastLoadedAt > 60000
     if (lastLoadedAccountSetId !== userStore.accountSetId || stale) void loadDashboard()

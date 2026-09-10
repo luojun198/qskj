@@ -111,6 +111,10 @@ export function useAccountForm(auxCategories: Ref<any[]>, auxLookup: AccountAuxL
       is_enabled: 1,
       is_cash: 0,
       is_bank: 0,
+      is_foreign: 0,
+      currency_code: null,
+      is_quantity: 0,
+      quantity_unit: null,
       direction: 'debit',
       no_negative: 0,
       aux_list: [{ cat_id: null, item_id: null }],
@@ -139,6 +143,10 @@ export function useAccountForm(auxCategories: Ref<any[]>, auxLookup: AccountAuxL
       aux_list,
       is_cash: row.is_cash ? 1 : 0,
       is_bank: row.is_bank ? 1 : 0,
+      is_foreign: row.is_foreign ? 1 : 0,
+      currency_code: row.currency_code || null,
+      is_quantity: row.is_quantity ? 1 : 0,
+      quantity_unit: row.quantity_unit || null,
       no_negative: row.no_negative ? 1 : 0,
     }
   }

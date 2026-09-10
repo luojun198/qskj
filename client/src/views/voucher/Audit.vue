@@ -1,9 +1,26 @@
 <template>
   <div class="page voucher-list-page">
-    <div class="voucher-page-top">
-      <div class="voucher-page-top-row">
-        <h3 class="voucher-page-top-title">凭证管理</h3>
+    <!-- 顶部功能工具栏（与凭证录入页同款） -->
+    <div class="wb-card gl-toolbar-card">
+      <div class="gl-toolbar">
+        <button
+          v-for="btn in glToolbarButtons"
+          :key="btn.key"
+          type="button"
+          class="gl-tool-btn"
+          :class="{ 'is-disabled': btn.disabled, [`gl-tool-btn--${btn.tone}`]: !!btn.tone }"
+          :disabled="btn.disabled"
+          :title="btn.tooltip || btn.name"
+          @click="btn.action"
+        >
+          <span class="gl-tool-btn__icon">
+            <component :is="btn.icon" :size="17" :stroke-width="1.8" />
+          </span>
+          <span class="gl-tool-btn__label">{{ btn.name }}</span>
+        </button>
+        <AccountDisplayModeSwitch class="gl-toolbar-account-display" />
         <VoucherFilterBar
+          class="gl-toolbar-filter"
           layout="grouped"
           :filters="filters"
           :aux-categories="auxCategories"
@@ -24,34 +41,7 @@
           @load-aux-items="loadAuxItems"
           @search-aux-items="searchAuxItems"
           @apply-scheme="handleApplyScheme"
-        >
-          <template #actions>
-            <Teleport v-if="ptActive" defer to="#tabbar-actions">
-              <el-button class="voucher-toolbar-btn" plain size="small" @click="columnDialogVisible = true">
-                <el-icon><Setting /></el-icon>列设置
-              </el-button>
-            </Teleport>
-            <el-button
-              class="voucher-toolbar-btn"
-              plain
-              size="small"
-              :loading="exporting"
-              @click="exportData"
-            >
-              <el-icon><Download /></el-icon>
-              导出
-            </el-button>
-            <el-button
-              class="voucher-toolbar-btn"
-              plain
-              size="small"
-              :disabled="!selected.length || selected.length > 1"
-              @click="handleTurnTemplate"
-            >
-              转模版
-            </el-button>
-          </template>
-        </VoucherFilterBar>
+        />
       </div>
     </div>
 
@@ -78,88 +68,23 @@
       @unpost="unPost"
     />
 
-    <div class="voucher-batch-bar">
-      <span class="batch-selected-text">
+    <div class="pagination-bar">
+      <span class="pagination-text batch-selected-text">
         {{
           selectAllMode
             ? `已选中全部 ${pagination.total} 条（含未加载数据）`
-            : `已选 ${selected.length} 张`
+            : `已选 ${selectedVoucherCount} 张`
         }}
       </span>
-
-      <div class="voucher-batch-bar__group voucher-batch-bar__group--forward">
-        <span class="voucher-batch-bar__label">正向操作</span>
-        <el-button
-          class="voucher-batch-btn voucher-batch-btn--audit"
-          type="primary"
-          :disabled="!selected.length && !selectAllMode"
-          @click="handleSelectedBatchAudit"
-        >
-          <el-icon><CircleCheck /></el-icon>
-          批量审核
-          <span v-if="selectAllMode" class="voucher-batch-btn__hint">（全部 {{ pagination.total }} 条）</span>
-        </el-button>
-        <el-button
-          class="voucher-batch-btn voucher-batch-btn--post"
-          type="success"
-          :disabled="!selected.length && !selectAllMode"
-          :loading="batchPosting"
-          @click="handleBatchPost"
-        >
-          <el-icon><Checked /></el-icon>
-          批量记账
-          <span v-if="selectAllMode" class="voucher-batch-btn__hint">（全部 {{ pagination.total }} 条）</span>
-        </el-button>
-      </div>
-
-      <div class="voucher-batch-bar__group voucher-batch-bar__group--reverse">
-        <span class="voucher-batch-bar__label">逆向操作</span>
-        <el-button
-          class="voucher-batch-btn voucher-batch-btn--unaudit"
-          type="danger"
-          :disabled="!selected.length && !selectAllMode"
-          :loading="batchUnauditing"
-          @click="handleBatchUnAudit"
-        >
-          <el-icon><CircleClose /></el-icon>
-          批量反审核
-          <span v-if="selectAllMode" class="voucher-batch-btn__hint">（全部 {{ pagination.total }} 条）</span>
-        </el-button>
-        <el-tooltip :content="reverseTooltip" :disabled="!reverseTooltip" placement="top">
-          <span>
-            <el-button
-              class="voucher-batch-btn voucher-batch-btn--reverse"
-              type="danger"
-              plain
-              :disabled="!canReverseSelected"
-              @click="handleReverse"
-            >
-              <el-icon><RefreshLeft /></el-icon>
-              冲红
-            </el-button>
-          </span>
-        </el-tooltip>
-      </div>
-
-      <div class="voucher-batch-bar__group voucher-batch-bar__group--print">
-        <span class="voucher-batch-bar__label">打印</span>
-        <el-button-group>
-          <el-button plain :disabled="!selected.length" @click="handlePrint">
-            <el-icon><Printer /></el-icon>
-            打印
-          </el-button>
-          <el-button plain @click="batchPrintVisible = true">
-            <el-icon><Printer /></el-icon>
-            批量打印
-          </el-button>
-        </el-button-group>
-      </div>
-    </div>
-
-    <div class="pagination-bar">
       <span class="pagination-text">
         共 {{ pagination.total }} 条 · 已加载 {{ loadedVoucherCount }} 条
       </span>
+      <template v-if="softCapReached">
+        <span class="pagination-text">已加载较多，自动滚动已暂停</span>
+        <el-button size="small" plain :loading="loading || loadingMore" @click="loadMore">
+          继续加载
+        </el-button>
+      </template>
       <span class="pagination-text">每次加载</span>
       <el-select v-model="pagination.pageSize" style="width: 95px" @change="handlePageSizeChange">
         <el-option label="20条" :value="20" />
@@ -188,7 +113,7 @@
     <VoucherEntryDialogHost ref="entryDialogHostRef" @saved="fetchData" />
     <ColumnSettingsDialog v-model="columnDialogVisible" :columns="columnSettingsList" @update:columns="updateColumnSettings" @reset="resetColumnSettings" />
 
-    <PrintDialog v-model="printDialogVisible" :voucher-ids="printVoucherIds" :mode="printMode" />
+    <VoucherHiprintDialog v-model="printDialogVisible" :voucher-ids="printVoucherIds" :mode="printMode" />
 
     <BatchPrintDialog v-model="batchPrintVisible" :default-date-range="filters.dateRange || []" />
 
@@ -223,14 +148,30 @@
 <script setup lang="ts">
 import { computed, onMounted, onActivated, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Printer, CircleCheck, Checked, CircleClose, Download, Setting, RefreshLeft } from '@element-plus/icons-vue'
+import {
+  Download,
+  RotateCw,
+  Eye,
+  CheckCheck,
+  ListChecks,
+  FileX,
+  BookCheck,
+  BookX,
+  Undo2,
+  ExternalLink,
+  Printer,
+  Layers,
+  Settings2,
+  FilePen,
+  ArrowLeft,
+} from 'lucide-vue-next'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '@/api/request'
 import VoucherAuditTable from '@/components/voucher/VoucherAuditTable.vue'
 import VoucherFilterBar from '@/components/voucher/VoucherFilterBar.vue'
 import BatchAuditDialog from '@/components/voucher/BatchAuditDialog.vue'
 import VoucherEntryDialogHost from '@/components/voucher/VoucherEntryDialogHost.vue'
-import PrintDialog from '@/components/print/PrintDialog.vue'
+import VoucherHiprintDialog from '@/components/print/VoucherHiprintDialog.vue'
 import BatchPrintDialog from '@/components/print/BatchPrintDialog.vue'
 import TaskProgressDialog from '@/components/task/TaskProgressDialog.vue'
 import { useVoucherQuery, applyVoucherFilters, type VoucherFilters } from '@/composables/useVoucherQuery'
@@ -240,7 +181,6 @@ import { useBatchAuditDialog } from '@/composables/useBatchAuditDialog'
 import { useVoucherModalRestore } from '@/composables/useVoucherModalRestore'
 import { useKeyboardShortcuts } from '@/composables/useKeyboardShortcuts'
 import { useColumnWidthMemory } from '@/composables/useColumnWidthMemory'
-import { usePageToolbarTeleport } from '@/composables/usePageToolbarTeleport'
 import { hasPermission } from '@/utils/permission'
 import { exportVouchersToExcel, fetchAllVouchers } from '@/utils/voucherExport'
 import { useSystemParamsStore } from '@/stores/systemParams'
@@ -249,6 +189,8 @@ import { useVoucherAuditReturnStore } from '@/stores/voucherAuditReturn'
 import { useVoucherReverse, canReverseVoucher, reverseDisabledReason } from '@/composables/useVoucherReverse'
 import ColumnSettingsDialog from '@/components/common/ColumnSettingsDialog.vue'
 import { loadColumnSettings, saveColumnSettings, type ColumnSetting } from '@/utils/columnSettings'
+import { useIncrementalAuxColumns } from '@/composables/useIncrementalAuxColumns'
+import { VOUCHER_LIST_SOFT_CAP } from '@/utils/voucherListPerf'
 
 const VIS_COL_KEY = 'voucher-audit-cols-visible'
 const {
@@ -301,8 +243,6 @@ function resetColumnSettings() {
     ...discoveredDynamicCols.value.map(column => ({ ...column, visible: true })),
   ])
 }
-const { ptActive } = usePageToolbarTeleport()
-
 const canUnpostVoucher = computed(() => hasPermission('voucher:unpost'))
 
 const route = useRoute()
@@ -349,14 +289,16 @@ const loadedVoucherCount = computed(() => list.value.length)
 
 // 滚轮下拉自动加载下一页（追加式无限滚动）
 const voucherTableRef = ref<any>(null)
-const { scrollToTop } = useTableInfiniteScroll({
+const { scrollToTop, isOverSoftCap } = useTableInfiniteScroll({
   getScrollEl: () => voucherTableRef.value?.containerRef ?? null,
   hasMore,
   loading,
   loadingMore,
   onLoadMore: loadMore,
   watchSource: () => flatList.value.length,
+  maxAutoRows: VOUCHER_LIST_SOFT_CAP,
 })
+const softCapReached = computed(() => isOverSoftCap() && hasMore.value)
 
 async function handleApplyScheme(schemeFilters: Partial<VoucherFilters>) {
   applyVoucherFilters(filters.value, schemeFilters)
@@ -371,51 +313,13 @@ async function handleSearch() {
   await scrollToTop()
 }
 
-/** 从列表数据发现辅助列（computed 缓存，只在数据真正变化时重新计算） */
-const discoveredDynamicCols = computed<ColSetting[]>(() => {
-  const fixedCodes = new Set(['dept', 'project', 'supplier', 'person', 'func_class'])
-  const result: ColSetting[] = []
-  const seen = new Set<string>()
-
-  const hasDept = flatList.value.some(
-    row => row.dept_name && String(row.dept_name).trim() !== ''
-  )
-  const hasProject = flatList.value.some(
-    row => row.project_name && String(row.project_name).trim() !== ''
-  )
-  if (hasDept && !seen.has('dept_name')) {
-    seen.add('dept_name')
-    result.push({ key: 'dept_name', label: '部门', visible: true, dynamic: true, group: '辅助核算' })
-  }
-  if (hasProject && !seen.has('project_name')) {
-    seen.add('project_name')
-    result.push({ key: 'project_name', label: '项目', visible: true, dynamic: true, group: '辅助核算' })
-  }
-
-  for (const row of flatList.value) {
-    for (const key of Object.keys(row)) {
-      if (!key.startsWith('_aux_') || !row[key]) continue
-      if (seen.has(key)) continue
-      const code = key.slice(5)
-      if (fixedCodes.has(code)) continue
-      const cat = auxCategories.value.find(c => c.code === code)
-      if (!cat) continue
-      seen.add(key)
-      result.push({ key, label: cat.name || code, visible: true, dynamic: true, group: '辅助核算' })
-    }
-  }
-  return result
+const { discoveredDynamicCols } = useIncrementalAuxColumns({
+  flatList,
+  auxCategories,
+  storageKey: VIS_COL_KEY,
+  baseVisibleCols,
+  visibleCols,
 })
-
-watch(discoveredDynamicCols, (dynamic) => {
-  visibleCols.value = loadColumnSettings(VIS_COL_KEY, [
-    ...baseVisibleCols.map(column => ({ ...column })),
-    ...dynamic.map(column => ({ ...column })),
-  ]).map(column => ({
-    ...column,
-    dynamic: dynamic.some(current => current.key === column.key),
-  }))
-}, { immediate: true })
 
 // 选择相关逻辑
 const selected = ref<any[]>([])
@@ -427,7 +331,7 @@ const { reverseVoucher } = useVoucherReverse({ onSuccess: () => fetchData() })
 /** 冲红是单张操作：仅当恰好选中一张凭证（可能勾选多行分录）时可用 */
 const reverseTargetVoucher = computed(() => {
   if (selectAllMode.value) return null
-  const ids = Array.from(new Set(selected.value.map((row: any) => row._voucherId).filter(Boolean)))
+  const ids = Array.from(selectedIdSet.value)
   if (ids.length !== 1) return null
   return list.value.find((v: any) => v.id === ids[0]) || null
 })
@@ -447,6 +351,16 @@ function handleReverse() {
 const selectAllMode = ref(false) // 是否全选所有页
 const selectionRestoreActive = ref(false)
 const selectionRestoreIds = ref<string[] | null>(null)
+
+/** O(1) 选中判断，供 getRowClass 使用 */
+const selectedIdSet = computed(() => {
+  const set = new Set<string>()
+  for (const row of selected.value) {
+    const id = row._voucherId || row.id
+    if (id) set.add(String(id))
+  }
+  return set
+})
 
 function applySelectionRestore() {
   if (!selectionRestoreActive.value) return
@@ -476,11 +390,7 @@ function isSelectableRow(row: any) {
 
 function getRowClass({ row }: { row: any }) {
   const stripeClass = row._stripeGroup === 0 ? 'voucher-group-even' : 'voucher-group-odd'
-
-  // 通过 _voucherId 检查当前凭证是否被选中
-  const isSelected = selected.value.some((r: any) => r._voucherId === row._voucherId)
-
-  // 返回斑马纹类名 + 选中类名
+  const isSelected = selectedIdSet.value.has(String(row._voucherId || ''))
   return isSelected ? `${stripeClass} voucher-selected is-selected` : stripeClass
 }
 
@@ -898,17 +808,179 @@ async function handleBatchAuditConfirm() {
   await handleBatchAudit()
 }
 
+/** 已勾选的凭证张数（selected 为分录行，按凭证去重） */
+const selectedVoucherCount = computed(
+  () => new Set(selected.value.map((row: any) => getRowVoucherId(row)).filter(Boolean)).size
+)
+
+const hasBatchTarget = computed(() => selected.value.length > 0 || selectAllMode.value)
+const batchHint = computed(() => (selectAllMode.value ? `（全部 ${pagination.total} 条）` : ''))
+
+function handleViewSelected() {
+  if (selectedVoucherCount.value !== 1) {
+    ElMessage.warning('请先勾选一张凭证')
+    return
+  }
+  openEntryDialog(selected.value[0])
+}
+
+function handleReturn() {
+  if (window.history.length > 1) {
+    router.back()
+  } else {
+    router.push('/group/财务总账')
+  }
+}
+
+// 顶部功能工具栏（与凭证录入 / 查询页同款排版；批量操作全部放到这里）
+const glToolbarButtons = computed(() => [
+  {
+    key: 'save',
+    name: '另存',
+    icon: Download,
+    tooltip: '导出为 Excel 文件',
+    disabled: exporting.value,
+    action: exportData,
+  },
+  {
+    key: 'refresh',
+    name: '刷新',
+    icon: RotateCw,
+    tooltip: '刷新凭证列表',
+    action: () => fetchData(),
+  },
+  {
+    key: 'view',
+    name: '查看',
+    icon: Eye,
+    tooltip: '查看勾选的凭证',
+    disabled: selectedVoucherCount.value !== 1,
+    action: handleViewSelected,
+  },
+  {
+    key: 'batch-audit',
+    name: '批审核',
+    icon: CheckCheck,
+    tooltip: `批量审核勾选的凭证${batchHint.value}`,
+    tone: 'forward',
+    disabled: !hasBatchTarget.value,
+    action: handleSelectedBatchAudit,
+  },
+  {
+    key: 'batch-post',
+    name: '批记账',
+    icon: BookCheck,
+    tooltip: `批量记账勾选的凭证${batchHint.value}`,
+    tone: 'forward',
+    disabled: !hasBatchTarget.value || batchPosting.value,
+    action: handleBatchPost,
+  },
+  {
+    key: 'batch-unaudit',
+    name: '批反审',
+    icon: FileX,
+    tooltip: `批量反审核勾选的凭证${batchHint.value}`,
+    tone: 'reverse',
+    disabled: !hasBatchTarget.value || batchUnauditing.value,
+    action: handleBatchUnAudit,
+  },
+  {
+    key: 'batch-unpost',
+    name: '批反记账',
+    icon: BookX,
+    tooltip: canUnpostVoucher.value
+      ? `批量反记账勾选的凭证${batchHint.value}`
+      : '当前用户没有凭证反记账权限',
+    tone: 'reverse',
+    disabled: !hasBatchTarget.value || !canUnpostVoucher.value,
+    action: handleBatchUnpost,
+  },
+  {
+    key: 'batch-ops',
+    name: '批操作',
+    icon: ListChecks,
+    tooltip: '按日期 / 类型范围批量审核、记账（Ctrl+E）',
+    action: () => (batchAuditVisible.value = true),
+  },
+  {
+    key: 'reverse',
+    name: '反冲',
+    icon: Undo2,
+    tooltip: reverseTooltip.value || '凭证红字冲销',
+    tone: 'reverse',
+    disabled: !canReverseSelected.value,
+    action: handleReverse,
+  },
+  {
+    key: 'turn-template',
+    name: '转出',
+    icon: ExternalLink,
+    tooltip: '保存为凭证模版',
+    disabled: selectedVoucherCount.value !== 1,
+    action: handleTurnTemplate,
+  },
+  {
+    key: 'print',
+    name: '打印',
+    icon: Printer,
+    tooltip: '打印勾选的凭证',
+    disabled: !selected.value.length,
+    action: handlePrint,
+  },
+  {
+    key: 'batch-print',
+    name: '连打',
+    icon: Layers,
+    tooltip: '连续打印（批量打印）',
+    action: () => (batchPrintVisible.value = true),
+  },
+  {
+    key: 'columns',
+    name: '列设置',
+    icon: Settings2,
+    tooltip: '设置显示列',
+    action: () => (columnDialogVisible.value = true),
+  },
+  {
+    key: 'entry',
+    name: '录入',
+    icon: FilePen,
+    tooltip: '跳转凭证录入',
+    action: () => router.push('/voucher/entry'),
+  },
+  {
+    key: 'return',
+    name: '返回',
+    icon: ArrowLeft,
+    tooltip: '返回',
+    action: handleReturn,
+  },
+])
+
 async function handlePageSizeChange(size: number) {
-  if (size === -1 && pagination.total > 500) {
-    try {
-      await ElMessageBox.confirm(
-        `当前共 ${pagination.total} 条记录，加载全部可能较慢，建议使用导出功能处理大量数据。是否继续？`,
-        '加载全部',
-        { type: 'warning', confirmButtonText: '继续加载', cancelButtonText: '取消' }
-      )
-    } catch {
-      pagination.pageSize = 20
-      return
+  if (size === -1) {
+    if (pagination.total > VOUCHER_LIST_SOFT_CAP) {
+      try {
+        await ElMessageBox.confirm(
+          `当前共 ${pagination.total} 条记录，一次加载进表格会明显卡顿（建议阈值约 ${VOUCHER_LIST_SOFT_CAP} 行分录）。请改用「另存」导出，或缩小筛选范围。是否仍要加载全部？`,
+          '加载全部',
+          { type: 'warning', confirmButtonText: '继续加载', cancelButtonText: '取消' }
+        )
+      } catch {
+        pagination.pageSize = 20
+        return
+      }
+    } else if (pagination.total > 500) {
+      try {
+        await ElMessageBox.confirm(
+          `当前共 ${pagination.total} 条记录，加载全部可能较慢，建议使用导出功能处理大量数据。是否继续？`,
+          '加载全部',
+          { type: 'warning', confirmButtonText: '继续加载', cancelButtonText: '取消' }
+        )
+      } catch {
+        pagination.pageSize = 20
+        return
+      }
     }
   }
   onPageSizeChange(size)
@@ -935,6 +1007,19 @@ async function tryRestoreVoucherAuditContext() {
   applySelectionRestore()
 }
 
+/**
+ * 财务总账工作页面以 ?status=draft / audited 进入时，预设状态筛选：
+ * 「凭证审核」看待审核（只录入），「凭证过账」看待记账（已审核）。
+ * 覆盖搜索记忆恢复出来的旧状态，但不动其他条件。
+ */
+const ROUTE_STATUS_PRESETS = new Set(['draft', 'audited', 'posted'])
+function applyRouteStatusPreset() {
+  const status = String(route.query.status || '')
+  if (!ROUTE_STATUS_PRESETS.has(status)) return
+  filters.value.status = status
+  pagination.page = 1
+}
+
 async function bootstrapAuditPage() {
   restoreVisibleCols()
   await Promise.all([loadVoucherTypes(), systemParamsStore.load(), loadAuxCategories()])
@@ -945,6 +1030,7 @@ async function bootstrapAuditPage() {
     return
   }
 
+  applyRouteStatusPreset()
   await fetchData()
   await tryRestoreVoucherModal()
 }
@@ -975,6 +1061,7 @@ onActivated(async () => {
   }
 
   await Promise.all([loadVoucherTypes(), systemParamsStore.load(), loadAuxCategories()])
+  applyRouteStatusPreset()
   await fetchData()
   await tryRestoreVoucherModal()
 })

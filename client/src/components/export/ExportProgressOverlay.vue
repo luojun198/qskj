@@ -54,7 +54,7 @@ defineProps<{
 
 .export-progress-panel__message {
   margin: 0 0 16px;
-  font-size: 14px;
+  font-size: var(--cw-text-base);
   line-height: 1.5;
   color: #606266;
   min-height: 21px;

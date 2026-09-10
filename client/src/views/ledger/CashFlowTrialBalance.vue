@@ -571,7 +571,7 @@ onMounted(async () => {
   flex-wrap: wrap;
   gap: 8px;
   color: var(--el-text-color-secondary);
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   margin-bottom: 12px;
 }
 
@@ -642,14 +642,14 @@ onMounted(async () => {
 .checks-section h4,
 .table-section h4 {
   margin: 0 0 10px;
-  font-size: 14px;
+  font-size: var(--cw-text-base);
   font-weight: 600;
 }
 
 .count-tag {
   font-weight: normal;
   color: var(--el-text-color-secondary);
-  font-size: 13px;
+  font-size: var(--cw-text-base);
 }
 
 .count-tag.hint {
@@ -663,7 +663,7 @@ onMounted(async () => {
   padding: 8px 12px;
   border-radius: 6px;
   margin-bottom: 6px;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   background: var(--el-fill-color-light);
 }
 

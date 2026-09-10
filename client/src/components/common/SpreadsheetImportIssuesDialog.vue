@@ -60,7 +60,7 @@ const emit = defineEmits<{
 <style scoped>
 .import-issues-intro {
   margin: 0 0 12px;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   color: #606266;
   line-height: 1.6;
 }
@@ -90,13 +90,13 @@ const emit = defineEmits<{
   margin-bottom: 0;
 }
 .import-issue-title {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   font-weight: 600;
   color: var(--el-text-color-primary);
   margin-bottom: 4px;
 }
 .import-issue-detail {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   color: #606266;
   line-height: 1.55;
 }

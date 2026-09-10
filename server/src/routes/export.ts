@@ -23,7 +23,7 @@ const MAX_EXPORT_ROWS = 500000
  * 服务端生成 xlsx 并流式返回，避免十万级数据在浏览器端生成卡死。
  */
 router.post('/styled-xlsx', async (req: AuthRequest, res) => {
-  const { fileName, sheetName, title, subtitle, columns, rows, summaryValues, stripe } =
+  const { fileName, sheetName, title, subtitle, columns, rows, subtotalRows, summaryValues, stripe } =
     req.body || {}
 
   if (!Array.isArray(columns) || columns.length === 0) {
@@ -45,6 +45,7 @@ router.post('/styled-xlsx', async (req: AuthRequest, res) => {
       subtitle: typeof subtitle === 'string' ? subtitle : undefined,
       columns: columns as ExportColumnSpec[],
       rows: rows as (string | number | null)[][],
+      subtotalRows: Array.isArray(subtotalRows) ? subtotalRows : undefined,
       summaryValues: Array.isArray(summaryValues) ? summaryValues : undefined,
       stripe: stripe !== false,
     })

@@ -27,7 +27,7 @@ function createDb() {
       account_id TEXT, account_code TEXT, account_name TEXT,
       direction TEXT, amount REAL, amount_cents INTEGER,
       dept_id TEXT, project_id TEXT, supplier_id TEXT, person_id TEXT, func_class_id TEXT,
-      aux_data TEXT
+      aux_data TEXT, currency_code TEXT, exchange_rate REAL, foreign_amount REAL
     );
     CREATE TABLE account_balances (
       id TEXT PRIMARY KEY, account_set_id TEXT, account_id TEXT,
@@ -40,6 +40,8 @@ function createDb() {
       end_debit REAL DEFAULT 0,
       end_credit REAL DEFAULT 0,
       aux_item_id TEXT DEFAULT '',
+      foreign_init_balance REAL DEFAULT 0, foreign_current_debit REAL DEFAULT 0,
+      foreign_current_credit REAL DEFAULT 0, foreign_end_balance REAL DEFAULT 0,
       UNIQUE(account_set_id, account_id, year, period, aux_item_id)
     );
   `)

@@ -618,7 +618,7 @@ onMounted(() => {
 .revoke-callout__info strong {
   display: block;
   color: #991b1b;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   font-weight: 700;
   margin-bottom: 2px;
 }
@@ -672,7 +672,7 @@ onMounted(() => {
 
 .card-header-row strong {
   color: #111827;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
 }
 
 .transfer-list-card :deep(.el-card__header),
@@ -732,7 +732,7 @@ onMounted(() => {
 .type-title strong {
   display: block;
   color: #0f172a;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
 }
 
 .type-title span,
@@ -779,7 +779,7 @@ onMounted(() => {
 .preview-section__head h4 {
   margin: 0 0 2px;
   color: #0f172a;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
 }
 
 .entry-table {

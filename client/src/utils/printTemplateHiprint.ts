@@ -5,6 +5,10 @@
  *   统一走预览 / 打印 / 导出 PDF / 套打底图通道。
  */
 import type { HiprintPanel } from '@/types/print'
+import {
+  createVoucherPrintProvider,
+  VOUCHER_SUMMARY_FORMATTER_SRC,
+} from '@/utils/hiprintVoucherProvider'
 
 type HiprintModule = typeof import('vue-plugin-hiprint')
 
@@ -26,7 +30,7 @@ export async function loadHiprint(): Promise<HiprintModule> {
           /* 忽略 */
         }
         mod.hiprint.init({
-          providers: [new mod.defaultElementTypeProvider()],
+          providers: [new mod.defaultElementTypeProvider(), createVoucherPrintProvider(mod.hiprint)],
         })
         initialized = true
       }
@@ -148,6 +152,111 @@ export function buildSingleHtmlPanel(options: BuildHtmlPanelOptions): HiprintTem
 
   // hiprint PrintTemplate 的 template 选项需要 { panels: [...] }
   return { panels: [panel] }
+}
+
+/**
+ * hiprint 打印/预览时元素纵坐标并不照搬设计坐标：
+ * `BasePrintElement.getBeginPrintTopInPaperByReferenceElement()` 里，只有
+ * `isHeaderOrFooter()`（top < paperHeader 或 top >= paperFooter）和 `isFixed()`
+ * （options.fixed）的元素用设计 top，其余元素的 top = 上一个元素「实际渲染后的底边」
+ * + 设计时的间距。分录表按真实行数撑高后，排在它后面的合计行、制单/审核/记账/主管
+ * 就会整体下移，于是「设计器画布」和「示例预览 / 打印」对不上（横向一致、纵向错位）。
+ *
+ * 套打凭证要的是「所见即所得」：格子位置由纸张决定，不能被数据行数推着走。
+ * 因此渲染前把除表格/HTML 之外的元素统一标记 fixed，强制使用设计坐标。
+ * 表格自身不能钉死（它要分页、要按行数增高），HTML 元素（账册/报表整页内容）同理。
+ */
+const FLOWING_ELEMENT_TYPES = new Set(['table', 'html'])
+
+export function pinDesignedPanelElements<T>(template: T): T {
+  const panels = (template as { panels?: unknown[] } | null | undefined)?.panels
+  if (!Array.isArray(panels)) return template
+  return {
+    ...(template as object),
+    panels: panels.map(panel => {
+      const p = panel as HiprintPanel
+      const els = p?.printElements
+      if (!Array.isArray(els)) return panel
+      return {
+        ...p,
+        printElements: els.map(el => {
+          const e = el as { options?: Record<string, unknown>; printElementType?: { type?: string } }
+          const type = e?.printElementType?.type
+          if (!e?.options || (type && FLOWING_ELEMENT_TYPES.has(type))) return el
+          return { ...e, options: { ...e.options, fixed: true } }
+        }),
+      }
+    }),
+  } as T
+}
+
+/**
+ * 给表格元素里 `tableSummary === 'sum'` 的列注入合计单元格渲染函数。
+ *
+ * hiprint 内置的求和用 `Number(cellValue)` 解析，而分录表的金额是带千分位的字符串
+ * （'1,000.00'），Number 出来是 NaN，整列合计就废了。VOUCHER_SUMMARY_FORMATTER_SRC
+ * 去掉千分位后重新求和并格式化，见其函数注释。
+ *
+ * 只在渲染前注入、不落库：模板 JSON 里只保存 hiprint 原生的 tableSummary* 配置，
+ * 因此**已保存的老模板**（包括用户直接用 hiprint 原生「底部聚合类型」下拉配的）
+ * 同样能拿到正确数字。同样不修改入参。
+ */
+function injectSummaryFormatterInColumns(columns: unknown): unknown {
+  if (!Array.isArray(columns)) return columns
+  return columns.map(entry => {
+    // options.columns 是「每层表头一个数组」的二维结构，递归到叶子列
+    if (Array.isArray(entry)) return injectSummaryFormatterInColumns(entry)
+    const col = entry as Record<string, unknown> | null
+    if (!col || typeof col !== 'object') return entry
+    if (Array.isArray((col as { columns?: unknown }).columns)) {
+      return { ...col, columns: injectSummaryFormatterInColumns((col as { columns: unknown }).columns) }
+    }
+    if (col.tableSummary !== 'sum' || col.tableSummaryFormatter) return entry
+    return { ...col, tableSummaryFormatter: VOUCHER_SUMMARY_FORMATTER_SRC }
+  })
+}
+
+export function injectVoucherSummaryFormatter<T>(template: T): T {
+  const panels = (template as { panels?: unknown[] } | null | undefined)?.panels
+  if (!Array.isArray(panels)) return template
+  return {
+    ...(template as object),
+    panels: panels.map(panel => {
+      const p = panel as HiprintPanel
+      const els = p?.printElements
+      if (!Array.isArray(els)) return panel
+      return {
+        ...p,
+        printElements: els.map(el => {
+          const e = el as {
+            options?: Record<string, unknown>
+            printElementType?: { type?: string; columns?: unknown }
+          }
+          if (e?.printElementType?.type !== 'table') return el
+          const next: typeof e = { ...e }
+          if (e.options?.columns) {
+            next.options = { ...e.options, columns: injectSummaryFormatterInColumns(e.options.columns) }
+          }
+          // createTableFooter 取的是表头构建阶段派生出来的 rowColumns，两处都写更保险
+          if (e.printElementType?.columns) {
+            next.printElementType = {
+              ...e.printElementType,
+              columns: injectSummaryFormatterInColumns(e.printElementType.columns),
+            }
+          }
+          return next
+        }),
+      }
+    }),
+  } as T
+}
+
+/**
+ * 渲染（预览 / 打印 / 导出 PDF）前对面板做的全部归一化处理。
+ * 调用方只要记住这一个函数即可，不用逐个记得要调哪几步。
+ */
+export function normalizePanelForRender<T>(template: T): T {
+  return injectVoucherSummaryFormatter(pinDesignedPanelElements(template))
 }
 
 /** 把单 HTML 面板需要的打印数据（绑定 field=content） */
@@ -321,11 +430,22 @@ export interface BuildTablePrintOptions<T = any> {
   monochrome?: boolean
   /** 按打印面板宽度固定表格布局，避免宽表超出 A4 可打印区域 */
   fitToPage?: boolean
+  /**
+   * 正文字号（px）。传入后优先使用，不再按列数压到过小字号。
+   * 未传且 fitToPage 时，最低约 11px，保证直接打印可读。
+   */
+  fontSize?: number
   /** 返回行内联样式（如小计行加粗底色），可选 */
   rowStyle?: (row: T, index: number) => string
   /** 表尾合计行（已是字符串数组，与列对应），可选 */
   footer?: string[]
+  /** 合计行之前的小计行（如外币表按币种小计），每行与列对应，可选 */
+  footerSubtotals?: string[][]
 }
+
+/** 小/中/大 对应正文字号（px） */
+export const PRINT_FONT_SIZE_MAP = { small: 10, medium: 12, large: 14 } as const
+export type PrintFontSizeKey = keyof typeof PRINT_FONT_SIZE_MAP
 
 function escapeHtml(s: string): string {
   return String(s ?? '')
@@ -347,15 +467,21 @@ export function buildTablePrintHtml<T = any>(opts: BuildTablePrintOptions<T>): s
     headerRows,
     monochrome = false,
     fitToPage = false,
+    fontSize,
     rowStyle,
     footer,
+    footerSubtotals,
   } = opts
   const columnCount = Math.max(columns.length, 1)
-  const fittedFontSize = columnCount >= 16 ? 7 : columnCount >= 12 ? 8 : columnCount >= 9 ? 9 : 10
-  const fittedHeaderPadding = columnCount >= 12 ? '2px 1px' : '3px 2px'
-  const fittedCellPadding = columnCount >= 12 ? '2px 1px' : '2px 3px'
-  const thBase = `border:1px solid #000;padding:${fitToPage ? fittedHeaderPadding : '4px 6px'};font-size:${fitToPage ? `${fittedFontSize}px` : '12px'};line-height:1.25;white-space:normal;overflow-wrap:anywhere;${monochrome ? 'color:#000;' : 'background:#f2f2f2;'}font-weight:600;box-sizing:border-box;`
-  const tdBase = `border:1px solid #000;padding:${fitToPage ? fittedCellPadding : '3px 6px'};font-size:${fitToPage ? `${fittedFontSize}px` : '12px'};line-height:1.3;${monochrome ? 'color:#000;' : ''}box-sizing:border-box;`
+  // 历史 fitToPage 会把宽表压到 7–10px，直接打印过小；默认抬到可读区间
+  const autoFitted =
+    columnCount >= 16 ? 11 : columnCount >= 12 ? 11 : columnCount >= 9 ? 12 : 12
+  const bodyFontSize = fontSize && fontSize > 0 ? fontSize : fitToPage ? autoFitted : 12
+  const headerFontSize = Math.min(bodyFontSize + 1, bodyFontSize >= 14 ? 15 : bodyFontSize + 1)
+  const fittedHeaderPadding = bodyFontSize <= 10 ? '2px 2px' : bodyFontSize <= 12 ? '3px 4px' : '4px 5px'
+  const fittedCellPadding = bodyFontSize <= 10 ? '2px 2px' : bodyFontSize <= 12 ? '3px 4px' : '4px 5px'
+  const thBase = `border:1px solid #000;padding:${fitToPage ? fittedHeaderPadding : '4px 6px'};font-size:${headerFontSize}px;line-height:1.25;white-space:normal;overflow-wrap:anywhere;${monochrome ? 'color:#000;' : 'background:#f2f2f2;'}font-weight:600;box-sizing:border-box;`
+  const tdBase = `border:1px solid #000;padding:${fitToPage ? fittedCellPadding : '3px 6px'};font-size:${bodyFontSize}px;line-height:1.3;${monochrome ? 'color:#000;' : ''}box-sizing:border-box;`
 
   const headerHtml = headerRows
     ? headerRows
@@ -392,14 +518,15 @@ export function buildTablePrintHtml<T = any>(opts: BuildTablePrintOptions<T>): s
     })
     .join('')
 
-  const foot = footer
-    ? `<tr>${footer
-        .map(
-          (v, idx) =>
-            `<td style="${tdBase}font-weight:600;${monochrome ? '' : 'background:#fafafa;'}text-align:${columns[idx]?.align || 'left'};">${escapeHtml(v)}</td>`
-        )
-        .join('')}</tr>`
-    : ''
+  const footRow = (values: string[]) =>
+    `<tr>${values
+      .map(
+        (v, idx) =>
+          `<td style="${tdBase}font-weight:600;${monochrome ? '' : 'background:#fafafa;'}text-align:${columns[idx]?.align || 'left'};">${escapeHtml(v)}</td>`
+      )
+      .join('')}</tr>`
+  const foot =
+    (footerSubtotals || []).map(footRow).join('') + (footer ? footRow(footer) : '')
 
   const subtitleLines = subtitle ? (Array.isArray(subtitle) ? subtitle : [subtitle]) : []
   const colgroup = fitToPage
@@ -416,11 +543,11 @@ export function buildTablePrintHtml<T = any>(opts: BuildTablePrintOptions<T>): s
       .cw-table-print-root .cw-print-table thead { display: table-header-group; }
       .cw-table-print-root .cw-print-table tr { break-inside: avoid; page-break-inside: avoid; }
     </style>
-    <div style="text-align:center;font-size:18px;font-weight:700;letter-spacing:2px;margin-bottom:4px;">${escapeHtml(title)}</div>
+    <div style="text-align:center;font-size:${Math.max(16, bodyFontSize + 6)}px;font-weight:700;letter-spacing:2px;margin-bottom:4px;">${escapeHtml(title)}</div>
     ${subtitleLines
       .map(
         (line, index) =>
-          `<div style="text-align:center;font-size:12px;color:${monochrome ? '#000' : '#333'};margin-bottom:${index === subtitleLines.length - 1 ? '8px' : '3px'};">${escapeHtml(line)}</div>`
+          `<div style="text-align:center;font-size:${Math.max(11, bodyFontSize)}px;color:${monochrome ? '#000' : '#333'};margin-bottom:${index === subtitleLines.length - 1 ? '8px' : '3px'};">${escapeHtml(line)}</div>`
       )
       .join('')}
     <table class="cw-print-table" style="border-collapse:collapse;width:100%;max-width:100%;${fitToPage ? 'table-layout:fixed;' : ''}box-sizing:border-box;font-variant-numeric:tabular-nums;">

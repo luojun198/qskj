@@ -71,7 +71,7 @@ describe('printTemplateHiprint', () => {
     })
   })
 
-  it('根据宽表列数自动收紧 A4 自适应字号和间距', () => {
+  it('根据宽表列数自动收紧 A4 自适应字号，但保持可读下限', () => {
     const columns = Array.from({ length: 16 }, (_, index) => ({
       label: `第${index + 1}列`,
       align: 'right' as const,
@@ -86,9 +86,24 @@ describe('printTemplateHiprint', () => {
       rows: [{}],
     })
 
-    expect(html).toContain('font-size:7px')
-    expect(html).toContain('padding:2px 1px')
+    expect(html).toContain('font-size:11px')
     expect(html).toContain('width:6.25%')
     expect(html).toContain('white-space:nowrap')
+  })
+
+  it('显式 fontSize 优先于自动字号', () => {
+    const html = buildTablePrintHtml({
+      title: '科目余额表',
+      monochrome: true,
+      fitToPage: true,
+      fontSize: 14,
+      columns: [
+        { label: '科目', render: r => r.name },
+        { label: '余额', align: 'right', render: r => r.bal },
+      ],
+      rows: [{ name: '现金', bal: '1.00' }],
+    })
+    expect(html).toContain('font-size:14px')
+    expect(html).toContain('font-size:15px')
   })
 })

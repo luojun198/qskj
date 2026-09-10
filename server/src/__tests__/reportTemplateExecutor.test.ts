@@ -88,6 +88,52 @@ describe('reportTemplateExecutor', () => {
     expect(sheet.cells[2].display_value).toBe('0.00')
   })
 
+  it('金额默认两位小数带千分位、行次保持整数、日期占位符取当期最后一天', () => {
+    const base = {
+      report_sheet_id: 'sheet-1',
+      cell_type: 'formula',
+      text_value: null,
+      format_text: null,
+      style_key: null,
+      side: null,
+    }
+    const [sheet] = executeTemplateSheets(
+      [
+        {
+          id: 'sheet-1',
+          report_definition_id: 'report-1',
+          sheet_key: 'sheet1',
+          sheet_name: 'amount-format',
+          sheet_index: 0,
+          cells: [
+            { ...base, id: 'date', row_index: 0, col_index: 0, cell_type: 'text', text_value: '%yh%mh%dh', formula_text: null },
+            { ...base, id: 'no-1', row_index: 1, col_index: 0, cell_type: 'number', text_value: '1', formula_text: null },
+            { ...base, id: 'no-2', row_index: 2, col_index: 0, formula_text: '=A2+1' },
+            { ...base, id: 'amt-1', row_index: 1, col_index: 1, cell_type: 'number', text_value: '1540000', formula_text: null },
+            { ...base, id: 'amt-2', row_index: 2, col_index: 1, formula_text: '@JQY(111,1,99)+4667670.9' },
+            { ...base, id: 'amt-sum', row_index: 3, col_index: 1, formula_text: '=B3+0.1' },
+            { ...base, id: 'amt-fn', row_index: 4, col_index: 1, formula_text: '=SUM(B2)' },
+          ],
+        },
+      ],
+      {
+        db: createMockDb(0) as any,
+        accountSetId: 'account-set-1',
+        year: 2026,
+        period: 2,
+      }
+    )
+    const byId = new Map(sheet.cells.map(cell => [cell.id, cell]))
+
+    expect(byId.get('date')!.display_value).toBe('2026年02月28日')
+    expect(byId.get('no-2')!.display_value).toBe('2')
+    expect(byId.get('amt-2')!.display_value).toBe('4,667,670.90')
+    // 引用了金额格的公式也是金额
+    expect(byId.get('amt-sum')!.display_value).toBe('4,667,671.00')
+    // 调用函数的汇总视为金额，即便结果是整数也带两位小数
+    expect(byId.get('amt-fn')!.display_value).toBe('1,540,000.00')
+  })
+
   it('should support Excel SUM ranges in imported report total rows', () => {
     const [sheet] = executeTemplateSheets(
       [

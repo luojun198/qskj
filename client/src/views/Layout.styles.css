@@ -9,10 +9,9 @@
   -webkit-font-smoothing: antialiased;
 }
 
-/* ========== 侧边栏：应用栏 + 二级导航面板 ========== */
+/* ========== 侧边栏：仅应用栏（二级导航面板已取消） ========== */
 .aside.app-shell-aside {
   --app-rail-width: 64px;
-  --app-nav-panel-width: 220px;
   position: relative;
   display: flex;
   flex-direction: row;
@@ -24,33 +23,6 @@
   box-shadow: 4px 0 24px rgba(18, 199, 174, 0.05);
   transition: width 0.28s cubic-bezier(0.4, 0, 0.2, 1);
   z-index: 200;
-}
-
-/* 悬浮模式：面板覆盖在主内容之上，不挤占宽度 */
-.nav-panel-floating .aside.app-shell-aside .app-shell-panel {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: var(--app-rail-width);
-  z-index: 3;
-  box-shadow: 8px 0 28px rgba(15, 61, 58, 0.14);
-}
-
-.nav-panel-enter-active,
-.nav-panel-leave-active {
-  transition: opacity 0.18s ease, transform 0.18s ease;
-}
-
-.nav-panel-enter-from,
-.nav-panel-leave-to {
-  opacity: 0;
-  transform: translateX(-8px);
-}
-
-/* 固定模式下不做位移动画，避免主区宽度抖动 */
-.apple-layout:not(.nav-panel-floating) .nav-panel-enter-from,
-.apple-layout:not(.nav-panel-floating) .nav-panel-leave-to {
-  transform: none;
 }
 
 .breadcrumb-section {
@@ -82,7 +54,7 @@
 }
 
 .apple-breadcrumb {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
 }
 
 .apple-breadcrumb .el-breadcrumb__item:last-child .el-breadcrumb__inner {
@@ -127,7 +99,7 @@
 }
 
 .info-chip__label {
-  font-size: 12px;
+  font-size: var(--cw-text-sm);
   font-weight: 500;
   color: var(--cw-text-secondary);
   white-space: nowrap;
@@ -184,7 +156,7 @@
 }
 
 .info-chip__text {
-  font-size: 12px;
+  font-size: var(--cw-text-sm);
   font-weight: 600;
   color: var(--cw-ink-primary);
   max-width: 120px;
@@ -239,7 +211,7 @@
   border-radius: 10px;
   background: transparent;
   color: var(--cw-ink-primary);
-  font-size: 12px;
+  font-size: var(--cw-text-sm);
   font-weight: 600;
   cursor: pointer;
   transition:
@@ -381,7 +353,7 @@ html.cw-light-mode .header-action-btn--perf:hover:not(:disabled) {
   padding: 6px 12px;
   border-radius: 10px;
   background: rgba(0, 0, 0, 0.04);
-  font-size: 12px;
+  font-size: var(--cw-text-sm);
   color: #6e6e73;
   transition: background 0.2s ease;
 }
@@ -461,7 +433,7 @@ html.cw-light-mode .header-action-btn--perf:hover:not(:disabled) {
 }
 
 .user-name {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   font-weight: 500;
   color: #1d1d1f;
 }
@@ -561,6 +533,12 @@ html.cw-light-mode .header-action-btn--perf:hover:not(:disabled) {
   overflow: hidden;
 }
 
+/* 报表页：缩放时允许外层兜底滚动，避免 125% 下内容被裁切且无法下滚 */
+.main .page.report-page,
+.main .page.cash-flow-page {
+  overflow: auto;
+}
+
 /* 仪表盘：随主内容区整体滚动，不再单独嵌套滚动条 */
 .main-view .mint-dashboard,
 .main-view .dashboard {
@@ -593,7 +571,7 @@ html.cw-light-mode .header-action-btn--perf:hover:not(:disabled) {
   gap: 10px;
   padding: 10px 14px;
   border-radius: 10px;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   color: #1d1d1f;
   transition: background 0.15s ease;
 }

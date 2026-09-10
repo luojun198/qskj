@@ -8,6 +8,7 @@ import {
   SHARED_SCM_MODULES,
   type LicenseModuleKey,
 } from './licenseModules'
+import { resolveNavAppTitle } from '@/utils/groupNavigation'
 
 export interface NavItem {
   path: string
@@ -15,6 +16,7 @@ export interface NavItem {
   /** 任一权限满足即显示；省略表示登录即可见 */
   permission?: string | string[]
   requiresCashFlow?: boolean
+  requiresForeignCurrency?: boolean
   /** 所属注册模块（任一授权即可）；省略时继承子分组/分组，再按路径推导 */
   module?: LicenseModuleKey | LicenseModuleKey[]
   /** Lucide 图标键，见 navIcons.ts；省略时按路径回退 */
@@ -78,6 +80,7 @@ export const DASHBOARD_PERMISSION = 'system:dashboard'
 const ROUTE_PERMISSION_MAP: Record<string, string | string[]> = {
   '/dashboard': DASHBOARD_PERMISSION,
   '/base/account': 'base:account',
+  '/base/account-set-info': 'system:init',
   '/base/init-balance': 'period:init',
   '/base/init-balance/aux': 'period:init',
   '/base/voucher-type': 'base:vtype',
@@ -86,22 +89,39 @@ const ROUTE_PERMISSION_MAP: Record<string, string | string[]> = {
   '/report/dynamic': 'report:define',
   '/base/print-template': 'system:print',
   '/base/cash-flow-items': 'base:cashitem',
+  '/base/currency': 'base:currency',
   '/base/fund-source': 'base:project',
   '/voucher/entry': 'voucher:entry',
   '/voucher/audit': ['voucher:audit', 'voucher:post', 'voucher:unpost'],
   '/voucher/auto-transfer': 'period:carry',
+  '/voucher/fx-reval': 'period:carry',
   '/voucher/query': 'voucher:query',
   '/voucher/period-close': ['period:close', 'period:unclose'],
+  // ⚠️ 历史命名错位，勿"顺手对齐"：
+  //   /ledger/general  页面是「科目余额表」，权限 key 为 ledger:balance
+  //   /ledger/balance  页面是「总分类账」，  权限 key 为 ledger:general
+  // 即路由名与功能名互换、权限 key 又与两者互换一遍。本表是权限的唯一真源，
+  // 新增菜单请以「页面实际功能」挑权限 key，不要按路由名推断。
+  // 若要彻底统一，需同步改路由、菜单、角色权限表存量数据与用户标签页缓存，属大版本改动。
   '/ledger/general': 'ledger:balance',
   '/ledger/detail': 'ledger:detail',
+  '/ledger/vat-detail': 'ledger:detail',
+  '/ledger/multi-column': 'ledger:multirow',
   '/ledger/balance': 'ledger:general',
   '/ledger/cash-journal': ['ledger:cash', 'ledger:bank'],
   '/ledger/cash-flow-trial-balance': 'ledger:cashflow',
+  '/ledger/foreign-balance': 'ledger:foreign',
+  '/ledger/quantity-balance': 'ledger:qty',
+  '/ledger/voucher-summary': 'ledger:vsummary',
+  '/ledger/subject-analysis': 'ledger:balance',
   '/ledger/chronological': 'ledger:detail',
   '/base/project': 'base:project',
   '/base/project/category/new': 'base:project',
   '/ledger/aux-balance': 'ledger:aux',
+  '/ledger/aux-foreign-balance': 'ledger:aux',
+  '/ledger/aux-quantity-balance': 'ledger:aux',
   '/ledger/aux-detail': 'ledger:aux',
+  '/ledger/aux-multi-column': 'ledger:aux',
   '/system/account-set': 'system:account',
   '/system/user': 'system:user',
   '/system/role': 'system:role',
@@ -284,9 +304,11 @@ export function isNavItemVisible(
   permissions: string[],
   enableCashFlow: boolean,
   licensedModules: readonly string[] = ALL_MODULE_KEYS,
-  inheritedModule?: LicenseModuleKey | LicenseModuleKey[]
+  inheritedModule?: LicenseModuleKey | LicenseModuleKey[],
+  enableForeignCurrency = false
 ): boolean {
   if (item.requiresCashFlow && !enableCashFlow) return false
+  if (item.requiresForeignCurrency && !enableForeignCurrency) return false
   const requiredModules = toModuleList(item.module ?? inheritedModule)
   const moduleOk = requiredModules.length > 0
     ? hasLicensedModule(licensedModules, requiredModules)
@@ -301,21 +323,34 @@ function filterNavItems(
   permissions: string[],
   enableCashFlow: boolean,
   licensedModules: readonly string[],
-  inheritedModule?: LicenseModuleKey | LicenseModuleKey[]
+  inheritedModule?: LicenseModuleKey | LicenseModuleKey[],
+  enableForeignCurrency = false
 ): NavItem[] {
   return items.filter(item =>
-    isNavItemVisible(item, permissions, enableCashFlow, licensedModules, inheritedModule)
+    isNavItemVisible(
+      item,
+      permissions,
+      enableCashFlow,
+      licensedModules,
+      inheritedModule,
+      enableForeignCurrency
+    )
   )
 }
 
 /** 静态应用定义（不含动态报表子项） */
-function getStaticNavApps(enableCashFlow: boolean): NavApp[] {
+function getStaticNavApps(enableCashFlow: boolean, enableForeignCurrency = false): NavApp[] {
   const ledgerItems: NavItem[] = [
+    // 注意：路由名与功能名历史错位，权限 key 见本文件顶部 routePermissionMap 处说明
     { path: '/ledger/general', title: '科目余额表', permission: 'ledger:balance', icon: 'Table2' },
     { path: '/ledger/balance', title: '总分类账', permission: 'ledger:general', icon: 'BookOpen' },
     { path: '/ledger/detail', title: '明细账', permission: 'ledger:detail', icon: 'ListOrdered' },
+    { path: '/ledger/vat-detail', title: '增值税明细账', permission: 'ledger:detail', icon: 'Receipt' },
+    { path: '/ledger/multi-column', title: '多栏账', permission: 'ledger:multirow', icon: 'Table2' },
     { path: '/ledger/chronological', title: '序时账', permission: 'ledger:detail', icon: 'Clock' },
     { path: '/ledger/cash-journal', title: '日记账', permission: ['ledger:cash', 'ledger:bank'], icon: 'Wallet' },
+    { path: '/ledger/voucher-summary', title: '凭证汇总表', permission: 'ledger:vsummary', icon: 'Table2' },
+    { path: '/ledger/quantity-balance', title: '库存数量金额表', permission: 'ledger:qty', icon: 'Boxes' },
   ]
   if (enableCashFlow) {
     ledgerItems.push({
@@ -326,9 +361,41 @@ function getStaticNavApps(enableCashFlow: boolean): NavApp[] {
       icon: 'Waves',
     })
   }
+  if (enableForeignCurrency) {
+    ledgerItems.push({
+      path: '/ledger/foreign-balance',
+      title: '外币余额表',
+      permission: 'ledger:foreign',
+      requiresForeignCurrency: true,
+      icon: 'Coins',
+    })
+  }
+
+  const auxItems: NavItem[] = [
+    { path: '/base/project', title: '核算项目', permission: 'base:project', icon: 'Tags' },
+    { path: '/ledger/aux-balance', title: '辅助项目余额表', permission: 'ledger:aux', icon: 'Layers' },
+  ]
+  if (enableForeignCurrency) {
+    auxItems.push({
+      path: '/ledger/aux-foreign-balance',
+      title: '辅助项目外币余额表',
+      permission: 'ledger:aux',
+      requiresForeignCurrency: true,
+      icon: 'Coins',
+    })
+  }
+  auxItems.push({
+    path: '/ledger/aux-quantity-balance',
+    title: '辅助项目库存数量金额表',
+    permission: 'ledger:aux',
+    icon: 'Boxes',
+  })
+  auxItems.push({ path: '/ledger/aux-detail', title: '辅助项目明细账', permission: 'ledger:aux', icon: 'Sheet' })
+  auxItems.push({ path: '/ledger/aux-multi-column', title: '辅助项目多栏明细账', permission: 'ledger:aux', icon: 'Table2' })
 
   const financeReportItems: NavItem[] = [
     { path: '/ledger/standard-report', title: '标准报表', permission: 'ledger:detail', icon: 'FileBarChart2' },
+    { path: '/ledger/subject-analysis', title: '财务分析', permission: 'ledger:balance', icon: 'PieChart' },
   ]
   if (enableCashFlow) {
     financeReportItems.push({
@@ -355,20 +422,13 @@ function getStaticNavApps(enableCashFlow: boolean): NavApp[] {
             { path: '/voucher/entry', title: '凭证录入', permission: 'voucher:entry', icon: 'FilePen' },
             { path: '/voucher/audit', title: '审核记账', permission: ['voucher:audit', 'voucher:post', 'voucher:unpost'], icon: 'FileCheck2' },
             { path: '/voucher/query', title: '凭证查询', permission: 'voucher:query', icon: 'FileSearch' },
+            { path: '/voucher/fx-reval', title: '期末调汇', permission: 'period:carry', icon: 'Coins', requiresForeignCurrency: true },
             { path: '/voucher/auto-transfer', title: '凭证结转', permission: 'period:carry', icon: 'ArrowRightLeft' },
             { path: '/voucher/period-close', title: '期间结账', permission: ['period:close', 'period:unclose'], icon: 'CalendarCheck' },
           ],
         },
         { key: 'finance-ledger', label: '账簿查询', items: ledgerItems },
-        {
-          key: 'finance-aux',
-          label: '辅助核算',
-          items: [
-            { path: '/base/project', title: '核算项目', permission: 'base:project', icon: 'Tags' },
-            { path: '/ledger/aux-balance', title: '辅助项目余额表', permission: 'ledger:aux', icon: 'Layers' },
-            { path: '/ledger/aux-detail', title: '辅助项目明细账', permission: 'ledger:aux', icon: 'Sheet' },
-          ],
-        },
+        { key: 'finance-aux', label: '辅助核算', items: auxItems },
         { key: DYNAMIC_REPORT_SECTION_KEY, label: '财务报表', items: financeReportItems },
       ],
     },
@@ -688,10 +748,22 @@ function getStaticNavApps(enableCashFlow: boolean): NavApp[] {
           module: 'gl',
           items: [
             { path: '/base/account', title: '会计科目', permission: 'base:account', icon: 'BookMarked' },
+            { path: '/base/account-set-info', title: '套账信息', permission: 'system:init', icon: 'IdCard' },
             { path: '/base/init-balance', title: '期初余额', permission: 'period:init', icon: 'Coins' },
             { path: '/base/voucher-type', title: '凭证类型', permission: 'base:vtype', icon: 'Tags' },
             { path: '/voucher/template', title: '凭证模版', permission: 'base:template', icon: 'LayoutTemplate' },
             { path: '/base/transfer-type', title: '结转维护', permission: 'base:transfer', icon: 'ArrowRightLeft' },
+            ...(enableForeignCurrency
+              ? [
+                  {
+                    path: '/base/currency',
+                    title: '外币类型',
+                    permission: 'base:currency',
+                    requiresForeignCurrency: true,
+                    icon: 'Coins',
+                  } as NavItem,
+                ]
+              : []),
           ],
         },
         {
@@ -777,9 +849,10 @@ export function buildNavApps(
   permissions: string[],
   enableCashFlow: boolean,
   dynamicReportItems: NavItem[],
-  licensedModules: readonly string[] = ALL_MODULE_KEYS
+  licensedModules: readonly string[] = ALL_MODULE_KEYS,
+  enableForeignCurrency = false
 ): NavApp[] {
-  return getStaticNavApps(enableCashFlow)
+  return getStaticNavApps(enableCashFlow, enableForeignCurrency)
     .map(app => {
       const sections = app.sections
         .map(section => {
@@ -790,7 +863,14 @@ export function buildNavApps(
               : section.items
           return {
             ...section,
-            items: filterNavItems(baseItems, permissions, enableCashFlow, licensedModules, inherited),
+            items: filterNavItems(
+              baseItems,
+              permissions,
+              enableCashFlow,
+              licensedModules,
+              inherited,
+              enableForeignCurrency
+            ),
           }
         })
         .filter(section => section.items.length > 0)
@@ -926,6 +1006,10 @@ export function getRoutePermissions(path: string): string[] | undefined {
     return ['base:project']
   }
 
+  if (normalized === '/base/print-template' || normalized.startsWith('/base/print-template/')) {
+    return ['system:print']
+  }
+
   return undefined
 }
 
@@ -956,12 +1040,47 @@ export function canAccessRoute(
   return matchPermissions(permissions, required)
 }
 
-/** 登录后默认落地页：有主页权限则 /dashboard，否则取第一个可访问菜单 */
+/**
+ * 校验「默认主页」偏好在当前权限下是否可用。
+ * /group/{模块名} 形式的模块主页需在可见导航树里有同名应用且分组非空（与 GroupNav 空态判定一致）；
+ * 其余按普通路由的权限 + 注册模块校验。
+ */
+export function isValidHomePath(
+  path: string,
+  permissions: string[],
+  enableCashFlow = false,
+  licensedModules: readonly string[] = ALL_MODULE_KEYS,
+  enableForeignCurrency = false
+): boolean {
+  if (!path) return false
+
+  if (path.startsWith('/group/')) {
+    let title = path.slice('/group/'.length).split('?')[0]
+    try {
+      title = decodeURIComponent(title)
+    } catch {
+      /* 非法编码时按原文匹配 */
+    }
+    title = resolveNavAppTitle(title)
+    const app = buildNavApps(permissions, enableCashFlow, [], licensedModules, enableForeignCurrency).find(
+      a => a.title === title
+    )
+    return !!app && app.sections.length > 0
+  }
+
+  return canAccessRoute(path, permissions, licensedModules)
+}
+
+/** 登录后默认落地页：用户自定义主页 → /dashboard → 第一个可访问菜单 */
 export function getDefaultLandingPath(
   permissions: string[],
   enableCashFlow = false,
-  licensedModules: readonly string[] = ALL_MODULE_KEYS
+  licensedModules: readonly string[] = ALL_MODULE_KEYS,
+  preferredPath?: string
 ): string {
+  if (preferredPath && isValidHomePath(preferredPath, permissions, enableCashFlow, licensedModules)) {
+    return preferredPath
+  }
   if (canAccessRoute('/dashboard', permissions, licensedModules)) {
     return '/dashboard'
   }

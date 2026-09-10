@@ -193,7 +193,17 @@ export interface VoucherEntryPrintData {
   account_name: string
   debit: number
   credit: number
+  quantity?: number
+  unit_price?: number
+  unit?: string
+  currency_code?: string
+  exchange_rate?: number
+  foreign_amount?: number
+  cash_flow_code?: string
+  cash_flow_name?: string
   aux_data?: Record<string, { id: string; name: string; field_values?: Record<string, any> }>  // 辅助项目数据
+  /** 服务端已扁平化的辅助项目名称：aux_<类别code> → 项目名 */
+  [auxField: `aux_${string}`]: string | undefined
 }
 
 // 凭证打印数据

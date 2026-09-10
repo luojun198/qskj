@@ -17,7 +17,7 @@
 .voucher-list-page .page-header h3,
 .voucher-page-top-title {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--cw-text-lg);
   font-weight: 600;
   color: var(--text-strong);
   position: relative;
@@ -46,6 +46,131 @@
   flex-wrap: nowrap;
   gap: 12px;
   min-width: 0;
+}
+
+.voucher-load-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-radius: var(--radius-md, 8px);
+  background: var(--surface-brand-soft, #eefbf8);
+  border: 1px solid var(--border-subtle, #e6ebee);
+  font-size: var(--cw-text-base);
+  color: var(--text-muted, #606266);
+}
+
+.voucher-load-status__text strong {
+  color: var(--text-strong, #303133);
+  font-weight: 700;
+}
+
+/* ========== 顶部功能工具栏（录入 / 查询共用：图标在上、文字在下） ========== */
+.gl-toolbar-card {
+  padding: 4px 10px;
+  background: #ffffff;
+  border: 1px solid var(--wb-line);
+  border-radius: var(--wb-radius, 6px);
+  margin-bottom: 8px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+
+.gl-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: max-content;
+}
+
+/* 筛选栏与工具按钮同行：占满剩余宽度，去掉自身卡片外观 */
+.gl-toolbar:has(.gl-toolbar-filter) {
+  min-width: 0;
+  width: 100%;
+}
+
+.gl-toolbar .gl-toolbar-filter.voucher-filter-card {
+  flex: 1 1 320px;
+  min-width: 320px;
+  margin-left: 8px;
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.gl-toolbar .gl-toolbar-filter.voucher-filter-card .el-card__body {
+  padding: 0 !important;
+}
+
+.gl-tool-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 44px;
+  padding: 4px 6px 3px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--wb-radius-sm, 4px);
+  color: var(--wb-text);
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.14s ease;
+  white-space: nowrap;
+}
+
+.gl-tool-btn:hover:not(:disabled) {
+  background: var(--surface-brand-soft, #f0fdf4);
+  border-color: var(--mint-200, #a7f3d0);
+  color: var(--mint-800, #065f46);
+}
+
+.gl-tool-btn:active:not(:disabled) {
+  background: var(--mint-100, #d1fae5);
+}
+
+.gl-tool-btn.is-disabled,
+.gl-tool-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.gl-tool-btn__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--mint-600, #059669);
+  height: 18px;
+}
+
+.gl-tool-btn.is-disabled .gl-tool-btn__icon,
+.gl-tool-btn:disabled .gl-tool-btn__icon {
+  color: var(--wb-text-3, #94a3b8);
+}
+
+.gl-tool-btn__label {
+  font-size: 11.5px;
+  line-height: 1;
+  letter-spacing: 0.2px;
+}
+
+/* 批量正向 / 逆向操作着色（凭证管理页） */
+.gl-tool-btn--forward:not(:disabled) .gl-tool-btn__icon {
+  color: var(--el-color-primary, #409eff);
+}
+
+.gl-tool-btn--reverse:not(:disabled) .gl-tool-btn__icon {
+  color: var(--el-color-danger, #f56c6c);
+}
+
+.gl-tool-btn--reverse:hover:not(:disabled) {
+  background: var(--el-color-danger-light-9, #fef0f0);
+  border-color: var(--el-color-danger-light-7, #fab6b6);
+  color: var(--el-color-danger, #f56c6c);
 }
 
 /* ========== 分组彩色工具栏 ========== */
@@ -142,6 +267,161 @@
   overflow: hidden;
 }
 
+/* ========== 凭证虚拟表格（录入 / 管理 / 查询共用）网格线 ========== */
+/* 外框画在单元格上，贴合实际列宽，不包住右侧空白 */
+.voucher-list-page .gl-entry-table-v2,
+.voucher-list-page .voucher-audit-table-v2 {
+  /* 比选中蓝 / 斑马薄荷都深一档，避免选中后线「消失」 */
+  --voucher-grid-line: var(--ink-300, #b4cbce);
+  border: none !important;
+  border-radius: 0;
+  box-sizing: border-box;
+}
+
+/* 用 inset box-shadow 画网格：画在背景之上，选中/hover 不会盖住 */
+.voucher-list-page .gl-entry-table-v2 .el-table-v2__header-cell,
+.voucher-list-page .gl-entry-table-v2 .el-table-v2__row-cell,
+.voucher-list-page .voucher-audit-table-v2 .el-table-v2__header-cell,
+.voucher-list-page .voucher-audit-table-v2 .el-table-v2__row-cell {
+  border: none !important;
+  box-shadow:
+    inset -1px 0 0 var(--voucher-grid-line),
+    inset 0 -1px 0 var(--voucher-grid-line);
+  box-sizing: border-box;
+}
+
+.voucher-list-page .gl-entry-table-v2 .el-table-v2__header-cell:first-child,
+.voucher-list-page .gl-entry-table-v2 .el-table-v2__row-cell:first-child,
+.voucher-list-page .voucher-audit-table-v2 .el-table-v2__header-cell:first-child,
+.voucher-list-page .voucher-audit-table-v2 .el-table-v2__row-cell:first-child {
+  box-shadow:
+    inset 1px 0 0 var(--voucher-grid-line),
+    inset -1px 0 0 var(--voucher-grid-line),
+    inset 0 -1px 0 var(--voucher-grid-line);
+}
+
+.voucher-list-page .gl-entry-table-v2 .el-table-v2__header-cell,
+.voucher-list-page .voucher-audit-table-v2 .el-table-v2__header-cell {
+  box-shadow:
+    inset -1px 0 0 var(--voucher-grid-line),
+    inset 0 1px 0 var(--voucher-grid-line),
+    inset 0 -1px 0 var(--voucher-grid-line);
+}
+
+.voucher-list-page .gl-entry-table-v2 .el-table-v2__header-cell:first-child,
+.voucher-list-page .voucher-audit-table-v2 .el-table-v2__header-cell:first-child {
+  box-shadow:
+    inset 1px 0 0 var(--voucher-grid-line),
+    inset -1px 0 0 var(--voucher-grid-line),
+    inset 0 1px 0 var(--voucher-grid-line),
+    inset 0 -1px 0 var(--voucher-grid-line);
+}
+
+/* 横线只画在单元格上，避免行宽撑满容器后空白区也出现横线 */
+.voucher-list-page .gl-entry-table-v2 .el-table-v2__header-row,
+.voucher-list-page .gl-entry-table-v2 .el-table-v2__row,
+.voucher-list-page .voucher-audit-table-v2 .el-table-v2__header-row,
+.voucher-list-page .voucher-audit-table-v2 .el-table-v2__row {
+  border-bottom: none !important;
+  box-sizing: border-box;
+}
+
+/* 斑马纹 / hover / 选中背景打在单元格上，避免整行背景盖住竖线 */
+.voucher-list-page .gl-entry-table-v2 .el-table-v2__row,
+.voucher-list-page .voucher-audit-table-v2 .el-table-v2__row {
+  background-color: transparent !important;
+}
+
+/* 三页统一：斑马纹用品牌浅薄荷（与主题同系），选中用气泡蓝（辅色，色相与薄荷区分） */
+.voucher-list-page {
+  --voucher-stripe-even: var(--mint-50, #e8fbf7);
+  --voucher-stripe-odd: #ffffff;
+  --voucher-row-hover: var(--mint-100, #cff6ef);
+  --voucher-row-selected: var(--blue-100, #d2e7ff);
+  --voucher-row-selected-hover: var(--blue-200, #a9d0ff);
+  --voucher-row-selected-text: var(--blue-700, #1a54a8);
+}
+
+.voucher-list-page .gl-entry-table-v2 .el-table-v2__row.voucher-group-even .el-table-v2__row-cell,
+.voucher-list-page .voucher-audit-table-v2 .el-table-v2__row.voucher-group-even .el-table-v2__row-cell {
+  background-color: var(--voucher-stripe-even);
+}
+.voucher-list-page .gl-entry-table-v2 .el-table-v2__row.voucher-group-odd .el-table-v2__row-cell,
+.voucher-list-page .voucher-audit-table-v2 .el-table-v2__row.voucher-group-odd .el-table-v2__row-cell {
+  background-color: var(--voucher-stripe-odd);
+}
+.voucher-list-page .gl-entry-table-v2 .el-table-v2__row:hover .el-table-v2__row-cell,
+.voucher-list-page .voucher-audit-table-v2 .el-table-v2__row:hover .el-table-v2__row-cell {
+  background-color: var(--voucher-row-hover);
+}
+.voucher-list-page .gl-entry-table-v2 .el-table-v2__row.voucher-selected .el-table-v2__row-cell,
+.voucher-list-page .voucher-audit-table-v2 .el-table-v2__row.voucher-selected .el-table-v2__row-cell,
+.voucher-list-page .voucher-audit-table-v2 .el-table-v2__row.is-selected .el-table-v2__row-cell {
+  background-color: var(--voucher-row-selected) !important;
+  color: var(--voucher-row-selected-text);
+  font-weight: 500;
+}
+.voucher-list-page .gl-entry-table-v2 .el-table-v2__row.voucher-selected:hover .el-table-v2__row-cell,
+.voucher-list-page .voucher-audit-table-v2 .el-table-v2__row.voucher-selected:hover .el-table-v2__row-cell,
+.voucher-list-page .voucher-audit-table-v2 .el-table-v2__row.is-selected:hover .el-table-v2__row-cell {
+  background-color: var(--voucher-row-selected-hover) !important;
+}
+
+/* 表头列宽拖动手把 */
+.vt-header-cell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+}
+
+.vt-header-cell__title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vt-header-cell--center .vt-header-cell__title {
+  text-align: center;
+}
+
+.vt-header-cell--right .vt-header-cell__title {
+  text-align: right;
+}
+
+.vt-header-cell__resizer {
+  position: absolute;
+  top: 0;
+  right: -6px;
+  width: 10px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 2;
+  touch-action: none;
+  user-select: none;
+}
+
+.vt-header-cell__resizer:hover::after,
+.vt-header-cell__resizer.is-dragging::after {
+  content: '';
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 4px;
+  width: 2px;
+  background: var(--el-color-primary, #409eff);
+}
+
+.vt-resizing,
+.vt-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
 /* 表格行高 */
 .voucher-list-page .el-table {
   border-radius: var(--radius-md) !important;
@@ -186,8 +466,18 @@
 }
 
 .voucher-list-page .batch-selected-text {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   font-weight: 600;
   color: var(--text-strong);
   white-space: nowrap;
+}
+
+/* 「科目显示」末级/完整路径切换：工具条与录入页次级栏里都不参与压缩 */
+.gl-toolbar .gl-toolbar-account-display {
+  flex: 0 0 auto;
+  margin-left: 8px;
+}
+
+.gl-sub-bar .gl-sub-bar__account-display {
+  flex: 0 0 auto;
 }

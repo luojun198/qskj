@@ -79,7 +79,53 @@
                   <span class="form-switch-label">银行</span>
                   <el-switch v-model="form.is_bank" :active-value="1" :inactive-value="0" />
                 </div>
+                <div v-if="enableForeignCurrency" class="form-switch-item">
+                  <span class="form-switch-label">外币</span>
+                  <el-switch
+                    v-model="form.is_foreign"
+                    :active-value="1"
+                    :inactive-value="0"
+                    @change="onForeignChange"
+                  />
+                </div>
+                <div class="form-switch-item">
+                  <el-tooltip
+                    effect="dark"
+                    placement="top"
+                    content="开启后：该科目录入凭证时必须填数量，单价与金额二选一输入；可在「库存数量金额表」中查询。"
+                  >
+                    <span class="form-switch-label">数量</span>
+                  </el-tooltip>
+                  <el-switch
+                    v-model="form.is_quantity"
+                    :active-value="1"
+                    :inactive-value="0"
+                    @change="onQuantityChange"
+                  />
+                </div>
               </div>
+            </el-form-item>
+          </el-col>
+          <el-col v-if="enableForeignCurrency && form.is_foreign" :span="12">
+            <el-form-item label="核算币种" required>
+              <el-select v-model="form.currency_code" filterable clearable style="width: 100%" placeholder="选择外币">
+                <el-option
+                  v-for="c in foreignCurrencyOptions"
+                  :key="c.code"
+                  :label="`${c.code} ${c.name}（期末汇率 ${formatRate(c)}）`"
+                  :value="c.code"
+                />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col v-if="form.is_quantity" :span="12">
+            <el-form-item label="计量单位" required>
+              <el-input
+                v-model="form.quantity_unit"
+                maxlength="10"
+                show-word-limit
+                placeholder="如：个 / 千克 / 米"
+              />
             </el-form-item>
           </el-col>
           <el-col :span="12">
@@ -195,19 +241,22 @@
       <el-button
         v-if="mode === 'add'"
         :loading="saving"
-        @click="emit('save-and-add')"
+        @click="handleSave('save-and-add')"
       >保存并新增</el-button>
-      <el-button type="primary" :loading="saving" @click="emit('save')">保存</el-button>
+      <el-button type="primary" :loading="saving" @click="handleSave('save')">保存</el-button>
     </template>
   </el-dialog>
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { ElMessage } from 'element-plus'
 import {
   ACCOUNT_TREE_SELECT_POPPER_CLASS,
   ACCOUNT_TREE_SELECT_POPPER_STYLE,
 } from '@/utils/accountSelectDisplay'
+import { getCurrencies, type Currency } from '@/api/currency'
+import { useSystemParamsStore } from '@/stores/systemParams'
 
 interface Props {
   modelValue: boolean
@@ -235,6 +284,58 @@ const emit = defineEmits<{
   save: []
   'save-and-add': []
 }>()
+
+const systemParamsStore = useSystemParamsStore()
+const enableForeignCurrency = computed(() => systemParamsStore.enableForeignCurrency)
+const currencyList = ref<Currency[]>([])
+const foreignCurrencyOptions = computed(() => currencyList.value.filter(c => !c.is_base))
+
+function onForeignChange(val: string | number | boolean) {
+  if (!val) {
+    props.form.currency_code = null
+  } else if (!props.form.currency_code && foreignCurrencyOptions.value.length === 1) {
+    // 只有一种外币时自动带出
+    props.form.currency_code = foreignCurrencyOptions.value[0].code
+  }
+}
+
+function onQuantityChange(val: string | number | boolean) {
+  if (!val) {
+    props.form.quantity_unit = null
+  }
+}
+
+function formatRate(c: Currency) {
+  const rate = Number(c.end_rate ?? c.default_rate ?? 1)
+  const decimals = Math.max(2, Math.min(8, Number(c.rate_decimals) || 4))
+  return rate.toFixed(decimals)
+}
+
+/** 保存前置校验：勾了外币必须选币种 */
+function handleSave(kind: 'save' | 'save-and-add') {
+  if (enableForeignCurrency.value && Number(props.form.is_foreign) === 1 && !props.form.currency_code) {
+    ElMessage.warning('已勾选外币核算，请选择核算币种')
+    return
+  }
+  if (Number(props.form.is_quantity) === 1 && !String(props.form.quantity_unit || '').trim()) {
+    ElMessage.warning('已勾选数量核算，请填写计量单位')
+    return
+  }
+  if (kind === 'save') emit('save')
+  else emit('save-and-add')
+}
+
+onMounted(async () => {
+  await systemParamsStore.load()
+  if (enableForeignCurrency.value) {
+    try {
+      const res = await getCurrencies()
+      currencyList.value = res.data || []
+    } catch {
+      currencyList.value = []
+    }
+  }
+})
 
 const visible = ref(props.modelValue)
 const childrenCount = ref(0)

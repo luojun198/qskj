@@ -1,40 +1,34 @@
 <template>
-  <el-container class="layout-container apple-layout" :class="{ 'nav-panel-floating': !panelPinned }">
-    <!-- 侧边栏：应用栏 + 二级导航面板 -->
-    <aside
-      class="aside app-shell-aside"
-      :style="{ width: asideWidth }"
-    >
+  <el-container class="layout-container apple-layout">
+    <!-- 侧边栏：只保留应用栏；点应用图标直接进模块主页（二级导航面板与模块主页功能完全重复，已取消） -->
+    <aside class="aside app-shell-aside" :style="{ width: asideWidth }">
       <AppRail
         :apps="navApps"
         :active-app-key="activeAppKey"
-        :pinned="panelPinned"
         :logo-src="brandingStore.logoSrc"
         :brand-title="brandingStore.title"
         :version="appVersion || undefined"
+        :home-path="homePagePath"
         @home="goToHome"
         @select="handleAppSelect"
         @preload="preloadNavApp"
-        @toggle-pin="togglePanelPinned"
+        @context="openHomeMenu"
       />
-      <transition name="nav-panel">
-        <AppNavPanel
-          v-if="panelVisible"
-          ref="navPanelRef"
-          class="app-shell-panel"
-          :app="panelApp"
-          :apps="navApps"
-          :active-menu="activeMenu"
-          :pinned="panelPinned"
-          @navigate="handlePanelNavigate"
-          @open-home="openAppPanel"
-          @preload="preloadMenuPath"
-          @preload-app="preloadNavApp"
-        />
-      </transition>
     </aside>
 
-    <el-container @pointerdown="onMainPointerDown">
+    <!-- 应用栏右键：设置/取消「默认主页」 -->
+    <teleport to="body">
+      <div v-if="homeMenu.visible" class="rail-context-mask" @click="closeHomeMenu" @contextmenu.prevent="closeHomeMenu">
+        <ul class="rail-context-menu" :style="{ left: `${homeMenu.x}px`, top: `${homeMenu.y}px` }" @click.stop>
+          <li v-if="!homeMenuIsCurrent" class="rail-context-menu__item" @click="applyHomeMenu">
+            设为默认主页
+          </li>
+          <li v-else class="rail-context-menu__item" @click="resetHomeMenu">取消默认主页</li>
+        </ul>
+      </div>
+    </teleport>
+
+    <el-container>
       <!-- 顶栏 - 苹果风格 -->
       <el-header class="header">
         <div class="header-left">
@@ -245,7 +239,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch, provide } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch, provide } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { getUsersByAccountSet, logout, switchOperator } from '@/api/auth'
@@ -275,13 +269,23 @@ import { useLicenseStore } from '@/stores/license'
 import { useAppBuildInfo } from '@/composables/useAppBuildInfo'
 import TabsBar from '@/components/layout/TabsBar.vue'
 import AppRail from '@/components/layout/AppRail.vue'
-import AppNavPanel from '@/components/layout/AppNavPanel.vue'
 import { useTabsStore } from '@/stores/tabs'
 import { getTabPolicy, getViewKey as getViewKeyUtil } from '@/utils/viewKey'
 import { DOC_TITLE } from '@/utils/scmDoc'
 import { shouldUseLightMode, setPerformanceMode } from '@/utils/performanceMode'
 import { getGroupNavigationPath, resolveNavAppTitle } from '@/utils/groupNavigation'
-import { preloadRoutePath, preloadRoutePathsWhenIdle } from '@/utils/routePreload'
+import { preloadRoutePathsWhenIdle } from '@/utils/routePreload'
+import {
+  clearHomePage,
+  homePagePath,
+  loadHomePage,
+  resetHomePageContext,
+  setHomePage,
+} from '@/utils/homePreference'
+import {
+  loadAccountDisplayMode,
+  resetAccountDisplayMode,
+} from '@/utils/accountDisplayPreference'
 
 const keepAliveMax = shouldUseLightMode() ? 6 : 14
 
@@ -365,13 +369,6 @@ function scheduleScmDocFormPreload() {
 function preloadScmEntryChain() {
   const listTask = preloadScmDocList()
   if (listTask) void listTask.finally(scheduleScmDocFormPreload)
-}
-
-/** 鼠标移到菜单项上就把对应视图拉好，点下去时组件已经在手里 */
-function preloadMenuPath(path: string) {
-  preloadRoutePath(router, path)
-  // 供应链单据列表进去多半要开单据，顺带把表单也备上
-  if (path.split('?')[0] === '/scm/docs') preloadScmDocForm()
 }
 
 /** 移到应用图标上：整个应用低优先级排队预取 */
@@ -513,7 +510,6 @@ useKeyboardShortcuts([
 
 function goToHome() {
   selectedAppKey.value = null
-  closeFloatingPanel()
   router.push(
     getDefaultLandingPath(userStore.permissions, systemParamsStore.enableCashFlow, licenseStore.modules)
   )
@@ -577,25 +573,11 @@ async function handleChangeAccount() {
   await router.push('/login')
 }
 
-// ── 应用栏 / 导航面板 ───────────────────────────────────────────────────────
-const NAV_PANEL_PINNED_KEY = 'cw-nav-panel-pinned-v2'
+// ── 应用栏 ─────────────────────────────────────────────────────────────────
 const APP_RAIL_WIDTH = 64
-const APP_NAV_PANEL_WIDTH = 220
 
-function readPanelPinned(): boolean {
-  try {
-    return localStorage.getItem(NAV_PANEL_PINNED_KEY) === '1'
-  } catch {
-    return false
-  }
-}
-
-const panelPinned = ref(readPanelPinned())
 /** 用户在应用栏上点选（而非按路由推导）的应用键；路由切到别的应用时自动清空 */
 const selectedAppKey = ref<string | null>(null)
-/** 悬浮模式下面板是否打开 */
-const floatingOpen = ref(false)
-const navPanelRef = ref<InstanceType<typeof AppNavPanel> | null>(null)
 
 const navApps = computed(() =>
   buildNavApps(
@@ -606,7 +588,8 @@ const navApps = computed(() =>
       title: t.title,
       permission: 'report:view',
     })),
-    licenseStore.modules
+    licenseStore.modules,
+    systemParamsStore.enableForeignCurrency
   )
 )
 
@@ -615,6 +598,8 @@ const menuGroups = computed(() => navApps.value.map(navAppToGroup))
 
 provide('layoutNavApps', navApps)
 provide('layoutMenuGroups', menuGroups)
+/** 财务总账工作页面「切换用户」节点复用顶栏的切换操作员弹窗（函数声明会提升，此处引用安全） */
+provide('layoutOpenSwitchOperator', () => openSwitchOperatorDialog())
 
 /** 当前路由归属（应用 › 分组 › 页面） */
 const currentLocation = computed(() => {
@@ -634,44 +619,11 @@ const activeAppKey = computed(() => {
   return route.path === HOME_PATH ? WORKBENCH_APP_KEY : ''
 })
 
-/** 面板展示的应用：点选 > 路由归属；工作台或无归属时为 null（展示全部应用） */
-const panelApp = computed<NavApp | null>(() => {
-  const key = activeAppKey.value
-  if (!key || key === WORKBENCH_APP_KEY) return null
-  return navApps.value.find(a => a.key === key) || null
-})
+const asideWidth = computed(() => `${APP_RAIL_WIDTH}px`)
 
-const panelVisible = computed(() => (panelPinned.value ? true : floatingOpen.value))
-
-const asideWidth = computed(() =>
-  `${APP_RAIL_WIDTH + (panelPinned.value ? APP_NAV_PANEL_WIDTH : 0)}px`
-)
-
-function closeFloatingPanel() {
-  if (panelPinned.value) return
-  floatingOpen.value = false
-}
-
-function onEscapeClosePanel(event: KeyboardEvent) {
-  if (event.key !== 'Escape') return
-  if (panelPinned.value || !floatingOpen.value) return
-  closeFloatingPanel()
-}
-
-onMounted(() => window.addEventListener('keydown', onEscapeClosePanel))
-onBeforeUnmount(() => window.removeEventListener('keydown', onEscapeClosePanel))
-
-function togglePanelPinned() {
-  panelPinned.value = !panelPinned.value
-  floatingOpen.value = false
-  try {
-    localStorage.setItem(NAV_PANEL_PINNED_KEY, panelPinned.value ? '1' : '0')
-  } catch { /* 忽略 */ }
-}
-
+/** 点击应用图标：直接进入该模块主页（模块主页已列出该模块全部功能） */
 function openAppPanel(app: NavApp) {
   selectedAppKey.value = app.key
-  if (!panelPinned.value) floatingOpen.value = true
   preloadNavApp(app)
   const target = getGroupNavigationPath(app.title)
   if (route.path !== target) {
@@ -679,31 +631,24 @@ function openAppPanel(app: NavApp) {
   }
 }
 
-/** 点击应用图标：未固定时再点同一模块则收起，否则弹出该应用面板 */
 function handleAppSelect(app: NavApp) {
-  if (!panelPinned.value && floatingOpen.value && panelApp.value?.key === app.key) {
-    selectedAppKey.value = null
-    closeFloatingPanel()
-    return
-  }
   openAppPanel(app)
 }
 
-function handlePanelNavigate(path: string) {
-  selectedAppKey.value = null
-  closeFloatingPanel()
-  if (route.fullPath !== path) {
-    void router.push(path)
-  }
-}
-
-function onMainPointerDown() {
-  closeFloatingPanel()
-}
-
+/**
+ * Ctrl+K：功能搜索框现在在模块主页 / 工作台上（原二级导航面板已取消），
+ * 因此先跳到当前模块主页（无模块归属时回工作台），再由目标页按 ?focus=search 聚焦。
+ */
 function focusNavSearch() {
-  if (!panelPinned.value) floatingOpen.value = true
-  nextTick(() => navPanelRef.value?.focusSearch())
+  const app = currentLocation.value?.app
+  const target = app ? getGroupNavigationPath(app.title) : HOME_PATH
+  const query = { ...route.query, focus: 'search' }
+  if (route.path === target) {
+    if (route.query.focus !== 'search') void router.replace({ path: target, query })
+    else void router.replace({ path: target, query: { ...route.query, focus: `search-${Date.now()}` } })
+    return
+  }
+  void router.push({ path: target, query: { focus: 'search' } })
 }
 
 // 路由切换到其它应用（或工作台）时，放弃手动点选状态，让高亮跟随路由
@@ -715,6 +660,60 @@ watch(
       selectedAppKey.value = null
     }
   }
+)
+
+// ── 默认主页偏好 ───────────────────────────────────────────────────────────
+const homeMenu = ref<{ visible: boolean; x: number; y: number; app: NavApp | null }>({
+  visible: false,
+  x: 0,
+  y: 0,
+  app: null,
+})
+
+/** 右键项对应的主页路径：工作台为 /dashboard，应用为其模块主页 */
+const homeMenuPath = computed(() =>
+  homeMenu.value.app ? getGroupNavigationPath(homeMenu.value.app.title) : '/dashboard'
+)
+const homeMenuIsCurrent = computed(() => homePagePath.value === homeMenuPath.value)
+
+function openHomeMenu(payload: { app: NavApp | null; event: MouseEvent }) {
+  homeMenu.value = {
+    visible: true,
+    x: Math.min(payload.event.clientX + 4, window.innerWidth - 160),
+    y: Math.min(payload.event.clientY + 4, window.innerHeight - 60),
+    app: payload.app,
+  }
+}
+
+function closeHomeMenu() {
+  homeMenu.value.visible = false
+}
+
+function applyHomeMenu() {
+  const label = homeMenu.value.app?.title || '工作台'
+  setHomePage(homeMenuPath.value)
+  closeHomeMenu()
+  ElMessage.success(`已将「${label}」设为默认主页`)
+}
+
+function resetHomeMenu() {
+  clearHomePage()
+  closeHomeMenu()
+  ElMessage.success('已取消默认主页，登录后回到工作台')
+}
+
+watch(
+  () => [userStore.userInfo?.username, userStore.accountSetId] as const,
+  ([username, accountSetId]) => {
+    if (accountSetId) {
+      loadHomePage(username || '', accountSetId)
+      loadAccountDisplayMode(username || '', accountSetId)
+    } else {
+      resetHomePageContext()
+      resetAccountDisplayMode()
+    }
+  },
+  { immediate: true }
 )
 
 function navigateToModuleHome() {
@@ -844,9 +843,6 @@ const currentListItem = computed(() => {
   return pool[0] || null
 })
 
-// 菜单项可能通过查询参数承载不同业务入口（如预收/预付核销），
-// 高亮必须使用匹配到的完整菜单地址，不能只使用 route.path。
-const activeMenu = computed(() => currentListItem.value?.path || route.path)
 const currentTitle = computed(() => currentListItem.value?.title || (route.meta?.title as string) || '')
 /** 面包屑一级：应用名（模块导航页本身只显示应用名） */
 const currentParent = computed(() => {
@@ -949,7 +945,8 @@ async function reloadCurrentView() {
   const home = getDefaultLandingPath(
     userStore.permissions,
     systemParamsStore.enableCashFlow,
-    licenseStore.modules
+    licenseStore.modules,
+    loadHomePage(userStore.userInfo?.username || '', userStore.accountSetId || '')
   )
   const target = canAccessRoute(route.fullPath, userStore.permissions, licenseStore.modules)
     ? route.fullPath
@@ -957,6 +954,38 @@ async function reloadCurrentView() {
   await router.replace(target)
 }
 </script>
+
+<style scoped>
+.rail-context-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+}
+
+.rail-context-menu {
+  position: fixed;
+  min-width: 148px;
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+  background: var(--el-bg-color-overlay, #fff);
+  border: 1px solid var(--el-border-color-light, #e4e7ed);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+  font-size: 13px;
+}
+
+.rail-context-menu__item {
+  padding: 7px 14px;
+  cursor: pointer;
+  color: var(--el-text-color-primary, #303133);
+  white-space: nowrap;
+}
+
+.rail-context-menu__item:hover {
+  background: var(--el-fill-color-light, #f5f7fa);
+}
+</style>
 
 <style>
 @import './Layout.styles.css';

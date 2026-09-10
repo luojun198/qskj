@@ -560,3 +560,96 @@ describe('useStandardReportGrid 单元格多选', () => {
     expect(grid.selectionSummary.value).toBe('7 格')
   })
 })
+
+describe('useStandardReportGrid 取数视图呈现', () => {
+  function makeComputedGrid() {
+    const grid = useStandardReportGrid()
+    grid.loadDetail(
+      makeDetail([
+        // 表头：未合并的长文本，右侧两格空白
+        { row_index: 0, col_index: 0, text_value: '纳税人名称 ：广州东汇食品有限公司', cell_type: 'text', style_key: 'font-size-15' },
+        { row_index: 0, col_index: 3, text_value: '会企01表', cell_type: 'text', style_key: 'align-right' },
+        // 数据行：项目名 / 居中的行次公式 / 右对齐金额公式
+        { row_index: 1, col_index: 0, text_value: '货币资金', cell_type: 'text', style_key: 'border-all' },
+        { row_index: 1, col_index: 1, formula_text: '=B1+1', cell_type: 'formula', style_key: 'align-center border-all' },
+        { row_index: 1, col_index: 2, formula_text: '@YE(1001,99)', cell_type: 'formula', style_key: 'border-all' },
+        { row_index: 1, col_index: 3, formula_text: '@NC(1001)', cell_type: 'formula', style_key: 'border-all' },
+      ])
+    )
+    grid.colWidths.value = [100, 60, 90, 90]
+    grid.viewMode.value = 'compute'
+    grid.computedMap.value = new Map([
+      [grid.cellKey(1, 1), { display_value: '1', status: 'ok', numeric_value: 1 }],
+      [grid.cellKey(1, 2), { display_value: '0', status: 'ok', numeric_value: 0 }],
+      [grid.cellKey(1, 3), { display_value: '1234.5', status: 'ok', numeric_value: 1234.5 }],
+    ])
+    grid.showComputed.value = true
+    return grid
+  }
+
+  const findCell = (grid: ReturnType<typeof useStandardReportGrid>, row: number, col: number) =>
+    grid.context.buildSheetVisibleCells({} as never).find(c => c.rowIndex === row && c.colIndex === col)
+
+  it('取数结果为 0 时留白', () => {
+    const grid = makeComputedGrid()
+    expect(findCell(grid, 1, 2)?.displayValue).toBe('')
+    expect(findCell(grid, 1, 3)?.displayValue).toBe('1234.5')
+  })
+
+  it('格子自带对齐优先于数值默认右对齐', () => {
+    const grid = makeComputedGrid()
+    expect(findCell(grid, 1, 1)?.textAlign).toBe('center')
+    expect(findCell(grid, 1, 3)?.textAlign).toBe('right')
+  })
+
+  it('只读视图下装不下的左对齐文本向右铺到空白邻格，被铺过的格子不再渲染', () => {
+    const grid = makeComputedGrid()
+    const header = findCell(grid, 0, 0)
+    // 100px 装不下 15 号字 16 个汉字，铺过 B、C 两列后被 D 列的内容挡住
+    expect(header?.colSpan).toBe(3)
+    expect(findCell(grid, 0, 1)).toBeUndefined()
+    expect(findCell(grid, 0, 2)).toBeUndefined()
+    expect(findCell(grid, 0, 3)?.displayValue).toBe('会企01表')
+    // 带边框的数据行不受影响
+    expect(findCell(grid, 1, 0)?.colSpan).toBe(1)
+  })
+
+  it('右邻是整行居中的日期格时，名称越过格线铺到日期文字之前，日期格仍然渲染', () => {
+    const grid = useStandardReportGrid()
+    grid.loadDetail(
+      makeDetail([
+        { row_index: 0, col_index: 0, text_value: '纳税人名称 ：广州东汇食品有限公司', cell_type: 'text', style_key: 'font-size-15' },
+        {
+          row_index: 0,
+          col_index: 1,
+          text_value: '2025年12月31日',
+          cell_type: 'text',
+          style_key: 'align-row-center font-size-15',
+          merge_info: JSON.stringify({ rowSpan: 1, colSpan: 6 }),
+        },
+        { row_index: 0, col_index: 7, text_value: '会企01表', cell_type: 'text', style_key: 'align-right' },
+        { row_index: 1, col_index: 0, text_value: '货币资金', cell_type: 'text', style_key: 'border-all' },
+      ])
+    )
+    grid.colWidths.value = [193, 36, 121, 121, 193, 35, 121, 121]
+    grid.viewMode.value = 'compute'
+    grid.showComputed.value = true
+
+    const header = findCell(grid, 0, 0)
+    const date = findCell(grid, 0, 1)
+    expect(header?.colSpan).toBe(1)
+    expect(header?.softSpillWidth).toBeGreaterThan(193)
+    // 不能碰到日期文字：总宽 941，中线 470.5，日期 9 字符约 100px 宽
+    expect(header?.softSpillWidth).toBeLessThan(470.5 - 40)
+    expect(date?.displayValue).toBe('2025年12月31日')
+    expect(date?.rowCenterOffset).toBeCloseTo(470.5 - 193, 5)
+  })
+
+  it('公式视图不做溢出铺开', () => {
+    const grid = makeComputedGrid()
+    grid.viewMode.value = 'template'
+    grid.showComputed.value = false
+    expect(findCell(grid, 0, 0)?.colSpan).toBe(1)
+    expect(findCell(grid, 0, 1)).toBeDefined()
+  })
+})

@@ -55,7 +55,7 @@
   justify-content: center;
   color: #fff;
   font-weight: 600;
-  font-size: 14px;
+  font-size: var(--cw-text-base);
 }
 
 .user-info {
@@ -209,14 +209,14 @@
 }
 
 .param-label {
-  font-size: 14px;
+  font-size: var(--cw-text-base);
   color: var(--text-primary);
   font-weight: 500;
 }
 
 .param-value {
   font-family: 'SF Mono', 'Menlo', monospace;
-  font-size: 14px;
+  font-size: var(--cw-text-base);
   color: var(--text-secondary);
 }
 

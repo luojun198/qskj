@@ -86,9 +86,10 @@ describe('initBalanceTrial', () => {
     expect(totals.totalCredit).toBe(100)
   })
 
-  it('有辅助期初明细时只汇总 aux 行', () => {
+  it('有科目汇总行时以汇总行为准（不再累加 aux 明细）', () => {
+    // 汇总行 100 = dept 类目合计（60 + 40），与辅助明细口径一致
     db.prepare(
-      `INSERT INTO init_balances VALUES ('ba0','set1','aux-leaf','debit',2026,0,300,300,0,'',NULL,NULL,NULL,NULL)`
+      `INSERT INTO init_balances VALUES ('ba0','set1','aux-leaf','debit',2026,0,100,100,0,'',NULL,NULL,NULL,NULL)`
     ).run()
     db.prepare(
       `INSERT INTO init_balances VALUES ('ba1','set1','aux-leaf','debit',2026,0,60,60,0,'dept:a',NULL,NULL,NULL,NULL)`
@@ -104,6 +105,40 @@ describe('initBalanceTrial', () => {
     expect(totals.balanced).toBe(true)
     expect(totals.totalDebit).toBe(100)
     expect(totals.totalCredit).toBe(100)
+  })
+
+  // FIX-104（评审报告 B1）：同时启用两个辅助类目时，每个类目各存一套金额相同的明细行，
+  // 老口径「SUM 全部 aux 行」会把 91 算成 182，且借贷同时翻倍导致试算仍显示"平衡"。
+  it('多辅助类目不再成倍放大期初', () => {
+    db.prepare(
+      `INSERT INTO init_balances VALUES ('m0','set1','aux-leaf','debit',2026,0,91,91,0,'',NULL,NULL,NULL,NULL)`
+    ).run()
+    db.prepare(
+      `INSERT INTO init_balances VALUES ('m1','set1','aux-leaf','debit',2026,0,91,91,0,'dept:d1',NULL,NULL,NULL,NULL)`
+    ).run()
+    db.prepare(
+      `INSERT INTO init_balances VALUES ('m2','set1','aux-leaf','debit',2026,0,91,91,0,'pers:p1',NULL,NULL,NULL,NULL)`
+    ).run()
+    db.prepare(
+      `INSERT INTO init_balances VALUES ('m3','set1','leaf2','credit',2026,0,91,0,91,'',NULL,NULL,NULL,NULL)`
+    ).run()
+
+    const totals = getInitBalanceTrialTotals(db, 'set1', 2026)
+    expect(totals.totalDebit).toBe(91)
+    expect(totals.totalCredit).toBe(91)
+    expect(totals.balanced).toBe(true)
+  })
+
+  it('无科目汇总行时回退累加 aux 明细（历史数据不丢期初）', () => {
+    db.prepare(
+      `INSERT INTO init_balances VALUES ('n1','set1','aux-leaf','debit',2026,0,60,60,0,'dept:a',NULL,NULL,NULL,NULL)`
+    ).run()
+    db.prepare(
+      `INSERT INTO init_balances VALUES ('n2','set1','aux-leaf','debit',2026,0,40,40,0,'dept:b',NULL,NULL,NULL,NULL)`
+    ).run()
+
+    const totals = getInitBalanceTrialTotals(db, 'set1', 2026)
+    expect(totals.totalDebit).toBe(100)
   })
 
   it('优先使用 opening + pre_book 字段', () => {

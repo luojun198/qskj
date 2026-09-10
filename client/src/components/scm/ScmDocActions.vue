@@ -63,8 +63,12 @@ async function auditWithItemDefaultWarehouses(id: string) {
 async function handleAudit() {
   await ElMessageBox.confirm('确认审核？', '提示', { type: 'info' })
   const r = await auditWithItemDefaultWarehouses(props.row.id!)
-  const warn = (r as any)?.data?.credit_warning
-  if (warn) ElMessage.warning({ message: warn, duration: 6000 })
+  // 信用额度与序列号（盘点差异）告警都不阻断审核，合并后一并提示
+  const warns = [(r as any)?.data?.credit_warning, (r as any)?.data?.serial_warning].filter(Boolean)
+  // 发票校正来源单据挂账额属于正常结果，用 info 语气提示而非告警
+  const notice = (r as any)?.data?.invoice_notice
+  if (warns.length) ElMessage.warning({ message: warns.join('；'), duration: 6000 })
+  else if (notice) ElMessage.success({ message: `已审核。${notice}`, duration: 6000 })
   else ElMessage.success('已审核')
   emit('changed')
 }
@@ -129,5 +133,5 @@ async function handleGenVoucher() {
 
 <style scoped>
 .action-btns { display: flex; justify-content: center; align-items: center; gap: 2px; flex-wrap: wrap; }
-.action-btns .el-button { margin: 0 !important; padding: 0 2px !important; min-width: auto; font-size: 13px; }
+.action-btns .el-button { margin: 0 !important; padding: 0 2px !important; min-width: auto; font-size: var(--cw-text-base); }
 </style>

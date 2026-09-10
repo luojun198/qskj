@@ -140,6 +140,8 @@
                       cell.colIndex
                     ),
                     merged: cell.colSpan > 1 || cell.rowSpan > 1,
+                    'row-center': cell.rowCenterOffset != null && !cell.isEditing,
+                    'soft-spill': cell.softSpillWidth != null && !cell.isEditing,
                   },
                 ]"
                 :title="cell.tooltip"
@@ -158,6 +160,20 @@
                     @blur="grid.applyInlineEdit(cell)"
                   />
                 </template>
+                <div
+                  v-else-if="cell.rowCenterOffset != null"
+                  class="cell-content cell-content-row-center"
+                  :style="{ left: `${cell.rowCenterOffset}px` }"
+                >
+                  {{ cell.displayValue || ' ' }}
+                </div>
+                <div
+                  v-else-if="cell.softSpillWidth != null"
+                  class="cell-content cell-content-soft-spill"
+                  :style="{ width: `${Math.max(0, cell.softSpillWidth - 12)}px` }"
+                >
+                  {{ cell.displayValue || ' ' }}
+                </div>
                 <div v-else class="cell-content">{{ cell.displayValue || ' ' }}</div>
               </div>
             </div>
@@ -212,10 +228,17 @@ if (!grid) {
 .grid-panel :deep(.el-tabs__content) {
   flex: 1;
   min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .grid-panel :deep(.el-tab-pane) {
   height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 /* 单表时不需要页签头 */
@@ -301,7 +324,7 @@ if (!grid) {
   box-sizing: border-box;
   overflow: hidden;
   padding: 2px 6px;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   cursor: cell;
 }
 
@@ -310,6 +333,34 @@ if (!grid) {
   overflow: hidden;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* 整行居中：文字锚在整张报表的中线上，允许探出本格边界（抬头行左右邻格通常留白） */
+.cell.row-center {
+  overflow: visible;
+}
+
+.cell-content-row-center {
+  position: absolute;
+  top: 50%;
+  width: auto;
+  max-width: none;
+  overflow: visible;
+  white-space: nowrap;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+/* 越线溢出：左对齐文字铺过右侧「整行居中」格的格线，直到日期文字之前 */
+.cell.soft-spill {
+  overflow: visible;
+}
+
+.cell-content-soft-spill {
+  flex: none;
+  max-width: none;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 .cell.selected {

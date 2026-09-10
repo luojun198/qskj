@@ -442,7 +442,7 @@ onMounted(async () => {
 <style scoped>
 .scm-statement-page { display: flex; flex-direction: column; height: 100%; padding: 12px 16px; }
 .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
-.total-hint { margin-left: auto; font-size: 13px; color: var(--el-text-color-secondary); }
+.total-hint { margin-left: auto; font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }
 .page-body { flex: 1; min-height: 0; }
 .amt { font-weight: 600; }
 /* 合并表头字段固定在首条明细行，避免浏览器对 rowspan 单元格做整块垂直居中。 */

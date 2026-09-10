@@ -19,7 +19,7 @@ body,
   width: 100%;
   height: 100%;
   font-family: var(--cw-font-body, var(--font-sans));
-  font-size: var(--cw-text-base, 13px);
+  font-size: var(--cw-text-base, 12px);
   color: var(--cw-text-primary, var(--text-strong));
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -32,7 +32,7 @@ body,
   justify-content: center;
   min-height: 100vh;
   color: #909399;
-  font: 14px/1.5 system-ui, sans-serif;
+  font: var(--cw-text-sm, 11px)/1.5 system-ui, sans-serif;
 }
 
 body {
@@ -234,23 +234,23 @@ a {
   --cw-font-number: 'DIN Alternate', 'DIN', 'Helvetica Neue', 'Arial', sans-serif;
   --cw-font-accent: 'FZShuSong-Z01S', 'STSong', 'SimSun', serif;
 
-  /* 字号系统：与左侧导航同一档
-     应用栏 11px / 二级导航与页签 13px / 页标题 15px
-     正文与列表跟二级导航走 13px，不再比导航大一号 */
-  --cw-text-xs: 11px;
-  --cw-text-sm: 12px;
-  --cw-text-base: 13px;
-  --cw-text-lg: 15px;
-  --cw-text-xl: 16px;
+  /* 字号系统：对齐左侧 AppRail 模块标签（11px）
+     辅助 11px / 正文与表格 12px / 页标题 13px
+     正文不再比左侧模块大一到两档 */
+  --cw-text-xs: 10px;
+  --cw-text-sm: 11px;
+  --cw-text-base: 12px;
+  --cw-text-lg: 13px;
+  --cw-text-xl: 14px;
   --cw-text-2xl: 22px;
   --cw-text-3xl: 28px;
-  --el-font-size-base: 13px;
-  --el-font-size-small: 12px;
-  --el-font-size-extra-small: 11px;
+  --el-font-size-base: 12px;
+  --el-font-size-small: 11px;
+  --el-font-size-extra-small: 10px;
 
   /* 列表表头与表体同字号，字重略重即可，不要 700 黑体抢导航 */
   --cw-table-header-font-family: 'Noto Sans SC', 'Source Han Sans CN', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  --cw-table-header-font-size: 13px;
+  --cw-table-header-font-size: 12px;
   --cw-table-header-font-weight: 600;
 
   /* 字重系统 */
@@ -275,6 +275,16 @@ a {
   --cw-dialog-xl: 900px;
   --cw-dialog-label-sm: 80px;
   --cw-dialog-label-md: 100px;
+}
+
+/* 笔记本常见宽度：正文与左侧模块同档（11px），标题再压一档 */
+@media (max-width: 1366px) {
+  :root {
+    --cw-text-base: 11px;
+    --cw-text-lg: 12px;
+    --cw-table-header-font-size: 11px;
+    --el-font-size-base: 11px;
+  }
 }
 
 /* ========== 暗色模式 ========== */
@@ -559,7 +569,7 @@ a {
 }
 
 .el-dialog__title {
-  font-size: 15px !important;
+  font-size: var(--cw-text-lg) !important;
   font-weight: 600 !important;
   color: #1f2d33 !important;
   letter-spacing: 0;
@@ -670,4 +680,13 @@ a {
   flex: 0 0 auto;
   height: auto !important;
   min-height: 0;
+}
+
+/* hiprint 表格（凭证分录表 / 账表）表头去掉默认灰色底纹：
+   vue-plugin-hiprint/dist/print-lock.css 里写死了
+   `.hiprint-printElement-table thead { background: #e8e8e8 }`，
+   在设计器画布、预览和浏览器打印中都会渲染成一条灰色阴影带。
+   这里统一改为透明（保留加粗），设计器、预览、打印三处同时生效。 */
+.hiprint-printElement-table thead {
+  background: transparent !important;
 }

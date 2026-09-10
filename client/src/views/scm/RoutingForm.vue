@@ -153,8 +153,8 @@ onMounted(init)
 .rt-form-header__code { font-size: 12px; color: var(--el-text-color-secondary); }
 .rt-form-header__right { display: flex; gap: 8px; }
 .rt-form-body { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 12px 16px; gap: 6px; }
-.rt-lines-hd { display: flex; align-items: center; gap: 12px; font-weight: 600; font-size: 13px; }
+.rt-lines-hd { display: flex; align-items: center; gap: 12px; font-weight: 600; font-size: var(--cw-text-base); }
 .rt-lines-hd__hint { margin-left: auto; font-weight: 400; font-size: 12px; color: var(--el-text-color-secondary); }
 .rt-lines { flex: 1; min-height: 200px; }
-.rt-empty { padding: 24px 0; color: var(--el-text-color-secondary); font-size: 13px; }
+.rt-empty { padding: 24px 0; color: var(--el-text-color-secondary); font-size: var(--cw-text-base); }
 </style>

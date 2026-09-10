@@ -9,7 +9,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { getDb } from '../db/index.js'
 import { authMiddleware, AuthRequest, operationLog } from '../middleware/index.js'
 import { applyMovingAvgIn, applyMovingAvgOut, reverseDocMoves, getCostingMethod } from '../services/scmCosting.js'
-import { applyPayment, reversePayment, getPartnerLedger, getAllPartnerLedger, applyReceivableFromShipment, applyPayableFromReceipt, applyOutsourceFeePayable, getOpenItems, getPaymentSources, verifyArAp, cancelVerify, listVerifies, getDocVerifiedInfo, getArApAging, getDueReminder, getPartnerCredit, getPartnerOpenAr, getPartnerBalanceSummary } from '../services/scmArAp.js'
+import { applyPayment, applyInvoice, reverseInvoice, reversePayment, getPartnerLedger, getAllPartnerLedger, applyReceivableFromShipment, applyPayableFromReceipt, applyOutsourceFeePayable, getOpenItems, getPaymentSources, verifyArAp, cancelVerify, listVerifies, getDocVerifiedInfo, getArApAging, getDueReminder, getPartnerCredit, getPartnerOpenAr, getPartnerBalanceSummary } from '../services/scmArAp.js'
 import { assertAccountIdsInScope, type AccountScopeContext } from '../services/accountAuthorization.js'
 import { maintainDocBatches, reverseDocBatches } from '../services/scmBatch.js'
 import { maintainDocSerials, reverseDocSerials } from '../services/scmSerial.js'
@@ -224,8 +224,17 @@ function seedDocTypes(db: ReturnType<typeof getDb>, accountSetId: string) {
 // auto-number: YYYYMM-code-001
 // 单据编号：按参数 scm:doc_no_rule 模板生成，支持 {YYYY}{YY}{MM}{DD}{CODE}{SEQ:n}
 // 默认 {YYYY}{MM}-{CODE}-{SEQ:3} 等价于历史 YYYYMM-CODE-001
-function nextDocNo(db: ReturnType<typeof getDb>, accountSetId: string, docTypeCode: string): string {
-  const now = new Date()
+/**
+ * 生成单据号。
+ *
+ * 年月日取自单据日期而非服务器当前日期——补录上月单据时若按当前月取号，
+ * 单号月份会与单据期间对不上（{YYYY}{MM} 规则下尤为明显）。
+ */
+export function nextDocNo(db: ReturnType<typeof getDb>, accountSetId: string, docTypeCode: string, docDate?: string | null): string {
+  const now =
+    typeof docDate === 'string' && /^\d{4}-\d{2}-\d{2}/.test(docDate)
+      ? new Date(`${docDate.slice(0, 10)}T00:00:00`)
+      : new Date()
   const ruleRow = db.prepare("SELECT param_value FROM system_params WHERE account_set_id=? AND param_key='scm:doc_no_rule'").get(accountSetId) as any
   let rule = String(ruleRow?.param_value || '').trim() || '{YYYY}{MM}-{CODE}-{SEQ:3}'
   if (!/\{SEQ(:\d+)?\}/.test(rule)) rule += '-{SEQ:3}'  // 规则缺序号则补在末尾
@@ -244,6 +253,33 @@ function nextDocNo(db: ReturnType<typeof getDb>, accountSetId: string, docTypeCo
     if (m) max = Math.max(max, parseInt(m[1]))
   }
   return tmpl.replace(seqM[0], String(max + 1).padStart(seqWidth, '0'))
+}
+
+/**
+ * 在排它事务中取号并写库，遇唯一约束冲突自动重试（最多 3 次）。
+ *
+ * nextDocNo / nextSeqNo 都是「查最大值 + 1」，两个连接同时保存会取到同一个号，
+ * 撞 UNIQUE(account_set_id, doc_type, doc_no) 后直接抛约束错误给用户（500）。
+ * 用 BEGIN IMMEDIATE 把「取号 + 插入」括起来即可串行化；跨进程仍可能撞锁，
+ * 故保留重试。口径与凭证录入（routes/voucher.ts）一致。
+ */
+function withDocNoRetry<T>(db: ReturnType<typeof getDb>, fn: () => T): T {
+  const MAX_RETRIES = 3
+  let lastError: any = null
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    try {
+      return db.transaction(fn).immediate()
+    } catch (e: any) {
+      lastError = e
+      const msg = String(e?.message || '')
+      const retryable =
+        e?.code === 'SQLITE_BUSY' ||
+        e?.code === 'SQLITE_CONSTRAINT_UNIQUE' ||
+        /UNIQUE constraint failed|database is locked/i.test(msg)
+      if (!retryable) throw e
+    }
+  }
+  throw lastError
 }
 
 // helper: lookup item by code → { id, name, inv_account, sale_account, ... }
@@ -315,7 +351,13 @@ function buildDocLineRow(aid: string, docId: string, seq: number, l: any, header
   const q = Number(l.qty) || 0
   const p = Number(l.price) || 0
   const dr = Number(l.discount_rate) || 0
-  const { amount, discount_amount } = lineAmountWithDiscount(q, p, dr)
+  // 发票类单据常常只填金额、不填数量单价（如「运费 500 元」一行）。
+  // 原实现恒按 qty×price×折率 计算，这类行的金额会被直接算成 0 而丢失。
+  // 仅在「没有数量」时才采用前端传入的金额；有数量仍按单价算，行为不变。
+  const directAmount = q === 0 && l.amount != null && Number(l.amount) !== 0 ? round2(Number(l.amount)) : null
+  const { amount, discount_amount } = directAmount != null
+    ? { amount: directAmount, discount_amount: 0 }
+    : lineAmountWithDiscount(q, p, dr)
   const fv = l.field_values && typeof l.field_values === 'object'
     ? JSON.stringify(l.field_values)
     : (l.field_values ?? '{}')
@@ -330,6 +372,52 @@ function buildDocLineRow(aid: string, docId: string, seq: number, l: any, header
     l.arap_source_log_id ?? null,
   ]
   return { values, qty: q, amount }
+}
+
+/** 明细行落库数组中受整单折扣影响的列下标（从 DOC_LINE_COLUMNS 推导，避免手写魔法数字） */
+export const LINE_COL_QTY = DOC_LINE_COLUMNS.indexOf('qty')
+export const LINE_COL_PRICE = DOC_LINE_COLUMNS.indexOf('price')
+export const LINE_COL_AMOUNT = DOC_LINE_COLUMNS.indexOf('amount')
+export const LINE_COL_DISCOUNT_AMOUNT = DOC_LINE_COLUMNS.indexOf('discount_amount')
+export const LINE_COL_TAX_AMOUNT = DOC_LINE_COLUMNS.indexOf('tax_amount')
+
+/**
+ * 把整单折扣分摊到各明细行。
+ *
+ * 原实现整单折扣只作用于表头 total_amount，行金额不变——而凭证、应收应付、库存成本
+ * 全都按行取数，于是「单据合计 ≠ 凭证金额 ≠ 往来挂账额」。这里按行金额比例把折扣摊到
+ * 行上（行折扣口径不变，整单折扣叠加在行折扣之后），税额同比例缩放，
+ * 末行吸收舍入尾差，保证 Σ行金额 恒等于表头合计。
+ *
+ * 返回分摊后的合计金额（即表头 total_amount）。
+ */
+export function allocateHeaderDiscount(rows: Array<{ values: any[]; amount: number }>, discountRate: number): number {
+  const factor = discountFactor(discountRate)
+  const grossTotal = round2(rows.reduce((s, r) => s + r.amount, 0))
+  if (factor === 1 || !rows.length) return grossTotal
+
+  const target = round2(grossTotal * factor)
+  let allocated = 0
+  // 末行吸收尾差：只有当存在金额非 0 的行时才需要兜底，全 0 行单据直接按 target 返回
+  const lastIdx = rows.reduce((idx, r, i) => (r.amount !== 0 ? i : idx), -1)
+
+  rows.forEach((r, i) => {
+    const oldAmount = r.amount
+    const newAmount = i === lastIdx ? round2(target - allocated) : round2(oldAmount * factor)
+    if (i !== lastIdx) allocated = round2(allocated + newAmount)
+
+    const gross = round2((Number(r.values[LINE_COL_QTY]) || 0) * (Number(r.values[LINE_COL_PRICE]) || 0))
+    r.values[LINE_COL_AMOUNT] = newAmount
+    r.values[LINE_COL_DISCOUNT_AMOUNT] = round2(gross - newAmount)
+    // 税额按折后金额同比例缩放（前端按折前金额×税率算的税额在此校正）
+    const tax = Number(r.values[LINE_COL_TAX_AMOUNT]) || 0
+    if (tax !== 0 && oldAmount !== 0) {
+      r.values[LINE_COL_TAX_AMOUNT] = round2(tax * (newAmount / oldAmount))
+    }
+    r.amount = newAmount
+  })
+
+  return lastIdx >= 0 ? target : grossTotal
 }
 
 /**
@@ -482,7 +570,7 @@ router.get('/scm/sales-order-relations', (req: AuthRequest, res) => {
 
 // ── Doc CRUD ────────────────────────────────────────────
 router.get('/scm/docs/next-no', (req: AuthRequest, res) => {
-  res.json({ code: 0, data: { next_no: nextDocNo(getDb(), asid(req), (req.query.doc_type as string) || 'PI') } })
+  res.json({ code: 0, data: { next_no: nextDocNo(getDb(), asid(req), (req.query.doc_type as string) || 'PI', req.query.doc_date as string) } })
 })
 
 // 列表富行查询（列表 + 上下游追溯共用）：带往来单位/仓库名、下推进度、各类关联计数。
@@ -942,9 +1030,10 @@ router.post('/scm/docs', operationLog('供应链单据新增', '供应链'), (re
     if (qtyError) return res.status(400).json({ code: 400, message: qtyError })
   }
 
-  const docNo = nextDocNo(db, asid(req), b.doc_type)
   const docId = uuidv4()
-  db.transaction(() => {
+  // 取号与插入必须在同一个排它事务内，否则并发保存会撞单号唯一约束
+  const docNo = withDocNoRetry(db, () => {
+    const docNo = nextDocNo(db, asid(req), b.doc_type, b.doc_date)
     db.prepare(`INSERT INTO scm_doc (id,account_set_id,doc_type,doc_no,doc_date,partner_code,dept_code,warehouse_code,operator,maker,status,source_doc_id,bom_id,total_qty,total_amount,remark,discount_rate,plan_id,${DOC_HEADER_EXTRA_COLUMNS.join(',')})
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,${DOC_HEADER_EXTRA_COLUMNS.map(() => '?').join(',')})`).run(
       docId, asid(req), b.doc_type, docNo, b.doc_date || new Date().toISOString().slice(0, 10),
@@ -956,18 +1045,21 @@ router.post('/scm/docs', operationLog('供应链单据新增', '供应链'), (re
     if (Array.isArray(b.lines)) {
       fillMrLineDefaults(db, asid(req), b.doc_type, b.lines)
       const ins = prepareDocLineInsert(db)
-      let seq = 0; let tq = 0; let ta = 0
+      let seq = 0; let tq = 0
+      const rows: Array<{ values: any[]; qty: number; amount: number }> = []
       for (const l of b.lines) {
         seq++
         const row = buildDocLineRow(asid(req), docId, seq, l, b.warehouse_code)
-        ins.run(...row.values)
-        tq += row.qty; ta += row.amount
+        rows.push(row)
+        tq += row.qty
       }
-      // 整单折扣（折）作用于合计
-      const total = round2(ta * discountFactor(Number(b.discount_rate) || 0))
+      // 整单折扣（折）分摊到行后再入库，保证 Σ行金额 == 表头合计 == 凭证/往来取数
+      const total = allocateHeaderDiscount(rows, Number(b.discount_rate) || 0)
+      for (const row of rows) ins.run(...row.values)
       db.prepare('UPDATE scm_doc SET total_qty=?,total_amount=? WHERE id=?').run(tq, total, docId)
     }
-  })()
+    return docNo
+  })
   res.json({ code: 0, data: { id: docId, doc_no: docNo } })
 })
 
@@ -1017,7 +1109,10 @@ router.put('/scm/docs/:id', operationLog('供应链单据修改', '供应链'), 
     if (qtyError) return res.status(400).json({ code: 400, message: qtyError })
   }
   db.transaction(() => {
-    db.prepare(`UPDATE scm_doc SET doc_date=?,partner_code=?,dept_code=?,warehouse_code=?,operator=?,source_doc_id=?,bom_id=?,remark=?,discount_rate=?,plan_id=?,maker=COALESCE(maker,?),${DOC_HEADER_EXTRA_COLUMNS.map(c => `${c}=?`).join(',')},updated_at=datetime('now') WHERE id=?`).run(
+    // 关键列用 COALESCE(?, 列) 语义：请求未带该字段时保留原值。
+    // 原实现 `b.doc_date ?? null` 会把旧前端漏传的单据日期直接置 NULL，
+    // 进而破坏列表排序、账龄与期间归属。
+    db.prepare(`UPDATE scm_doc SET doc_date=COALESCE(?,doc_date),partner_code=COALESCE(?,partner_code),dept_code=?,warehouse_code=COALESCE(?,warehouse_code),operator=?,source_doc_id=?,bom_id=?,remark=?,discount_rate=?,plan_id=?,maker=COALESCE(maker,?),${DOC_HEADER_EXTRA_COLUMNS.map(c => `${c}=?`).join(',')},updated_at=datetime('now') WHERE id=?`).run(
       b.doc_date ?? null, b.partner_code ?? null, b.dept_code ?? null, b.warehouse_code ?? null, b.operator || userName(req),
       preservedSourceDocId, b.bom_id ?? null, b.remark ?? null, Number(b.discount_rate) || 0, preservedPlanId, userName(req),
       ...docHeaderExtraValues(b), req.params.id
@@ -1026,15 +1121,17 @@ router.put('/scm/docs/:id', operationLog('供应链单据修改', '供应链'), 
       fillMrLineDefaults(db, asid(req), b.doc_type, b.lines)
       db.prepare('DELETE FROM scm_doc_line WHERE doc_id=?').run(req.params.id)
       const ins = prepareDocLineInsert(db)
-      let seq = 0; let tq = 0; let ta = 0
+      let seq = 0; let tq = 0
+      const rows: Array<{ values: any[]; qty: number; amount: number }> = []
       for (const l of b.lines) {
         seq++
         const row = buildDocLineRow(asid(req), req.params.id, seq, l, b.warehouse_code)
-        ins.run(...row.values)
-        tq += row.qty; ta += row.amount
+        rows.push(row)
+        tq += row.qty
       }
-      // 整单折扣（折）作用于合计
-      const total = round2(ta * discountFactor(Number(b.discount_rate) || 0))
+      // 整单折扣（折）分摊到行后再入库，保证 Σ行金额 == 表头合计 == 凭证/往来取数
+      const total = allocateHeaderDiscount(rows, Number(b.discount_rate) || 0)
+      for (const row of rows) ins.run(...row.values)
       db.prepare('UPDATE scm_doc SET total_qty=?,total_amount=? WHERE id=?').run(tq, total, req.params.id)
     }
   })()
@@ -1192,6 +1289,8 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
 
   // 销售发货单（销售出库 SO）：审核要扣库存、挂应收，故客户与仓库必填
   let creditWarning: string | null = null
+  let serialWarning: string | null = null
+  let invoiceNotice: string | null = null
   if (doc.doc_type === 'SO') {
     if (!doc.partner_code) return res.status(400).json({ code: 400, message: '销售出库单必须指定客户（往来单位），无法生成应收' })
     if (lines.some(l => Number(l.qty) > 0 && !l.warehouse_code)) {
@@ -1586,16 +1685,26 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
         }
       }
     }
-    // 销售发货单（SO）→ 应收；采购入库单（PI）→ 应付（按货物金额，不含税；发票不参与往来）
+    // 往来挂账（一律按价税合计，与凭证应收/应付口径一致）：
+    //   SO 销售发货 → 应收暂估；PI 采购入库 → 应付暂估；
+    //   RP/RS 发票 → 有来源单据则校正该单的暂估额，无来源单据则新挂一条。
     if (doc.doc_type === 'SO') {
       applyReceivableFromShipment(db, aid, doc, lines)
     } else if (doc.doc_type === 'PI') {
       applyPayableFromReceipt(db, aid, doc, lines)
+    } else if (doc.doc_type === 'RP' || doc.doc_type === 'RS') {
+      const r = applyInvoice(db, aid, doc, lines)
+      if (r.mode === 'adjust') {
+        invoiceNotice = `已按发票金额 ${r.amount} 校正来源单据「${r.sourceDocNo}」的往来挂账`
+      }
     }
     // 批次/保质期追溯（启用批次的物料）：与移动平均成本并行维护，出库不足会抛错回滚
     if (docType.affects_stock) maintainDocBatches(db, aid, doc.id)
     // 序列号追溯（启用序列号的物料）：个数须等于数量，入库登记/出库核销，异常回滚
-    if (docType.affects_stock) maintainDocSerials(db, aid, doc.id)
+    if (docType.affects_stock) {
+      const w = maintainDocSerials(db, aid, doc.id)
+      if (w.length) serialWarning = w.join('；')
+    }
     db.prepare("UPDATE scm_doc SET status='audited', auditor=?, audited_at=datetime('now'), updated_at=datetime('now') WHERE id=?").run(userName(req), doc.id)
   })
   try {
@@ -1606,7 +1715,7 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
   }
   const latest = db.prepare('SELECT id,status,total_amount,auditor,audited_at FROM scm_doc WHERE id=?').get(doc.id) as any
   res.json({ code: 0, data: { ...latest, total_amount: Number(latest?.total_amount) || 0,
-    already_audited: false, credit_warning: creditWarning } })
+    already_audited: false, credit_warning: creditWarning, serial_warning: serialWarning, invoice_notice: invoiceNotice } })
 }
 router.post('/scm/docs/:id/audit', operationLog('供应链单据审核', '供应链'), auditDocHandler)
 
@@ -1654,6 +1763,8 @@ export const unauditDocHandler = (req: AuthRequest, res: Response) => {
     } else {
     // 销售发货(SO)→回滚应收、采购入库(PI)→回滚应付（reversePayment 按 doc_no 删除往来台账，无出纳流水，安全）
     if (doc.doc_type === 'SO' || doc.doc_type === 'PI') reversePayment(db, aid, doc)
+    // 发票(RP/RS) 反审核：校正过来源单据暂估的还原回来源金额，独立发票的删除自己的台账
+    if (doc.doc_type === 'RP' || doc.doc_type === 'RS') reverseInvoice(db, aid, doc)
     // 委外入库(WI) 反审核：回退委外厂应付（reversePayment 按 doc_no 删除往来台账）
     if (doc.doc_type === 'WI') reversePayment(db, aid, doc)
     if (docType?.affects_stock) reverseDocMoves(db, aid, doc.id)
@@ -3463,6 +3574,21 @@ export const genVoucherHandler = (req: AuthRequest, res: Response) => {
 
   const docType = db.prepare('SELECT * FROM scm_doc_type WHERE account_set_id=? AND code=?').get(aid, doc.doc_type) as any
   if (!docType) return res.status(400).json({ code: 400, message: '未知单据类型' })
+
+  // 由来源单据下推的发票不单独制证：来源单据（PI 采购入库 / SO 销售发货）审核制证时
+  // 已经把存货、税额、往来一次记完，发票只负责校正金额与勾稽，再记一次就是重复入账。
+  if ((doc.doc_type === 'RP' || doc.doc_type === 'RS') && doc.source_doc_id) {
+    const src = db.prepare('SELECT doc_no, voucher_id FROM scm_doc WHERE id=? AND account_set_id=?')
+      .get(doc.source_doc_id, aid) as any
+    if (src) {
+      return res.status(400).json({
+        code: 400,
+        message: src.voucher_id
+          ? `本发票由来源单据「${src.doc_no}」下推，该单已生成凭证，发票无需重复制证`
+          : `本发票由来源单据「${src.doc_no}」下推，请在来源单据上生成凭证`,
+      })
+    }
+  }
   const paymentErr = validatePaymentData(db, aid, doc, lines, req.accountScope)
   if (paymentErr) return res.status(paymentErr.status).json({ code: paymentErr.status, message: paymentErr.message })
 
@@ -3515,7 +3641,10 @@ export const genVoucherHandler = (req: AuthRequest, res: Response) => {
       }
       continue
     }
-    if (!l.qty || l.qty <= 0) continue
+    // 发票行允许「只有金额、没有数量」（如运费行），不能按数量过滤掉
+    const isInvoiceDoc = doc.doc_type === 'RP' || doc.doc_type === 'RS'
+    if (!isInvoiceDoc && (!l.qty || l.qty <= 0)) continue
+    if (isInvoiceDoc && !(Number(l.amount) || 0) && !(Number(l.tax_amount) || 0)) continue
     const item = getItem(db, aid, l.item_code)
     const invCode = item?.inv_account || '1405'                          // 存货科目（默认 库存商品）
     const sumr = `${doc.doc_no} ${item?.name || l.item_code}`
@@ -3524,7 +3653,18 @@ export const genVoucherHandler = (req: AuthRequest, res: Response) => {
     const cost = Math.round(Number((l.unit_cost || 0) * l.qty) * 100) / 100  // 库存成本额(审核回写)
     if (amt <= 0 && cost <= 0) continue
 
-    if (cat === 'purchase') {
+    if (doc.doc_type === 'RP' || doc.doc_type === 'RS') {
+      // 发票单（dir='none'，不动库存）。有来源单据的发票不在此制证——来源单据
+      // （PI/SO）审核制证时已经把存货、税额、往来一次性记完了，发票只是校正金额与勾稽，
+      // 再记一次会重复入账。该情形在循环外拦截，这里只处理独立录入的发票。
+      if (doc.doc_type === 'RP') {
+        // 独立采购发票：借 存货 + 进项税 / 贷 应付
+        addEntry(invCode, 'debit', amt, sumr); addEntry(TAX_IN, 'debit', tax, sumr); addEntry(AP, 'credit', amt + tax, sumr)
+      } else {
+        // 独立销售发票：借 应收 / 贷 收入 + 销项。无库存移动，故不结转成本。
+        addEntry(AR, 'debit', amt + tax, sumr); addEntry(REV, 'credit', amt, sumr); addEntry(TAX_OUT, 'credit', tax, sumr)
+      }
+    } else if (cat === 'purchase') {
       // 采购入库：借 存货 + 进项税 / 贷 应付；采购退货反向
       if (dir === 'in') { addEntry(invCode, 'debit', amt, sumr); addEntry(TAX_IN, 'debit', tax, sumr); addEntry(AP, 'credit', amt + tax, sumr) }
       else if (dir === 'out') { addEntry(invCode, 'credit', amt, sumr); addEntry(TAX_IN, 'credit', tax, sumr); addEntry(AP, 'debit', amt + tax, sumr) }

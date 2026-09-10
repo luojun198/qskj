@@ -621,12 +621,12 @@ watch(page, () => {
   background: var(--el-bg-color);
 }
 .ibp-footer__info {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   color: var(--el-text-color-regular);
 }
 .ibp-footer__count {
   color: var(--el-color-primary);
-  font-size: 15px;
+  font-size: var(--cw-text-lg);
   margin: 0 2px;
 }
 .ibp-footer__placeholder {

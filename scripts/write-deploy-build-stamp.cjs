@@ -61,7 +61,10 @@ function gitHead() {
 const clientIndex = join(deployDir, 'client/dist/index.html')
 const serverBundle = join(deployDir, 'server/bundle.cjs')
 const deployDb = join(deployDir, 'data/finance.db')
-const devDb = join(projectRoot, 'data/finance.db')
+// 与 copy-dev-db-to-deploy.cjs 保持一致：本分支开发库是 data/finance-0523.db
+const devDb = [join(projectRoot, 'data/finance-0523.db'), join(projectRoot, 'data/finance.db')].find((p) =>
+  existsSync(p)
+) || join(projectRoot, 'data/finance-0523.db')
 const srcClientIndex = join(projectRoot, 'client/dist/index.html')
 const srcServerBundle = join(projectRoot, 'server/dist/bundle.cjs')
 
@@ -106,7 +109,7 @@ if (existsSync(deployDb) && existsSync(devDb)) {
     devDbFingerprint != null &&
     deployDbFingerprint === devDbFingerprint
   if (!dbInSyncWithDev) {
-    mismatches.push('deploy-final/data/finance.db business data differs from dev data/finance.db')
+    mismatches.push(`deploy-final/data/finance.db business data differs from dev ${devDb}`)
   }
 }
 
@@ -143,7 +146,7 @@ if (!inSync) {
 }
 
 if (dbInSyncWithDev === false) {
-  console.warn('WARN: deploy-final database differs from dev data/finance.db')
+  console.warn(`WARN: deploy-final database differs from dev ${devDb}`)
   console.warn('       Report/print template changes in dev DB are NOT in this deploy package.')
   console.warn('       Re-run build-deploy.bat or scripts\\sync-deploy-data.bat before compressing zip.')
 }

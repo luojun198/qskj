@@ -1,22 +1,28 @@
 <template>
   <div class="group-nav-container mint-dashboard module-home">
     <div v-if="currentApp && availableItems.length > 0" class="group-nav-shell">
-      <!-- 模块头部：图标 + 标题 + 说明 + 主入口；按模块着色建立识别度 -->
+      <!-- 模块头部：压缩为一个图标高度，去除非必要重复按钮 -->
       <header class="wb-card wb-card--raised module-head" :class="accentClass">
         <div class="module-head__main">
           <span class="module-head__icon">
-            <component :is="resolveNavIcon(currentApp.icon)" :size="20" :stroke-width="1.8" />
+            <component :is="resolveNavIcon(currentApp.icon)" :size="18" :stroke-width="1.8" />
           </span>
-          <div class="module-head__text">
+          <div class="module-head__meta">
             <h1 class="module-head__title">{{ currentApp.title }}</h1>
-            <p class="module-head__desc">
-              {{ currentApp.description || `在此处理 ${currentApp.title} 相关的业务操作` }}
+            <p v-if="currentApp.description" class="module-head__desc">
+              {{ currentApp.description }}
             </p>
           </div>
+          <NavFunctionSearch
+            ref="searchRef"
+            class="module-head__search"
+            :apps="allApps"
+            :current-app-key="currentApp.key"
+          />
         </div>
         <div class="module-head__side">
           <span class="module-head__stat">{{ currentApp.sections.length }} 个分组 · {{ availableItems.length }} 项功能</span>
-          <div class="module-head__actions">
+          <div v-if="currentFlowConfig?.layout !== 'gl-workspace'" class="module-head__actions">
             <router-link v-if="primaryEntry" class="module-btn module-btn--primary" :to="primaryEntry.path">
               <component :is="getIcon(primaryEntry)" :size="14" :stroke-width="1.8" />
               {{ primaryEntry.title }}
@@ -27,9 +33,15 @@
             </router-link>
           </div>
         </div>
+
       </header>
 
-      <template v-if="currentFlowConfig && currentFlowConfig.layout === 'flow'">
+
+      <GlWorkspace
+        v-if="currentFlowConfig && currentFlowConfig.layout === 'gl-workspace'"
+        :available-items="flowAvailableItems"
+      />
+      <template v-else-if="currentFlowConfig && currentFlowConfig.layout === 'flow'">
         <ProcessFlow
           :config="currentFlowConfig"
           :availableItems="flowAvailableItems"
@@ -61,7 +73,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, inject, type Component, type Ref } from 'vue'
+import { computed, inject, nextTick, onActivated, onMounted, ref, watch, type Component, type Ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { Warning } from '@element-plus/icons-vue'
 import { flattenNavApp, flattenNavApps, type NavApp, type NavItem } from '@/config/navigation'
@@ -70,10 +82,26 @@ import { collectFlowCoveredPaths, groupFlowMap, normalizeNavPath } from '@/confi
 import { resolveNavAppTitle } from '@/utils/groupNavigation'
 import ProcessFlow from './components/ProcessFlow.vue'
 import BentoGrid from './components/BentoGrid.vue'
+import GlWorkspace from './components/GlWorkspace.vue'
+import NavFunctionSearch from '@/components/layout/NavFunctionSearch.vue'
 
 const route = useRoute()
 
 const navApps = inject('layoutNavApps') as Ref<NavApp[]> | undefined
+const allApps = computed<NavApp[]>(() => navApps?.value || [])
+
+/**
+ * 功能搜索框（原二级导航面板里的搜索，面板取消后搬到模块首页）。
+ * Layout 的 Ctrl+K 会带 ?focus=search 跳到模块首页，这里自动聚焦。
+ */
+const searchRef = ref<InstanceType<typeof NavFunctionSearch> | null>(null)
+function focusSearchIfRequested() {
+  if (!String(route?.query?.focus || '').startsWith('search')) return
+  nextTick(() => searchRef.value?.focus())
+}
+onMounted(focusSearchIfRequested)
+onActivated(focusSearchIfRequested)
+watch(() => route?.query?.focus, focusSearchIfRequested)
 
 const currentApp = computed<NavApp | null>(() => {
   if (!navApps?.value) return null
@@ -164,13 +192,14 @@ function getIcon(target: NavItem | string): Component {
   gap: var(--wb-gap);
 }
 
-/* ---- 模块头部卡：左侧 3px 识别色竖条 + 同色图标底 ---- */
+/* ---- 模块头部卡：压缩为一个图标高度，单行紧凑 ---- */
 .module-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 12px 16px 12px 13px;
+  padding: 6px 16px 6px 12px;
+  min-height: 46px;
   border-left: 3px solid var(--mint-500);
 }
 
@@ -193,17 +222,18 @@ function getIcon(target: NavItem | string): Component {
   align-items: center;
   gap: 12px;
   min-width: 0;
+  flex: 1;
 }
 
-/* 与应用栏同一图标语言：浅底 + 薄荷线条，20px */
+/* 紧凑图标，34px */
 .module-head__icon {
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 20px;
+  font-size: 18px;
   color: var(--mint-700);
   background: var(--mint-100);
   flex-shrink: 0;
@@ -214,44 +244,49 @@ function getIcon(target: NavItem | string): Component {
   stroke: currentColor;
 }
 
-.module-head__text {
-  min-width: 0;
+.module-head__meta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .module-head__title {
   margin: 0;
-  font-size: 16px;
+  font-size: var(--cw-text-lg);
   font-weight: 600;
-  line-height: 1.3;
+  line-height: 1;
   color: var(--wb-text);
+  white-space: nowrap;
 }
 
 .module-head__desc {
-  margin: 3px 0 0;
-  font-size: 12px;
+  margin: 0;
+  font-size: var(--cw-text-sm);
   color: var(--wb-text-3);
   white-space: nowrap;
+  max-width: 260px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.module-head__search {
+  width: 100%;
+  max-width: 320px;
+  margin-top: 0;
 }
 
 .module-head__side {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   flex-shrink: 0;
 }
 
 .module-head__stat {
-  font-size: 12px;
+  font-size: var(--cw-text-sm);
   color: var(--wb-text-3);
   white-space: nowrap;
-}
-
-.module-head__actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 
 .module-btn {
@@ -264,7 +299,7 @@ function getIcon(target: NavItem | string): Component {
   border-radius: var(--wb-radius-sm);
   background: var(--wb-card);
   color: var(--wb-text);
-  font-size: 12.5px;
+  font-size: var(--cw-text-sm);
   font-weight: 500;
   text-decoration: none;
   cursor: pointer;
@@ -331,14 +366,14 @@ function getIcon(target: NavItem | string): Component {
 
 .empty-title {
   margin: 0 0 8px;
-  font-size: 16px;
+  font-size: var(--cw-text-lg);
   font-weight: 600;
   color: var(--wb-text);
 }
 
 .empty-subtitle {
   margin: 0 0 22px;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   color: var(--wb-text-3);
   line-height: 1.6;
 }

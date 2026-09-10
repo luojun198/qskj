@@ -17,7 +17,10 @@ export interface AcdImportResult {
   accountSetId: string
   name: string
   code: string
+  /** 实际落库的会计年度（完整导入以 ACD xt_kzrq 为准，可能与调用方传入值不同） */
   fiscalYear: number
+  /** 实际落库的建账日期（YYYY-MM-DD） */
+  startDate: string
   stats: ImportStats
   standardReports: number
 }
@@ -60,11 +63,16 @@ export async function acdImportService(params: AcdImportParams): Promise<AcdImpo
     syncAccountSetUserRoleLinks(accountSetId, db)
     checkpointDatabase(db)
 
+    const persisted = db
+      .prepare('SELECT fiscal_year, start_date FROM account_sets WHERE id = ?')
+      .get(accountSetId) as { fiscal_year?: number; start_date?: string } | undefined
+
     return {
       accountSetId,
       name: params.name,
       code: params.code,
-      fiscalYear: params.fiscalYear,
+      fiscalYear: Number(persisted?.fiscal_year) || params.fiscalYear,
+      startDate: persisted?.start_date || params.startDate,
       stats,
       standardReports,
     }

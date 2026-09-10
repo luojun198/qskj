@@ -6,6 +6,7 @@ import {
   flattenNavApps,
   getDefaultLandingPath,
   getRouteModules,
+  isValidHomePath,
   getRoutePermissions,
   isNavItemVisible,
   locateNavItem,
@@ -114,7 +115,12 @@ describe('navigation permissions', () => {
       const finance = apps.find(a => a.key === 'finance')
       expect(finance?.sections.map(s => s.label)).toEqual(['凭证处理', '账簿查询', '辅助核算', '财务报表'])
       const reports = finance?.sections.find(s => s.label === '财务报表')
-      expect(reports?.items.map(i => i.title)).toEqual(['标准报表', '现金流量表(估算)', '资产负债表'])
+      expect(reports?.items.map(i => i.title)).toEqual([
+        '标准报表',
+        '财务分析',
+        '现金流量表(估算)',
+        '资产负债表',
+      ])
       expect(reports?.items.find(i => i.title === '资产负债表')?.icon).toBe('FileBarChart2')
     })
 
@@ -154,10 +160,17 @@ describe('navigation permissions', () => {
       expect(voucher?.items.map(i => i.path)).toEqual(['/voucher/query'])
       const ledger = finance.sections.find(s => s.label === '账簿查询')
       expect(ledger?.items.some(i => i.path === '/ledger/detail')).toBe(true)
+      expect(ledger?.items.some(i => i.path === '/ledger/multi-column')).toBe(false)
       expect(ledger?.items.some(i => i.path === '/ledger/cash-journal')).toBe(false)
-      expect(finance.sections.find(s => s.label === '财务报表')?.items.map(i => i.title)).toEqual(['标准报表', '资产负债表'])
+      // 财务分析与科目余额表同权（ledger:balance），只读角色可见
+      expect(finance.sections.find(s => s.label === '财务报表')?.items.map(i => i.title)).toEqual(['标准报表', '财务分析', '资产负债表'])
     })
 
+    it('多栏账路径使用独立权限', () => {
+      expect(getRoutePermissions('/ledger/multi-column')).toEqual(['ledger:multirow'])
+      expect(buildNavApps(['ledger:multirow'], false, []).flatMap(app => app.sections.flatMap(section => section.items)).some(item => item.path === '/ledger/multi-column')).toBe(true)
+      expect(buildNavApps(['ledger:detail'], false, []).flatMap(app => app.sections.flatMap(section => section.items)).some(item => item.path === '/ledger/multi-column')).toBe(false)
+    })
     it('分组内子项全被过滤时分组隐藏，应用内分组全空时应用隐藏', () => {
       const apps = buildNavApps(['system:backup'], false, [])
       expect(apps.map(a => a.key)).toEqual(['system'])
@@ -178,7 +191,7 @@ describe('navigation permissions', () => {
       const apps = buildNavApps(ADMIN_PERMISSIONS, true, [])
       const basedata = apps.find(a => a.key === 'basedata')
       expect(basedata?.sections.map(s => s.label)).toEqual(['财务档案', '出纳档案', '资产档案', '供应链档案', '报表与打印'])
-      expect(basedata?.sections[0].items.map(i => i.title)).toEqual(['会计科目', '期初余额', '凭证类型', '凭证模版', '结转维护'])
+      expect(basedata?.sections[0].items.map(i => i.title)).toEqual(['会计科目', '套账信息', '期初余额', '凭证类型', '凭证模版', '结转维护'])
     })
 
     it('buildMenuGroups 兼容层：每个应用摊平为一个 NavGroup，children 为全部页面、subGroups 对应分组', () => {
@@ -293,6 +306,39 @@ describe('navigation permissions', () => {
       expect(canAccessRoute('/scm/docs?doc_type=WO', ADMIN_PERMISSIONS)).toBe(true)
     })
 
+    it('辅助项目多栏明细账受 ledger:aux 控制', () => {
+      expect(getRoutePermissions('/ledger/aux-multi-column')).toEqual(['ledger:aux'])
+      expect(canAccessRoute('/ledger/aux-multi-column', ['ledger:aux'])).toBe(true)
+      expect(canAccessRoute('/ledger/aux-multi-column', ['ledger:detail'])).toBe(false)
+      const items = flattenNavApps(buildNavApps(['ledger:aux'], true, []))
+      expect(items.some(item => item.path === '/ledger/aux-multi-column')).toBe(true)
+    })
+
+    it('isValidHomePath 校验自定义默认主页', () => {
+      // 模块主页：按标题在可见导航树中查找（支持 URL 编码与旧标题别名）
+      expect(isValidHomePath('/group/出纳管理', ADMIN_PERMISSIONS)).toBe(true)
+      expect(isValidHomePath(`/group/${encodeURIComponent('出纳管理')}`, ADMIN_PERMISSIONS)).toBe(true)
+      expect(isValidHomePath('/group/资金管理', ADMIN_PERMISSIONS)).toBe(true)
+      expect(isValidHomePath('/group/出纳管理', ['voucher:query'])).toBe(false)
+      expect(isValidHomePath('/group/不存在的模块', ADMIN_PERMISSIONS)).toBe(false)
+      // 普通页面：走 canAccessRoute
+      expect(isValidHomePath('/voucher/query', ['voucher:query'])).toBe(true)
+      expect(isValidHomePath('/voucher/entry', ['voucher:query'])).toBe(false)
+      expect(isValidHomePath('', ADMIN_PERMISSIONS)).toBe(false)
+    })
+
+    it('getDefaultLandingPath 优先使用有效的自定义主页，无效时回退', () => {
+      expect(getDefaultLandingPath(ADMIN_PERMISSIONS, false, undefined, '/group/出纳管理')).toBe(
+        '/group/出纳管理'
+      )
+      // 无权限的自定义主页回退到 /dashboard
+      expect(getDefaultLandingPath(ADMIN_PERMISSIONS, false, undefined, '/group/不存在的模块')).toBe(
+        '/dashboard'
+      )
+      // 未设置时行为不变
+      expect(getDefaultLandingPath(ADMIN_PERMISSIONS, false, undefined, '')).toBe('/dashboard')
+    })
+
     it('getDefaultLandingPath 无总账授权且无主页权限时落到首个可用模块页面', () => {
       expect(getDefaultLandingPath(['voucher:query', 'scm:sale'], false, ['scm'])).toBe('/scm/docs')
       expect(getDefaultLandingPath(['voucher:query'], false, ['scm'])).toBe('/forbidden')
@@ -329,6 +375,9 @@ describe('navigation permissions', () => {
       expect(getRoutePermissions('/scm/report/outsource/execution')).toEqual(['scm:report'])
       expect(getRoutePermissions('/base/project/category/new')).toEqual(['base:project'])
       expect(getRoutePermissions('/base/project/category/cat-001/edit')).toEqual(['base:project'])
+      expect(getRoutePermissions('/base/print-template')).toEqual(['system:print'])
+      expect(getRoutePermissions('/base/print-template/design')).toEqual(['system:print'])
+      expect(getRoutePermissions('/base/print-template/design/abc')).toEqual(['system:print'])
     })
 
     it('动态报表 /report/run/:code 匹配 report:view', () => {

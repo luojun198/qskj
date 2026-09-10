@@ -8,7 +8,18 @@ const { join, resolve } = require('node:path')
 
 const projectRoot = resolve(process.argv[2] || '.')
 const deployDir = resolve(process.argv[3] || join(projectRoot, 'deploy-final'))
-const sourceDbPath = resolve(process.argv[4] || join(projectRoot, 'data', 'finance.db'))
+// 本分支(cw0523)开发库为 data/finance-0523.db（见 server/.env 的 DB_PATH）；
+// data/finance.db 是原项目 cw 的历史库，不能作为打包来源。
+function resolveSourceDb() {
+  if (process.argv[4]) return resolve(process.argv[4])
+  const candidates = ['finance-0523.db', 'finance.db']
+  for (const name of candidates) {
+    const candidate = join(projectRoot, 'data', name)
+    if (existsSync(candidate)) return candidate
+  }
+  return join(projectRoot, 'data', candidates[0])
+}
+const sourceDbPath = resolveSourceDb()
 const dbDir = join(deployDir, 'data')
 const destDbPath = join(dbDir, 'finance.db')
 

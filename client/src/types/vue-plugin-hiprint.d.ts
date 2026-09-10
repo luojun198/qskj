@@ -41,6 +41,7 @@ declare module 'vue-plugin-hiprint' {
     init(options?: Record<string, unknown>): void
     PrintTemplate: new (options: Record<string, unknown>) => HiprintTemplateInstance
     PrintElementTypeManager: PrintElementTypeManagerStatic
+    PrintElementTypeGroup: new (title: string, list: unknown[]) => unknown
     [key: string]: unknown
   }
 

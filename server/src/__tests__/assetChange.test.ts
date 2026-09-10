@@ -525,6 +525,61 @@ describe('固定资产变动引擎', () => {
       expect(a.net_value).toBe(10200)
     })
 
+    // ── A1 / A2 / A5 回归 ───────────────────────────────────
+
+    it('A1：撤销改良时还原被延长的使用月数', () => {
+      const result = change({
+        kind: 'improvement',
+        payload: { amount: 3000, use_months: 24 },
+        generateVoucher: true,
+        counterAccount: '1604',
+      })
+      expect(asset().use_months).toBe(24)
+
+      revokeAssetChange({ db, accountSetId: SET_ID, changeId: result.changeId })
+      const a = asset()
+      expect(a.use_months).toBe(12)
+      expect(a.original_value).toBe(12000)
+      expect(a.salvage_value).toBe(1200)
+      expect(a.net_value).toBe(10200)
+    })
+
+    it('A1：撤销原值变动时还原一并调整的残值率与残值', () => {
+      const result = change({
+        kind: 'original_value',
+        payload: { amount: 3000, salvage_rate: 0.2 },
+        generateVoucher: true,
+        counterAccount: '1001',
+      })
+      expect(asset().salvage_rate).toBe(0.2)
+      expect(asset().salvage_value).toBe(3000)
+
+      revokeAssetChange({ db, accountSetId: SET_ID, changeId: result.changeId })
+      const a = asset()
+      expect(a.salvage_rate).toBe(0.1)
+      expect(a.salvage_value).toBe(1200)
+      expect(a.original_value).toBe(12000)
+    })
+
+    it('A2：撤销残值率调整时按还原后的残值率重算残值', () => {
+      const result = change({ kind: 'depr_factor', payload: { salvage_rate: 0.25 } })
+      expect(asset().salvage_value).toBe(3000)
+
+      revokeAssetChange({ db, accountSetId: SET_ID, changeId: result.changeIds[0] })
+      const a = asset()
+      expect(a.salvage_rate).toBe(0.1)
+      expect(a.salvage_value).toBe(1200)
+    })
+
+    it('A5：撤销使用月数会使其不大于已计提月数时拦截', () => {
+      const result = change({ kind: 'depr_factor', payload: { use_months: 36 } })
+      // 期间之外补提折旧游标，模拟已提月数追上原月数的场景
+      db.prepare("UPDATE fixed_asset SET depr_months_done=12 WHERE asset_no='A1'").run()
+      expect(() =>
+        revokeAssetChange({ db, accountSetId: SET_ID, changeId: result.changeIds[0] })
+      ).toThrow(/不大于已计提月数/)
+    })
+
     it('存在更晚变动时必须逆序撤销', () => {
       const first = change({ kind: 'dept', changeDate: '2026-06-15', payload: { dept_code: 'D2' } })
       change({ kind: 'status', changeDate: '2026-07-15', payload: { status_code: '02' } })

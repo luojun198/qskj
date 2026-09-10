@@ -1,7 +1,7 @@
 <template>
   <div class="page scm-partner-page">
     
-    <div class="partner-toolbar">
+    <div class="partner-toolbar toolbar">
       <div v-if="!propType" class="partner-tabs">
         <el-radio-group v-model="activeTab" size="small" @change="onTabChange">
           <el-radio-button value="">全部</el-radio-button>
@@ -108,6 +108,6 @@ onMounted(load)
 <style scoped>
 .scm-partner-page { padding: 12px 16px; }
 .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
-.partner-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.partner-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
 .partner-add-btn { margin-left: auto; }
 </style>

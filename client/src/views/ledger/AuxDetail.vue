@@ -1846,7 +1846,7 @@ onActivated(() => {
   padding: 6px 12px;
   background-color: #f5f7fa;
   border-radius: 4px;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   line-height: 1.5;
   color: #606266;
 }
@@ -1884,7 +1884,7 @@ onActivated(() => {
 }
 
 .filter-item label {
-  font-size: 14px;
+  font-size: var(--cw-text-base);
   font-weight: 500;
   color: #303133;
 }
@@ -1899,7 +1899,7 @@ onActivated(() => {
 .date-separator,
 .amount-separator {
   color: #909399;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
 }
 
 .drawer-footer {
@@ -1949,7 +1949,7 @@ onActivated(() => {
 }
 
 .category-label {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   font-weight: 600;
   color: #606266;
 }
@@ -1963,7 +1963,7 @@ onActivated(() => {
   padding: 12px;
   text-align: center;
   color: #909399;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   background-color: #f5f7fa;
   border-radius: 4px;
 }

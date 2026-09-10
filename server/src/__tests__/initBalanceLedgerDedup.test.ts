@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach } from 'vitest'
 import Database from 'better-sqlite3'
 import { buildAccountInitBalanceExpr } from '../services/ledgerQuery.js'
+import { buildInitBalanceSumExpr } from '../services/initBalanceScope.js'
 
 describe('init_balances 期初去重', () => {
   let db: Database.Database
@@ -61,5 +62,43 @@ describe('init_balances 期初去重', () => {
     const sql = `SELECT ${buildAccountInitBalanceExpr("'a1'")} as v`
     const right = db.prepare(sql).get('as1', 2026) as { v: number }
     expect(right.v).toBe(500)
+  })
+
+  // FIX-104（评审报告 B1）：账簿侧原本是「有 aux 行就 SUM 全部 aux 行」，
+  // 报表侧（reportBalance）早已改成取科目汇总行——同一科目账簿 91、报表 182 各说各话。
+  it('多辅助类目：账簿口径与报表口径取到同一个期初', () => {
+    db.prepare(`DELETE FROM init_balances`).run()
+    db.prepare(
+      `INSERT INTO init_balances VALUES ('s0', 'as1', 'a1', 'debit', 2026, 1, 91, 91, 0, '')`
+    ).run()
+    db.prepare(
+      `INSERT INTO init_balances VALUES ('s1', 'as1', 'a1', 'debit', 2026, 1, 91, 91, 0, 'dept:d1')`
+    ).run()
+    db.prepare(
+      `INSERT INTO init_balances VALUES ('s2', 'as1', 'a1', 'debit', 2026, 1, 91, 91, 0, 'pers:p1')`
+    ).run()
+
+    // 老账簿口径（保留在这里作为反例）会得到 182
+    const legacy = db
+      .prepare(
+        `SELECT SUM(init_balance) as v FROM init_balances
+         WHERE account_id='a1' AND year=2026 AND aux_item_id != ''`
+      )
+      .get() as { v: number }
+    expect(legacy.v).toBe(182)
+
+    const ledger = db
+      .prepare(`SELECT ${buildAccountInitBalanceExpr("'a1'")} as v`)
+      .get('as1', 2026) as { v: number }
+    const report = db
+      .prepare(
+        `SELECT ${buildInitBalanceSumExpr()} as v FROM init_balances
+         WHERE account_set_id=? AND account_id='a1' AND year=? GROUP BY account_id`
+      )
+      .get('as1', 2026) as { v: number }
+
+    expect(ledger.v).toBe(91)
+    expect(report.v).toBe(91)
+    expect(ledger.v).toBe(report.v)
   })
 })

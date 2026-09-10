@@ -38,6 +38,8 @@ import {
   validateVoucherDate,
   findDuplicateEntries,
   validateVoucherEntriesCashFlow,
+  validateVoucherEntriesForeignCurrency,
+  validateVoucherEntriesQuantity,
   validateVoucherEntryAmounts,
   VOUCHER_ENTRY_INSERT_SQL,
   VOUCHER_NO_SEQ_SQL,
@@ -422,6 +424,16 @@ router.post(
         return res.status(400).json({ code: 400, message: cashFlowError })
       }
 
+      const foreignCurrencyError = validateVoucherEntriesForeignCurrency(db, req.accountSetId || '', entries)
+      if (foreignCurrencyError) {
+        return res.status(400).json({ code: 400, message: foreignCurrencyError })
+      }
+      
+      const quantityError = validateVoucherEntriesQuantity(db, req.accountSetId || '', entries)
+      if (quantityError) {
+        return res.status(400).json({ code: 400, message: quantityError })
+      }
+
       const insertScopeError = assertVoucherEntriesInAccountScope(
         req.accountScope || { bypass: true, restricted: false, allowedAccountIds: new Set() },
         entries.map((e: VoucherEntryInput) => e.account_id)
@@ -658,6 +670,16 @@ router.post(
     const cashFlowError = validateVoucherEntriesCashFlow(db, req.accountSetId || '', entries)
     if (cashFlowError) {
       return res.status(400).json({ code: 400, message: cashFlowError })
+    }
+
+    const foreignCurrencyError = validateVoucherEntriesForeignCurrency(db, req.accountSetId || '', entries)
+    if (foreignCurrencyError) {
+      return res.status(400).json({ code: 400, message: foreignCurrencyError })
+    }
+    
+    const quantityError = validateVoucherEntriesQuantity(db, req.accountSetId || '', entries)
+    if (quantityError) {
+      return res.status(400).json({ code: 400, message: quantityError })
     }
 
     const scopeError = assertVoucherEntriesInAccountScope(
@@ -952,7 +974,15 @@ router.post(
               e.func_class_name ?? null,
               e.aux_data ?? null,
               e.cash_flow_code ?? null,
-              e.cash_flow_name ?? null
+              e.cash_flow_name ?? null,
+              // 外币三列在 migration 114 追加进 VOUCHER_ENTRY_INSERT_SQL，此处手写参数一直漏传，
+              // 导致冲红必然抛「参数个数不符」；随数量三列一并补齐。
+              e.currency_code ?? null,
+              e.exchange_rate ?? null,
+              e.foreign_amount ?? null,
+              e.quantity ?? null,
+              e.unit_price ?? null,
+              e.unit ?? null
             )
           })
 
@@ -1385,6 +1415,16 @@ router.put(
       return res.status(400).json({ code: 400, message: cashFlowError })
     }
 
+    const foreignCurrencyError = validateVoucherEntriesForeignCurrency(db, req.accountSetId || '', entries)
+    if (foreignCurrencyError) {
+      return res.status(400).json({ code: 400, message: foreignCurrencyError })
+    }
+    
+    const quantityError = validateVoucherEntriesQuantity(db, req.accountSetId || '', entries)
+    if (quantityError) {
+      return res.status(400).json({ code: 400, message: quantityError })
+    }
+
     const updateDuplicateWarnings = findDuplicateEntries(entries)
     const updateDuplicateWarning =
       updateDuplicateWarnings.length > 0
@@ -1477,7 +1517,7 @@ router.put(
 //
 // FIX-007 / P1-10：补齐不相容职责 / 期间 / 日期 / 现金流必填校验
 //   - 权限：必须同时具备 voucher:entry 和 voucher:audit（因为该接口含再审核动作）
-//   - 制单人 ≠ 审核人（与普通审核一致）
+//   - 期间已结账不允许修改
 //   - 期间已结账不允许修改
 //   - 若同时改了 voucher_date：复用 validateVoucherDate + 时序控制
 //   - 现金流量必填项校验
@@ -1600,6 +1640,16 @@ router.put(
       return res.status(400).json({ code: 400, message: cashFlowError })
     }
 
+    const foreignCurrencyError = validateVoucherEntriesForeignCurrency(db, req.accountSetId || '', entries)
+    if (foreignCurrencyError) {
+      return res.status(400).json({ code: 400, message: foreignCurrencyError })
+    }
+    
+    const quantityError = validateVoucherEntriesQuantity(db, req.accountSetId || '', entries)
+    if (quantityError) {
+      return res.status(400).json({ code: 400, message: quantityError })
+    }
+
     const { debitTotal } = calculateVoucherTotals(entries)
     const { categories, itemMap } = loadVoucherAuxiliaryData({
       db,
@@ -1675,6 +1725,10 @@ router.delete(
       })
     }
     deleteVoucherRecords(db, id)
+    // 期末调汇凭证被手工删除（先反记账再删）后，释放该期间的调汇记录，允许重新生成
+    if (voucher?.source === 'fx_reval') {
+      db.prepare('DELETE FROM fx_revaluation_runs WHERE account_set_id=? AND voucher_id=?').run(req.accountSetId, id)
+    }
     // 清理冲红关联的对端引用，避免悬空导致原凭证永远显示「已冲红」而无法再次冲红
     db.prepare(
       'UPDATE vouchers SET reversed_by_voucher_id=NULL WHERE account_set_id=? AND reversed_by_voucher_id=?'
@@ -1888,6 +1942,58 @@ router.delete(
 
 // ===================== 打印数据接口 =====================
 
+/**
+ * 分录打印数据：除摘要/科目/借贷外，把数量单价、外币、现金流量以及辅助项目一并带出，
+ * 供打印模板按需勾选列。辅助项目同时给出 aux_data 原始结构和 aux_<类别code> 的扁平名称。
+ */
+function buildEntryPrintData(entry: any) {
+  let auxData: Record<string, { id?: string; name?: string; field_values?: Record<string, any> }> | null = null
+  if (entry.aux_data) {
+    try {
+      auxData = typeof entry.aux_data === 'string' ? JSON.parse(entry.aux_data) : entry.aux_data
+    } catch (e) {
+      console.error('解析辅助项目数据失败:', e)
+    }
+  }
+  const auxFlat: Record<string, string> = {}
+  if (auxData && typeof auxData === 'object') {
+    for (const [code, item] of Object.entries(auxData)) {
+      const safeCode = String(code).replace(/[^a-zA-Z0-9_]/g, '')
+      if (safeCode) auxFlat[`aux_${safeCode}`] = item?.name || ''
+    }
+  }
+  // 兼容只写了固定列（dept_name 等）而没写 aux_data 的历史数据
+  const legacyAux: Array<[string, string | null | undefined]> = [
+    ['dept', entry.dept_name],
+    ['project', entry.project_name],
+    ['supplier', entry.supplier_name],
+    ['person', entry.person_name],
+    ['func_class', entry.func_class_name],
+  ]
+  for (const [code, name] of legacyAux) {
+    if (name && !auxFlat[`aux_${code}`]) auxFlat[`aux_${code}`] = name
+  }
+
+  return {
+    summary: entry.summary || '',
+    account_code: entry.account_code || '',
+    account_name: entry.account_name || '',
+    debit: entry.direction === 'debit' ? entry.amount || 0 : 0,
+    credit: entry.direction === 'credit' ? entry.amount || 0 : 0,
+    quantity: entry.quantity || 0,
+    unit_price: entry.unit_price || 0,
+    unit: entry.unit || '',
+    currency_code: entry.currency_code || '',
+    exchange_rate: entry.exchange_rate || 0,
+    foreign_amount: entry.foreign_amount || 0,
+    cash_flow_code: entry.cash_flow_code || '',
+    cash_flow_name: entry.cash_flow_name || '',
+    aux_items: entry.aux_items || [],
+    aux_data: auxData,
+    ...auxFlat,
+  }
+}
+
 // 获取单张凭证打印数据
 // FIX-020 / P2-35：router.use(authMiddleware) 已在文件顶部注册，移除路由级重复挂载
 router.get('/print-data/:id', (req: AuthRequest, res) => {
@@ -1918,28 +2024,7 @@ router.get('/print-data/:id', (req: AuthRequest, res) => {
       .get(req.accountSetId || '') as any
     const unitName = unitNameParam?.param_value || accountSet?.name || ''
 
-    // 格式化分录数据（direction+amount → debit/credit）
-    const entries = detail.entries.map((entry: any) => {
-      // 解析辅助项目数据
-      let auxData = null
-      if (entry.aux_data) {
-        try {
-          auxData = typeof entry.aux_data === 'string' ? JSON.parse(entry.aux_data) : entry.aux_data
-        } catch (e) {
-          console.error('解析辅助项目数据失败:', e)
-        }
-      }
-
-      return {
-        summary: entry.summary || '',
-        account_code: entry.account_code || '',
-        account_name: entry.account_name || '',
-        debit: entry.direction === 'debit' ? entry.amount || 0 : 0,
-        credit: entry.direction === 'credit' ? entry.amount || 0 : 0,
-        aux_items: entry.aux_items || [],
-        aux_data: auxData,
-      }
-    })
+    const entries = detail.entries.map(buildEntryPrintData)
 
     // 计算合计（calculateVoucherTotals 返回 debitTotal/creditTotal）
     const totals = calculateVoucherTotals(detail.entries)
@@ -2089,28 +2174,7 @@ router.post('/print-data/batch', (req: AuthRequest, res) => {
         const detail = getVoucherDetail({ db, voucherId: voucher.id })
         if (!detail) return null
 
-        const entries = detail.entries.map((entry: any) => {
-          // 解析辅助项目数据
-          let auxData = null
-          if (entry.aux_data) {
-            try {
-              auxData =
-                typeof entry.aux_data === 'string' ? JSON.parse(entry.aux_data) : entry.aux_data
-            } catch (e) {
-              console.error('解析辅助项目数据失败:', e)
-            }
-          }
-
-          return {
-            summary: entry.summary || '',
-            account_code: entry.account_code || '',
-            account_name: entry.account_name || '',
-            debit: entry.direction === 'debit' ? entry.amount || 0 : 0,
-            credit: entry.direction === 'credit' ? entry.amount || 0 : 0,
-            aux_items: entry.aux_items || [],
-            aux_data: auxData,
-          }
-        })
+        const entries = detail.entries.map(buildEntryPrintData)
 
         const totals = calculateVoucherTotals(detail.entries)
 

@@ -230,6 +230,29 @@ interface ChangeContext {
 }
 
 /** 写一条变动流水，返回其 id */
+/** 原值类变动写入 old_text 的旧值快照（见 applyValueChange） */
+interface ValueChangeSnapshot {
+  salvage_rate: number
+  salvage_value: number
+  use_months: number
+}
+
+/** 解析原值类变动的快照；旧记录没有快照时返回 null，调用方退回兼容行为。 */
+function parseValueSnapshot(text: unknown): ValueChangeSnapshot | null {
+  if (typeof text !== 'string' || !text.startsWith('{')) return null
+  try {
+    const o = JSON.parse(text)
+    if (o == null || typeof o !== 'object') return null
+    return {
+      salvage_rate: Number(o.salvage_rate || 0),
+      salvage_value: Number(o.salvage_value || 0),
+      use_months: Number(o.use_months || 0),
+    }
+  } catch {
+    return null
+  }
+}
+
 function writeChange(
   ctx: ChangeContext,
   row: {
@@ -329,12 +352,19 @@ function applyValueChange(
 
   const voucher = ctx.generateVoucher ? generateValueChangeVoucher(ctx, kind, amount) : null
 
+  // FIX：撤销时需要还原的不止 original_value——本次可能一并改了残值率与使用月数，
+  // 把这些旧值以 JSON 快照存进 old_text（该字段在原值类变动中原本未使用，无需迁移）。
   const changeId = writeChange(ctx, {
     kind,
     changeItem: kind === 'improvement' ? '大修改良' : '原值增减',
     oldValue: oldOriginal,
     newValue: newOriginal,
     amount,
+    oldText: JSON.stringify({
+      salvage_rate: Number(asset.salvage_rate || 0),
+      salvage_value: Number(asset.salvage_value || 0),
+      use_months: Number(asset.use_months || 0),
+    }),
     voucherId: voucher?.voucherId ?? null,
   })
 
@@ -921,13 +951,29 @@ export function revokeAssetChange(params: {
       case 'original_value':
       case 'improvement': {
         const restoredOriginal = Number(change.old_value ?? asset.original_value)
-        const salvageRate = Number(asset.salvage_rate || 0)
+        // FIX：优先按变动时写入的快照还原残值率 / 残值 / 使用月数；
+        // 旧记录（无快照）退回原行为，只还原原值并按现残值率重算残值。
+        const snap = parseValueSnapshot(change.old_text)
+        const salvageRate = snap?.salvage_rate ?? Number(asset.salvage_rate || 0)
+        const restoredSalvage = snap?.salvage_value ?? round2(restoredOriginal * salvageRate)
+        const restoredUseMonths = snap?.use_months ?? Number(asset.use_months || 0)
+        if (
+          restoredUseMonths !== Number(asset.use_months || 0) &&
+          restoredUseMonths <= Number(asset.depr_months_done || 0)
+        ) {
+          throw new Error(
+            `撤销后的使用月数（${restoredUseMonths}）不大于已计提月数（${asset.depr_months_done}），无法撤销`
+          )
+        }
         db.prepare(
-          `UPDATE fixed_asset SET original_value=?, salvage_value=?, net_value=?, updated_at=datetime('now')
+          `UPDATE fixed_asset SET original_value=?, salvage_rate=?, salvage_value=?, use_months=?,
+             net_value=?, updated_at=datetime('now')
             WHERE id=?`
         ).run(
           restoredOriginal,
-          round2(restoredOriginal * salvageRate),
+          salvageRate,
+          restoredSalvage,
+          restoredUseMonths,
           calcNetValue(
             restoredOriginal,
             Number(asset.accum_depr || 0),
@@ -964,10 +1010,24 @@ export function revokeAssetChange(params: {
         if (!DEPR_FACTOR_FIELDS[field]) throw new Error(`未知的折旧要素字段：${field}`)
         const restored =
           field === 'depr_method' ? change.old_text : (change.old_value ?? Number(change.old_text))
+        // FIX：撤销使用月数时兜底校验，避免还原后小于已计提月数导致折旧静默停止
+        if (field === 'use_months' && Number(restored) <= Number(asset.depr_months_done || 0)) {
+          throw new Error(
+            `撤销后的使用月数（${restored}）不大于已计提月数（${asset.depr_months_done}），无法撤销`
+          )
+        }
         db.prepare(`UPDATE fixed_asset SET ${field}=?, updated_at=datetime('now') WHERE id=?`).run(
           restored ?? null,
           asset.id
         )
+        // FIX：残值率是残值的计算依据，还原残值率后必须按还原值重算残值与净值，
+        // 否则残值停留在调整后的数，后续「剩余期间摊余」折旧算错。
+        if (field === 'salvage_rate') {
+          const restoredSalvage = round2(Number(asset.original_value || 0) * Number(restored || 0))
+          db.prepare(
+            `UPDATE fixed_asset SET salvage_value=?, updated_at=datetime('now') WHERE id=?`
+          ).run(restoredSalvage, asset.id)
+        }
         break
       }
     }

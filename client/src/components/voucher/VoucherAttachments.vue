@@ -415,7 +415,7 @@ function formatDate(dateString: string): string {
 }
 
 .compact-file-list .empty-text {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   color: #c0c4cc;
 }
 
@@ -463,7 +463,7 @@ function formatDate(dateString: string): string {
 
 .attachment-count {
   color: #909399;
-  font-size: 14px;
+  font-size: var(--cw-text-base);
   font-weight: normal;
 }
 
@@ -607,7 +607,7 @@ function formatDate(dateString: string): string {
 .excel-preview-container :deep(td) {
   border: 1px solid #dcdfe6;
   padding: 4px 8px;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   min-width: 60px;
 }
 .excel-preview-container :deep(tr:nth-child(even)) {

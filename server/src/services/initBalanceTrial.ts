@@ -2,6 +2,8 @@
  * 期初试算平衡（与期初录入页 leaf 节点口径一致）
  */
 
+import { pickInitBalanceRows } from './initBalanceScope.js'
+
 export interface InitBalanceTrialTotals {
   balanced: boolean
   totalDebit: number
@@ -44,7 +46,7 @@ function rowCredit(row: InitBalanceRow): number {
   return row.init_credit || 0
 }
 
-/** 按末级科目汇总期初借贷（避免父科目重复累加；辅助科目只计 aux 明细行） */
+/** 按末级科目汇总期初借贷（避免父科目重复累加；辅助科目取科目汇总行，见 initBalanceScope） */
 export function getInitBalanceTrialTotals(
   db: {
     prepare: (sql: string) => {
@@ -84,8 +86,8 @@ export function getInitBalanceTrialTotals(
     const rows = loadRows.all(accountSetId, accountId, year) as InitBalanceRow[]
     if (rows.length === 0) continue
 
-    const auxRows = rows.filter(r => r.aux_item_id)
-    const rowsToSum = auxRows.length > 0 ? auxRows : rows.filter(r => !r.aux_item_id)
+    // FIX-104：与账簿/报表共用「汇总行优先」口径，多辅助类目不再成倍累加
+    const rowsToSum = pickInitBalanceRows(rows)
 
     for (const row of rowsToSum) {
       totalDebit += rowDebit(row)

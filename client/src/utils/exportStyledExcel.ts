@@ -18,7 +18,18 @@ export type ExportProgressCallback = (info: {
 export type ExportAlign = 'left' | 'center' | 'right'
 export type ExportValueType = 'text' | 'amount' | 'number' | 'integer'
 
-export type ExportColumnDef<T = Record<string, unknown>> = {
+/**
+ * 导出列定义。
+ *
+ * 泛型默认 `any` 而非 `Record<string, unknown>`：后者会把 `row.xxx` 一律推成 `unknown`，
+ * 而项目里大量调用方写的是裸 `ExportColumnDef[]`、行数据本身也是 `any[]`，
+ * 于是每个 `value: row => row.amount` 都报 TS2322，制造了上百条无效噪音，
+ * 反而让 vue-tsc 无法充当门禁。
+ *
+ * 想要类型检查请显式传行类型（如 `ExportColumnDef<LedgerBalanceRow>[]`，
+ * 见 `ledgerExportBuilders.ts`），那条路径的检查强度不受本默认值影响。
+ */
+export type ExportColumnDef<T = any> = {
   label: string
   width?: number
   align?: ExportAlign
@@ -29,13 +40,18 @@ export type ExportColumnDef<T = Record<string, unknown>> = {
   bold?: (row: T) => boolean
 }
 
-export type ExportStyledTableOptions<T = Record<string, unknown>> = {
+export type ExportStyledTableOptions<T = any> = {
   fileName: string
   sheetName?: string
   title?: string
   subtitle?: string
   columns: ExportColumnDef<T>[]
   rows: T[]
+  /**
+   * 合计行之前的小计行（如外币表按币种小计）。每行与叶子列一一对应，
+   * 首列原样取数组内容（不像 summaryValues 那样强制写「合计」）。
+   */
+  subtotalRows?: (string | number | null | undefined)[][]
   /** 与叶子列一一对应的合计值；首列会自动写入「合计」 */
   summaryValues?: (string | number | null | undefined)[]
   stripe?: boolean
@@ -343,6 +359,7 @@ export async function exportStyledTableViaServer<T>(
     subtitle,
     columns,
     rows,
+    subtotalRows,
     summaryValues,
     stripe,
     onProgress,
@@ -365,6 +382,7 @@ export async function exportStyledTableViaServer<T>(
     subtitle,
     columns: serializeColumns(columns),
     rows: resolvedRows,
+    subtotalRows: subtotalRows?.map(row => row.map(v => (v === undefined ? null : v))),
     summaryValues: summaryValues?.map(v => (v === undefined ? null : v)),
     stripe,
   }
@@ -401,6 +419,7 @@ function appendStyledSheet<T>(
     subtitle,
     columns,
     rows,
+    subtotalRows,
     summaryValues,
     stripe = true,
   } = options
@@ -481,6 +500,17 @@ function appendStyledSheet<T>(
     })
     currentRow += 1
   })
+
+  for (const subtotal of subtotalRows || []) {
+    const row = worksheet.getRow(currentRow)
+    row.height = 18
+    leafColumns.forEach((column, colIndex) => {
+      const cell = row.getCell(colIndex + 1)
+      cell.value = normalizeCellValue(subtotal[colIndex] ?? '')
+      applyCellStyle(cell, { align: column.align, type: column.type, bold: true })
+    })
+    currentRow += 1
+  }
 
   if (summaryValues?.length) {
     const row = worksheet.getRow(currentRow)

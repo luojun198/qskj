@@ -2,7 +2,7 @@
   <div class="page page-ledger page-ledger-aux">
     <div class="page-header">
       <div class="header-left">
-        <h3>辅助项目余额表</h3>
+        <h3>{{ pageTitle }}</h3>
         <div class="filter-hint">
           <span class="filter-hint-label">当前筛选：</span>
           <span class="filter-hint-text">{{ filterHintText }}</span>
@@ -183,6 +183,24 @@
           <el-input v-model="filters.account_code" placeholder="科目编码" clearable />
         </div>
 
+        <div v-if="isForeign" class="filter-item">
+          <label>币种</label>
+          <el-select
+            v-model="filters.currency_code"
+            clearable
+            filterable
+            placeholder="全部外币"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="c in currencies"
+              :key="c.code"
+              :label="`${c.code} ${c.name}`"
+              :value="c.code"
+            />
+          </el-select>
+        </div>
+
         <div class="filter-item">
           <el-checkbox v-model="filters.include_unposted"> 统计未记账凭证 </el-checkbox>
         </div>
@@ -257,7 +275,26 @@
           </el-table-column>
         </template>
 
-        <!-- 固定余额列 -->
+        <!-- 外币模式：币种 + 期末汇率 -->
+        <el-table-column
+          v-if="isForeign"
+          column-key="currency_code"
+          prop="currency_code"
+          label="币种"
+          :width="colWidth('currency_code', 70)"
+          align="center"
+        />
+        <el-table-column
+          v-if="isForeign"
+          column-key="exchange_rate"
+          label="汇率"
+          :width="colWidth('exchange_rate', 90)"
+          align="right"
+        >
+          <template #default="{ row }">{{ rateText(row.currency_code) }}</template>
+        </el-table-column>
+
+        <!-- 固定余额列（外币模式下每段追加「原币」列，本位币列改名） -->
         <el-table-column label="期初余额" align="center">
           <el-table-column
             column-key="init_direction"
@@ -275,9 +312,33 @@
             </template>
           </el-table-column>
           <el-table-column
+            v-if="isForeign"
+            column-key="foreign_init_balance"
+            prop="foreign_init_balance"
+            label="原币"
+            :width="colWidth('foreign_init_balance', 120)"
+            align="right"
+          >
+            <template #default="{ row }">
+              {{ formatForeignAmount(Math.abs(row.foreign_init_balance || 0)) }}
+            </template>
+          </el-table-column>
+          <el-table-column
+            v-if="isQuantity"
+            column-key="qty_init_balance"
+            prop="qty_init_balance"
+            label="数量"
+            :width="colWidth('qty_init_balance', 120)"
+            align="right"
+          >
+            <template #default="{ row }">
+              {{ formatQuantityValue(row.qty_init_balance) }}
+            </template>
+          </el-table-column>
+          <el-table-column
             column-key="init_balance"
             prop="init_balance"
-            label="余额"
+            :label="isForeign ? '本位币' : isQuantity ? '金额' : '余额'"
             :width="colWidth('init_balance', 130)"
             align="right"
           >
@@ -288,9 +349,33 @@
         </el-table-column>
         <el-table-column label="本期发生额" align="center">
           <el-table-column
+            v-if="isForeign"
+            column-key="foreign_current_debit"
+            prop="foreign_current_debit"
+            label="借方原币"
+            :width="colWidth('foreign_current_debit', 120)"
+            align="right"
+          >
+            <template #default="{ row }">
+              {{ formatForeignAmount(row.foreign_current_debit) }}
+            </template>
+          </el-table-column>
+          <el-table-column
+            v-if="isQuantity"
+            column-key="qty_current_debit"
+            prop="qty_current_debit"
+            label="借方数量"
+            :width="colWidth('qty_current_debit', 120)"
+            align="right"
+          >
+            <template #default="{ row }">
+              {{ formatQuantityValue(row.qty_current_debit) }}
+            </template>
+          </el-table-column>
+          <el-table-column
             column-key="current_debit"
             prop="current_debit"
-            label="借方"
+            :label="isForeign ? '借方本位币' : isQuantity ? '借方金额' : '借方'"
             :width="colWidth('current_debit', 130)"
             align="right"
           >
@@ -299,9 +384,33 @@
             </template>
           </el-table-column>
           <el-table-column
+            v-if="isForeign"
+            column-key="foreign_current_credit"
+            prop="foreign_current_credit"
+            label="贷方原币"
+            :width="colWidth('foreign_current_credit', 120)"
+            align="right"
+          >
+            <template #default="{ row }">
+              {{ formatForeignAmount(row.foreign_current_credit) }}
+            </template>
+          </el-table-column>
+          <el-table-column
+            v-if="isQuantity"
+            column-key="qty_current_credit"
+            prop="qty_current_credit"
+            label="贷方数量"
+            :width="colWidth('qty_current_credit', 120)"
+            align="right"
+          >
+            <template #default="{ row }">
+              {{ formatQuantityValue(row.qty_current_credit) }}
+            </template>
+          </el-table-column>
+          <el-table-column
             column-key="current_credit"
             prop="current_credit"
-            label="贷方"
+            :label="isForeign ? '贷方本位币' : isQuantity ? '贷方金额' : '贷方'"
             :width="colWidth('current_credit', 130)"
             align="right"
           >
@@ -327,9 +436,33 @@
             </template>
           </el-table-column>
           <el-table-column
+            v-if="isForeign"
+            column-key="foreign_end_balance"
+            prop="foreign_end_balance"
+            label="原币"
+            :width="colWidth('foreign_end_balance', 120)"
+            align="right"
+          >
+            <template #default="{ row }">
+              {{ formatForeignAmount(Math.abs(row.foreign_end_balance || 0)) }}
+            </template>
+          </el-table-column>
+          <el-table-column
+            v-if="isQuantity"
+            column-key="qty_end_balance"
+            prop="qty_end_balance"
+            label="数量"
+            :width="colWidth('qty_end_balance', 120)"
+            align="right"
+          >
+            <template #default="{ row }">
+              {{ formatQuantityValue(row.qty_end_balance) }}
+            </template>
+          </el-table-column>
+          <el-table-column
             column-key="end_balance"
             prop="end_balance"
-            label="余额"
+            :label="isForeign ? '本位币' : isQuantity ? '金额' : '余额'"
             :width="colWidth('end_balance', 130)"
             align="right"
           >
@@ -364,8 +497,14 @@
     <HiprintDialog
       v-model="hiprintVisible"
       template-type="ledger"
-      template-key="ledger:aux-balance"
-      title="辅助项目余额表"
+      :template-key="
+        isForeign
+          ? 'ledger:aux-foreign-balance'
+          : isQuantity
+            ? 'ledger:aux-quantity-balance'
+            : 'ledger:aux-balance'
+      "
+      :title="pageTitle"
       :get-print-html="buildPrintHtml"
       default-paper="A4"
       default-orientation="landscape"
@@ -389,7 +528,12 @@ import { filterAuxCategoriesForAccount } from '@/utils/accountCashFlow'
 import { useAuxWideTable } from '@/composables/useColumnWidthMemory'
 import { useFillHeightTable } from '@/composables/useFillHeightTable'
 import { exportStyledTableViaServer, type ExportColumnDef } from '@/utils/exportStyledExcel'
-import { buildAuxBalanceExportSummaryValues } from '@/utils/ledgerExportBuilders'
+import {
+  buildAuxBalanceExportSummaryValues,
+  buildAuxForeignBalanceExportSummaryValues,
+  buildAuxForeignBalanceSubtotalRows,
+  type AuxForeignTotals,
+} from '@/utils/ledgerExportBuilders'
 import {
   formatSignedBalanceAmount,
   formatInitBalanceDirection,
@@ -403,10 +547,52 @@ import ExportProgressOverlay from '@/components/export/ExportProgressOverlay.vue
 import HiprintDialog from '@/components/print/HiprintDialog.vue'
 import { buildTablePrintHtml } from '@/utils/printTemplateHiprint'
 import { useUserStore } from '@/stores/user'
+import { getCurrencies, type Currency } from '@/api/currency'
 
-const exportProgress = useExportProgress('正在导出辅助项目余额表')
+/**
+ * foreign=true 时为「辅助项目外币余额表」：只统计外币核算科目，
+ * 在同一张表上追加币种列与原币期初/发生/期末，本位币列保留。
+ *
+ * quantity=true 时为「辅助项目库存数量金额表」：只统计数量核算科目，
+ * 在同一张表上追加数量期初/发生/结余列，金额列保留。两者互斥。
+ */
+const props = withDefaults(defineProps<{ foreign?: boolean; quantity?: boolean }>(), {
+  foreign: false,
+  quantity: false,
+})
+const isForeign = computed(() => !!props.foreign)
+const isQuantity = computed(() => !props.foreign && !!props.quantity)
+const pageTitle = computed(() =>
+  isForeign.value
+    ? '辅助项目外币余额表'
+    : isQuantity.value
+      ? '辅助项目库存数量金额表'
+      : '辅助项目余额表'
+)
+
+/** 数量展示：6 位小数，0 留空（与库存数量金额表一致） */
+function formatQuantityValue(value: number | null | undefined) {
+  const n = Number(value) || 0
+  return n ? Math.abs(n).toFixed(6) : ''
+}
+
+const exportProgress = useExportProgress(`正在导出${pageTitle.value}`)
 const { accountSetName } = storeToRefs(useUserStore())
 const hiprintVisible = ref(false)
+const currencies = ref<Currency[]>([])
+
+/** 原币金额展示：与本位币一致保留两位小数 */
+function formatForeignAmount(value: number | null | undefined) {
+  return formatAmount(Number(value) || 0)
+}
+
+/** 各币种期末汇率，来自后端 rates（与外币余额表、期末调汇同一条回退链） */
+const foreignRates = ref<Record<string, number>>({})
+
+function rateText(currencyCode: string | null | undefined): string {
+  const rate = foreignRates.value[String(currencyCode || '').toUpperCase()]
+  return rate ? Number(rate).toFixed(4) : ''
+}
 
 const AUX_BALANCE_ITEM_BATCH = 5000
 const CHUNKED_LOAD_THRESHOLD = 500
@@ -429,7 +615,20 @@ const grandTotals = ref<{
   current_debit: number
   current_credit: number
   end_balance: number
+  qty_init_balance?: number
+  qty_current_debit?: number
+  qty_current_credit?: number
+  qty_end_balance?: number
 } | null>(null)
+/** 外币模式：按币种分列的原币合计（不同币种不能相加） */
+const foreignTotals = ref<Record<string, AuxForeignTotals> | null>(null)
+/** 表尾原币合计：结果只含一个币种时才可直接显示，多币种留空 */
+const singleCurrencyForeignTotals = computed<AuxForeignTotals | null>(() => {
+  const totals = foreignTotals.value
+  if (!totals) return null
+  const keys = Object.keys(totals)
+  return keys.length === 1 ? totals[keys[0]] : null
+})
 const currentPage = ref(1)
 const pageSize = ref(50)
 const hasQueried = ref(false)
@@ -474,6 +673,7 @@ const filters = ref<any>({
   start_date: `${year}-01-01`,
   end_date: `${year}-12-31`,
   account_code: '',
+  currency_code: '',
   include_unposted: true,
 })
 
@@ -513,6 +713,9 @@ function buildAuxBalanceFilterParts(): string[] {
   }
   if (filters.value.account_code) {
     parts.push(`科目：${filters.value.account_code}`)
+  }
+  if (isForeign.value) {
+    parts.push(`币种：${filters.value.currency_code || '全部外币'}`)
   }
   parts.push(filters.value.include_unposted ? '含未记账凭证' : '仅已记账凭证')
   return parts
@@ -587,6 +790,38 @@ const auxColumnDefs = computed(() => {
   for (const cat of activeCategoryColumns.value) {
     defs.push({ key: cat.code, fallback: 140 })
   }
+  if (isForeign.value) {
+    defs.push(
+      { key: 'currency_code', fallback: 70 },
+      { key: 'exchange_rate', fallback: 90 },
+      { key: 'init_direction', fallback: 60 },
+      { key: 'foreign_init_balance', fallback: 120 },
+      { key: 'init_balance', fallback: 130 },
+      { key: 'foreign_current_debit', fallback: 120 },
+      { key: 'current_debit', fallback: 130 },
+      { key: 'foreign_current_credit', fallback: 120 },
+      { key: 'current_credit', fallback: 130 },
+      { key: 'end_direction', fallback: 60 },
+      { key: 'foreign_end_balance', fallback: 120 },
+      { key: 'end_balance', fallback: 130 }
+    )
+    return defs
+  }
+  if (isQuantity.value) {
+    defs.push(
+      { key: 'init_direction', fallback: 60 },
+      { key: 'qty_init_balance', fallback: 120 },
+      { key: 'init_balance', fallback: 130 },
+      { key: 'qty_current_debit', fallback: 120 },
+      { key: 'current_debit', fallback: 130 },
+      { key: 'qty_current_credit', fallback: 120 },
+      { key: 'current_credit', fallback: 130 },
+      { key: 'end_direction', fallback: 60 },
+      { key: 'qty_end_balance', fallback: 120 },
+      { key: 'end_balance', fallback: 130 }
+    )
+    return defs
+  }
   defs.push(
     { key: 'init_direction', fallback: 60 },
     { key: 'init_balance', fallback: 130 },
@@ -604,10 +839,18 @@ const {
   tableWidth: auxTableWidth,
   onDragEnd,
   afterTableLayout,
-} = useAuxWideTable('ledger_aux_balance', auxColumnDefs, {
-  columnKey: auxTableColumnKey,
-  afterLayout: relayoutAfterData,
-})
+} = useAuxWideTable(
+  isForeign.value
+    ? 'ledger_aux_foreign_balance'
+    : isQuantity.value
+      ? 'ledger_aux_quantity_balance'
+      : 'ledger_aux_balance',
+  auxColumnDefs,
+  {
+    columnKey: auxTableColumnKey,
+    afterLayout: relayoutAfterData,
+  }
+)
 
 function getSummaries(param: { columns: TableColumnCtx<any>[]; data: any[] }) {
   const { columns } = param
@@ -615,6 +858,7 @@ function getSummaries(param: { columns: TableColumnCtx<any>[]; data: any[] }) {
   if (!totals) {
     return columns.map((_, index) => (index === 0 ? '合计' : ''))
   }
+  const fx = singleCurrencyForeignTotals.value
 
   return columns.map((col, index) => {
     if (index === 0) return '合计'
@@ -636,6 +880,34 @@ function getSummaries(param: { columns: TableColumnCtx<any>[]; data: any[] }) {
     }
     if (key === 'end_balance') {
       return formatAmount(Math.abs(totals.end_balance))
+    }
+    if (key === 'currency_code') {
+      return fx ? Object.keys(foreignTotals.value || {})[0] || '' : foreignTotals.value ? '多币种' : ''
+    }
+    if (key === 'foreign_init_balance') {
+      return fx ? formatForeignAmount(Math.abs(fx.foreign_init_balance)) : ''
+    }
+    if (key === 'foreign_current_debit') {
+      return fx ? formatForeignAmount(fx.foreign_current_debit) : ''
+    }
+    if (key === 'foreign_current_credit') {
+      return fx ? formatForeignAmount(fx.foreign_current_credit) : ''
+    }
+    if (key === 'foreign_end_balance') {
+      return fx ? formatForeignAmount(Math.abs(fx.foreign_end_balance)) : ''
+    }
+    // 数量合计：不同科目的计量单位可能不同，仍按后端返回的总量展示，供核对用
+    if (key === 'qty_init_balance') {
+      return formatQuantityValue(totals.qty_init_balance)
+    }
+    if (key === 'qty_current_debit') {
+      return formatQuantityValue(totals.qty_current_debit)
+    }
+    if (key === 'qty_current_credit') {
+      return formatQuantityValue(totals.qty_current_credit)
+    }
+    if (key === 'qty_end_balance') {
+      return formatQuantityValue(totals.qty_end_balance)
     }
     return ''
   })
@@ -746,11 +1018,25 @@ function buildQueryParams(extra: Record<string, unknown> = {}) {
   if (filters.value.end_date) params.end_date = filters.value.end_date
   if (filters.value.account_code) params.account_code = filters.value.account_code
   if (filters.value.include_unposted) params.include_unposted = true
+  if (isForeign.value) {
+    params.with_foreign = true
+    if (filters.value.currency_code) params.currency_code = filters.value.currency_code
+  }
+  if (isQuantity.value) {
+    params.with_quantity = true
+  }
   return params
 }
 
-function auxBalanceRowKey(row: { account_code?: string; category_code?: string; aux_id?: string }) {
-  return `${row.account_code || ''}|${row.category_code || ''}|${row.aux_id || ''}`
+function auxBalanceRowKey(row: {
+  account_code?: string
+  category_code?: string
+  aux_id?: string
+  currency_code?: string
+}) {
+  return `${row.account_code || ''}|${row.category_code || ''}|${row.aux_id || ''}|${
+    row.currency_code || ''
+  }`
 }
 
 function sortAuxBalanceRows(rows: any[]) {
@@ -788,6 +1074,8 @@ async function fetchDataChunked() {
   list.value = []
   total.value = 0
   grandTotals.value = null
+  foreignTotals.value = null
+  foreignRates.value = {}
   clientSidePagination.value = true
   summaryLoading.value = false
 
@@ -812,6 +1100,8 @@ async function fetchDataChunked() {
       .post<any>('/ledger/aux-balance', buildQueryParams({ summary_only: true }))
       .then(res => {
         grandTotals.value = res.totals || null
+        foreignTotals.value = res.foreign_totals || null
+        foreignRates.value = res.rates || {}
       })
       .catch(error => {
         console.error('加载表尾合计失败:', error)
@@ -869,6 +1159,8 @@ async function fetchDataServerPage() {
     list.value = res.data || []
     total.value = res.total ?? 0
     grandTotals.value = res.totals || null
+    foreignTotals.value = res.foreign_totals || null
+    foreignRates.value = res.rates || {}
     hasQueried.value = true
     if (res.categoryFields) {
       categoryFields.value = res.categoryFields
@@ -904,6 +1196,8 @@ async function fetchSelectedItemsChunked() {
   list.value = []
   clientSidePagination.value = true
   grandTotals.value = null
+  foreignTotals.value = null
+  foreignRates.value = {}
   summaryLoading.value = true
 
   try {
@@ -938,6 +1232,8 @@ async function fetchSelectedItemsChunked() {
       buildQueryParams({ summary_only: true })
     )
     grandTotals.value = summaryRes.totals || null
+    foreignTotals.value = summaryRes.foreign_totals || null
+    foreignRates.value = summaryRes.rates || {}
     if (summaryRes.categoryFields) {
       categoryFields.value = summaryRes.categoryFields
     }
@@ -980,6 +1276,7 @@ async function exportData() {
 
   let exportRows = clientSidePagination.value && allRows.value.length > 0 ? allRows.value : []
   let exportTotals = grandTotals.value
+  let exportForeignTotals = foreignTotals.value
 
   try {
     if (exportRows.length === 0) {
@@ -997,6 +1294,7 @@ async function exportData() {
         if (page === 1) {
           serverTotal = (res as any).total ?? batch.length
           exportTotals = (res as any).totals as typeof grandTotals.value
+          exportForeignTotals = ((res as any).foreign_totals || null) as typeof foreignTotals.value
         }
         exportProgress.setFetchProgress(collected.length, serverTotal)
         if (batch.length === 0 || collected.length >= serverTotal) break
@@ -1013,7 +1311,7 @@ async function exportData() {
       return
     }
 
-    const columns: ExportColumnDef[] = [
+    const columns: ExportColumnDef<any>[] = [
       {
         label: '科目编码',
         width: colWidth('account_code', 140),
@@ -1034,76 +1332,135 @@ async function exportData() {
       })
     }
 
+    const foreign = isForeign.value
+    if (foreign) {
+      columns.push({
+        label: '币种',
+        width: colWidth('currency_code', 70),
+        align: 'center',
+        value: row => row.currency_code || '',
+      })
+      columns.push({
+        label: '汇率',
+        width: colWidth('exchange_rate', 90),
+        align: 'right',
+        value: row => rateText(row.currency_code),
+      })
+    }
+
+    const initChildren: ExportColumnDef<any>[] = [
+      {
+        label: '方向',
+        width: colWidth('init_direction', 60),
+        align: 'center',
+        value: row =>
+          formatInitBalanceDirection({
+            init_balance: row.init_balance,
+            direction: row.direction || row.account_direction || 'debit',
+          }),
+      },
+    ]
+    if (foreign) {
+      initChildren.push({
+        label: '原币',
+        width: colWidth('foreign_init_balance', 120),
+        align: 'right',
+        type: 'amount',
+        value: row => formatSignedBalanceAmount(row.foreign_init_balance || 0, false),
+      })
+    }
+    initChildren.push({
+      label: foreign ? '本位币' : '余额',
+      width: colWidth('init_balance', 130),
+      align: 'right',
+      type: 'amount',
+      value: row => formatSignedBalanceAmount(row.init_balance, false),
+    })
+
+    const currentChildren: ExportColumnDef<any>[] = []
+    if (foreign) {
+      currentChildren.push({
+        label: '借方原币',
+        width: colWidth('foreign_current_debit', 120),
+        align: 'right',
+        type: 'amount',
+        value: row => row.foreign_current_debit || 0,
+      })
+    }
+    currentChildren.push({
+      label: foreign ? '借方本位币' : '借方',
+      width: colWidth('current_debit', 130),
+      align: 'right',
+      type: 'amount',
+      value: row => row.current_debit || 0,
+    })
+    if (foreign) {
+      currentChildren.push({
+        label: '贷方原币',
+        width: colWidth('foreign_current_credit', 120),
+        align: 'right',
+        type: 'amount',
+        value: row => row.foreign_current_credit || 0,
+      })
+    }
+    currentChildren.push({
+      label: foreign ? '贷方本位币' : '贷方',
+      width: colWidth('current_credit', 130),
+      align: 'right',
+      type: 'amount',
+      value: row => row.current_credit || 0,
+    })
+
+    const endChildren: ExportColumnDef<any>[] = [
+      {
+        label: '方向',
+        width: colWidth('end_direction', 60),
+        align: 'center',
+        value: row =>
+          formatEndBalanceDirection({
+            end_balance: row.end_balance,
+            direction: row.direction || row.account_direction || 'debit',
+          }),
+      },
+    ]
+    if (foreign) {
+      endChildren.push({
+        label: '原币',
+        width: colWidth('foreign_end_balance', 120),
+        align: 'right',
+        type: 'amount',
+        value: row => formatSignedBalanceAmount(row.foreign_end_balance || 0, false),
+      })
+    }
+    endChildren.push({
+      label: foreign ? '本位币' : '余额',
+      width: colWidth('end_balance', 130),
+      align: 'right',
+      type: 'amount',
+      value: row => formatSignedBalanceAmount(row.end_balance, false),
+    })
+
     columns.push(
-      {
-        label: '期初余额',
-        children: [
-          {
-            label: '方向',
-            width: colWidth('init_direction', 60),
-            align: 'center',
-            value: row =>
-              formatInitBalanceDirection({
-                init_balance: row.init_balance,
-                direction: row.direction || row.account_direction || 'debit',
-              }),
-          },
-          {
-            label: '余额',
-            width: colWidth('init_balance', 130),
-            align: 'right',
-            type: 'amount',
-            value: row => formatSignedBalanceAmount(row.init_balance, false),
-          },
-        ],
-      },
-      {
-        label: '本期发生额',
-        children: [
-          {
-            label: '借方',
-            width: colWidth('current_debit', 130),
-            align: 'right',
-            type: 'amount',
-            value: row => row.current_debit || 0,
-          },
-          {
-            label: '贷方',
-            width: colWidth('current_credit', 130),
-            align: 'right',
-            type: 'amount',
-            value: row => row.current_credit || 0,
-          },
-        ],
-      },
-      {
-        label: '期末余额',
-        children: [
-          {
-            label: '方向',
-            width: colWidth('end_direction', 60),
-            align: 'center',
-            value: row =>
-              formatEndBalanceDirection({
-                end_balance: row.end_balance,
-                direction: row.direction || row.account_direction || 'debit',
-              }),
-          },
-          {
-            label: '余额',
-            width: colWidth('end_balance', 130),
-            align: 'right',
-            type: 'amount',
-            value: row => formatSignedBalanceAmount(row.end_balance, false),
-          },
-        ],
-      }
+      { label: '期初余额', children: initChildren },
+      { label: '本期发生额', children: currentChildren },
+      { label: '期末余额', children: endChildren }
     )
 
-    const summaryValues = buildAuxBalanceExportSummaryValues(
-      activeCategoryColumns.value.length,
-      exportTotals
-    )
+    const summaryValues = foreign
+      ? buildAuxForeignBalanceExportSummaryValues(
+          activeCategoryColumns.value.length,
+          exportTotals,
+          exportForeignTotals
+        )
+      : buildAuxBalanceExportSummaryValues(activeCategoryColumns.value.length, exportTotals)
+    // 多币种时原币不能相加，合计行只给本位币，原币按币种各出一行小计
+    const subtotalRows = foreign
+      ? buildAuxForeignBalanceSubtotalRows(
+          activeCategoryColumns.value.length,
+          exportForeignTotals,
+          foreignRates.value
+        )
+      : []
 
     const dateRange =
       filters.value.start_date && filters.value.end_date
@@ -1111,19 +1468,20 @@ async function exportData() {
         : new Date().toISOString().split('T')[0]
 
     await exportStyledTableViaServer({
-      fileName: `辅助项目余额表_${dateRange}.xlsx`,
-      sheetName: '辅助项目余额表',
-      title: '辅助项目余额表',
+      fileName: `${pageTitle.value}_${dateRange}.xlsx`,
+      sheetName: pageTitle.value,
+      title: pageTitle.value,
       subtitle: filterSummaryText.value,
       columns,
       rows: exportRows,
+      subtotalRows,
       summaryValues,
       onProgress: info => exportProgress.report(info),
     })
 
     ElMessage.success('导出完成，文件已开始下载')
   } catch (error: any) {
-    console.error('导出辅助项目余额表失败:', error)
+    console.error(`导出${pageTitle.value}失败:`, error)
     ElMessage.error(error?.response?.data?.error || error?.message || '导出失败')
   } finally {
     exportProgress.finish()
@@ -1162,83 +1520,149 @@ function buildPrintHtml(): string {
       render: r => (r.category_code === cat.code ? r.aux_name || r.aux_code || '' : ''),
     })
   }
-  columns.push(
-    {
-      label: '期初方向',
-      align: 'center',
-      render: r =>
-        formatInitBalanceDirection({
-          init_balance: r.init_balance,
-          direction: r.direction || r.account_direction || 'debit',
-        }),
-    },
-    {
-      label: '期初余额',
-      align: 'right',
-      render: r => (r.init_balance ? formatAmount(Math.abs(r.init_balance)) : ''),
-    },
-    {
-      label: '本期借方',
-      align: 'right',
-      render: r => (r.current_debit ? formatAmount(r.current_debit) : ''),
-    },
-    {
-      label: '本期贷方',
-      align: 'right',
-      render: r => (r.current_credit ? formatAmount(r.current_credit) : ''),
-    },
-    {
-      label: '期末方向',
-      align: 'center',
-      render: r =>
-        formatEndBalanceDirection({
-          end_balance: r.end_balance,
-          direction: r.direction || r.account_direction || 'debit',
-        }),
-    },
-    {
-      label: '期末余额',
-      align: 'right',
-      render: r => (r.end_balance ? formatAmount(Math.abs(r.end_balance)) : ''),
-    }
-  )
+  const foreign = isForeign.value
+  if (foreign) {
+    columns.push({ label: '币种', align: 'center', render: r => r.currency_code || '' })
+    columns.push({ label: '汇率', align: 'right', render: r => rateText(r.currency_code) })
+  }
 
-  // 两级表头：科目 rowspan2 + 各辅助列 rowspan2 + 期初/本期/期末 colspan2
+  const fxAmount = (v: number | undefined, abs = false) => {
+    const n = Number(v) || 0
+    return n ? formatForeignAmount(abs ? Math.abs(n) : n) : ''
+  }
+
+  // 每段的二级表头标签；外币模式下多出「原币」列并把本位币列改名
+  const initSubLabels: string[] = ['方向']
+  const currentSubLabels: string[] = []
+  const endSubLabels: string[] = ['方向']
+
+  columns.push({
+    label: '期初方向',
+    align: 'center',
+    render: r =>
+      formatInitBalanceDirection({
+        init_balance: r.init_balance,
+        direction: r.direction || r.account_direction || 'debit',
+      }),
+  })
+  if (foreign) {
+    initSubLabels.push('原币')
+    columns.push({
+      label: '期初原币',
+      align: 'right',
+      render: r => fxAmount(r.foreign_init_balance, true),
+    })
+  }
+  initSubLabels.push(foreign ? '本位币' : '余额')
+  columns.push({
+    label: '期初余额',
+    align: 'right',
+    render: r => (r.init_balance ? formatAmount(Math.abs(r.init_balance)) : ''),
+  })
+
+  if (foreign) {
+    currentSubLabels.push('借方原币')
+    columns.push({
+      label: '本期借方原币',
+      align: 'right',
+      render: r => fxAmount(r.foreign_current_debit),
+    })
+  }
+  currentSubLabels.push(foreign ? '借方本位币' : '借方')
+  columns.push({
+    label: '本期借方',
+    align: 'right',
+    render: r => (r.current_debit ? formatAmount(r.current_debit) : ''),
+  })
+  if (foreign) {
+    currentSubLabels.push('贷方原币')
+    columns.push({
+      label: '本期贷方原币',
+      align: 'right',
+      render: r => fxAmount(r.foreign_current_credit),
+    })
+  }
+  currentSubLabels.push(foreign ? '贷方本位币' : '贷方')
+  columns.push({
+    label: '本期贷方',
+    align: 'right',
+    render: r => (r.current_credit ? formatAmount(r.current_credit) : ''),
+  })
+
+  columns.push({
+    label: '期末方向',
+    align: 'center',
+    render: r =>
+      formatEndBalanceDirection({
+        end_balance: r.end_balance,
+        direction: r.direction || r.account_direction || 'debit',
+      }),
+  })
+  if (foreign) {
+    endSubLabels.push('原币')
+    columns.push({
+      label: '期末原币',
+      align: 'right',
+      render: r => fxAmount(r.foreign_end_balance, true),
+    })
+  }
+  endSubLabels.push(foreign ? '本位币' : '余额')
+  columns.push({
+    label: '期末余额',
+    align: 'right',
+    render: r => (r.end_balance ? formatAmount(Math.abs(r.end_balance)) : ''),
+  })
+
+  // 两级表头：科目 rowspan2 + 各辅助列 rowspan2（+ 币种）+ 期初/本期/期末 colspan
   const headerRow1: { label: string; rowspan?: number; colspan?: number }[] = [
     { label: '科目编码', rowspan: 2 },
     { label: '科目名称', rowspan: 2 },
   ]
   for (const cat of cats) headerRow1.push({ label: cat.name, rowspan: 2 })
-  headerRow1.push(
-    { label: '期初余额', colspan: 2 },
-    { label: '本期发生额', colspan: 2 },
-    { label: '期末余额', colspan: 2 }
-  )
-  const headerRow2: { label: string }[] = []
-  // 跳过科目编码/名称/辅助列（已在第一行 rowspan 合并）
-  const skipCount = 2 + cats.length
-  for (let i = skipCount; i < columns.length; i++) {
-    const lab = columns[i].label
-    headerRow2.push({ label: lab.includes('方向') ? '方向' : lab.includes('借') ? '借方' : '贷方' })
+  if (foreign) {
+    headerRow1.push({ label: '币种', rowspan: 2 }, { label: '汇率', rowspan: 2 })
   }
+  headerRow1.push(
+    { label: '期初余额', colspan: initSubLabels.length },
+    { label: '本期发生额', colspan: currentSubLabels.length },
+    { label: '期末余额', colspan: endSubLabels.length }
+  )
+  const headerRow2: { label: string }[] = [
+    ...initSubLabels,
+    ...currentSubLabels,
+    ...endSubLabels,
+  ].map(label => ({ label }))
 
   const totals = grandTotals.value
+  const fx = singleCurrencyForeignTotals.value
   const initNet = totals ? totals.init_balance : 0
   const endNet = totals ? totals.end_balance : 0
-  const footer: string[] = [
-    '合计',
-    '',
-    ...cats.map(() => ''),
-    initNet > 0 ? '借' : initNet < 0 ? '贷' : '',
-    initNet ? formatAmount(Math.abs(initNet)) : '',
-    totals ? formatAmount(totals.current_debit || 0) : '',
-    totals ? formatAmount(totals.current_credit || 0) : '',
-    endNet > 0 ? '借' : endNet < 0 ? '贷' : '',
-    endNet ? formatAmount(Math.abs(endNet)) : '',
-  ]
+  const footer: string[] = ['合计', '', ...cats.map(() => '')]
+  if (foreign) {
+    footer.push(fx ? Object.keys(foreignTotals.value || {})[0] || '' : foreignTotals.value ? '多币种' : '')
+    footer.push(fx ? rateText(Object.keys(foreignTotals.value || {})[0]) : '')
+  }
+  footer.push(initNet > 0 ? '借' : initNet < 0 ? '贷' : '')
+  if (foreign) footer.push(fx ? fxAmount(fx.foreign_init_balance, true) : '')
+  footer.push(initNet ? formatAmount(Math.abs(initNet)) : '')
+  if (foreign) footer.push(fx ? fxAmount(fx.foreign_current_debit) : '')
+  footer.push(totals ? formatAmount(totals.current_debit || 0) : '')
+  if (foreign) footer.push(fx ? fxAmount(fx.foreign_current_credit) : '')
+  footer.push(totals ? formatAmount(totals.current_credit || 0) : '')
+  footer.push(endNet > 0 ? '借' : endNet < 0 ? '贷' : '')
+  if (foreign) footer.push(fx ? fxAmount(fx.foreign_end_balance, true) : '')
+  footer.push(endNet ? formatAmount(Math.abs(endNet)) : '')
+
+  const footerSubtotals = foreign
+    ? buildAuxForeignBalanceSubtotalRows(
+        cats.length,
+        foreignTotals.value,
+        foreignRates.value
+      ).map(row => row.map(v => String(v ?? '')))
+    : []
 
   return buildTablePrintHtml<any>({
-    title: '辅助项目余额表',
+    title: pageTitle.value,
     subtitle: `账套：${accountSetName.value || '未命名账套'}　${filterSummaryText.value}`,
     rows: printRows.value,
     monochrome: true,
@@ -1246,6 +1670,7 @@ function buildPrintHtml(): string {
     headerRows: [headerRow1, headerRow2],
     columns,
     footer,
+    footerSubtotals,
   })
 }
 
@@ -1262,7 +1687,7 @@ function handleRowDblClick(row: any) {
   }
   if (filters.value.start_date) query.start_date = filters.value.start_date
   if (filters.value.end_date) query.end_date = filters.value.end_date
-  drillDown('/ledger/aux-detail', query, '辅助项目余额表')
+  drillDown('/ledger/aux-detail', query, pageTitle.value)
 }
 
 /** 每页条数切换 */
@@ -1335,12 +1760,15 @@ function resetFilters() {
     start_date: `${year}-01-01`,
     end_date: `${year}-12-31`,
     account_code: '',
+    currency_code: '',
     include_unposted: true,
   }
   list.value = []
   allRows.value = []
   total.value = 0
   grandTotals.value = null
+  foreignTotals.value = null
+  foreignRates.value = {}
   currentPage.value = 1
   hasQueried.value = false
   clientSidePagination.value = false
@@ -1396,6 +1824,8 @@ async function onAuxCategoryChange() {
   allRows.value = []
   total.value = 0
   grandTotals.value = null
+  foreignTotals.value = null
+  foreignRates.value = {}
   currentPage.value = 1
   hasQueried.value = false
   clientSidePagination.value = false
@@ -1405,8 +1835,21 @@ async function onAuxCategoryChange() {
   await fetchAuxItems()
 }
 
+async function fetchCurrencies() {
+  try {
+    const res = await getCurrencies()
+    currencies.value = (res.data || []).filter((c: Currency) => !c.is_base)
+  } catch (error) {
+    console.error('加载币种失败:', error)
+    currencies.value = []
+  }
+}
+
 onMounted(async () => {
   await fetchAuxCategories()
+  if (isForeign.value) {
+    await fetchCurrencies()
+  }
 })
 </script>
 
@@ -1449,7 +1892,7 @@ onMounted(async () => {
   padding: 6px 12px;
   background-color: #f5f7fa;
   border-radius: 4px;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   line-height: 1.5;
   color: #606266;
 }
@@ -1486,7 +1929,7 @@ onMounted(async () => {
 }
 
 .filter-item label {
-  font-size: 14px;
+  font-size: var(--cw-text-base);
   font-weight: 500;
   color: #303133;
 }
@@ -1499,7 +1942,7 @@ onMounted(async () => {
 
 .date-separator {
   color: #909399;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
 }
 
 .drawer-footer {
@@ -1549,7 +1992,7 @@ onMounted(async () => {
 }
 
 .category-label {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   font-weight: 600;
   color: #606266;
 }
@@ -1563,7 +2006,7 @@ onMounted(async () => {
   padding: 12px;
   text-align: center;
   color: #909399;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   background-color: #f5f7fa;
   border-radius: 4px;
 }
@@ -1584,7 +2027,7 @@ onMounted(async () => {
   flex-wrap: wrap;
 }
 .load-progress-bar__title {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   font-weight: 600;
   color: var(--el-color-primary);
 }

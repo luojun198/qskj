@@ -276,9 +276,9 @@ onMounted(loadList)
 <style scoped>
 .page-asset-inventory { display: flex; flex-direction: column; height: 100%; }
 .detail-header { display: flex; align-items: center; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--el-border-color-lighter); }
-.detail-info { display: flex; align-items: center; gap: 10px; flex: 1; font-size: 14px; }
+.detail-info { display: flex; align-items: center; gap: 10px; flex: 1; font-size: var(--cw-text-base); }
 .detail-actions { display: flex; gap: 8px; }
-.inventory-stats { display: flex; align-items: center; gap: 8px; padding: 8px 16px; font-size: 13px; }
+.inventory-stats { display: flex; align-items: center; gap: 8px; padding: 8px 16px; font-size: var(--cw-text-base); }
 .match { color: #67c23a; }
 .surplus { color: #e6a23c; }
 .deficit { color: #f56c6c; }

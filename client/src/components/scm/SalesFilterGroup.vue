@@ -112,7 +112,7 @@ function resetOperatorValue(condition: SalesReportFilterCondition) {
 .filter-group { width: 100%; }
 .filter-group.nested { padding: 9px 10px; border: 1px dashed var(--el-border-color); border-radius: 7px; background: var(--el-fill-color-lighter); }
 .group-head { display: flex; align-items: center; gap: 8px; min-height: 30px; }
-.group-label { font-size: 13px; font-weight: 600; color: var(--el-text-color-primary); }
+.group-label { font-size: var(--cw-text-base); font-weight: 600; color: var(--el-text-color-primary); }
 .condition-row { display: flex; align-items: center; gap: 8px; margin-top: 7px; width: 100%; }
 .field-select { width: 190px; }
 .operator-select { width: 126px; }

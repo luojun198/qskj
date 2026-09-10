@@ -456,7 +456,7 @@ export const scmApi = {
   getDocFieldDefs: (doc_type: string) => request.get<ScmDocFieldDef[]>('/scm/doc-fields', { params: { doc_type } }),
   getAllDocFieldDefs: () => request.get<ScmDocFieldDef[]>('/scm/doc-fields/all'),
   saveDocFieldDefs: (doc_type: string, fields: ScmDocFieldDef[]) => request.post('/scm/doc-fields', { doc_type, fields }),
-  getDocNextNo: (doc_type: string) => request.get<{ next_no: string }>('/scm/docs/next-no', { params: { doc_type } }),
+  getDocNextNo: (doc_type: string, doc_date?: string) => request.get<{ next_no: string }>('/scm/docs/next-no', { params: { doc_type, doc_date } }),
   getDocs: (params: { doc_type?: string; partner_code?: string; warehouse_code?: string; status?: string; start_date?: string; end_date?: string; payment_mode?: 'advance'; keyword?: string; biz_person?: string; page?: number; page_size?: number }) =>
     request.get<{ list: ScmDoc[]; total: number; page: number; page_size: number }>('/scm/docs', { params }),
   getSalesOrderRelations: (params?: { keyword?: string; status?: string; start_date?: string; end_date?: string; page?: number; page_size?: number }) =>
@@ -476,7 +476,7 @@ export const scmApi = {
   createDoc: (data: Partial<ScmDoc> & { lines?: Partial<ScmDocLine>[] }) => request.post<{ id: string; doc_no: string }>('/scm/docs', data),
   updateDoc: (id: string, data: Partial<ScmDoc> & { lines?: Partial<ScmDocLine>[] }) => request.put(`/scm/docs/${id}`, data),
   deleteDoc: (id: string, config?: RequestConfig) => request.delete(`/scm/docs/${id}`, config),
-  auditDoc: (id: string, data: { apply_item_default_warehouses?: boolean } = {}, config?: RequestConfig) => request.post<{ id: string; status: string; total_amount: number; auditor?: string; audited_at?: string; already_audited?: boolean; credit_warning?: string }>(`/scm/docs/${id}/audit`, data, config),
+  auditDoc: (id: string, data: { apply_item_default_warehouses?: boolean } = {}, config?: RequestConfig) => request.post<{ id: string; status: string; total_amount: number; auditor?: string; audited_at?: string; already_audited?: boolean; credit_warning?: string; serial_warning?: string; invoice_notice?: string }>(`/scm/docs/${id}/audit`, data, config),
   unauditDoc: (id: string, config?: RequestConfig) => request.post<{ ok: boolean }>(`/scm/docs/${id}/unaudit`, {}, config),
   genAssets: (id: string) => request.post<{ created: number }>(`/scm/docs/${id}/gen-assets`, {}),
   genVoucher: (id: string) => request.post<{ voucher_id: string; voucher_no: string; entry_count: number }>(`/scm/docs/${id}/gen-voucher`, {}),

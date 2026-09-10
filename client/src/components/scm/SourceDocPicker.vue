@@ -348,13 +348,13 @@ async function handleConfirm() {
 </script>
 
 <style scoped>
-.src-picker-hint { font-size: 13px; color: var(--el-text-color-secondary); margin-bottom: 8px; }
+.src-picker-hint { font-size: var(--cw-text-base); color: var(--el-text-color-secondary); margin-bottom: 8px; }
 .src-picker-section-title {
-  font-size: 13px; font-weight: 600; color: var(--el-text-color-primary);
+  font-size: var(--cw-text-base); font-weight: 600; color: var(--el-text-color-primary);
   margin: 10px 0 6px; display: flex; align-items: baseline; gap: 8px;
 }
 .src-picker-section-sub { font-weight: 400; color: var(--el-text-color-secondary); }
 .src-picker-empty { padding: 20px; text-align: center; color: var(--el-text-color-placeholder); }
-.src-picker-count { margin-right: auto; font-size: 13px; color: var(--el-text-color-secondary); }
+.src-picker-count { margin-right: auto; font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }
 :deep(.el-dialog__footer) { display: flex; align-items: center; gap: 8px; }
 </style>

@@ -83,6 +83,25 @@ describe('accountSetDefaults', () => {
     expect(accountSet.start_date).toBe('2026-04-01')
   })
 
+  it('默认业务参数可被 params 覆盖，旧键名随之同步（ACD 导入按源账套设置）', () => {
+    bootstrapNewAccountSetDefaults(db, 'as1', {
+      fiscal_year: 2026,
+      params: { enable_cash_flow: 'true', require_audit: 'true' },
+    })
+    const read = (key: string) =>
+      (
+        db
+          .prepare(`SELECT param_value FROM system_params WHERE account_set_id='as1' AND param_key=?`)
+          .get(key) as { param_value: string }
+      ).param_value
+    expect(read('enable_cash_flow')).toBe('true')
+    expect(read('require_audit')).toBe('true')
+    expect(read('voucher_audit_required')).toBe('true')
+    // 未覆盖的仍是默认值
+    expect(read('direct_print')).toBe('true')
+    expect(read('voucher_time_control')).toBe('false')
+  })
+
   it('新建账套应自动创建默认批量打印模版', () => {
     bootstrapNewAccountSetDefaults(db, 'as1', { fiscal_year: 2026 })
     const template = db
@@ -94,6 +113,59 @@ describe('accountSetDefaults', () => {
     expect(template.is_default).toBe(1)
     expect(template.paper_width).toBe(220)
     expect(template.paper_height).toBe(140)
+  })
+
+  it('有 hiprint 列时默认写入 panel 与凭证纸尺寸', () => {
+    const hiprintDb = new Database(':memory:')
+    hiprintDb.exec(`
+      CREATE TABLE print_templates (
+        id TEXT PRIMARY KEY,
+        account_set_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        paper_size TEXT NOT NULL DEFAULT 'custom',
+        paper_width REAL NOT NULL DEFAULT 220,
+        paper_height REAL NOT NULL DEFAULT 140,
+        margin_top REAL NOT NULL DEFAULT 15,
+        margin_bottom REAL NOT NULL DEFAULT 15,
+        margin_left REAL NOT NULL DEFAULT 10,
+        margin_right REAL NOT NULL DEFAULT 10,
+        elements TEXT NOT NULL DEFAULT '[]',
+        template_type TEXT DEFAULT 'voucher',
+        template_key TEXT,
+        panel TEXT,
+        is_default INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `)
+    const result = ensureDefaultPrintTemplateForAccountSet(hiprintDb, 'as1')
+    expect(result.created).toBe(true)
+    const row = hiprintDb
+      .prepare(
+        `SELECT name, paper_width, paper_height, template_key, panel FROM print_templates WHERE id=?`
+      )
+      .get(result.id) as {
+      name: string
+      paper_width: number
+      paper_height: number
+      template_key: string
+      panel: string
+    }
+    expect(row.name).toBe(DEFAULT_BATCH_PRINT_TEMPLATE_NAME)
+    expect(row.paper_width).toBe(210)
+    expect(row.paper_height).toBe(148)
+    expect(row.template_key).toBe('voucher:standard')
+    const panel = JSON.parse(row.panel)
+    expect(panel.panels[0].printElements.some((el: any) => el.options?.field === 'doc_title')).toBe(true)
+    const table = panel.panels[0].printElements.find((el: any) => el.options?.field === 'entries')
+    expect(table.options.maxRows).toBe(6)
+    expect(table.options.autoCompletion).toBe(true)
+    expect(table.options.tableFooterRepeat).toBe('last')
+    const cols = table.options.columns[0] as Array<{ field: string; tableSummary?: string; tableSummaryText?: string }>
+    expect(cols.find(c => c.field === 'debit')?.tableSummary).toBe('sum')
+    expect(cols.find(c => c.field === 'credit')?.tableSummary).toBe('sum')
+    expect(cols.find(c => c.field === 'summary')?.tableSummary).toBe('text')
+    expect(cols.find(c => c.field === 'summary')?.tableSummaryText).toBe('合计')
   })
 
   it('ensureDefaultPrintTemplateForAccountSet 应幂等', () => {

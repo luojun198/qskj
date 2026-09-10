@@ -42,6 +42,14 @@ describe('viewKey', () => {
       .not.toBe(getViewKey('/scm/docs?doc_type=RCV&payment_mode=advance', 'acct', 'ScmDocList'))
   })
 
+  it('打印模板设计器新建与保存后带 id 的地址共用标签', () => {
+    expect(getViewKey('/base/print-template/design', 'acct', 'PrintTemplateDesigner'))
+      .toBe(getViewKey('/base/print-template/design/abc', 'acct', 'PrintTemplateDesigner'))
+    expect(getViewKey('/base/print-template/design?preset=standard', 'acct', 'PrintTemplateDesigner'))
+      .toBe(getViewKey('/base/print-template/design/abc', 'acct', 'PrintTemplateDesigner'))
+    expect(getTabPolicy('PrintTemplateDesigner')).toEqual({ kind: 'editor', evictable: false })
+  })
+
   it('固定页和只读动态页返回正确策略', () => {
     expect(getTabPolicy('Dashboard')).toEqual({ kind: 'fixed', evictable: false })
     expect(getTabPolicy('ScmMrPushPreview')).toEqual({ kind: 'transient', evictable: true })

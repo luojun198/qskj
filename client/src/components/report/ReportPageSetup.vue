@@ -236,7 +236,7 @@ function save() {
 .page-setup__label {
   width: 48px;
   flex-shrink: 0;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   color: var(--el-text-color-regular);
 }
 

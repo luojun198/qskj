@@ -1,12 +1,15 @@
 import type { Database } from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
 
-import { extractAcdReportTemplates } from './acdReportFormulaSync.js'
+import { extractAcdReportTemplates, type AcdSheetLayout } from './acdReportFormulaSync.js'
+import { alignBoldWithLabel } from './reportBoldAlignment.js'
+import { centerHeaderDates } from './reportHeaderLayout.js'
 
 export interface AcdStandardReportCell {
   rowIndex: number
   colIndex: number
-  cellType: 'text' | 'formula'
+  /** number = 数字常量格（vts 的 RK 记录），求值时与公式结果一样参与引用运算 */
+  cellType: 'text' | 'formula' | 'number'
   textValue: string | null
   formulaText: string | null
   /** JSON，形如 {"rowSpan":1,"colSpan":8}；导入时为标题行固化跨列合并 */
@@ -101,6 +104,16 @@ function countFormulas(cells: AcdStandardReportCell[]) {
   return cells.filter(cell => cell.formulaText).length
 }
 
+/**
+ * 模板版的表头带润衡占位符（`纳税人名称：%U`、`%YH年`、`%yh%mh%dh`……），
+ * 数据快照版则把公司名/日期填成了字面文本。这是区分两者最直接的特征。
+ */
+const TEMPLATE_PLACEHOLDER_RE = /%[A-Za-z]/
+
+function hasTemplatePlaceholder(cells: AcdStandardReportCell[]) {
+  return cells.some(cell => cell.cellType === 'text' && TEMPLATE_PLACEHOLDER_RE.test(cell.textValue || ''))
+}
+
 export function pickTemplateSheet<T extends { index: number; cells: AcdStandardReportCell[] }>(
   sheets: T[]
 ): { sheet: T | undefined; recovered: boolean } {
@@ -116,6 +129,15 @@ export function pickTemplateSheet<T extends { index: number; cells: AcdStandardR
   const score = nonEmpty.some(item => countAnchorFormulas(item.cells) > 0)
     ? countAnchorFormulas
     : countFormulas
+
+  // 快照版并非一定「零 @ 公式」：「利润表(已执行新金融、收入准则)」的快照版在表尾之下
+  // 还挂着两行辅助格（资产减值损失 @JQY(6701,…)），只凭「第一个有 @ 公式的 sheet」会把它
+  // 当成模板版——正文 22 条取数公式全部丢失，页尾还多出「资产减值损失 1 / 信用减值损失 2」。
+  // 因此先找「表头带占位符 且 有取数公式」的 sheet；第一个 sheet 自身满足时行为与从前一致。
+  const templated = nonEmpty.find(item => hasTemplatePlaceholder(item.cells) && score(item.cells) > 0)
+  if (templated) {
+    return { sheet: templated, recovered: templated !== first }
+  }
 
   if (score(first.cells) > 0) {
     return { sheet: first, recovered: false }
@@ -188,6 +210,26 @@ export function trimDetachedBlocks(
   return cells.filter(cell => cell.rowIndex < rowLimit && cell.colIndex < colLimit)
 }
 
+/**
+ * 把公式版裁到呈现版的行列范围内。
+ *
+ * vts 的第一个 sheet 是原软件实际展示的「呈现版」（带 COLINFO/ROW 版面），后面的 @ 公式版
+ * 往往在正文右侧/下方挂着辅助列、辅助行（如「利润表（季报）」公式版的 c11~c24、
+ * 「利润表（分12个月）」公式版的 r23~r39 是另一套取数口径），原软件里这些是看不见的。
+ * 当选中的不是呈现版时，凡超出呈现版最大行/列的格子一律不要——这比「连续 N 个空行/列才截断」
+ * 的猜测准确：辅助区与正文之间常常只隔 1 列、甚至紧挨着。
+ */
+export function clipToDisplayBounds(
+  cells: AcdStandardReportCell[],
+  displayCells: AcdStandardReportCell[]
+): AcdStandardReportCell[] {
+  const filled = displayCells.filter(cell => cell.textValue || cell.formulaText)
+  if (!filled.length) return cells
+  const maxRow = Math.max(...filled.map(cell => cell.rowIndex))
+  const maxCol = Math.max(...filled.map(cell => cell.colIndex))
+  return cells.filter(cell => cell.rowIndex <= maxRow && cell.colIndex <= maxCol)
+}
+
 const MIN_COL_WIDTH = 60
 const MAX_COL_WIDTH = 360
 /** 一个半角字符的估算宽度（px），中文按两倍计 */
@@ -255,6 +297,93 @@ export function estimateRowHeights(cells: AcdStandardReportCell[]): number[] {
         ? Math.min(MAX_ROW_HEIGHT, Math.max(MIN_ROW_HEIGHT, Math.round(maxFontPx * ROW_HEIGHT_RATIO)))
         : MIN_ROW_HEIGHT
     )
+  }
+  return heights
+}
+
+/**
+ * vts 给出的列宽允许越过估算的上下限——行次列原版只有 3.4 个字符宽，利润表的项目列则有 56 个字符宽，
+ * 都是原报表的真实版面；只拦住明显不合理的极端值。
+ */
+const MIN_ACD_COL_WIDTH = 24
+const MAX_ACD_COL_WIDTH = 720
+/** 单元格左右内边距合计（与前端 .cell 的 padding 2px 6px 对应） */
+const CELL_PADDING_X = 12
+/** 单元格上下内边距 + 边框 */
+const CELL_PADDING_Y = 6
+/** 一行文字占用高度 = 字号 x 该系数 */
+const LINE_HEIGHT_RATIO = 1.35
+/** 自动换行最多算到几行，防止极端长文本把行撑到离谱 */
+const MAX_WRAP_LINES = 4
+const DEFAULT_FONT_PX = 13
+
+/**
+ * 列宽：优先用 vts 的 COLINFO 记录（原报表的真实版面），没记录的列退回按内容估算。
+ */
+export function resolveColumnWidths(cells: AcdStandardReportCell[], layout?: AcdSheetLayout): number[] {
+  const estimated = estimateColumnWidths(cells)
+  if (!layout) return estimated
+  return estimated.map((width, col) => {
+    const fromAcd = layout.colWidthsPx[col]
+    if (fromAcd === undefined) return width
+    return Math.min(MAX_ACD_COL_WIDTH, Math.max(MIN_ACD_COL_WIDTH, fromAcd))
+  })
+}
+
+function fontPxOf(styleKey: string | null | undefined) {
+  const matched = /font-size-(\d+)/.exec(styleKey || '')
+  return matched ? Number(matched[1]) : DEFAULT_FONT_PX
+}
+
+/** 估算一段文字的渲染宽度（px）：中文按一个字号宽、其余按 0.6 字号 */
+function estimateTextWidth(text: string, fontPx: number) {
+  let width = 0
+  for (const char of text) width += /[\u4e00-\u9fa5\uff00-\uffef]/.test(char) ? fontPx : fontPx * 0.6
+  return width
+}
+
+function parseColSpan(cell: AcdStandardReportCell) {
+  if (!cell.mergeInfo) return 1
+  try {
+    return Math.max(1, Number(JSON.parse(cell.mergeInfo)?.colSpan) || 1)
+  } catch {
+    return 1
+  }
+}
+
+/**
+ * 行高：优先用 vts 的 ROW 记录，没记录的行退回按字号推算；再按「自动换行」把行撑高——
+ * 文本按所在列宽折行后需要几行，就至少给几行的高度，标题、项目名折成两行才不会被行高截掉。
+ *
+ * 原报表也是这么呈现的：表头行 49px 正是「行次」在 3.4 字符宽的列里折成两行的结果。
+ */
+export function resolveRowHeights(
+  cells: AcdStandardReportCell[],
+  colWidths: number[],
+  layout?: AcdSheetLayout
+): number[] {
+  const estimated = estimateRowHeights(cells)
+  const heights = estimated.map((height, row) => {
+    const fromAcd = layout?.rowHeightsPx[row]
+    return fromAcd === undefined ? height : Math.max(MIN_ROW_HEIGHT / 2, fromAcd)
+  })
+
+  for (const cell of cells) {
+    if (cell.rowIndex >= heights.length) continue
+    const fontPx = fontPxOf(cell.styleKey)
+    let lines = 1
+    const text = cell.cellType === 'text' ? cell.textValue || '' : ''
+    if (text) {
+      const span = parseColSpan(cell)
+      let available = 0
+      for (let col = cell.colIndex; col < cell.colIndex + span; col += 1) {
+        available += colWidths[col] ?? colWidths[colWidths.length - 1] ?? 0
+      }
+      available = Math.max(1, available - CELL_PADDING_X)
+      lines = Math.min(MAX_WRAP_LINES, Math.max(1, Math.ceil(estimateTextWidth(text, fontPx) / available)))
+    }
+    const needed = Math.round(lines * fontPx * LINE_HEIGHT_RATIO + CELL_PADDING_Y)
+    if (needed > heights[cell.rowIndex]) heights[cell.rowIndex] = Math.min(MAX_ROW_HEIGHT * 2, needed)
   }
   return heights
 }
@@ -334,6 +463,10 @@ export function applyCenterAcross(cells: AcdStandardReportCell[]): AcdStandardRe
     if (!cell.centerAcross) continue
     if (cell.mergeInfo) continue
     if (cell.colIndex > bounds.lastCol) continue
+    // 只有文本才会「跨列居中」（标题、日期）。现金流量表「二、投资活动产生的现金流量：」
+    // 这类小节行的行次 `=B15+1` 也套了居中格式，右侧金额格恰好为空，若照样跨过去，
+    // 行次 11 就会跑到「本期金额」列中央；数值/公式格的位置就是它所在的列，不做跨列。
+    if (cell.cellType !== 'text' || cell.formulaText) continue
 
     // 右侧第一个「有内容」的格子；补边框造出来的空格子不算内容
     const nextFilled = (byRow.get(cell.rowIndex) || [])
@@ -474,15 +607,25 @@ export function previewAcdStandardReports(acdBuffer: Buffer): AcdStandardReportP
     }
 
     const { sheet, recovered } = pickTemplateSheet(template.sheets)
-    // 只对「被救回来」的报表裁孤岛：本来就有公式的报表一格都不动
-    const sheetCells = sheet ? (recovered ? trimDetachedBlocks(sheet.cells) : sheet.cells) : []
-    const cells = applyCenterAcross(fillTableBorders(deduplicateStandardReportCells(sheetCells)))
-    if (cells.length === 0) {
+    // 只对「被救回来」的报表裁边：先按呈现版（第一个非空 sheet）的行列范围裁掉公式版的辅助区，
+    // 再裁孤岛；本来就选中呈现版的报表一格都不动
+    const displaySheet = template.sheets.find(item => item.cells.length > 0)
+    const sheetCells = sheet
+      ? recovered
+        ? trimDetachedBlocks(displaySheet ? clipToDisplayBounds(sheet.cells, displaySheet.cells) : sheet.cells)
+        : sheet.cells
+      : []
+    const normalized = alignBoldWithLabel(
+      applyCenterAcross(fillTableBorders(deduplicateStandardReportCells(sheetCells)))
+    )
+    if (normalized.length === 0) {
       warnings.push(`跳过空报表模板: ${template.reportName} (${template.sourceFile})`)
       return
     }
 
-    applyTitleMerge(cells, template.reportName)
+    applyTitleMerge(normalized, template.reportName)
+    const cells = centerHeaderDates(normalized)
+    const colWidths = resolveColumnWidths(cells, template.layout)
 
     seenCodes.add(code)
     prepared.push({
@@ -493,8 +636,8 @@ export function previewAcdStandardReports(acdBuffer: Buffer): AcdStandardReportP
       // 用 code 作排序键，选择性重新导入时也不会让未选中报表的顺序漂移。
       sortOrder: Number.parseInt(code, 10) || templateIndex,
       cells,
-      colWidths: estimateColumnWidths(cells),
-      rowHeights: estimateRowHeights(cells),
+      colWidths,
+      rowHeights: resolveRowHeights(cells, colWidths, template.layout),
     })
   })
 

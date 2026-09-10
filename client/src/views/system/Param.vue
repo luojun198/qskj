@@ -94,6 +94,14 @@
                   <span class="param-switch-card__label">现金流核算</span>
                   <el-switch v-model="form.enable_cash_flow" size="small" inline-prompt active-text="开" inactive-text="关" />
                 </div>
+                <div class="param-switch-card">
+                  <span class="param-switch-card__label">外币核算</span>
+                  <el-switch v-model="form.enable_foreign_currency" size="small" inline-prompt active-text="开" inactive-text="关" />
+                </div>
+              </div>
+              <div v-if="form.enable_foreign_currency" class="param-field-row" style="margin-top: 12px">
+                <span class="param-field-label">本位币</span>
+                <el-input v-model="form.base_currency" style="width: 120px" size="small" placeholder="RMB" />
               </div>
             </div>
           </section>
@@ -643,6 +651,8 @@ const form = ref({
   direct_print: false,
   voucher_time_control: false,
   enable_cash_flow: false,
+  enable_foreign_currency: false,
+  base_currency: 'RMB',
   account_levels: 6,
   account_code_lengths: [4, 2, 2, 2, 2, 2, 2, 2, 2, 2],
 })
@@ -784,6 +794,10 @@ async function fetchData() {
         form.value.voucher_time_control = p.param_value === 'true'
       } else if (p.param_key === 'enable_cash_flow') {
         form.value.enable_cash_flow = p.param_value === 'true'
+      } else if (p.param_key === 'enable_foreign_currency') {
+        form.value.enable_foreign_currency = p.param_value === 'true'
+      } else if (p.param_key === 'base_currency') {
+        form.value.base_currency = p.param_value || 'RMB'
       } else if (p.param_key === 'account_levels') {
         form.value.account_levels = parseInt(p.param_value) || 6
       } else if (p.param_key === 'account_code_lengths') {
@@ -886,6 +900,11 @@ async function handleSave() {
       { param_key: 'direct_print', param_value: String(form.value.direct_print) },
       { param_key: 'voucher_time_control', param_value: String(form.value.voucher_time_control) },
       { param_key: 'enable_cash_flow', param_value: String(form.value.enable_cash_flow) },
+      {
+        param_key: 'enable_foreign_currency',
+        param_value: String(form.value.enable_foreign_currency),
+      },
+      { param_key: 'base_currency', param_value: form.value.base_currency || 'RMB' },
       { param_key: 'account_levels', param_value: String(form.value.account_levels) },
       {
         param_key: 'account_code_lengths',
@@ -1042,7 +1061,7 @@ onMounted(async () => {
 
 .overrun-card__head b {
   color: var(--text-strong, #0c2a2e);
-  font-size: 14px;
+  font-size: var(--cw-text-base);
   line-height: 1.35;
 }
 
@@ -1154,7 +1173,7 @@ onMounted(async () => {
   padding: 0 18px;
   border-radius: 8px;
   color: var(--text-muted, #62858a);
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   font-weight: 500;
   line-height: 34px;
   transition: color 140ms ease, background-color 140ms ease, box-shadow 140ms ease;
@@ -1167,7 +1186,7 @@ onMounted(async () => {
   background: var(--surface-card, #fff);
   box-shadow: var(--shadow-xs, 0 1px 2px rgba(12, 42, 46, 0.06));
   color: var(--mint-700, #0a8576);
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   font-weight: 700;
 }
 .param-tabs :deep(.el-tabs__active-bar) {
@@ -1186,7 +1205,7 @@ onMounted(async () => {
   gap: 10px;
   height: 200px;
   color: var(--el-text-color-secondary);
-  font-size: 13px;
+  font-size: var(--cw-text-base);
 }
 .param-sections {
   display: grid;
@@ -1278,7 +1297,7 @@ onMounted(async () => {
   gap: 3px;
   margin: 0;
   color: var(--text-strong, #0c2a2e);
-  font-size: 14px;
+  font-size: var(--cw-text-base);
   font-weight: 700;
   line-height: 1.35;
 }
@@ -1369,13 +1388,13 @@ onMounted(async () => {
 }
 
 .dashboard-rule-label {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   color: var(--el-text-color-secondary, #909399);
   flex-shrink: 0;
 }
 
 .dashboard-rule-current {
-  font-size: 14px;
+  font-size: var(--cw-text-base);
   font-weight: 600;
   color: var(--param-accent);
   flex: 1;
@@ -1409,7 +1428,7 @@ onMounted(async () => {
 }
 
 .param-switch-card__label {
-  font-size: 14px;
+  font-size: var(--cw-text-base);
   font-weight: 500;
   color: var(--el-text-color-primary, #303133);
   white-space: nowrap;

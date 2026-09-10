@@ -23,6 +23,12 @@ export interface VoucherEntryInput {
   summary?: string
   cash_flow_code?: string | null
   cash_flow_name?: string | null
+  currency_code?: string | null
+  exchange_rate?: number | null
+  foreign_amount?: number | null
+  quantity?: number | null
+  unit_price?: number | null
+  unit?: string | null
   dept_id?: string | null
   dept_name?: string | null
   project_id?: string | null
@@ -37,7 +43,7 @@ export interface VoucherEntryInput {
 }
 
 /** 分录 INSERT 列数（须与 buildVoucherEntryPayloads 返回值长度一致） */
-export const VOUCHER_ENTRY_INSERT_PARAM_COUNT = 24
+export const VOUCHER_ENTRY_INSERT_PARAM_COUNT = 30
 
 export const VOUCHER_ENTRY_INSERT_SQL = `
   INSERT INTO voucher_entries (
@@ -46,8 +52,10 @@ export const VOUCHER_ENTRY_INSERT_SQL = `
     dept_id, dept_name, project_id, project_name,
     supplier_id, supplier_name, person_id, person_name,
     func_class_id, func_class_name, aux_data,
-    cash_flow_code, cash_flow_name
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    cash_flow_code, cash_flow_name,
+    currency_code, exchange_rate, foreign_amount,
+    quantity, unit_price, unit
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 export interface AuxCategoryLike {
@@ -116,6 +124,8 @@ export function validateVoucherEntryAmounts(entries: VoucherEntryInput[]): strin
 export function buildReversedEntries<T extends VoucherEntryInput>(entries: T[]): T[] {
   return entries.map(e => {
     const cents = (e as any).amount_cents
+    const foreignAmount = (e as any).foreign_amount
+    const quantity = (e as any).quantity
     return {
       ...e,
       amount: -Number(e.amount || 0),
@@ -123,6 +133,13 @@ export function buildReversedEntries<T extends VoucherEntryInput>(entries: T[]):
         typeof cents === 'number' && Number.isFinite(cents)
           ? -cents
           : -yuanToCents(Number(e.amount) || 0),
+      foreign_amount:
+        foreignAmount == null || foreignAmount === ''
+          ? foreignAmount
+          : -Number(foreignAmount || 0),
+      // 数量与金额同向取负；单价是比率不是可加量，保持原值
+      quantity:
+        quantity == null || quantity === '' ? quantity : -Number(quantity || 0),
     }
   })
 }
@@ -352,6 +369,9 @@ export function buildVoucherEntryPayloads(params: {
             name: (entry.cash_flow_name || '').trim() || null,
           }
 
+    const fx = resolveForeignCurrencyFields(entry)
+    const qty = resolveQuantityFields(entry)
+
     return [
       uuidv4(),
       params.accountSetId,
@@ -377,6 +397,12 @@ export function buildVoucherEntryPayloads(params: {
       Object.keys(auxData).length > 0 ? JSON.stringify(auxData) : null,
       cashFlow.code,
       cashFlow.name,
+      fx.currencyCode,
+      fx.exchangeRate,
+      fx.foreignAmount,
+      qty.quantity,
+      qty.unitPrice,
+      qty.unit,
     ]
   })
 }
@@ -388,6 +414,54 @@ export function isCashFlowEnabledForAccountSet(db: Database, accountSetId: strin
     )
     .get(accountSetId) as { param_value?: string } | undefined
   return row?.param_value === 'true'
+}
+
+export function isForeignCurrencyEnabledForAccountSet(db: Database, accountSetId: string): boolean {
+  const row = db
+    .prepare(
+      `SELECT param_value FROM system_params WHERE account_set_id = ? AND param_key = 'enable_foreign_currency' LIMIT 1`
+    )
+    .get(accountSetId) as { param_value?: string } | undefined
+  return row?.param_value === 'true'
+}
+
+/** 规范化分录外币三字段；无原币时全部置空 */
+export function resolveForeignCurrencyFields(entry: VoucherEntryInput): {
+  currencyCode: string | null
+  exchangeRate: number | null
+  foreignAmount: number | null
+} {
+  const currencyCode = String(entry.currency_code || '')
+    .trim()
+    .toUpperCase() || null
+  const exchangeRateRaw = entry.exchange_rate
+  const foreignAmountRaw = entry.foreign_amount
+  const exchangeRate =
+    exchangeRateRaw == null || exchangeRateRaw === ('' as any)
+      ? null
+      : Number(exchangeRateRaw)
+  const foreignAmount =
+    foreignAmountRaw == null || foreignAmountRaw === ('' as any)
+      ? null
+      : Number(foreignAmountRaw)
+
+  if (
+    !currencyCode ||
+    foreignAmount == null ||
+    !Number.isFinite(foreignAmount) ||
+    Math.abs(foreignAmount) < 1e-9
+  ) {
+    return { currencyCode: null, exchangeRate: null, foreignAmount: null }
+  }
+
+  return {
+    currencyCode,
+    exchangeRate:
+      exchangeRate != null && Number.isFinite(exchangeRate) && exchangeRate > 0
+        ? exchangeRate
+        : null,
+    foreignAmount,
+  }
 }
 
 /**
@@ -445,6 +519,130 @@ export function validateVoucherEntriesCashFlow(
     }
     if (code && !cfStmt.get(accountSetId, code)) {
       return `现金流量项目编码「${code}」不存在或已停用`
+    }
+  }
+  return null
+}
+
+/** 启用外币核算时，校验外币科目分录的原币/汇率 */
+export function validateVoucherEntriesForeignCurrency(
+  db: Database,
+  accountSetId: string,
+  entries: VoucherEntryInput[]
+): string | null {
+  if (!isForeignCurrencyEnabledForAccountSet(db, accountSetId)) return null
+
+  const accountStmt = db.prepare(
+    `SELECT name, is_foreign, currency_code FROM accounts WHERE id = ? AND account_set_id = ?`
+  )
+
+  for (const entry of entries) {
+    if (!entry.account_id || !entry.amount) continue
+    const account = accountStmt.get(entry.account_id, accountSetId) as
+      | { name: string; is_foreign: number; currency_code: string | null }
+      | undefined
+    if (!account) continue
+
+    const fx = resolveForeignCurrencyFields(entry)
+    if (Number(account.is_foreign) === 1) {
+      if (!fx.foreignAmount) {
+        return `外币科目【${account.name}】须填写原币金额`
+      }
+      if (!fx.exchangeRate || !(fx.exchangeRate > 0)) {
+        return `外币科目【${account.name}】须填写大于 0 的汇率`
+      }
+      const expectedCode = String(account.currency_code || '')
+        .trim()
+        .toUpperCase()
+      if (expectedCode && fx.currencyCode && fx.currencyCode !== expectedCode) {
+        return `外币科目【${account.name}】币种应为 ${expectedCode}`
+      }
+    } else if (fx.foreignAmount || fx.currencyCode || fx.exchangeRate) {
+      // 非外币科目不允许带外币字段（写入时也会清空，这里仅提示）
+      return `科目【${account.name}】未启用外币核算，不能填写原币金额`
+    }
+  }
+  return null
+}
+
+/** 数量核算金额与数量的允许误差（元） */
+const QUANTITY_AMOUNT_TOLERANCE = 0.01
+
+/**
+ * 规范化分录数量三字段；无数量时全部置空。
+ *
+ * 与 resolveForeignCurrencyFields 对称：数量是「是否走数量核算」的开关字段，
+ * 数量为空或 0 时单价、单位一并清空，避免非数量科目残留脏值。
+ */
+export function resolveQuantityFields(entry: VoucherEntryInput): {
+  quantity: number | null
+  unitPrice: number | null
+  unit: string | null
+} {
+  const quantityRaw = entry.quantity
+  const unitPriceRaw = entry.unit_price
+  const quantity =
+    quantityRaw == null || quantityRaw === ('' as any) ? null : Number(quantityRaw)
+  const unitPrice =
+    unitPriceRaw == null || unitPriceRaw === ('' as any) ? null : Number(unitPriceRaw)
+  const unit = String(entry.unit || '').trim() || null
+
+  if (quantity == null || !Number.isFinite(quantity) || Math.abs(quantity) < 1e-9) {
+    return { quantity: null, unitPrice: null, unit: null }
+  }
+
+  return {
+    quantity,
+    unitPrice: unitPrice != null && Number.isFinite(unitPrice) ? unitPrice : null,
+    unit,
+  }
+}
+
+/**
+ * 数量核算科目分录校验。
+ *
+ * 规则（对应需求「必须输入数量，金额单价 2 选 1 输入」）：
+ *   1) 数量核算科目必须填数量；
+ *   2) 单价与金额至少填一个（前端会用另一个反算，这里兜底）；
+ *   3) 两者都有时，数量 × 单价 必须与金额相符（容差 1 分）；
+ *   4) 非数量核算科目不得携带数量/单价。
+ *
+ * 与外币不同：数量核算没有账套级总开关，始终生效。
+ */
+export function validateVoucherEntriesQuantity(
+  db: Database,
+  accountSetId: string,
+  entries: VoucherEntryInput[]
+): string | null {
+  const accountStmt = db.prepare(
+    `SELECT name, is_quantity, quantity_unit FROM accounts WHERE id = ? AND account_set_id = ?`
+  )
+
+  for (const entry of entries) {
+    if (!entry.account_id || !entry.amount) continue
+    const account = accountStmt.get(entry.account_id, accountSetId) as
+      | { name: string; is_quantity: number; quantity_unit: string | null }
+      | undefined
+    if (!account) continue
+
+    const qty = resolveQuantityFields(entry)
+    const amount = Number(entry.amount) || 0
+
+    if (Number(account.is_quantity) === 1) {
+      if (qty.quantity == null) {
+        return `数量核算科目【${account.name}】须填写数量`
+      }
+      if (qty.unitPrice == null && !amount) {
+        return `数量核算科目【${account.name}】须填写单价或金额`
+      }
+      if (qty.unitPrice != null && amount) {
+        if (Math.abs(qty.quantity * qty.unitPrice - amount) > QUANTITY_AMOUNT_TOLERANCE) {
+          return `数量核算科目【${account.name}】数量×单价与金额不符`
+        }
+      }
+    } else if (qty.quantity != null || qty.unitPrice != null) {
+      // 非数量核算科目不允许带数量字段（写入时也会清空，这里仅提示）
+      return `科目【${account.name}】未启用数量核算，不能填写数量`
     }
   }
   return null

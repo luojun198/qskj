@@ -1,9 +1,9 @@
 import { Router } from 'express'
 import bcrypt from 'bcryptjs'
 import { v4 as uuidv4 } from 'uuid'
-import { existsSync, mkdirSync, unlinkSync, readFileSync, readdirSync } from 'fs'
+import { existsSync, mkdirSync, unlinkSync, readFileSync } from 'fs'
 import multer from 'multer'
-import { join, resolve } from 'path'
+import { join } from 'path'
 import { getDb, ensureAccountSetSecurityBootstrap, getDeployDir } from '../db/index.js'
 import {
   generateToken,
@@ -14,12 +14,12 @@ import {
 } from '../middleware/index.js'
 import { operationLog } from '../middleware/index.js'
 import { acdImportService } from '../services/acdImport.js'
-import { importAcdTemplateToAccountSet } from '../scripts/importAcdToCurrentAccountSet.js'
-async function importExcelReportsFromTemplate(...args: any[]) {
-  const module = await import('../services/standardTemplateImport.js')
-  return (module.importExcelReportsFromTemplate as any)(...args)
-}
-import { syncAcdReportFormulasToAccountSet } from '../services/acdReportFormulaSync.js'
+import {
+  createAccountSetFromStandardTemplate,
+  listStandardTemplatesForClient,
+  StandardTemplateCreateError,
+} from '../services/standardTemplateAccountSet.js'
+import { getStandardTemplateGroups } from '../services/standardTemplateScan.js'
 import Database from 'better-sqlite3'
 import { getRequestIp, toDisplayIp } from '../utils/requestIp.js'
 import {
@@ -36,8 +36,6 @@ import {
   resolveUserPermissions,
   userHasLoginPermissionConfig,
 } from '../services/userRoleLinks.js'
-import { listImportableExcelFiles } from '../utils/reportTemplateFiles.js'
-import { cleanupAccountSetCascade } from '../services/accountSetCleanup.js'
 import {
   allocateAccountSetCode,
   applyAccountCodeConfigToDb,
@@ -45,7 +43,6 @@ import {
   resolveAccountSetStartDate,
   syncAccountSetStartDate,
 } from '../services/accountSetDefaults.js'
-import { ensureDynamicReportSchema } from '../db/ensureDynamicReportSchema.js'
 import { importSingleAccountSetBackupAsNewAccountSet } from '../services/accountSetBackupRestore.js'
 import { repairDatabaseReferentialIntegrity } from '../services/databaseIntegrityRepair.js'
 
@@ -98,72 +95,14 @@ router.get('/account-sets', (req, res) => {
   }
 })
 
-// Helper: resolve standard template directories
-function getStandardTemplateDirs(): string[] {
-  const deployDir = getDeployDir()
-  return [
-    join(deployDir, '标准模版'),
-    join(process.cwd(), '标准模版'),
-    resolve(process.cwd(), '..', '标准模版'),
-  ]
-}
-
-// Helper: scan standard templates (folders with ACD + Excel files)
-function scanStandardTemplates(): Array<{
-  id: string
-  name: string
-  description: string
-  acdFile: string
-  excelFiles: Array<{ name: string; path: string }>
-}> {
-  const dirs = getStandardTemplateDirs()
-  const templates: Array<{
-    id: string
-    name: string
-    description: string
-    acdFile: string
-    excelFiles: Array<{ name: string; path: string }>
-  }> = []
-  const seen = new Set<string>()
-
-  for (const dir of dirs) {
-    if (!existsSync(dir)) continue
-
-    const subDirs = readdirSync(dir, { withFileTypes: true }).filter(d => d.isDirectory())
-
-    for (const subDir of subDirs) {
-      const subDirPath = join(dir, subDir.name)
-      const files = readdirSync(subDirPath)
-
-      // 查找 ACD 文件
-      const acdFile = files.find(f => f.toLowerCase().endsWith('.acd'))
-      if (!acdFile) continue
-
-      // 去重：如果已扫描过同名子目录则跳过
-      if (seen.has(subDir.name)) continue
-      seen.add(subDir.name)
-
-      // 查找所有 Excel 报表（排除 ~$ 临时锁文件）
-      const excelFiles = listImportableExcelFiles(subDirPath)
-
-      templates.push({
-        id: subDir.name,
-        name: subDir.name,
-        description: `包含 1 个 ACD 文件和 ${excelFiles.length} 个报表模板`,
-        acdFile: join(subDirPath, acdFile),
-        excelFiles,
-      })
-    }
-  }
-
-  return templates
-}
-
-// 获取标准模版列表（公开，无需认证）
+// 获取标准模版列表（公开，无需认证）：目录来自「标准模版/catalog.json」+ 子目录扫描
 router.get('/standard-account-set-templates', (req, res) => {
   try {
-    const templates = scanStandardTemplates()
-    res.json({ code: 0, data: templates })
+    res.json({
+      code: 0,
+      data: listStandardTemplatesForClient(),
+      groups: getStandardTemplateGroups(),
+    })
   } catch (error: any) {
     res.status(500).json({ code: 500, message: error.message })
   }
@@ -173,123 +112,32 @@ router.get('/standard-account-set-templates', (req, res) => {
 router.post(
   '/account-sets/create-from-standard-template',
   asyncHandler(async (req, res) => {
-    const {
-      name,
-      code,
-      credit_code,
-      fiscal_year,
-      start_date,
-      unit_leader,
-      chief_accountant,
-      standard_template_id,
-    } = req.body
-
-    if (!name) {
-      return res.status(400).json({ code: 400, message: '名称不能为空' })
-    }
-    if (!standard_template_id) {
-      return res.status(400).json({ code: 400, message: '请选择标准模板' })
-    }
-
     const db = getDb()
-    let id: string | null = null
-
     try {
-      ensureDynamicReportSchema(db)
-
-      const templates = scanStandardTemplates()
-      const template = templates.find(t => t.id === standard_template_id)
-      if (!template) {
-        return res.status(404).json({ code: 404, message: '标准模板不存在' })
-      }
-
-      const existingName = db.prepare('SELECT id FROM account_sets WHERE name = ?').get(name)
-      if (existingName) {
-        return res.status(400).json({ code: 400, message: '账套名称已存在' })
-      }
-
-      const finalCode = allocateAccountSetCode(db, code)
-      id = uuidv4()
-
-      const fiscalYear = fiscal_year || new Date().getFullYear()
-      const normalizedStartDate = resolveAccountSetStartDate(start_date, fiscalYear)
-      db.prepare(
-        `INSERT INTO account_sets (id, name, code, credit_code, fiscal_year, start_date, unit_leader, chief_accountant)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(
-        id,
-        name,
-        finalCode,
-        credit_code,
-        fiscalYear,
-        normalizedStartDate,
-        unit_leader,
-        chief_accountant
-      )
-
-      bootstrapNewAccountSetDefaults(db, id, {
-        start_date: normalizedStartDate,
-        fiscal_year: fiscalYear,
-        unit_name: name,
-      })
-
-      ensureAccountSetSecurityBootstrap(id)
-
-      let acdStats: any = {}
-      console.log('[标准模版] 开始导入 ACD 文件:', template.acdFile)
-      const acdBuffer = readFileSync(template.acdFile)
-      acdStats = importAcdTemplateToAccountSet(id, acdBuffer)
-      console.log('[标准模版] ACD 导入成功:', acdStats)
-
-      let reportStats: any = { total: 0, success: 0, failed: 0, results: [] }
-      if (template.excelFiles?.length) {
-        console.log('[标准模版] Excel文件数量:', template.excelFiles.length)
-        try {
-          reportStats = await importExcelReportsFromTemplate(db, id, template.excelFiles)
-          syncAcdReportFormulasToAccountSet(db as any, id, acdBuffer)
-          console.log('[标准模版] Excel 报表导入完成:', reportStats)
-        } catch (err: any) {
-          console.error('[标准模版] Excel 报表导入失败:', err)
-          reportStats = {
-            total: template.excelFiles.length,
-            success: 0,
-            failed: template.excelFiles.length,
-            results: [],
-            error: err?.message || '未知错误',
-          }
-        }
-      }
-
-      const accountsCount = (acdStats.accounts?.inserted || 0) + (acdStats.accounts?.updated || 0)
-      const voucherTypesCount =
-        (acdStats.voucherTypes?.inserted || 0) + (acdStats.voucherTypes?.updated || 0)
-
+      const result = await createAccountSetFromStandardTemplate(db, req.body || {})
       res.json({
         code: 0,
-        message: '从标准模板创建成功，已自动创建管理员账号 admin/admin123',
+        message: result.reportStats?.failed > 0
+          ? '从标准模板创建成功，已自动创建管理员账号 admin/admin123，但 Excel 报表导入部分失败'
+          : '从标准模板创建成功，已自动创建管理员账号 admin/admin123',
         data: {
-          id,
-          name,
-          code: finalCode,
-          acdStats: {
-            accounts: accountsCount,
-            transferTypes: acdStats.transferTypes?.types || 0,
-            transferItems: acdStats.transferTypes?.items || 0,
-            voucherTypes: voucherTypesCount,
-            auxiliaryItems: acdStats.auxiliaryData?.totalItems || 0,
-          },
-          reportStats,
+          id: result.id,
+          name: result.name,
+          code: result.code,
+          start_date: result.start_date,
+          template: result.template,
+          accounting_standard: result.accounting_standard,
+          acdStats: result.acdStats,
+          standardReports: result.standardReports,
+          reportStats: result.reportStats,
+          warnings: result.warnings,
         },
       })
     } catch (err: any) {
-      console.error('[标准模版] 创建账套失败:', err)
-      if (id) {
-        try {
-          cleanupAccountSetCascade(db, id)
-        } catch (cleanupError) {
-          console.error('[标准模版] cleanup account set failed:', cleanupError)
-        }
+      if (err instanceof StandardTemplateCreateError) {
+        return res.status(err.status).json({ code: err.status, message: err.message })
       }
+      console.error('[标准模版] 创建账套失败:', err)
       log.error('account-sets/create-from-standard-template failed', {
         error: err instanceof Error ? err.message : String(err),
       })
@@ -975,6 +823,7 @@ router.post('/acd-import', upload.single('file'), async (req: AuthRequest, res) 
         name: result.name,
         code: result.code,
         fiscal_year: result.fiscalYear,
+        start_date: result.startDate,
         imported: {
           accounts: stats.accounts.inserted + stats.accounts.updated,
           initBalances: stats.initBalances.inserted,

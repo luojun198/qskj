@@ -91,7 +91,7 @@
 }
 
 .voucher-detail-value {
-  font-size: 14px;
+  font-size: var(--cw-text-base);
   color: var(--text-primary);
   font-weight: 600;
 }
@@ -227,7 +227,7 @@
 }
 
 .batch-delete-warning-text {
-  font-size: 14px;
+  font-size: var(--cw-text-base);
   color: var(--text-primary);
   line-height: 1.5;
 }

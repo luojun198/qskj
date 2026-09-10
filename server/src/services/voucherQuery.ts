@@ -119,7 +119,10 @@ export function buildVoucherListQuery(filters: VoucherListFilters, db: Database.
     params.push(Number(filters.period))
   }
 
-  if (filters.status) {
+  if (filters.status === 'unposted') {
+    // 凭证录入页：草稿与已审核都属于「未记账」
+    conditions.push("v.status IN ('draft', 'audited')")
+  } else if (filters.status && filters.status !== 'all') {
     conditions.push('v.status = ?')
     params.push(filters.status)
   }

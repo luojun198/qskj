@@ -1,16 +1,33 @@
-import { mount } from '@vue/test-utils'
-import { describe, expect, it, vi } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createPinia, setActivePinia } from 'pinia'
 import { ref } from 'vue'
 import GroupNav from '../GroupNav.vue'
 import { buildNavApps } from '@/config/navigation'
 
-const { route } = vi.hoisted(() => ({
+const { route, routerPush, confirmMock } = vi.hoisted(() => ({
   route: { params: { groupTitle: '' } as Record<string, string> },
+  routerPush: vi.fn(),
+  confirmMock: vi.fn(() => Promise.resolve('confirm')),
 }))
+
+vi.mock('element-plus', async importOriginal => {
+  const actual = await importOriginal<typeof import('element-plus')>()
+  return { ...actual, ElMessageBox: { ...actual.ElMessageBox, confirm: confirmMock } }
+})
 
 vi.mock('vue-router', () => ({
   useRoute: () => route,
+  // GlWorkspace 在「模块未启用」链接上要跳账套参数页
+  useRouter: () => ({ push: routerPush }),
 }))
+
+// GlWorkspace 读系统参数区分「模块未启用」与「无权限」，需要活动的 pinia
+beforeEach(() => {
+  setActivePinia(createPinia())
+  routerPush.mockClear()
+  confirmMock.mockClear()
+})
 
 function mountGroupNav(groupTitle: string, enableCashFlow = false) {
   route.params.groupTitle = groupTitle
@@ -60,32 +77,133 @@ describe('模块首页（星辰风）', () => {
     expect(bentoLabels(wrapper)).not.toContain('销售汇总表')
   })
 
-  it('财务总账：凭证录入/审核记账只保留在流程里，下方不重复', () => {
+  it('财务总账：专用工作页面，流程图主干为 录入→审核→过账→结转→报表，不渲染通用流程卡/宫格', () => {
     const wrapper = mountGroupNav('财务总账')
-    const flowTitles = wrapper.findAll('.flow-node__title').map(n => n.text())
-    expect(flowTitles).toEqual(expect.arrayContaining(['凭证录入', '审核记账']))
-    expect(bentoLabels(wrapper)).not.toContain('凭证录入')
-    expect(bentoLabels(wrapper)).not.toContain('审核记账')
+    expect(wrapper.find('.gl-workspace').exists()).toBe(true)
+    expect(wrapper.find('.flow-card').exists()).toBe(false)
+    expect(wrapper.find('.module-section').exists()).toBe(false)
+
+    const mainTitles = wrapper.findAll('.gl-cell--main .gl-tile__title').map(n => n.text())
+    expect(mainTitles).toEqual(['凭证录入', '凭证审核', '凭证过账', '月度结转', '报表'])
+    // 主干之间 4 个横向箭头
+    expect(wrapper.findAll('.gl-arrow--right').length).toBe(4)
   })
 
-  it('财务总账右上角主入口为新增凭证，并带 action=add', () => {
+  it('财务总账：审核/过账进入同一页面但带不同状态预设', () => {
     const wrapper = mountGroupNav('财务总账')
-    const primary = wrapper.find('.module-btn--primary')
-    expect(primary.text()).toContain('新增凭证')
-    expect(primary.attributes('href')).toBe('/voucher/entry?action=add')
+    const hrefs = wrapper.findAll('.gl-cell--main .gl-tile').map(n => n.attributes('href'))
+    expect(hrefs).toEqual([
+      '/voucher/entry',
+      '/voucher/audit?status=draft',
+      '/voucher/audit?status=audited',
+      '/voucher/auto-transfer',
+      '/ledger/standard-report',
+    ])
   })
 
-  it('财务总账辅助操作：长标题完整输出，不在文案层截断', () => {
+  it('财务总账：下挂节点为凭证查询/结账/数据备份（跨应用引用系统管理），无 Layout 注入时切换用户不显示', () => {
+    const wrapper = mountGroupNav('财务总账')
+    const below = wrapper.findAll('.gl-cell--below .gl-tile__title').map(n => n.text())
+    expect(below).toEqual(['凭证查询', '结账', '数据备份'])
+    expect(wrapper.find('.gl-cell--above').exists()).toBe(false)
+  })
+
+  it('财务总账：切换用户节点调用 Layout 注入的弹窗', async () => {
+    route.params.groupTitle = '财务总账'
+    const open = vi.fn()
+    const navApps = ref(buildNavApps(['*'], false, [], ['gl'] as any))
+    const wrapper = mount(GroupNav, {
+      global: {
+        provide: { layoutNavApps: navApps, layoutOpenSwitchOperator: open },
+        stubs: {
+          'router-link': { props: ['to'], template: '<a :href="to"><slot /></a>' },
+          'el-icon': { template: '<i><slot /></i>' },
+        },
+        mocks: { $router: { push: vi.fn() } },
+      },
+    })
+    const above = wrapper.find('.gl-cell--above button.gl-tile')
+    expect(above.text()).toContain('切换用户')
+    await above.trigger('click')
+    expect(open).toHaveBeenCalledTimes(1)
+  })
+
+  it('财务总账：底部链接列严格按参考图排列与命名，链接列已全部可点', () => {
     const wrapper = mountGroupNav('财务总账', true)
-    const auxLabels = wrapper.findAll('.flow-aux .app-tile__label').map(n => n.text())
-    expect(auxLabels).toEqual(expect.arrayContaining([
-      '辅助项目余额表',
-      '辅助项目明细账',
-      '现金流量试算平衡表',
-    ]))
-    const flowTitles = wrapper.findAll('.flow-node__title').map(n => n.text())
-    expect(flowTitles).toContain('科目与基础资料')
+    const columns = wrapper.findAll('.gl-links__col')
+    expect(columns.length).toBe(4)
+    const colTexts = columns.map(c => c.findAll('.gl-link').map(n => n.text()))
+    expect(colTexts).toEqual([
+      ['总分类账', '银行日记账', '现金日记账'],
+      ['汇总余额表', '外币余额表', '辅助项目余额表', '辅助项目外币余额表', '凭证汇总表'],
+      ['明细账', '增值税明细账', '多栏账', '辅助项目明细账', '辅助项目多栏明细账'],
+      ['库存数量金额表', '辅助项目库存数量金额表', '现金流量试算平衡表'],
+    ])
+    // 未实现的功能占位：不是可点链接
+    const placeholders = wrapper.findAll('.gl-link--placeholder').map(n => n.text())
+    expect(placeholders).not.toContain('合同账款查询')
+    expect(placeholders).not.toContain('库存数量金额表')
+    const qtyLink = wrapper.findAll('a.gl-link').find(n => n.text() === '库存数量金额表')
+    expect(qtyLink?.attributes('href')).toBe('/ledger/quantity-balance')
+    const vatLink = wrapper.findAll('a.gl-link').find(n => n.text() === '增值税明细账')
+    expect(vatLink?.attributes('href')).toBe('/ledger/vat-detail')
+    const multiColumnLink = wrapper.findAll('a.gl-link').find(n => n.text() === '多栏账')
+    expect(multiColumnLink?.attributes('href')).toBe('/ledger/multi-column')
+    expect(placeholders).not.toContain('辅助项目多栏明细账')
+    const auxMultiColumnLink = wrapper.findAll('a.gl-link').find(n => n.text() === '辅助项目多栏明细账')
+    expect(auxMultiColumnLink?.attributes('href')).toBe('/ledger/aux-multi-column')
+    const bank = wrapper.findAll('a.gl-link').find(n => n.text() === '银行日记账')
+    expect(bank?.attributes('href')).toBe('/ledger/cash-journal?scope=bank')
+    // 流程图里已有的凭证入口不在链接列重复
+    expect(colTexts.flat()).not.toContain('凭证录入')
   })
+
+  it('财务总账：未启用外币核算的入口显示为「模块未启用」，点击引导去账套参数而非提示功能没做', async () => {
+    const wrapper = mountGroupNav('财务总账', true)
+
+    const moduleOff = wrapper.findAll('.gl-link--module-off').map(n => n.text())
+    expect(moduleOff).toContain('外币余额表')
+    expect(moduleOff).toContain('辅助项目外币余额表')
+    // 关键：不再落到「功能规划中」那条占位分支
+    const placeholders = wrapper.findAll('.gl-link--placeholder').map(n => n.text())
+    expect(placeholders).not.toContain('外币余额表')
+
+    const link = wrapper.findAll('.gl-link--module-off').find(n => n.text() === '外币余额表')!
+    expect(link.attributes('title')).toBe('账套未启用外币核算')
+    await link.trigger('click')
+    await flushPromises()
+    expect(confirmMock).toHaveBeenCalled()
+    expect(routerPush).toHaveBeenCalledWith('/system/param')
+  })
+
+  it('财务总账：左侧面板的「期末调汇」「外币类型」同样是「模块未启用」而非「功能规划中」', async () => {
+    const wrapper = mountGroupNav('财务总账', true)
+
+    const moduleOff = wrapper.findAll('.gl-sidebar-btn--module-off').map(n => n.text())
+    expect(moduleOff).toEqual(expect.arrayContaining(['期末调汇', '外币类型']))
+    const placeholders = wrapper.findAll('.gl-sidebar-btn--placeholder').map(n => n.text())
+    expect(placeholders).not.toContain('期末调汇')
+    expect(placeholders).not.toContain('外币类型')
+
+    // action 项（无路由）仍要渲染成按钮，不能被 status 判定吞掉
+    const buttons = wrapper.findAll('button.gl-sidebar-btn').map(n => n.text())
+    expect(buttons).toContain('修改密码')
+
+    const btn = wrapper.findAll('.gl-sidebar-btn--module-off').find(n => n.text() === '期末调汇')!
+    expect(btn.attributes('title')).toBe('账套未启用外币核算')
+    await btn.trigger('click')
+    await flushPromises()
+    expect(confirmMock).toHaveBeenCalled()
+    expect(routerPush).toHaveBeenCalledWith('/system/param')
+  })
+
+
+  it('模块头部压缩为单行紧凑模式，右上角无重复冗余按钮', () => {
+    const wrapper = mountGroupNav('财务总账')
+    expect(wrapper.find('.module-head').exists()).toBe(true)
+    expect(wrapper.find('.module-head__actions').exists()).toBe(false)
+  })
+
 
   it('出纳管理：流程未覆盖的银行对账仍出现在其他功能', () => {
     const wrapper = mountGroupNav('出纳管理')

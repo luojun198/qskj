@@ -62,7 +62,7 @@
 }
 
 .not-found :deep(.el-result__subtitle) {
-  font-size: 15px;
+  font-size: var(--cw-text-lg);
   color: #6e6e73;
   margin-bottom: 32px;
 }
@@ -71,7 +71,7 @@
   height: 44px;
   padding: 12px 32px;
   border-radius: 12px !important;
-  font-size: 14px !important;
+  font-size: var(--cw-text-base) !important;
   font-weight: 600 !important;
   background: linear-gradient(135deg, #007AFF 0%, #5856D6 100%) !important;
   border: none !important;

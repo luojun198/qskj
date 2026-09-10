@@ -1,12 +1,13 @@
 <template>
   <div class="page report-page">
-    <div class="report-header">
+    <div class="report-header no-print">
       <ReportViewToolbar
         v-if="isDirectReportMode"
         v-model:year="filters.year"
         v-model:period="filters.period"
         v-model:show-execution-result="showExecutionResult"
         v-model:show-zero-value="showZeroValue"
+        v-model:fit-print-to-page="fitPrintToPage"
         :page-title="pageTitle"
         :subtitle="periodSubtitle"
         :years="years"
@@ -51,7 +52,7 @@
       />
     </div>
 
-    <AccountScopeAlert />
+    <AccountScopeAlert class="no-print" />
 
     <div v-loading="loading" class="report-body">
       <ReportSheetGrid v-if="templateData" />
@@ -414,6 +415,8 @@ const saving = ref(false)
 const executing = ref(false)
 const showExecutionResult = ref(false)
 const showZeroValue = ref(false)
+/** 打印时是否强制缩到一页；默认关闭，保证字号可读并可分页 */
+const fitPrintToPage = ref(false)
 const templates = ref<TemplateListItem[]>([])
 const templateData = ref<TemplateDetail | null>(null)
 const selectedCode = ref('')
@@ -2844,15 +2847,16 @@ function handlePrint() {
     const body = document.querySelector('.report-body') as HTMLElement | null
     const grid = document.querySelector('.sheet-grid') as HTMLElement | null
     if (grid && body) {
-      // A4 纵向去除 5mm 页边距后的可用区（96dpi 下的 CSS 像素），留少量余量
+      // A4 纵向去除页边距后的可用区（96dpi 近似 CSS 像素）
       const a4Width = 718
       const a4Height = 1040
       const gridWidth = grid.scrollWidth
       const gridHeight = grid.scrollHeight
       const widthScale = gridWidth > 0 ? a4Width / gridWidth : 1
-      const heightScale = gridHeight > 0 ? a4Height / gridHeight : 1
-      // 取较小缩放比，保证整张表完整落在一页 A4 上；内容偏小时不放大
-      const scale = Math.min(widthScale, heightScale, 1)
+      // 默认只按纸宽缩放并允许纵向分页；勾选「打印适应一页」时才同时压高度
+      const scale = fitPrintToPage.value
+        ? Math.min(widthScale, gridHeight > 0 ? a4Height / gridHeight : 1, 1)
+        : Math.min(widthScale, 1)
       if (scale < 1) {
         body.style.zoom = String(scale)
       }
@@ -3126,7 +3130,7 @@ onMounted(async () => {
 
 .report-generate-dialog__desc {
   margin-top: 4px;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   color: #606266;
   line-height: 1.5;
 }
@@ -3144,7 +3148,7 @@ onMounted(async () => {
 }
 
 .report-generate-field__label {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   font-weight: 600;
   color: #606266;
 }
@@ -3157,7 +3161,7 @@ onMounted(async () => {
   border-radius: 12px;
   background: #fff;
   color: #303133;
-  font-size: 14px;
+  font-size: var(--cw-text-base);
   font-weight: 500;
   outline: none;
   transition: border-color 0.2s, box-shadow 0.2s;
@@ -3177,7 +3181,7 @@ onMounted(async () => {
 
 .sort-order-tip {
   margin: 0 0 12px;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   color: #606266;
   line-height: 1.5;
 }
@@ -3189,7 +3193,7 @@ onMounted(async () => {
 .sort-order-preview {
   margin: 0 0 12px;
   padding: 8px 12px;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   color: #303133;
   background: var(--el-fill-color-light);
   border-radius: 6px;

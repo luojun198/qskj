@@ -176,6 +176,16 @@
           <span v-if="row.is_bank" class="mini-flag bank">是</span>
         </template>
       </el-table-column>
+      <el-table-column label="外币" column-key="外币" :width="getColumnWidth('外币', 72)" align="center">
+        <template #default="{ row }">
+          <span v-if="row.is_foreign" class="mini-flag">{{ row.currency_code || '是' }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="数量" column-key="数量" :width="getColumnWidth('数量', 72)" align="center">
+        <template #default="{ row }">
+          <span v-if="row.is_quantity" class="mini-flag">{{ row.quantity_unit || '是' }}</span>
+        </template>
+      </el-table-column>
       <el-table-column label="辅助核算" column-key="辅助核算" min-width="220" :width="getColumnWidth('辅助核算')">
         <template #default="{ row }">
           <div v-if="row.is_aux" class="aux-tags">
@@ -1601,7 +1611,7 @@ onActivated(() => load())
 
 .import-tips {
   margin-bottom: 16px;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   color: #606266;
   line-height: 1.8;
 }

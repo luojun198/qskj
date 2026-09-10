@@ -234,7 +234,7 @@ watch(pickerRoots, roots => {
 }
 
 .rules-category-row__label {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   font-weight: 600;
   color: var(--el-text-color-primary, #303133);
 }

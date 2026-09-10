@@ -17,6 +17,12 @@ export interface UseTableInfiniteScrollOptions {
   threshold?: number
   /** 数据长度，变化后自动重新绑定并检查是否需要补满首屏 */
   watchSource?: () => number
+  /**
+   * 自动滚动加载的行数软上限（默认 800）。
+   * 超过后停止自动 loadMore / checkFill，需用户点按钮继续。
+   * 传 0 / Infinity 表示不限制。
+   */
+  maxAutoRows?: number
 }
 
 /**
@@ -26,7 +32,15 @@ export interface UseTableInfiniteScrollOptions {
  * 不依赖 @vueuse/core，自行管理监听的绑定与解绑，兼容 keep-alive。
  */
 export function useTableInfiniteScroll(options: UseTableInfiniteScrollOptions) {
-  const { getScrollEl, hasMore, loading, loadingMore, onLoadMore, threshold = 150 } = options
+  const {
+    getScrollEl,
+    hasMore,
+    loading,
+    loadingMore,
+    onLoadMore,
+    threshold = 150,
+    maxAutoRows = 800,
+  } = options
 
   let scrollEl: HTMLElement | null = null
   let bound = false
@@ -46,12 +60,26 @@ export function useTableInfiniteScroll(options: UseTableInfiniteScrollOptions) {
       '.el-table__body-wrapper .el-scrollbar__wrap'
     )
     if (scrollbarWrap) return scrollbarWrap
+    // el-table-v2 虚拟列表滚动容器
+    const v2Scroll = root.querySelector<HTMLElement>(
+      '.el-table-v2__body > div, .el-vl__wrapper, .el-table-v2 .el-virtual-scrollbar__wrap'
+    )
+    if (v2Scroll) return v2Scroll
     // 兜底：老结构直接在 body-wrapper 上滚动
     return root.querySelector<HTMLElement>('.el-table__body-wrapper')
   }
 
+  function currentRowCount() {
+    return options.watchSource ? options.watchSource() : 0
+  }
+
+  function isOverSoftCap() {
+    if (!maxAutoRows || !Number.isFinite(maxAutoRows) || maxAutoRows <= 0) return false
+    return currentRowCount() >= maxAutoRows
+  }
+
   function canLoad() {
-    return hasMore.value && !loading.value && !loadingMore.value
+    return hasMore.value && !loading.value && !loadingMore.value && !isOverSoftCap()
   }
 
   function handleScroll() {
@@ -123,5 +151,5 @@ export function useTableInfiniteScroll(options: UseTableInfiniteScrollOptions) {
   onDeactivated(unbind)
   onUnmounted(unbind)
 
-  return { rebind, unbind, checkFill, scrollToTop }
+  return { rebind, unbind, checkFill, scrollToTop, isOverSoftCap }
 }

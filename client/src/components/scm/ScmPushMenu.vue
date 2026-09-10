@@ -173,10 +173,10 @@ defineExpose({ reload: load })
 </script>
 
 <style scoped>
-.push-menu-compact { margin: 0 !important; padding: 0 2px !important; min-width: auto; font-size: 13px; }
+.push-menu-compact { margin: 0 !important; padding: 0 2px !important; min-width: auto; font-size: var(--cw-text-base); }
 .push-menu-panel { width: 300px; padding: 4px 0; }
 .push-menu-title { padding: 6px 14px 8px; color: var(--el-text-color-secondary); font-size: 12px; border-bottom: 1px solid var(--el-border-color-lighter); }
-.push-menu-empty { padding: 14px; color: var(--el-text-color-secondary); font-size: 13px; text-align: center; }
+.push-menu-empty { padding: 14px; color: var(--el-text-color-secondary); font-size: var(--cw-text-base); text-align: center; }
 .push-menu-error { color: var(--el-color-danger); cursor: pointer; }
 .push-menu-item { height: auto !important; line-height: 1.4 !important; padding: 8px 14px !important; }
 .push-menu-item__body { width: 100%; min-width: 0; }

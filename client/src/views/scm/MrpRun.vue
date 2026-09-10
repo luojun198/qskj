@@ -7,7 +7,7 @@
       </div>
       <el-button type="primary" :loading="openingNew" @click="openNew"><el-icon><Plus /></el-icon>新增计算单</el-button>
     </div>
-    <div class="filters">
+    <div class="filters toolbar">
       <el-input v-model="filters.keyword" placeholder="单号或备注" clearable style="width:220px" @keyup.enter="load" />
       <el-select v-model="filters.status" clearable placeholder="全部状态" style="width:130px" @change="load">
         <el-option label="草稿" value="draft" /><el-option label="已审核" value="audited" />
@@ -87,5 +87,5 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.mrp-list-page{display:flex;flex-direction:column;height:100%;padding:14px 18px;gap:12px}.page-header{display:flex;align-items:center;justify-content:space-between}.page-header h2{margin:0;font-size:15px;font-weight:600}.sub{margin-top:4px;color:var(--el-text-color-secondary);font-size:13px}.filters{display:flex;gap:8px}
+.mrp-list-page{display:flex;flex-direction:column;height:100%;padding:14px 18px;gap:12px}.page-header{display:flex;align-items:center;justify-content:space-between}.page-header h2{margin:0;font-size: var(--cw-text-lg);font-weight:600}.sub{margin-top:4px;color:var(--el-text-color-secondary);font-size: var(--cw-text-base)}.filters{display:flex;gap:8px}
 </style>

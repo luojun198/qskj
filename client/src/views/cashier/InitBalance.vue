@@ -175,6 +175,6 @@ async function handleImport(file: any) {
 <style scoped>
 .page-cashier-initbal { display: flex; flex-direction: column; height: 100%; }
 .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.label { font-size: 13px; color: var(--el-text-color-regular); }
+.label { font-size: var(--cw-text-base); color: var(--el-text-color-regular); }
 .table-container { flex: 1; overflow: hidden; padding: 0 16px 8px; }
 </style>

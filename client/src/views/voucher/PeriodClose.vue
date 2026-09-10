@@ -443,7 +443,7 @@ onMounted(() => {
 
 .toolbar-title {
   color: #0f172a;
-  font-size: 14px;
+  font-size: var(--cw-text-base);
   font-weight: 700;
   line-height: 1;
 }

@@ -241,7 +241,7 @@ function adjustFontSize(delta: number) {
   border: none;
   background: transparent;
   color: var(--el-color-primary);
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   cursor: pointer;
 }
 

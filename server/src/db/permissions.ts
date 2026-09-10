@@ -46,6 +46,7 @@ export const PERMISSIONS: PermissionDef[] = [
   { code: 'ledger:aux',       name: '辅助明细账',   module: 'ledger',  moduleName: '账簿查询' },
   { code: 'ledger:qty',       name: '数量余额表',   module: 'ledger',  moduleName: '账簿查询' },
   { code: 'ledger:foreign',   name: '外币余额表',   module: 'ledger',  moduleName: '账簿查询' },
+  { code: 'ledger:vsummary',  name: '凭证汇总表',   module: 'ledger',  moduleName: '账簿查询' },
   { code: 'ledger:cashflow',  name: '现金流量表',   module: 'ledger',  moduleName: '账簿查询' },
 
   // ── 报表管理 ──────────────────────────────────────────

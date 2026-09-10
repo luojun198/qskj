@@ -18,7 +18,9 @@ function createDb() {
     CREATE TABLE scm_serial_move (id TEXT, account_set_id TEXT, doc_id TEXT, doc_type TEXT, doc_no TEXT,
       line_seq INTEGER, warehouse_code TEXT, item_code TEXT, serial_no TEXT, direction TEXT, created_at TEXT);
   `)
-  for (const [c, d] of [['PI', 'in'], ['SO', 'out'], ['TR', 'none']]) {
+  db.exec(`CREATE TABLE scm_stock_move (id TEXT, account_set_id TEXT, doc_type TEXT, doc_no TEXT,
+      line_seq INTEGER, item_code TEXT, direction TEXT, qty REAL);`)
+  for (const [c, d] of [['PI', 'in'], ['SO', 'out'], ['TR', 'none'], ['CK', 'none']]) {
     db.prepare("INSERT INTO scm_doc_type (id,account_set_id,code,direction) VALUES (?,?,?,?)").run(uuidv4(), AID, c, d)
   }
   db.prepare("INSERT INTO scm_item (id,account_set_id,code,name,serial_flag) VALUES (?,?,?,?,1)").run(uuidv4(), AID, 'A', 'A')
@@ -76,6 +78,48 @@ describe('scmSerial 序列号追溯', () => {
     reverseDocSerials(db, AID, pin)   // 撤销入库（本单为建档来源）→ 删除登记
     expect(inStock(db, 'SN1')).toBeUndefined()
     expect(inStock(db, 'SN2')).toBeUndefined()
+  })
+
+  // ── S6：盘点(CK)维护序列号台账 ────────────────────────────
+
+  const mkMove = (db: Database.Database, docNo: string, dir: string, qty: number) =>
+    db.prepare("INSERT INTO scm_stock_move (id,account_set_id,doc_type,doc_no,line_seq,item_code,direction,qty) VALUES (?,?,?,?,?,?,?,?)")
+      .run(uuidv4(), AID, 'CK', docNo, 1, 'A', dir, qty)
+
+  it('S6 盘盈：实盘清单里账上没有的序列号被登记入库', () => {
+    maintainDocSerials(db, AID, mkdoc(db, 'PI', 'P1', 'W1', 'A', 1, ['SN1']))
+    const ck = mkdoc(db, 'CK', 'C1', 'W1', 'A', 2, ['SN1', 'SN2'])
+    mkMove(db, 'C1', 'in', 1)
+    expect(maintainDocSerials(db, AID, ck)).toEqual([])
+    expect(inStock(db, 'SN2')).toMatchObject({ status: 'in_stock', warehouse_code: 'W1' })
+    expect(inStock(db, 'SN1').status).toBe('in_stock')
+  })
+
+  it('S6 盘亏：账上在库但实盘清单里没有的序列号被核销', () => {
+    maintainDocSerials(db, AID, mkdoc(db, 'PI', 'P1', 'W1', 'A', 2, ['SN1', 'SN2']))
+    const ck = mkdoc(db, 'CK', 'C1', 'W1', 'A', 1, ['SN1'])
+    mkMove(db, 'C1', 'out', 1)
+    expect(maintainDocSerials(db, AID, ck)).toEqual([])
+    expect(inStock(db, 'SN2').status).toBe('out')
+    expect(inStock(db, 'SN1').status).toBe('in_stock')
+  })
+
+  it('S6 盘点差异与序列号对不上时只告警不拦截', () => {
+    maintainDocSerials(db, AID, mkdoc(db, 'PI', 'P1', 'W1', 'A', 1, ['SN1']))
+    const ck = mkdoc(db, 'CK', 'C1', 'W1', 'A', 3, ['SN1'])
+    mkMove(db, 'C1', 'in', 2)
+    const warnings = maintainDocSerials(db, AID, ck)
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toMatch(/盘盈 2/)
+  })
+
+  it('S6 账实相符（无库存移动）时序列号台账不动', () => {
+    maintainDocSerials(db, AID, mkdoc(db, 'PI', 'P1', 'W1', 'A', 1, ['SN1']))
+    const ck = mkdoc(db, 'CK', 'C1', 'W1', 'A', 1, ['SN1'])
+    expect(maintainDocSerials(db, AID, ck)).toEqual([])
+    expect(inStock(db, 'SN1').status).toBe('in_stock')
+    const moves = db.prepare("SELECT COUNT(*) c FROM scm_serial_move WHERE doc_type='CK'").get() as any
+    expect(moves.c).toBe(0)
   })
 
   it('非序列号物料跳过', () => {

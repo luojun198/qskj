@@ -13,13 +13,22 @@ import {
 } from '../db/permissions.js'
 import { mapAcdCashFlowJd } from '../utils/acdCashFlow.js'
 import { parseKmbmRow } from '../utils/acdKmbmParse.js'
+import { calcForeignInitBalance } from '../utils/initBalanceForeign.js'
 import { buildVoucherNo, getMaxVoucherNoSeqInPeriod } from '../services/voucherEntry.js'
 import {
   applyAccountCodeConfigToDb,
+  bootstrapNewAccountSetDefaults,
   syncAccountSetStartDate,
   isValidAccountSetStartDate,
   resolveAccountSetStartDate,
+  upsertAccountSetSystemParam,
 } from '../services/accountSetDefaults.js'
+import {
+  getCurrencyByCode,
+  upsertCurrencyRow,
+  upsertExchangeRate,
+} from '../services/currencyService.js'
+import { rebuildAccountBalances } from '../services/accountBalanceRebuild.js'
 import { importCashierTables, importFixedAssetTables } from './importAcdCashierAsset.js'
 import { importSupplyChainFromAcd } from '../services/importAcdSupplyChain.js'
 
@@ -47,6 +56,8 @@ type ParsedTables = {
   transferTypes: AcdRow[]
   voucherEntries: AcdRow[]
   voucherHeaders: AcdRow[]
+  voucherTemplateHeaders: AcdRow[] // pzmb - 凭证模板
+  voucherTemplateEntries: AcdRow[] // pzmb_pz - 凭证模板分录
   budgetSurplusAdjustments: AcdRow[]
   reportCatalog: AcdRow[]
   reportFormulaCatalog: AcdRow[]
@@ -61,6 +72,13 @@ type ParsedTables = {
   auxPersons: AcdRow[] // grk - 个人
   auxCashFlows: AcdRow[] // xjll_xm - 现金流量项目
   auxFundSources: AcdRow[] // zjly - 资金来源
+  // 辅助核算期初表（科目 × 辅助项目 × 年份）
+  auxCustomerInitBalances: AcdRow[] // dwnc - 往来单位期初
+  auxDeptInitBalances: AcdRow[] // bmnc - 部门期初
+  auxPersonInitBalances: AcdRow[] // grnc - 个人期初
+  auxProjectInitBalances: AcdRow[] // xmnc - 项目期初
+  /** fbgl - 外币汇率 */
+  currencies: AcdRow[]
   // 出纳模块原始表
   cashierJournal: AcdRow[] // cn_mx - 出纳日记账明细
   cashierInitBalances: AcdRow[] // cn_nc - 出纳期初
@@ -127,7 +145,17 @@ type ImportStats = {
     updated: number
     skipped: number
   }
+  /** 外币核算科目数量（is_foreign=1） */
+  foreignAccounts: number
+  currencies: {
+    inserted: number
+    updated: number
+  }
   initBalances: {
+    inserted: number
+    skipped: number
+  }
+  auxInitBalances: {
     inserted: number
     skipped: number
   }
@@ -139,6 +167,8 @@ type ImportStats = {
     vouchers: number
     entries: number
   }
+  voucherTemplates: number
+  accountBalanceRows: number
   budgetSurplusAdjustments: {
     inserted: number
     skipped: number
@@ -484,6 +514,8 @@ function parseAcdTables(acdFilePathOrBuffer: string | Buffer, acdBuffer?: Buffer
   const transferTypeContent = getTable('jzlx.txt')
   const voucherEntryContent = getTable('pz.txt')
   const voucherHeaderContent = getTable('pzdj.txt')
+  const voucherTemplateHeaderContent = getTable('pzmb.txt')
+  const voucherTemplateEntryContent = getTable('pzmb_pz.txt')
   const budgetSurplusAdjustmentContent = getTable('ysda.txt')
   const reportCatalogContent = getTable('bbml.txt')
   const reportFormulaCatalogContent = getTable('bbml_gs.txt')
@@ -582,6 +614,11 @@ function parseAcdTables(acdFilePathOrBuffer: string | Buffer, acdBuffer?: Buffer
   const auxPersonsContent = getTable('grk.txt')
   const auxCashFlowsContent = getTable('xjll_xm.txt')
   const auxFundSourcesContent = getTable('zjly.txt')
+  const auxCustomerInitBalanceContent = getTable('dwnc.txt')
+  const auxDeptInitBalanceContent = getTable('bmnc.txt')
+  const auxPersonInitBalanceContent = getTable('grnc.txt')
+  const auxProjectInitBalanceContent = getTable('xmnc.txt')
+  const currenciesContent = getTable('fbgl.txt')
 
   // 出纳模块表
   const cashierJournalContent = getTable('cn_mx.txt')
@@ -611,6 +648,8 @@ function parseAcdTables(acdFilePathOrBuffer: string | Buffer, acdBuffer?: Buffer
     transferTypes: splitTableRows(transferTypeContent),
     voucherEntries: splitTableRows(voucherEntryContent),
     voucherHeaders: splitTableRows(voucherHeaderContent),
+    voucherTemplateHeaders: splitTableRows(voucherTemplateHeaderContent),
+    voucherTemplateEntries: splitTableRows(voucherTemplateEntryContent),
     budgetSurplusAdjustments: splitTableRows(budgetSurplusAdjustmentContent),
     reportCatalog: splitTableRows(reportCatalogContent),
     reportFormulaCatalog: splitTableRows(reportFormulaCatalogContent),
@@ -624,6 +663,11 @@ function parseAcdTables(acdFilePathOrBuffer: string | Buffer, acdBuffer?: Buffer
     auxPersons: splitTableRows(auxPersonsContent),
     auxCashFlows: splitTableRows(auxCashFlowsContent),
     auxFundSources: splitTableRows(auxFundSourcesContent),
+    auxCustomerInitBalances: splitTableRows(auxCustomerInitBalanceContent),
+    auxDeptInitBalances: splitTableRows(auxDeptInitBalanceContent),
+    auxPersonInitBalances: splitTableRows(auxPersonInitBalanceContent),
+    auxProjectInitBalances: splitTableRows(auxProjectInitBalanceContent),
+    currencies: splitTableRows(currenciesContent),
     cashierJournal: splitTableRows(cashierJournalContent),
     cashierInitBalances: splitTableRows(cashierInitBalanceContent),
     bankStatements: splitTableRows(bankStatementContent),
@@ -675,25 +719,41 @@ function getParentCode(code: string, knownCodes: Set<string>): string | null {
 /**
  * 构建辅助核算类型字符串
  */
-function buildAuxTypes(item: any): string | null {
-  const types: string[] = []
+/**
+ * 按系统口径生成 accounts.aux_types：JSON 对象，键为辅助类目 ID（非 code），值为默认项目 ID（无则 null）。
+ * 期初辅助、凭证录入、辅助账都用 parseAccountAuxCategoryIds(aux_types) 取「类目 ID」再去 aux_categories 反查 code；
+ * 旧实现写的是 "customer,dept" 这种 code 串，被当成类目 ID 后一律查不到，导致辅助科目期初页面只读且辅助期初无法打开。
+ * 润衡只有一张往来单位表（dwk），wls（往来）标志并入 customer 类目。
+ */
+export function buildAuxTypes(
+  item: {
+    isDeptAux?: boolean
+    isProjectAux?: boolean
+    isCustomerAux?: boolean
+    isSupplierAux?: boolean
+    isPersonAux?: boolean
+  },
+  categoryIdByCode: Map<string, string>
+): string | null {
+  const codes: string[] = []
+  if (item.isDeptAux) codes.push('dept')
+  if (item.isProjectAux) codes.push('project')
+  if (item.isCustomerAux || item.isSupplierAux) codes.push('customer')
+  if (item.isPersonAux) codes.push('person')
 
-  if (item.isDeptAux) types.push('dept')
-  if (item.isProjectAux) types.push('project')
-  if (item.isCustomerAux) types.push('customer')
-  if (item.isSupplierAux) types.push('supplier')
-  if (item.isPersonAux) types.push('person')
-  if (item.isOtherAux1) types.push('other1')
-  if (item.isOtherAux2) types.push('other2')
-
-  return types.length > 0 ? types.join(',') : null
+  const auxTypes: Record<string, null> = {}
+  for (const code of codes) {
+    const categoryId = categoryIdByCode.get(code)
+    if (categoryId) auxTypes[categoryId] = null
+  }
+  return Object.keys(auxTypes).length > 0 ? JSON.stringify(auxTypes) : null
 }
 
 /**
  * 从 ACD 的 xt.txt 中提取科目编码长度配置
  * 返回 [xt_len1, xt_len2, ..., xt_len10]
  */
-function extractAccountCodeLengthsFromXt(xt: Map<string, string>): number[] | null {
+export function extractAccountCodeLengthsFromXt(xt: Map<string, string>): number[] | null {
   const lengths: number[] = []
 
   for (let i = 1; i <= 10; i++) {
@@ -707,8 +767,13 @@ function extractAccountCodeLengthsFromXt(xt: Map<string, string>): number[] | nu
     }
 
     const len = Number.parseInt(value.trim(), 10)
-    if (isNaN(len) || len <= 0) {
+    if (isNaN(len) || len < 0) {
       return null // 配置无效
+    }
+    // 润衡把未启用的级次写成 xt_lenN=0（例如 4,3,3,2,2,2,0,0,0,0），0 表示到此为止
+    if (len === 0) {
+      if (i === 1) return null
+      break
     }
 
     lengths.push(len)
@@ -1673,9 +1738,14 @@ export function buildStats(accountSetId: string, accountSetName: string): Import
     systemParams: { upserted: 0 },
     voucherTypes: { inserted: 0, updated: 0, skipped: 0 },
     accounts: { inserted: 0, updated: 0, skipped: 0 },
+    foreignAccounts: 0,
+    currencies: { inserted: 0, updated: 0 },
     initBalances: { inserted: 0, skipped: 0 },
+    auxInitBalances: { inserted: 0, skipped: 0 },
     transferTypes: { types: 0, items: 0 },
     vouchers: { vouchers: 0, entries: 0 },
+    voucherTemplates: 0,
+    accountBalanceRows: 0,
     budgetSurplusAdjustments: { inserted: 0, skipped: 0 },
     users: 0,
     periodClosing: { closedCount: 0, from: '', to: '' },
@@ -2063,6 +2133,17 @@ function importSystemParams(
     upsert.run(uuidv4(), accountSetId, item.key, item.value, 'ACD 导入元数据')
   }
 
+  // 税号 nsh → 账套统一社会信用代码（用户已填则不覆盖）
+  const taxNo = (xt.get('nsh') || '').trim()
+  if (taxNo) {
+    const row = db
+      .prepare('SELECT credit_code FROM account_sets WHERE id = ?')
+      .get(accountSetId) as { credit_code?: string | null } | undefined
+    if (row && !String(row.credit_code || '').trim()) {
+      db.prepare('UPDATE account_sets SET credit_code = ? WHERE id = ?').run(taxNo, accountSetId)
+    }
+  }
+
   // 顺带把使用单位落到系统真正读取的 unit_name 上。
   // 早先只写进 import_acd:unit_name，而那个 key 全库没有任何地方读，
   // 结果报表抬头只能退回账套名（形如「zw06广州东汇食品有限公司20260827」）。
@@ -2078,6 +2159,181 @@ function importSystemParams(
       upsert.run(uuidv4(), accountSetId, 'unit_name', acdUnitName, '使用单位（ACD 导入）')
       stats.systemParams.upserted += 1
     }
+  }
+}
+
+/**
+ * 从 xt.txt 推导本系统的业务参数：
+ *   xt_xjll_sz=1 → enable_cash_flow（现金流量核算已启用，凭证分录带 xjbm）
+ *   xt_pzsh_sz=1 → require_audit（凭证须审核后记账）
+ * 未出现的键不返回，交给 bootstrapNewAccountSetDefaults 用默认值。
+ */
+export function deriveAcdBusinessParams(xt: Map<string, string>): Record<string, string> {
+  const params: Record<string, string> = {}
+  const flag = (key: string): boolean | null => {
+    const raw = (xt.get(key) || '').trim()
+    if (!raw) return null
+    return raw === '1' || raw.toLowerCase() === 'true'
+  }
+  const cashFlow = flag('xt_xjll_sz')
+  if (cashFlow !== null) params.enable_cash_flow = String(cashFlow)
+  const audit = flag('xt_pzsh_sz')
+  if (audit !== null) params.require_audit = String(audit)
+  return params
+}
+
+/**
+ * 凭证模板：pzmb（模板编号、名称）+ pzmb_pz（模板分录，列位同 pz 去掉 nf/yf 前缀）
+ *   0 mbbh, 1 pzlx, 2 pzbh, 3 pz_xh, 4 kmbm, 5 pz_zy, 6 pz_jf, 7 pz_df, 8 pz_wb, 9 pz_hl,
+ *   10 pz_sl, 11 pz_dj, 12 jslb, 13 pz_ph, 14 jzbz, 15 xmbm, 16 dwbm, 17 bmbm, 18 grbm, 19 bz, 20 dw, … 25 xjbm
+ * 写入 voucher_templates.entries_data（与 routes/voucherTemplate 的 JSON 结构一致）。
+ */
+function importVoucherTemplates(
+  accountSetId: string,
+  tables: ParsedTables,
+  stats: ImportStats,
+  dryRun: boolean
+) {
+  const headers = tables.voucherTemplateHeaders
+  if (headers.length === 0) return
+  const db = getDb()
+
+  const accounts = db
+    .prepare('SELECT id, code, name, is_foreign, currency_code FROM accounts WHERE account_set_id = ?')
+    .all(accountSetId) as Array<{
+    id: string
+    code: string
+    name: string
+    is_foreign: number
+    currency_code: string | null
+  }>
+  const accountByCode = new Map(accounts.map(a => [a.code.trim(), a]))
+  const voucherTypes = db
+    .prepare('SELECT id, code FROM voucher_types WHERE account_set_id = ?')
+    .all(accountSetId) as Array<{ id: string; code: string }>
+  const voucherTypeIdByCode = new Map(voucherTypes.map(vt => [vt.code.trim(), vt.id]))
+  const auxCategories = db
+    .prepare('SELECT id, code FROM aux_categories WHERE account_set_id = ?')
+    .all(accountSetId) as Array<{ id: string; code: string }>
+  const auxCategoryIdByCode = new Map(auxCategories.map(c => [c.code, c.id]))
+  const auxItems = db
+    .prepare('SELECT id, type, code, name FROM aux_items WHERE account_set_id = ?')
+    .all(accountSetId) as Array<{ id: string; type: string; code: string; name: string }>
+  const auxItemByTypeAndCode = new Map(
+    auxItems.map(item => [`${item.type}|${String(item.code || '').trim()}`, item])
+  )
+  const lookupAux = (categoryCode: string, itemCode: string) => {
+    const categoryId = auxCategoryIdByCode.get(categoryCode)
+    if (!categoryId || !itemCode) return null
+    return auxItemByTypeAndCode.get(`${categoryId}|${itemCode}`) || null
+  }
+  const auxColumns: Array<{ index: number; code: string; idKey: string; nameKey: string }> = [
+    { index: 15, code: 'project', idKey: 'project_id', nameKey: 'project_name' },
+    { index: 16, code: 'customer', idKey: 'supplier_id', nameKey: 'supplier_name' },
+    { index: 17, code: 'dept', idKey: 'dept_id', nameKey: 'dept_name' },
+    { index: 18, code: 'person', idKey: 'person_id', nameKey: 'person_name' },
+  ]
+
+  const entriesByTemplate = new Map<string, AcdRow[]>()
+  for (const row of tables.voucherTemplateEntries) {
+    const code = (row[0] || '').trim()
+    if (!code) continue
+    if (!entriesByTemplate.has(code)) entriesByTemplate.set(code, [])
+    entriesByTemplate.get(code)!.push(row)
+  }
+
+  const existing = new Set(
+    (
+      db
+        .prepare('SELECT template_no FROM voucher_templates WHERE account_set_id = ?')
+        .all(accountSetId) as Array<{ template_no: string }>
+    ).map(row => row.template_no)
+  )
+  const insert = db.prepare(`
+    INSERT INTO voucher_templates
+      (id, account_set_id, template_no, template_name, voucher_type_id, total_amount, remark, entries_data, created_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+  `)
+
+  let imported = 0
+  let skippedEntries = 0
+  for (const header of headers) {
+    const templateNo = (header[0] || '').trim()
+    const templateName = (header[1] || '').trim() || templateNo
+    if (!templateNo || existing.has(templateNo)) continue
+    const rows = (entriesByTemplate.get(templateNo) || []).sort(
+      (a, b) => (Number.parseInt(a[3] || '0', 10) || 0) - (Number.parseInt(b[3] || '0', 10) || 0)
+    )
+    if (rows.length === 0) continue
+
+    let voucherTypeId: string | null = null
+    let totalAmount = 0
+    const entries: Array<Record<string, unknown>> = []
+    for (const row of rows) {
+      const account = accountByCode.get((row[4] || '').trim())
+      if (!account) {
+        skippedEntries += 1
+        continue
+      }
+      const mapped = mapAcdEntryAmount(parseAcdNumber(row[6]), parseAcdNumber(row[7]))
+      const direction = mapped?.direction ?? 'debit'
+      const amount = mapped?.amount ?? 0
+      if (!voucherTypeId) voucherTypeId = voucherTypeIdByCode.get((row[1] || '').trim()) || null
+      if (direction === 'debit') totalAmount += amount
+
+      const entry: Record<string, unknown> = {
+        seq: entries.length + 1,
+        account_id: account.id,
+        account_code: account.code,
+        account_name: account.name,
+        direction,
+        amount,
+        summary: (row[5] || '').trim(),
+        cash_flow_code: (row[25] || '').trim() || null,
+      }
+      // pzmb_pz: 8 pz_wb, 9 pz_hl, 19 bz
+      const pzWb = parseAcdNumber(row[8])
+      if (Number(account.is_foreign) === 1 && pzWb !== 0) {
+        const bz = (row[19] || '').trim().toUpperCase()
+        entry.currency_code = bz || account.currency_code || null
+        entry.exchange_rate = parseAcdNumber(row[9]) || null
+        entry.foreign_amount = pzWb
+      }
+      const auxData: Record<string, { id: string; name: string }> = {}
+      for (const column of auxColumns) {
+        const item = lookupAux(column.code, (row[column.index] || '').trim())
+        if (!item) continue
+        entry[column.idKey] = item.id
+        entry[column.nameKey] = item.name
+        auxData[column.code] = { id: item.id, name: item.name }
+      }
+      if (Object.keys(auxData).length > 0) entry.aux_data = JSON.stringify(auxData)
+      entries.push(entry)
+    }
+    if (entries.length === 0) continue
+
+    imported += 1
+    if (!dryRun) {
+      insert.run(
+        uuidv4(),
+        accountSetId,
+        templateNo,
+        templateName,
+        voucherTypeId,
+        Math.round(totalAmount * 100) / 100,
+        'ACD 导入',
+        JSON.stringify(entries)
+      )
+    }
+  }
+
+  stats.voucherTemplates += imported
+  if (imported > 0) {
+    stats.importedTables.push('pzmb.txt', 'pzmb_pz.txt')
+    console.log(`[ACD] 导入凭证模板: ${imported} 个`)
+  }
+  if (skippedEntries > 0) {
+    stats.warnings.push(`凭证模板有 ${skippedEntries} 行分录科目在账套中不存在，已跳过`)
   }
 }
 
@@ -2119,24 +2375,44 @@ export function parseAcdStartDate(s: string | undefined | null): string | null {
   return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
 }
 
-/** 从 ACD xt.txt 的 xt_kzrq 更新账套建账日期；若账套已有有效建账日期则保留（用户创建时填写） */
+/**
+ * 从 ACD xt.txt 的 xt_kzrq 更新账套建账日期。
+ *
+ * - 默认（模板导入）：账套已有有效建账日期则保留（用户创建账套时填写的值优先）。
+ * - preferXt=true（完整导入，账套本身就是由这个 ACD 生成的）：xt_kzrq 优先，
+ *   同时把 fiscal_year 同步为建账年度。完整导入的路由层拿不到用户输入的日期，
+ *   只会填一个「当年 1 月 1 日」的占位值，如果保留它，年中开账（如 2025.12.01）
+ *   的账套会被记成次年 1 月开账，期初页面的年度、账前累计列、期间状态全都对不上。
+ */
 export function updateAccountSetStartDateFromXt(
   db: { prepare: (sql: string) => { run: (...args: unknown[]) => unknown; get: (...args: unknown[]) => unknown } },
   accountSetId: string,
-  xt: Map<string, string>
+  xt: Map<string, string>,
+  options: { preferXt?: boolean } = {}
 ): string | null {
   const accountSet = db
     .prepare('SELECT start_date, fiscal_year FROM account_sets WHERE id = ?')
     .get(accountSetId) as { start_date?: string; fiscal_year?: number } | undefined
   const existing = String(accountSet?.start_date || '').trim()
+  const startDateFromXt = parseAcdStartDate(xt.get('xt_kzrq'))
+
+  if (options.preferXt && startDateFromXt) {
+    console.log(`[ACD] 以 xt_kzrq 为准设置建账日期: ${startDateFromXt}`)
+    syncAccountSetStartDate(db as any, accountSetId, startDateFromXt)
+    const fiscalYear = Number(startDateFromXt.slice(0, 4))
+    if (accountSet?.fiscal_year !== fiscalYear) {
+      db.prepare('UPDATE account_sets SET fiscal_year = ? WHERE id = ?').run(fiscalYear, accountSetId)
+    }
+    return startDateFromXt
+  }
+
   if (isValidAccountSetStartDate(existing)) {
     console.log(`[ACD] 保留账套已有建账日期: ${existing}`)
     syncAccountSetStartDate(db as any, accountSetId, existing)
     return existing
   }
 
-  const startDateStr = parseAcdStartDate(xt.get('xt_kzrq'))
-  if (!startDateStr) {
+  if (!startDateFromXt) {
     console.log('[ACD] xt.txt 中未找到有效的 xt_kzrq（建账日期），保持账套原有建账日期')
     if (existing) {
       const fallback = resolveAccountSetStartDate(existing, accountSet?.fiscal_year)
@@ -2145,9 +2421,9 @@ export function updateAccountSetStartDateFromXt(
     }
     return null
   }
-  console.log(`[ACD] 从 xt_kzrq 读取到建账日期: ${startDateStr}`)
-  syncAccountSetStartDate(db as any, accountSetId, startDateStr)
-  return startDateStr
+  console.log(`[ACD] 从 xt_kzrq 读取到建账日期: ${startDateFromXt}`)
+  syncAccountSetStartDate(db as any, accountSetId, startDateFromXt)
+  return startDateFromXt
 }
 
 /**
@@ -2309,10 +2585,28 @@ function importAccounts(accountSetId: string, rows: AcdRow[], stats: ImportStats
 
   console.log(`[ACD] 使用科目编码长度配置: [${codeLengths.join(',')}]`)
 
+  const baseCurrency = (
+    (
+      db
+        .prepare(
+          `SELECT param_value FROM system_params
+           WHERE account_set_id = ? AND param_key = 'base_currency' LIMIT 1`
+        )
+        .get(accountSetId) as { param_value?: string } | undefined
+    )?.param_value || 'RMB'
+  )
+    .trim()
+    .toUpperCase()
+
   const filtered = rows
     .map(row => parseKmbmRow(row))
     .filter((item): item is NonNullable<typeof item> => item !== null)
     .sort((a, b) => a.level - b.level || a.code.localeCompare(b.code))
+
+  // aux_types 需要引用类目 ID，先保证标准类目存在（幂等）
+  const auxCategoryIdByCode = dryRun
+    ? new Map<string, string>()
+    : ensureAuxCategories(accountSetId, db)
 
   const knownCodes = new Set(filtered.map(item => item.code))
   const existing = db
@@ -2327,18 +2621,21 @@ function importAccounts(accountSetId: string, rows: AcdRow[], stats: ImportStats
     INSERT INTO accounts (
       id, account_set_id, code, name, direction, level, parent_id,
       is_cash, is_bank, is_aux, aux_types, require_cash_flow,
+      is_foreign, currency_code,
       is_enabled, allow_delete, created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, datetime('now'), datetime('now'))
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, datetime('now'), datetime('now'))
   `)
   const updateStmt = db.prepare(`
     UPDATE accounts
     SET name=?, direction=?, level=?, parent_id=?,
         is_cash=?, is_bank=?, is_aux=?, aux_types=?, require_cash_flow=?,
+        is_foreign=?, currency_code=?,
         updated_at=datetime('now')
     WHERE id=?
   `)
 
+  let foreignCount = 0
   for (const item of filtered) {
     // 直接使用ACD的级别，不再fallback到错误的getAccountLevel
     const level = item.level
@@ -2348,8 +2645,15 @@ function importAccounts(accountSetId: string, rows: AcdRow[], stats: ImportStats
     const parentId = parentCode ? accountIdByCode.get(parentCode) || null : null
 
     // 构建辅助核算类型
-    const auxTypes = buildAuxTypes(item)
+    const auxTypes = buildAuxTypes(item, auxCategoryIdByCode)
     const isAux = auxTypes ? 1 : 0
+    const isForeign = item.isForeign ? 1 : 0
+    const currencyCode = resolveImportedAccountCurrencyCode(
+      item.isForeign,
+      item.currencyCode,
+      baseCurrency
+    )
+    if (isForeign) foreignCount += 1
 
     const existingRow = existingByCode.get(item.code)
 
@@ -2370,7 +2674,9 @@ function importAccounts(accountSetId: string, rows: AcdRow[], stats: ImportStats
           item.isBank ? 1 : 0,
           isAux,
           auxTypes,
-          item.isCash || item.isBank ? 1 : 0
+          item.isCash || item.isBank ? 1 : 0,
+          isForeign,
+          currencyCode
         )
       }
       continue
@@ -2389,8 +2695,118 @@ function importAccounts(accountSetId: string, rows: AcdRow[], stats: ImportStats
         isAux,
         auxTypes,
         item.isCash || item.isBank ? 1 : 0,
+        isForeign,
+        currencyCode,
         existingRow.id
       )
+    }
+  }
+
+  stats.foreignAccounts = foreignCount
+  if (!dryRun && foreignCount > 0) {
+    upsertAccountSetSystemParam(db, accountSetId, 'enable_foreign_currency', 'true', '启用外币核算')
+  }
+}
+
+/**
+ * 科目币种写入规则：fbs=1 时优先保留 kmbm.bz；
+ * 空值、伪编码 BWB/SL、以及本位币别名（BWB/RMB 等）不写入 currency_code。
+ */
+export function resolveImportedAccountCurrencyCode(
+  isForeign: boolean,
+  currencyCode: string | null | undefined,
+  baseCurrency = 'RMB'
+): string | null {
+  if (!isForeign) return null
+  const code = String(currencyCode || '')
+    .trim()
+    .toUpperCase()
+  if (!code) return null
+  if (code === 'BWB' || code === 'SL') return null
+  const base = String(baseCurrency || 'RMB')
+    .trim()
+    .toUpperCase() || 'RMB'
+  if (code === base) return null
+  if ((code === 'RMB' || code === 'CNY') && (base === 'RMB' || base === 'CNY')) return null
+  return code
+}
+
+/**
+ * fbgl：外币定义与期初/期末汇率。
+ * 列：0 bz, 1 nchl, 2 qchl, 3 qmhl, 4 sykm, 5 bwbz（1=本位币, 2=外币）
+ */
+export function importCurrencies(
+  accountSetId: string,
+  fbglRows: AcdRow[],
+  xt: Map<string, string>,
+  stats: ImportStats,
+  dryRun: boolean
+) {
+  if (!fbglRows || fbglRows.length === 0) return
+
+  const db = getDb()
+  stats.importedTables.push('fbgl.txt')
+
+  const baseFromXt = (xt.get('xt_bwb') || 'RMB').trim().toUpperCase() || 'RMB'
+  if (!dryRun) {
+    upsertAccountSetSystemParam(db, accountSetId, 'base_currency', baseFromXt, '本位币')
+  }
+
+  const startDate =
+    (
+      db
+        .prepare('SELECT start_date FROM account_sets WHERE id = ?')
+        .get(accountSetId) as { start_date?: string } | undefined
+    )?.start_date ||
+    parseAcdStartDate(xt.get('xt_kzrq')) ||
+    ''
+  const opening = parseAcdYearMonth(startDate) || parseAcdYearMonth(xt.get('xt_kzrq')) || {
+    year: new Date().getFullYear(),
+    month: 1,
+  }
+
+  for (const row of fbglRows) {
+    const code = (row[0] || '').trim().toUpperCase()
+    if (!code || code === 'BWB' || code === 'SL') continue
+
+    const nchl = parseAcdNumber(row[1])
+    const qchl = parseAcdNumber(row[2])
+    const qmhl = parseAcdNumber(row[3])
+    const bwbz = (row[5] || '').trim()
+    const isBase = bwbz === '1' || code === baseFromXt
+    const rateCandidate = qchl > 0 ? qchl : nchl > 0 ? nchl : 0
+    const defaultRate = isBase ? 1 : rateCandidate > 0 ? rateCandidate : 1
+
+    if (dryRun) {
+      const existing = getCurrencyByCode(accountSetId, code)
+      if (existing) stats.currencies.updated += 1
+      else stats.currencies.inserted += 1
+      continue
+    }
+
+    const existing = getCurrencyByCode(accountSetId, code)
+    upsertCurrencyRow({
+      account_set_id: accountSetId,
+      code,
+      is_base: isBase,
+      default_rate: defaultRate,
+    })
+    if (existing) stats.currencies.updated += 1
+    else stats.currencies.inserted += 1
+
+    if (!isBase && rateCandidate > 0) {
+      try {
+        upsertExchangeRate({
+          account_set_id: accountSetId,
+          currency_code: code,
+          year: opening.year,
+          period: opening.month,
+          rate: rateCandidate,
+          closing_rate: qmhl > 0 ? qmhl : null,
+        })
+      } catch (err: any) {
+        stats.warnings.push(`币种 ${code} 汇率写入失败: ${err?.message || err}`)
+      }
     }
   }
 }
@@ -2410,32 +2826,33 @@ function importInitBalances(
   stats.importedTables.push('nc.txt')
 
   const accounts = db
-    .prepare('SELECT id, code, direction FROM accounts WHERE account_set_id = ?')
-    .all(accountSetId) as Array<{ id: string; code: string; direction: 'debit' | 'credit' }>
-  const accountByCode = new Map(accounts.map(item => [String(item.code || '').trim(), item]))
-
-  const deleteStmt = db.prepare('DELETE FROM init_balances WHERE account_set_id = ? AND year = ?')
-  const insertStmt = db.prepare(`
-    INSERT INTO init_balances (id, account_set_id, account_id, direction, year, period, init_balance, init_debit, init_credit, aux_item_id, created_at)
-    VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, '', datetime('now'))
-  `)
-
-  interface PreparedRow {
-    accountId: string
+    .prepare(
+      `SELECT id, code, direction, is_foreign, currency_code
+       FROM accounts WHERE account_set_id = ?`
+    )
+    .all(accountSetId) as Array<{
+    id: string
+    code: string
     direction: 'debit' | 'credit'
-    debit: number
-    credit: number
-    balance: number
-  }
+    is_foreign: number
+    currency_code: string | null
+  }>
+  const accountByCode = new Map(accounts.map(item => [String(item.code || '').trim(), item]))
 
   // FIX-2026-09-04：nc.txt 是「每年一套年初余额」的多年表（row[14]=年份），
   // 旧实现取首行年份当作唯一 importYear，再把所有年份的行合并累加写进那一年，
   // 结果是：其余年份（例如本例的 2016）一条期初都没有，科目余额表年初列全空；
   // 被选中的那一年金额还被叠加成了多年之和。这里改为按年份分组，各年独立写入。
-  const preparedByYear = new Map<number, Map<string, PreparedRow>>()
+  //
+  // FIX-2026-09-05：旧实现只读 nc_jf/nc_df（年初）写进 init_debit/init_credit，
+  // opening_*/pre_book_* 一律留 0，而「期初余额」页面和辅助期初都只读这四列，
+  // 于是导入后页面里一片空白（"无法导入期初"）；同时 jq_jf/jq_df（建账前累计发生）
+  // 被整个丢掉，年中开账（如 2025.12.01）的账套期初 = 年初 + 1~11 月累计，
+  // 少了累计发生额，期初余额和本年累计都是错的。这里改为按系统口径完整落列。
+  const preparedByYear = new Map<number, Map<string, PreparedInitBalanceRow>>()
   const fallbackYear = new Date().getFullYear()
 
-  for (const row of rows) {
+  for (const row of pickBaseCurrencyRows(rows, NC_COLUMNS.bz)) {
     const code = (row[0] || '').trim()
     const account = accountByCode.get(code)
     if (!code || !account) {
@@ -2443,36 +2860,24 @@ function importInitBalances(
       continue
     }
 
-    const parsedYear = Number.parseInt((row[14] || '').trim(), 10)
-    const year = Number.isInteger(parsedYear) && parsedYear > 1900 ? parsedYear : fallbackYear
+    const parsed = parseAcdNcAmounts(row, NC_COLUMNS, fallbackYear)
+    accumulateInitBalanceRow(preparedByYear, parsed.year, account.id, account.direction, parsed)
+  }
 
-    // nc.txt 列映射：row[2]=年初借方, row[3]=年初贷方, row[14]=年份
-    const debit = parseFloat((row[2] || '0').replace(/,/g, '')) || 0
-    const credit = parseFloat((row[3] || '0').replace(/,/g, '')) || 0
-    const direction = account.direction
-    const balance = direction === 'debit' ? debit - credit : credit - debit
+  // 外币科目：匹配 bz=currency_code 的原币行，写入 foreign_* 字段（BWB 本位币路径不变）
+  for (const row of rows) {
+    const code = (row[0] || '').trim()
+    const account = accountByCode.get(code)
+    if (!account || Number(account.is_foreign) !== 1) continue
+    const currencyCode = String(account.currency_code || '')
+      .trim()
+      .toUpperCase()
+    if (!currencyCode) continue
+    const bz = (row[NC_COLUMNS.bz] || '').trim().toUpperCase()
+    if (bz !== currencyCode) continue
 
-    let preparedByAccount = preparedByYear.get(year)
-    if (!preparedByAccount) {
-      preparedByAccount = new Map<string, PreparedRow>()
-      preparedByYear.set(year, preparedByAccount)
-    }
-
-    const existing = preparedByAccount.get(account.id)
-    if (existing) {
-      existing.debit += debit
-      existing.credit += credit
-      existing.balance =
-        direction === 'debit' ? existing.debit - existing.credit : existing.credit - existing.debit
-    } else {
-      preparedByAccount.set(account.id, {
-        accountId: account.id,
-        direction,
-        debit,
-        credit,
-        balance,
-      })
-    }
+    const parsed = parseAcdNcForeignAmounts(row, NC_COLUMNS, fallbackYear)
+    applyForeignInitAmounts(preparedByYear, parsed.year, account.id, account.direction, parsed)
   }
 
   let totalPrepared = 0
@@ -2488,21 +2893,443 @@ function importInitBalances(
 
   if (dryRun) return
 
+  const deleteStmt = db.prepare('DELETE FROM init_balances WHERE account_set_id = ? AND year = ?')
+  const insertStmt = prepareInitBalanceInsert(db)
   for (const [year, preparedByAccount] of preparedByYear) {
     deleteStmt.run(accountSetId, year)
-    for (const row of preparedByAccount.values()) {
-      insertStmt.run(
-        uuidv4(),
-        accountSetId,
-        row.accountId,
-        row.direction,
-        year,
-        row.balance,
-        row.debit,
-        row.credit
-      )
+    for (const prepared of preparedByAccount.values()) {
+      insertInitBalanceRow(insertStmt, accountSetId, year, '', prepared)
     }
   }
+}
+
+/** 润衡 nc / dwnc / bmnc / grnc / xmnc 表的列位置（见 data_stru.txt） */
+type NcColumns = {
+  bz: number
+  nc_jf: number
+  nc_df: number
+  jq_jf: number
+  jq_df: number
+  nf: number
+  nc_jf_b: number
+  nc_df_b: number
+  jq_jf_b: number
+  jq_df_b: number
+}
+
+/** nc: kmbm, bz, nc_jf, nc_df, jq_jf, jq_df, yjd, fbs, kmjs, ys, *_b x4, nf */
+export const NC_COLUMNS: NcColumns = {
+  bz: 1,
+  nc_jf: 2,
+  nc_df: 3,
+  jq_jf: 4,
+  jq_df: 5,
+  nf: 14,
+  nc_jf_b: 10,
+  nc_df_b: 11,
+  jq_jf_b: 12,
+  jq_df_b: 13,
+}
+/** dwnc/bmnc/grnc/xmnc: kmbm, <辅助编码>, bz, nc_jf, nc_df, jq_jf, jq_df, fbs, ys, *_b x4, nf */
+export const AUX_NC_COLUMNS: NcColumns = {
+  bz: 2,
+  nc_jf: 3,
+  nc_df: 4,
+  jq_jf: 5,
+  jq_df: 6,
+  nf: 13,
+  nc_jf_b: 9,
+  nc_df_b: 10,
+  jq_jf_b: 11,
+  jq_df_b: 12,
+}
+
+/** 润衡年初表里的本位币行标记 */
+const ACD_BASE_CURRENCY = 'BWB'
+
+/**
+ * 年初表按币种分行：bz='BWB' 是本位币汇总行，其余（RMB/USD…）是原币行，
+ * 原币行的本位币列也可能带值，全部累加会重复计算。只要表里出现过 BWB 行，就只取 BWB 行。
+ */
+export function pickBaseCurrencyRows(rows: AcdRow[], bzIndex: number): AcdRow[] {
+  const baseRows = rows.filter(row => (row[bzIndex] || '').trim().toUpperCase() === ACD_BASE_CURRENCY)
+  return baseRows.length > 0 ? baseRows : rows
+}
+
+type ParsedNcAmounts = {
+  year: number
+  openingDebit: number
+  openingCredit: number
+  preBookDebit: number
+  preBookCredit: number
+}
+
+type PreparedInitBalanceRow = {
+  accountId: string
+  direction: 'debit' | 'credit'
+  openingDebit: number
+  openingCredit: number
+  preBookDebit: number
+  preBookCredit: number
+  foreignOpeningDebit: number
+  foreignOpeningCredit: number
+  foreignPreBookDebit: number
+  foreignPreBookCredit: number
+}
+
+/**
+ * 读取一行润衡年初表：
+ *   nc_jf/nc_df = 年初余额（借/贷），jq_jf/jq_df = 建账前累计发生（借/贷）。
+ * 年初余额按系统约束只能落一侧（借贷不可同时填写），这里先净额化再落列；
+ * 累计发生额借贷两侧都保留。
+ */
+export function parseAcdNcAmounts(
+  row: AcdRow,
+  columns: NcColumns,
+  fallbackYear: number
+): ParsedNcAmounts {
+  const parsedYear = Number.parseInt((row[columns.nf] || '').trim(), 10)
+  const year = Number.isInteger(parsedYear) && parsedYear > 1900 ? parsedYear : fallbackYear
+  const openingNet = parseAcdNumber(row[columns.nc_jf]) - parseAcdNumber(row[columns.nc_df])
+  return {
+    year,
+    openingDebit: openingNet > 0 ? openingNet : 0,
+    openingCredit: openingNet < 0 ? -openingNet : 0,
+    preBookDebit: parseAcdNumber(row[columns.jq_jf]),
+    preBookCredit: parseAcdNumber(row[columns.jq_df]),
+  }
+}
+
+/**
+ * 读取外币（原币）年初金额：优先 *_b 列；若 *_b 全为 0 则回退到非 _b 列。
+ * 返回形状与 parseAcdNcAmounts 相同。
+ */
+export function parseAcdNcForeignAmounts(
+  row: AcdRow,
+  columns: NcColumns,
+  fallbackYear: number
+): ParsedNcAmounts {
+  const parsedYear = Number.parseInt((row[columns.nf] || '').trim(), 10)
+  const year = Number.isInteger(parsedYear) && parsedYear > 1900 ? parsedYear : fallbackYear
+
+  let ncJf = parseAcdNumber(row[columns.nc_jf_b])
+  let ncDf = parseAcdNumber(row[columns.nc_df_b])
+  let jqJf = parseAcdNumber(row[columns.jq_jf_b])
+  let jqDf = parseAcdNumber(row[columns.jq_df_b])
+
+  if (ncJf === 0 && ncDf === 0 && jqJf === 0 && jqDf === 0) {
+    ncJf = parseAcdNumber(row[columns.nc_jf])
+    ncDf = parseAcdNumber(row[columns.nc_df])
+    jqJf = parseAcdNumber(row[columns.jq_jf])
+    jqDf = parseAcdNumber(row[columns.jq_df])
+  }
+
+  const openingNet = ncJf - ncDf
+  return {
+    year,
+    openingDebit: openingNet > 0 ? openingNet : 0,
+    openingCredit: openingNet < 0 ? -openingNet : 0,
+    preBookDebit: jqJf,
+    preBookCredit: jqDf,
+  }
+}
+
+function emptyForeignAmounts() {
+  return {
+    foreignOpeningDebit: 0,
+    foreignOpeningCredit: 0,
+    foreignPreBookDebit: 0,
+    foreignPreBookCredit: 0,
+  }
+}
+
+function accumulateInitBalanceRow(
+  preparedByYear: Map<number, Map<string, PreparedInitBalanceRow>>,
+  year: number,
+  key: string,
+  direction: 'debit' | 'credit',
+  amounts: ParsedNcAmounts,
+  accountId = key
+) {
+  let preparedByKey = preparedByYear.get(year)
+  if (!preparedByKey) {
+    preparedByKey = new Map<string, PreparedInitBalanceRow>()
+    preparedByYear.set(year, preparedByKey)
+  }
+  const existing = preparedByKey.get(key)
+  if (existing) {
+    // 同一科目多行（多币种 bz）合并，年初仍需保持单侧
+    const openingNet =
+      existing.openingDebit - existing.openingCredit + amounts.openingDebit - amounts.openingCredit
+    existing.openingDebit = openingNet > 0 ? openingNet : 0
+    existing.openingCredit = openingNet < 0 ? -openingNet : 0
+    existing.preBookDebit += amounts.preBookDebit
+    existing.preBookCredit += amounts.preBookCredit
+    return
+  }
+  preparedByKey.set(key, {
+    accountId,
+    direction,
+    openingDebit: amounts.openingDebit,
+    openingCredit: amounts.openingCredit,
+    preBookDebit: amounts.preBookDebit,
+    preBookCredit: amounts.preBookCredit,
+    ...emptyForeignAmounts(),
+  })
+}
+
+function applyForeignInitAmounts(
+  preparedByYear: Map<number, Map<string, PreparedInitBalanceRow>>,
+  year: number,
+  key: string,
+  direction: 'debit' | 'credit',
+  amounts: ParsedNcAmounts,
+  accountId = key
+) {
+  let preparedByKey = preparedByYear.get(year)
+  if (!preparedByKey) {
+    preparedByKey = new Map<string, PreparedInitBalanceRow>()
+    preparedByYear.set(year, preparedByKey)
+  }
+  const existing = preparedByKey.get(key)
+  if (existing) {
+    const openingNet =
+      existing.foreignOpeningDebit -
+      existing.foreignOpeningCredit +
+      amounts.openingDebit -
+      amounts.openingCredit
+    existing.foreignOpeningDebit = openingNet > 0 ? openingNet : 0
+    existing.foreignOpeningCredit = openingNet < 0 ? -openingNet : 0
+    existing.foreignPreBookDebit += amounts.preBookDebit
+    existing.foreignPreBookCredit += amounts.preBookCredit
+    return
+  }
+  preparedByKey.set(key, {
+    accountId,
+    direction,
+    openingDebit: 0,
+    openingCredit: 0,
+    preBookDebit: 0,
+    preBookCredit: 0,
+    foreignOpeningDebit: amounts.openingDebit,
+    foreignOpeningCredit: amounts.openingCredit,
+    foreignPreBookDebit: amounts.preBookDebit,
+    foreignPreBookCredit: amounts.preBookCredit,
+  })
+}
+
+function prepareInitBalanceInsert(db: any) {
+  return db.prepare(`
+    INSERT INTO init_balances (
+      id, account_set_id, account_id, direction, year, period,
+      init_balance, init_debit, init_credit, aux_item_id,
+      opening_debit, opening_credit, pre_book_debit, pre_book_credit,
+      foreign_init_balance, foreign_opening_debit, foreign_opening_credit,
+      foreign_pre_book_debit, foreign_pre_book_credit, created_at
+    )
+    VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `)
+}
+
+function roundMoney(value: number): number {
+  return Math.round(value * 100) / 100
+}
+
+/** 与 initBalanceBatch.saveInitBalanceBatchItems 同口径：init_* = 年初 + 账前累计，余额按科目方向 */
+function insertInitBalanceRow(
+  insertStmt: { run: (...args: unknown[]) => unknown },
+  accountSetId: string,
+  year: number,
+  auxItemId: string,
+  prepared: PreparedInitBalanceRow
+) {
+  const od = roundMoney(prepared.openingDebit)
+  const oc = roundMoney(prepared.openingCredit)
+  const pd = roundMoney(prepared.preBookDebit)
+  const pc = roundMoney(prepared.preBookCredit)
+  const initDebit = roundMoney(od + pd)
+  const initCredit = roundMoney(oc + pc)
+  const initBalance = roundMoney(
+    prepared.direction === 'credit' ? initCredit - initDebit : initDebit - initCredit
+  )
+  const fod = roundMoney(prepared.foreignOpeningDebit)
+  const foc = roundMoney(prepared.foreignOpeningCredit)
+  const fpd = roundMoney(prepared.foreignPreBookDebit)
+  const fpc = roundMoney(prepared.foreignPreBookCredit)
+  const foreignInit = roundMoney(
+    calcForeignInitBalance(prepared.direction, fod, foc, fpd, fpc)
+  )
+  insertStmt.run(
+    uuidv4(),
+    accountSetId,
+    prepared.accountId,
+    prepared.direction,
+    year,
+    initBalance,
+    initDebit,
+    initCredit,
+    auxItemId,
+    od,
+    oc,
+    pd,
+    pc,
+    foreignInit,
+    fod,
+    foc,
+    fpd,
+    fpc
+  )
+}
+
+/**
+ * 辅助期初：dwnc（往来单位）/ bmnc（部门）/ grnc（个人）/ xmnc（项目）。
+ * 每行 = 某科目 × 某辅助项目 × 年份 的年初 + 建账前累计，写成 aux_item_id='<类目code>:<项目id>' 的明细行。
+ * 科目汇总行（aux_item_id=''）已由 nc.txt 写入且账簿取数「汇总行优先」，这里不重算汇总，
+ * 只在明细合计与汇总行不一致时给出警告。
+ */
+function importAuxInitBalances(
+  accountSetId: string,
+  tables: ParsedTables,
+  stats: ImportStats,
+  dryRun: boolean
+) {
+  const db = getDb()
+  const sources: Array<{ table: string; categoryCode: string; rows: AcdRow[] }> = [
+    { table: 'dwnc.txt', categoryCode: 'customer', rows: tables.auxCustomerInitBalances },
+    { table: 'bmnc.txt', categoryCode: 'dept', rows: tables.auxDeptInitBalances },
+    { table: 'grnc.txt', categoryCode: 'person', rows: tables.auxPersonInitBalances },
+    { table: 'xmnc.txt', categoryCode: 'project', rows: tables.auxProjectInitBalances },
+  ]
+  if (sources.every(source => source.rows.length === 0)) return
+
+  const accounts = db
+    .prepare(
+      `SELECT id, code, direction, is_foreign, currency_code
+       FROM accounts WHERE account_set_id = ?`
+    )
+    .all(accountSetId) as Array<{
+    id: string
+    code: string
+    direction: 'debit' | 'credit'
+    is_foreign: number
+    currency_code: string | null
+  }>
+  const accountByCode = new Map(accounts.map(item => [String(item.code || '').trim(), item]))
+
+  const categories = db
+    .prepare('SELECT id, code FROM aux_categories WHERE account_set_id = ?')
+    .all(accountSetId) as Array<{ id: string; code: string }>
+  const categoryIdByCode = new Map(categories.map(item => [item.code, item.id]))
+
+  const auxItems = db
+    .prepare('SELECT id, type, code FROM aux_items WHERE account_set_id = ?')
+    .all(accountSetId) as Array<{ id: string; type: string; code: string }>
+  const auxItemIdByTypeAndCode = new Map(
+    auxItems.map(item => [`${item.type}|${String(item.code || '').trim()}`, item.id])
+  )
+
+  const fallbackYear = new Date().getFullYear()
+  // key = `${accountId}|${auxItemId}`
+  const preparedByYear = new Map<number, Map<string, PreparedInitBalanceRow>>()
+  const auxItemIdByKey = new Map<string, string>()
+  let matched = 0
+  let skipped = 0
+
+  for (const source of sources) {
+    if (source.rows.length === 0) continue
+    const categoryId = categoryIdByCode.get(source.categoryCode)
+    if (!categoryId) {
+      stats.warnings.push(`${source.table}：账套缺少「${source.categoryCode}」辅助类目，已跳过辅助期初`)
+      continue
+    }
+    stats.importedTables.push(source.table)
+
+    for (const row of pickBaseCurrencyRows(source.rows, AUX_NC_COLUMNS.bz)) {
+      const account = accountByCode.get((row[0] || '').trim())
+      const itemCode = (row[1] || '').trim()
+      const itemId = itemCode ? auxItemIdByTypeAndCode.get(`${categoryId}|${itemCode}`) : undefined
+      if (!account || !itemId) {
+        skipped += 1
+        continue
+      }
+      const auxItemId = `${source.categoryCode}:${itemId}`
+      const key = `${account.id}|${auxItemId}`
+      auxItemIdByKey.set(key, auxItemId)
+      const parsed = parseAcdNcAmounts(row, AUX_NC_COLUMNS, fallbackYear)
+      accumulateInitBalanceRow(preparedByYear, parsed.year, key, account.direction, parsed, account.id)
+      matched += 1
+    }
+
+    for (const row of source.rows) {
+      const account = accountByCode.get((row[0] || '').trim())
+      if (!account || Number(account.is_foreign) !== 1) continue
+      const currencyCode = String(account.currency_code || '')
+        .trim()
+        .toUpperCase()
+      if (!currencyCode) continue
+      const bz = (row[AUX_NC_COLUMNS.bz] || '').trim().toUpperCase()
+      if (bz !== currencyCode) continue
+      const itemCode = (row[1] || '').trim()
+      const itemId = itemCode ? auxItemIdByTypeAndCode.get(`${categoryId}|${itemCode}`) : undefined
+      if (!itemId) continue
+      const auxItemId = `${source.categoryCode}:${itemId}`
+      const key = `${account.id}|${auxItemId}`
+      auxItemIdByKey.set(key, auxItemId)
+      const parsed = parseAcdNcForeignAmounts(row, AUX_NC_COLUMNS, fallbackYear)
+      applyForeignInitAmounts(preparedByYear, parsed.year, key, account.direction, parsed, account.id)
+    }
+  }
+
+  let totalPrepared = 0
+  for (const preparedByKey of preparedByYear.values()) totalPrepared += preparedByKey.size
+  stats.auxInitBalances.inserted += totalPrepared
+  stats.auxInitBalances.skipped += skipped
+  if (skipped > 0) {
+    stats.warnings.push(`辅助期初有 ${skipped} 行未匹配到科目或辅助项目，已跳过`)
+  }
+  if (totalPrepared === 0 || dryRun) return
+
+  const deleteStmt = db.prepare(
+    `DELETE FROM init_balances WHERE account_set_id = ? AND year = ? AND aux_item_id != ''`
+  )
+  const insertStmt = prepareInitBalanceInsert(db)
+  for (const [year, preparedByKey] of preparedByYear) {
+    deleteStmt.run(accountSetId, year)
+    for (const [key, prepared] of preparedByKey) {
+      insertInitBalanceRow(insertStmt, accountSetId, year, auxItemIdByKey.get(key) || '', prepared)
+    }
+  }
+
+  // 明细合计 vs 科目汇总行（nc.txt）对账，差异只提示不改数
+  const mismatches = db
+    .prepare(
+      `SELECT a.code, s.year,
+              s.init_balance AS summary_balance,
+              COALESCE(SUM(d.init_balance), 0) AS detail_balance
+       FROM init_balances s
+       JOIN accounts a ON a.id = s.account_id
+       JOIN init_balances d
+         ON d.account_set_id = s.account_set_id AND d.account_id = s.account_id
+        AND d.year = s.year AND d.period = s.period AND d.aux_item_id != ''
+       WHERE s.account_set_id = ? AND s.aux_item_id = ''
+       GROUP BY s.id
+       HAVING ABS(summary_balance - detail_balance) > 0.005`
+    )
+    .all(accountSetId) as Array<{
+    code: string
+    year: number
+    summary_balance: number
+    detail_balance: number
+  }>
+  for (const item of mismatches.slice(0, 20)) {
+    stats.warnings.push(
+      `科目 ${item.code} ${item.year} 年辅助期初明细合计 ${item.detail_balance.toFixed(2)} 与科目期初 ${item.summary_balance.toFixed(2)} 不一致（已按科目期初为准）`
+    )
+  }
+  if (mismatches.length > 20) {
+    stats.warnings.push(`另有 ${mismatches.length - 20} 个科目的辅助期初明细与科目期初不一致`)
+  }
+  console.log(`[ACD] 辅助期初: 匹配 ${matched} 行，写入 ${totalPrepared} 条，跳过 ${skipped} 行`)
 }
 
 function parseAcdNumber(value: string | undefined): number {
@@ -3040,6 +3867,46 @@ export function mapAcdEntryAmount(
   return { direction: useDebit ? 'debit' : 'credit', amount }
 }
 
+/**
+ * 将 pz.txt 分录按 (年|月|类型|凭证号) 分组，并按润衡凭证号与 pz_xh 排序。
+ * ACD 导出文件本身不保证凭证/分录顺序，旧实现按出现序写 seq 会导致「凭证错位」。
+ */
+export function groupAndSortAcdVoucherEntries(entries: AcdRow[]): {
+  voucherGroups: Map<string, AcdRow[]>
+  sortedGroupKeys: string[]
+} {
+  const voucherGroups = new Map<string, AcdRow[]>()
+  for (const row of entries) {
+    const nf = (row[0] || '').trim()
+    const yf = (row[1] || '').trim()
+    const pzlx = (row[2] || '').trim()
+    const pzbh = (row[3] || '').trim()
+    const key = `${nf}|${yf}|${pzlx}|${pzbh}`
+    if (!voucherGroups.has(key)) {
+      voucherGroups.set(key, [])
+    }
+    voucherGroups.get(key)!.push(row)
+  }
+  const sortedGroupKeys = Array.from(voucherGroups.keys()).sort((a, b) => {
+    const [ay, am, at, an] = a.split('|')
+    const [by, bm, bt, bn] = b.split('|')
+    return (
+      Number(ay) - Number(by) ||
+      Number(am) - Number(bm) ||
+      Number(at) - Number(bt) ||
+      Number(an) - Number(bn) ||
+      a.localeCompare(b)
+    )
+  })
+  for (const group of voucherGroups.values()) {
+    group.sort(
+      (a, b) =>
+        (Number.parseInt(a[4] || '0', 10) || 0) - (Number.parseInt(b[4] || '0', 10) || 0)
+    )
+  }
+  return { voucherGroups, sortedGroupKeys }
+}
+
 function importVouchers(
   accountSetId: string,
   tables: ParsedTables,
@@ -3061,10 +3928,18 @@ function importVouchers(
     stats.importedTables.push('pzdj.txt')
   }
 
-  // Build account code -> {id, name} map
+  // Build account code -> {id, name, is_foreign, currency_code} map
   const accounts = db
-    .prepare('SELECT id, code, name FROM accounts WHERE account_set_id = ?')
-    .all(accountSetId) as Array<{ id: string; code: string; name: string }>
+    .prepare(
+      `SELECT id, code, name, is_foreign, currency_code FROM accounts WHERE account_set_id = ?`
+    )
+    .all(accountSetId) as Array<{
+    id: string
+    code: string
+    name: string
+    is_foreign: number
+    currency_code: string | null
+  }>
   const accountMap = new Map(accounts.map(a => [a.code.trim(), a]))
 
   // Build voucher type code -> id map
@@ -3074,19 +3949,8 @@ function importVouchers(
   const voucherTypeMap = new Map(voucherTypes.map(vt => [vt.code.trim(), vt.id]))
   const voucherTypeNameMap = new Map(voucherTypes.map(vt => [vt.id, vt.name]))
 
-  // Group entries by key: nf + yf + pzlx + pzbh
-  const voucherGroups = new Map<string, AcdRow[]>()
-  for (const row of entries) {
-    const nf = (row[0] || '').trim()
-    const yf = (row[1] || '').trim()
-    const pzlx = (row[2] || '').trim()
-    const pzbh = (row[3] || '').trim()
-    const key = `${nf}|${yf}|${pzlx}|${pzbh}`
-    if (!voucherGroups.has(key)) {
-      voucherGroups.set(key, [])
-    }
-    voucherGroups.get(key)!.push(row)
-  }
+  // FIX-2026-09-05：按 (年, 月, 类型, 润衡凭证号) 排序凭证，按 pz_xh 排序分录
+  const { voucherGroups, sortedGroupKeys } = groupAndSortAcdVoucherEntries(entries)
 
   // Build header map for additional info (maker, auditor, etc.)
   const headerMap = new Map<string, AcdRow>()
@@ -3113,65 +3977,115 @@ function importVouchers(
   const fiscalYear = accountSet?.fiscal_year || new Date().getFullYear()
 
   const insertVoucher = db.prepare(`
-    INSERT INTO vouchers (id, account_set_id, voucher_no, voucher_type_id, voucher_date, year, period, status, total_amount, maker_name, auditor_name, poster_name, remark, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+    INSERT INTO vouchers (
+      id, account_set_id, voucher_no, voucher_type_id, voucher_date, year, period, status, total_amount,
+      maker_name, auditor_name, poster_name, posted_at, attachments, remark, created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
   `)
+  const voucherNoExists = db.prepare(
+    `SELECT 1 FROM vouchers
+     WHERE account_set_id = ? AND year = ? AND period = ? AND voucher_no = ?
+       AND (voucher_type_id = ? OR (voucher_type_id IS NULL AND ? IS NULL))
+     LIMIT 1`
+  )
 
   const cashFlowItems = db
     .prepare('SELECT code, name FROM cash_flow_items WHERE account_set_id = ?')
     .all(accountSetId) as Array<{ code: string; name: string }>
   const cashFlowNameByCode = new Map(cashFlowItems.map(item => [item.code.trim(), item.name]))
 
+  // 分录辅助项：pz.txt 16 xmbm(项目) / 17 dwbm(往来单位) / 18 bmbm(部门) / 19 grbm(个人)
+  // 按「类目 code + 项目编码」反查 aux_items，同时写固定列与 aux_data（账簿两种口径都兼容）
+  const auxCategories = db
+    .prepare('SELECT id, code FROM aux_categories WHERE account_set_id = ?')
+    .all(accountSetId) as Array<{ id: string; code: string }>
+  const auxCategoryIdByCode = new Map(auxCategories.map(item => [item.code, item.id]))
+  const auxItemRows = db
+    .prepare('SELECT id, type, code, name FROM aux_items WHERE account_set_id = ?')
+    .all(accountSetId) as Array<{ id: string; type: string; code: string; name: string }>
+  const auxItemByTypeAndCode = new Map(
+    auxItemRows.map(item => [`${item.type}|${String(item.code || '').trim()}`, item])
+  )
+  const lookupAuxItem = (categoryCode: string, itemCode: string) => {
+    if (!itemCode) return null
+    const categoryId = auxCategoryIdByCode.get(categoryCode)
+    if (!categoryId) return null
+    return auxItemByTypeAndCode.get(`${categoryId}|${itemCode}`) || null
+  }
+  const ACD_ENTRY_AUX_COLUMNS: Array<{ index: number; categoryCode: string }> = [
+    { index: 16, categoryCode: 'project' },
+    { index: 17, categoryCode: 'customer' },
+    { index: 18, categoryCode: 'dept' },
+    { index: 19, categoryCode: 'person' },
+  ]
+  let unresolvedAuxRefs = 0
+
   const insertEntry = db.prepare(`
     INSERT INTO voucher_entries (
       id, account_set_id, voucher_id, seq, account_id, account_code, account_name,
-      direction, amount, amount_cents, summary, cash_flow_code, cash_flow_name, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      direction, amount, amount_cents, quantity, unit_price, unit,
+      summary, cash_flow_code, cash_flow_name,
+      dept_id, dept_name, project_id, project_name, supplier_id, supplier_name,
+      person_id, person_name, aux_data,
+      currency_code, exchange_rate, foreign_amount, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   `)
 
   let entryCount = 0
+  let renumberedVouchers = 0
 
-  // 按月按类型追踪凭证编号
+  // 按月按类型追踪凭证编号（仅用于润衡凭证号冲突时补号）
   const voucherNoMap = new Map<string, number>()
 
   const persistVoucherBatch = (batch: Array<[string, AcdRow[]]>, startVoucherNo: number) => {
     let localEntryCount = 0
 
     for (const [key, groupEntries] of batch) {
-      const [nf, yf, pzlx] = key.split('|')
+      const [nf, yf, pzlx, pzbh] = key.split('|')
       const year = parseInt(nf) || fiscalYear
       const period = parseInt(yf) || 1
       const voucherTypeId = voucherTypeMap.get(pzlx) || null
-      const voucherDate = `${year}-${String(period).padStart(2, '0')}-${new Date(year, period, 0).getDate().toString().padStart(2, '0')}`
-
-      // 按月按类型生成凭证编号
-      const periodKey = `${year}-${period}-${voucherTypeId || '__NULL__'}`
-      if (!voucherNoMap.has(periodKey)) {
-        const maxNo = getMaxVoucherNoSeqInPeriod({
-          db,
-          accountSetId,
-          year,
-          period,
-          voucherTypeId,
-        })
-        voucherNoMap.set(periodKey, maxNo)
-      }
-
-      const currentMax = voucherNoMap.get(periodKey)!
       const typeName = voucherTypeId
         ? voucherTypeNameMap.get(voucherTypeId) || undefined
         : undefined
-      const voucherNo = buildVoucherNo({
-        maxNo: currentMax,
-        typeName,
-      })
-      voucherNoMap.set(periodKey, currentMax + 1)
 
-      // Get header info
+      // 凭证号：沿用润衡 pzbh（如 收-001），保证与原账凭证一一对应；
+      // 仅在号码已被占用（理论上不会）时才退回顺序补号。
+      const periodKey = `${year}-${period}-${voucherTypeId || '__NULL__'}`
+      const acdSeq = Number.parseInt(pzbh, 10)
+      let voucherNo = Number.isInteger(acdSeq) && acdSeq > 0
+        ? buildVoucherNo({ maxNo: acdSeq - 1, typeName })
+        : ''
+      if (
+        !voucherNo ||
+        voucherNoExists.get(accountSetId, year, period, voucherNo, voucherTypeId, voucherTypeId)
+      ) {
+        if (!voucherNoMap.has(periodKey)) {
+          voucherNoMap.set(
+            periodKey,
+            getMaxVoucherNoSeqInPeriod({ db, accountSetId, year, period, voucherTypeId })
+          )
+        }
+        const currentMax = voucherNoMap.get(periodKey)!
+        voucherNo = buildVoucherNo({ maxNo: currentMax, typeName })
+        voucherNoMap.set(periodKey, currentMax + 1)
+        renumberedVouchers += 1
+      }
+
+      // 凭证头 pzdj：4 pzdj_fds 附单据数 / 6 制单 / 7 审核 / 8 记账 / 9 pzdj_rq 凭证日期 / 11 pzdj_jzrq 记账日期
       const headerRow = headerMap.get(key)
       const makerName = headerRow ? (headerRow[6] || '').trim() : ''
       const auditorName = headerRow ? (headerRow[7] || '').trim() : ''
       const posterName = headerRow ? (headerRow[8] || '').trim() : ''
+      const attachments = headerRow ? Number.parseInt((headerRow[4] || '0').trim(), 10) || 0 : 0
+      // 凭证日期优先取 pzdj_rq；缺失则用分录 dd（日）列；再退回月末。旧实现一律写月末日期，
+      // 序时账 / 日记账 / 按日期查账的口径全部失真（本例 211 张里只有 78 张是 31 日）。
+      const voucherDate =
+        normalizeAcdDateInPeriod(headerRow?.[9], year, period) ??
+        buildAcdDateFromDay(groupEntries[0]?.[24], year, period) ??
+        buildPeriodEndDate(year, period)
+      const postedAt = normalizeAcdDateInPeriod(headerRow?.[11]) ?? null
 
       // 确定凭证状态：根据审核人和记账人判断
       let status: 'draft' | 'audited' | 'posted' = 'draft'
@@ -3193,6 +4107,13 @@ function importVouchers(
         summary: string
         cashFlowCode: string | null
         cashFlowName: string | null
+        quantity: number
+        unitPrice: number
+        unit: string | null
+        aux: EntryAuxFields
+        currencyCode: string | null
+        exchangeRate: number | null
+        foreignAmount: number | null
       }> = []
 
       for (let i = 0; i < groupEntries.length; i++) {
@@ -3201,6 +4122,14 @@ function importVouchers(
         const zy = (row[6] || '').trim()
         const jf = parseFloat((row[7] || '0').replace(/,/g, '')) || 0
         const df = parseFloat((row[8] || '0').replace(/,/g, '')) || 0
+        // 9 pz_wb 外币金额 / 10 pz_hl 汇率 / 20 bz 币种
+        const pzWb = parseAcdNumber(row[9])
+        const pzHl = parseAcdNumber(row[10])
+        const entryBz = (row[20] || '').trim().toUpperCase()
+        // 11 pz_sl 数量 / 12 pz_dj 单价 / 21 dw 计量单位（数量核算科目）
+        const quantity = parseAcdNumber(row[11])
+        const unitPrice = parseAcdNumber(row[12])
+        const unit = (row[21] || '').trim() || null
         const xjbm = (row[26] || '').trim()
 
         const account = accountMap.get(kmbm)
@@ -3213,6 +4142,54 @@ function importVouchers(
           ? cashFlowNameByCode.get(cashFlowCode) || cashFlowCode
           : null
 
+        let currencyCode: string | null = null
+        let exchangeRate: number | null = null
+        let foreignAmount: number | null = null
+        if (account && Number(account.is_foreign) === 1 && pzWb !== 0) {
+          currencyCode = entryBz || account.currency_code || null
+          exchangeRate = pzHl || null
+          foreignAmount = pzWb
+        }
+
+        const aux: EntryAuxFields = {
+          deptId: null,
+          deptName: null,
+          projectId: null,
+          projectName: null,
+          supplierId: null,
+          supplierName: null,
+          personId: null,
+          personName: null,
+          auxData: null,
+        }
+        const auxData: Record<string, { id: string; name: string }> = {}
+        for (const column of ACD_ENTRY_AUX_COLUMNS) {
+          const itemCode = (row[column.index] || '').trim()
+          if (!itemCode) continue
+          const item = lookupAuxItem(column.categoryCode, itemCode)
+          if (!item) {
+            unresolvedAuxRefs += 1
+            continue
+          }
+          auxData[column.categoryCode] = { id: item.id, name: item.name }
+          if (column.categoryCode === 'dept') {
+            aux.deptId = item.id
+            aux.deptName = item.name
+          } else if (column.categoryCode === 'project') {
+            aux.projectId = item.id
+            aux.projectName = item.name
+          } else if (column.categoryCode === 'customer') {
+            aux.supplierId = item.id
+            aux.supplierName = item.name
+          } else if (column.categoryCode === 'person') {
+            aux.personId = item.id
+            aux.personName = item.name
+          }
+        }
+        if (Object.keys(auxData).length > 0) {
+          aux.auxData = JSON.stringify(auxData)
+        }
+
         preparedEntries.push({
           seq: i + 1,
           accountId: account?.id || null,
@@ -3223,6 +4200,13 @@ function importVouchers(
           summary: zy,
           cashFlowCode,
           cashFlowName,
+          quantity,
+          unitPrice,
+          unit,
+          aux,
+          currencyCode,
+          exchangeRate,
+          foreignAmount,
         })
 
         if (direction === 'debit') totalAmount += amount
@@ -3243,6 +4227,8 @@ function importVouchers(
         makerName || null,
         auditorName || null,
         posterName || null,
+        status === 'posted' ? postedAt : null,
+        attachments,
         `ACD导入凭证`
       )
 
@@ -3258,9 +4244,24 @@ function importVouchers(
           entry.direction,
           entry.amount,
           Math.round(entry.amount * 100),
+          entry.quantity,
+          entry.unitPrice,
+          entry.unit,
           entry.summary || null,
           entry.cashFlowCode,
-          entry.cashFlowName
+          entry.cashFlowName,
+          entry.aux.deptId,
+          entry.aux.deptName,
+          entry.aux.projectId,
+          entry.aux.projectName,
+          entry.aux.supplierId,
+          entry.aux.supplierName,
+          entry.aux.personId,
+          entry.aux.personName,
+          entry.aux.auxData,
+          entry.currencyCode,
+          entry.exchangeRate,
+          entry.foreignAmount
         )
         localEntryCount++
       }
@@ -3269,7 +4270,10 @@ function importVouchers(
     return { entryCount: localEntryCount }
   }
 
-  const groupedVouchers = Array.from(voucherGroups.entries())
+  const groupedVouchers: Array<[string, AcdRow[]]> = sortedGroupKeys.map(key => [
+    key,
+    voucherGroups.get(key)!,
+  ])
   const batchSize = options?.batchSize ?? 150
 
   if (options?.batched) {
@@ -3284,6 +4288,67 @@ function importVouchers(
   }
 
   stats.vouchers.entries = entryCount
+  if (unresolvedAuxRefs > 0) {
+    stats.warnings.push(
+      `凭证分录有 ${unresolvedAuxRefs} 处辅助项目编码在辅助档案中找不到，已按无辅助导入`
+    )
+  }
+  if (renumberedVouchers > 0) {
+    stats.warnings.push(
+      `有 ${renumberedVouchers} 张凭证的润衡凭证号与账套已有凭证冲突，已顺序补号`
+    )
+  }
+}
+
+function buildPeriodEndDate(year: number, period: number): string {
+  const lastDay = new Date(year, period, 0).getDate()
+  return `${year}-${String(period).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+}
+
+/**
+ * 解析润衡日期（2025-12-23 / 2025.12.23 / 2025/12/23 / 20251223）为 YYYY-MM-DD。
+ * 传入 year/period 时要求落在该会计期间内，否则视为无效（防止串月）。
+ */
+export function normalizeAcdDateInPeriod(
+  value: string | undefined | null,
+  year?: number,
+  period?: number
+): string | null {
+  const raw = String(value || '').trim()
+  if (!raw) return null
+  const m =
+    raw.match(/^(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})/) ||
+    raw.match(/^(\d{4})(\d{2})(\d{2})$/)
+  if (!m) return null
+  const y = Number(m[1])
+  const mo = Number(m[2])
+  const d = Number(m[3])
+  if (mo < 1 || mo > 12 || d < 1 || d > new Date(y, mo, 0).getDate()) return null
+  if (year !== undefined && period !== undefined && (y !== year || mo !== period)) return null
+  return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+}
+
+/** pz.txt 的 dd 列只存「日」，与凭证所属年月拼成完整日期 */
+export function buildAcdDateFromDay(
+  value: string | undefined | null,
+  year: number,
+  period: number
+): string | null {
+  const day = Number.parseInt(String(value || '').trim(), 10)
+  if (!Number.isInteger(day) || day < 1 || day > new Date(year, period, 0).getDate()) return null
+  return `${year}-${String(period).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+}
+
+type EntryAuxFields = {
+  deptId: string | null
+  deptName: string | null
+  projectId: string | null
+  projectName: string | null
+  supplierId: string | null
+  supplierName: string | null
+  personId: string | null
+  personName: string | null
+  auxData: string | null
 }
 
 async function runImport(options: Options): Promise<ImportStats> {
@@ -3303,7 +4368,10 @@ async function runImport(options: Options): Promise<ImportStats> {
     importPeriodClosing(accountSet.id, tables.xt, stats, options.dryRun)
     importVoucherTypes(accountSet.id, tables.voucherTypes, stats, options.dryRun)
     importAccounts(accountSet.id, tables.accounts, stats, options.dryRun)
+    importCurrencies(accountSet.id, tables.currencies, tables.xt, stats, options.dryRun)
+    importAuxiliaryData(accountSet.id, tables, stats, options.dryRun)
     importInitBalances(accountSet.id, tables.initBalances, stats, options.dryRun)
+    importAuxInitBalances(accountSet.id, tables, stats, options.dryRun)
     importBudgetSurplusAdjustments(
       accountSet.id,
       tables.budgetSurplusAdjustments,
@@ -3319,6 +4387,7 @@ async function runImport(options: Options): Promise<ImportStats> {
       options.dryRun
     )
     importVouchers(accountSet.id, tables, stats, options.dryRun)
+    importVoucherTemplates(accountSet.id, tables, stats, options.dryRun)
     importAcdUsers(accountSet.id, tables, stats, options.dryRun)
   }
 
@@ -3326,6 +4395,7 @@ async function runImport(options: Options): Promise<ImportStats> {
     execute()
   } else {
     db.transaction(execute)()
+    stats.accountBalanceRows = rebuildAccountBalances(db, accountSet.id).rows
   }
 
   // 报表模板不再随 ACD 导入自动加载（启发式识别会计准则不可靠）。
@@ -3370,7 +4440,8 @@ export async function importAcdToAccountSet(
     )
   }
 
-  updateAccountSetStartDateFromXt(db, accountSet.id, tables.xt)
+  // 完整导入：账套就是这个 ACD 生成的，建账日期 / 会计年度以 xt_kzrq 为准
+  updateAccountSetStartDateFromXt(db, accountSet.id, tables.xt, { preferXt: true })
 
   const execute = () => {
     // 标记账套来源为 ACD
@@ -3380,7 +4451,12 @@ export async function importAcdToAccountSet(
     importPeriodClosing(accountSet.id, tables.xt, stats, false)
     importVoucherTypes(accountSet.id, tables.voucherTypes, stats, false)
     importAccounts(accountSet.id, tables.accounts, stats, false)
+    importCurrencies(accountSet.id, tables.currencies, tables.xt, stats, false)
+    // 辅助核算主数据（dwk/bmk/grk/xmk/xjll_xm/zjly）：辅助期初与凭证分录辅助项都依赖它，
+    // 过去只有模板导入会调用，完整导入里辅助科目挂着 is_aux 却没有任何辅助项目可选。
+    importAuxiliaryData(accountSet.id, tables, stats, false)
     importInitBalances(accountSet.id, tables.initBalances, stats, false)
+    importAuxInitBalances(accountSet.id, tables, stats, false)
     importBudgetSurplusAdjustments(accountSet.id, tables.budgetSurplusAdjustments, stats, false)
     importTransferTypes(
       accountSet.id,
@@ -3397,7 +4473,38 @@ export async function importAcdToAccountSet(
 
   db.transaction(execute)()
   importVouchers(accountSet.id, tables, stats, false, { batched: true, batchSize: 150 })
+  db.transaction(() => importVoucherTemplates(accountSet.id, tables, stats, false))()
   importAcdUsers(accountSet.id, tables, stats, false)
+
+  // FIX-2026-09-05：导入的凭证直接落成 status='posted'，但过账时才会写的 account_balances 一直是空的，
+  // 而资产负债表 / 利润表 / 现金流量表取数（reportBalance.getBatchBalances）和期末自动结转
+  // （autoTransfer）都只读 account_balances —— 导入后报表本期发生额全是 0。这里按已记账凭证全量重建。
+  const rebuilt = rebuildAccountBalances(db, accountSet.id)
+  stats.accountBalanceRows = rebuilt.rows
+  console.log(`[ACD] 重建 account_balances: ${rebuilt.rows} 行`)
+
+  // 账套默认参数 / 默认打印模板 / 资产字典兜底：
+  // ACD 建账走的是 acdImportService 直插 account_sets，从没调用过新建账套的 bootstrap，
+  // 于是 require_audit / enable_cash_flow 等参数缺失、没有默认打印模板。
+  // 放在导入之后执行：字典类只补空缺（不覆盖 ACD 带来的资产类别等），业务参数按 xt.txt 覆盖默认值。
+  {
+    const persisted = db
+      .prepare('SELECT start_date, fiscal_year FROM account_sets WHERE id = ?')
+      .get(accountSet.id) as { start_date?: string; fiscal_year?: number } | undefined
+    const businessParams = deriveAcdBusinessParams(tables.xt)
+    if (stats.foreignAccounts > 0) {
+      businessParams.enable_foreign_currency = 'true'
+    }
+    const baseCurrency = (tables.xt.get('xt_bwb') || '').trim()
+    if (baseCurrency) {
+      businessParams.base_currency = baseCurrency.toUpperCase()
+    }
+    bootstrapNewAccountSetDefaults(db, accountSet.id, {
+      start_date: persisted?.start_date,
+      fiscal_year: persisted?.fiscal_year,
+      params: businessParams,
+    })
+  }
 
   // 供应链模块数据（cpda→scm_item, khda→scm_partner, ckda→scm_warehouse）
   importSupplyChainFromAcd(db, accountSet.id, acdBuffer)
@@ -3469,6 +4576,7 @@ export function importAcdTemplateToAccountSet(
       importVoucherTypes(accountSet.id, tables.voucherTypes, stats, false)
     }
     importAccounts(accountSet.id, tables.accounts, stats, false)
+    importCurrencies(accountSet.id, tables.currencies, tables.xt, stats, false)
     if (!options.preserveTransfer) {
       importTransferTypes(
         accountSet.id,
@@ -3501,7 +4609,13 @@ export function importAcdTemplateToAccountSet(
 }
 
 export type { ImportStats, ParsedTables, AcdRow }
-export { parseAcdTables, parseAcdFileTables, splitTableRows }
+export {
+  parseAcdTables,
+  parseAcdFileTables,
+  splitTableRows,
+  inferAccountCodeLengths,
+  inferAccountLevelsFromAccounts,
+}
 
 function printStats(stats: ImportStats, dryRun: boolean) {
   console.log('\n' + '='.repeat(60))
@@ -3519,8 +4633,30 @@ function printStats(stats: ImportStats, dryRun: boolean) {
     )
   }
 
+  if (stats.foreignAccounts > 0) {
+    console.log(`  ✓ 外币科目: ${stats.foreignAccounts} 个`)
+  }
+
+  if (stats.currencies.inserted + stats.currencies.updated > 0) {
+    console.log(
+      `  ✓ 币种: ${stats.currencies.inserted + stats.currencies.updated} 个 (新增 ${stats.currencies.inserted}, 更新 ${stats.currencies.updated})`
+    )
+  }
+
   if (stats.initBalances.inserted > 0) {
     console.log(`  ✓ 期初余额: ${stats.initBalances.inserted} 条`)
+  }
+
+  if (stats.auxInitBalances.inserted > 0) {
+    console.log(`  ✓ 辅助期初: ${stats.auxInitBalances.inserted} 条`)
+  }
+
+  if (stats.voucherTemplates > 0) {
+    console.log(`  ✓ 凭证模板: ${stats.voucherTemplates} 个`)
+  }
+
+  if (stats.accountBalanceRows > 0) {
+    console.log(`  ✓ 科目余额(account_balances): ${stats.accountBalanceRows} 行`)
   }
 
   if (stats.voucherTypes.inserted + stats.voucherTypes.updated > 0) {

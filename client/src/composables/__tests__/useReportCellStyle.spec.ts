@@ -6,6 +6,7 @@ import {
   formatNumberByType,
   mergeStyleKey,
   parseStyleKey,
+  rowCenterOffsetPx,
   styleToCssText,
 } from '../useReportCellStyle'
 
@@ -26,6 +27,25 @@ describe('useReportCellStyle', () => {
         borderColor: 'FF0000',
         borderWidth: 2,
       })
+    })
+
+    it('align-row-center 解析成居中 + 整行标记，改成左对齐后标记失效', () => {
+      const style = parseStyleKey('align-row-center font-size-15')
+      expect(style.textAlign).toBe('center')
+      expect(style.rowCenter).toBe(true)
+      expect(buildStyleKey(style)).toBe('align-row-center font-size-15')
+
+      expect(mergeStyleKey('align-row-center font-size-15', { textAlign: 'left' })).toBe(
+        'align-left font-size-15'
+      )
+      expect(parseStyleKey('align-center').rowCenter).toBe(false)
+    })
+
+    it('rowCenterOffsetPx 算的是整行中线到本格左边缘的距离', () => {
+      const widths = [193, 36, 121, 121, 193, 35, 121, 121]
+      const total = widths.reduce((sum, width) => sum + width, 0)
+      expect(rowCenterOffsetPx(index => widths[index], widths.length, 1)).toBe(total / 2 - 193)
+      expect(rowCenterOffsetPx(index => widths[index], widths.length, 0)).toBe(total / 2)
     })
 
     it('解析新增的文字色与底色', () => {

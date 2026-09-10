@@ -6,8 +6,11 @@ import {
   applyTitleMerge,
   fillTableBorders,
   applyCenterAcross,
+  clipToDisplayBounds,
   estimateColumnWidths,
   estimateRowHeights,
+  resolveColumnWidths,
+  resolveRowHeights,
   deduplicateStandardReportCells,
   persistPreparedAcdStandardReports,
   pickTemplateSheet,
@@ -224,6 +227,31 @@ describe('ACD 标准报表选择性导入', () => {
       expect(pickTemplateSheet([first, second])).toEqual({ sheet: first, recovered: false })
     })
 
+    it('第一个 sheet 是带零星 @ 公式的快照版时，应改选表头带占位符的模板版', () => {
+      // 还原真实缺陷：「利润表(已执行新金融、收入准则)」的 sheet[0] 公司名/日期已填死，
+      // 正文没有一条取数公式，却在表尾之下挂着「资产减值损失 @JQY(6701,…)」两行辅助格；
+      // 旧判据「第一个有 @ 公式的 sheet」把它当成模板版，正文 22 条取数公式全丢。
+      const text = (t: string) => ({ ...cell(null), textValue: t })
+      const snapshot = {
+        index: 0,
+        cells: [text('纳税人名称：公司名称'), text('2024年12月31日'), cell('=B5+1'), cell('@JQY(6701,01,99)')],
+      }
+      const template = {
+        index: 1,
+        cells: [text('纳税人名称：%U'), text('%yh%mh%dh'), cell('@JQY(6001,01,99)'), cell('@JQY(6401,01,99)')],
+      }
+
+      expect(pickTemplateSheet([snapshot, template])).toEqual({ sheet: template, recovered: true })
+    })
+
+    it('第一个 sheet 自身就带占位符与 @ 公式时沿用它，不受后面 sheet 影响', () => {
+      const text = (t: string) => ({ ...cell(null), textValue: t })
+      const first = { index: 0, cells: [text('编制单位：%U'), cell('@JQY(6001,97,99)')] }
+      const merged = { index: 1, cells: [text('编制单位：%U'), cell('@JQD(6001,97,99)'), cell('@JQJ(6401,97,99)')] }
+
+      expect(pickTemplateSheet([first, merged])).toEqual({ sheet: first, recovered: false })
+    })
+
     it('忽略空 sheet；全部为空时返回 undefined', () => {
       const empty = { index: 0, cells: [] }
       const filled = { index: 1, cells: [cell('@ye(1001,99)')] }
@@ -274,6 +302,31 @@ describe('ACD 标准报表选择性导入', () => {
 
     it('空输入原样返回', () => {
       expect(trimDetachedBlocks([])).toEqual([])
+    })
+  })
+
+  describe('clipToDisplayBounds', () => {
+    const at = (rowIndex: number, colIndex: number, textValue: string | null = 'x') => ({
+      rowIndex,
+      colIndex,
+      cellType: 'text' as const,
+      textValue,
+      formulaText: null,
+    })
+
+    it('公式版紧挨正文的辅助列/辅助行按呈现版的范围裁掉', () => {
+      // 「利润表（季报）」公式版在 c11~c24 挂着另一套取数口径、「分12个月」公式版下方多出 17 行，
+      // 与正文之间没有足够空白让孤岛裁剪起作用；呈现版（第一个 sheet）只到 r33c3 / r22c14。
+      const display = [at(0, 0), at(33, 3)]
+      const formulaSheet = [at(0, 0), at(3, 11), at(20, 3), at(33, 3), at(34, 0), at(36, 24)]
+
+      expect(clipToDisplayBounds(formulaSheet, display)).toEqual([at(0, 0), at(20, 3), at(33, 3)])
+    })
+
+    it('呈现版为空时不裁', () => {
+      const cells = [at(0, 0), at(50, 30)]
+      expect(clipToDisplayBounds(cells, [])).toEqual(cells)
+      expect(clipToDisplayBounds(cells, [at(0, 0, null)])).toEqual(cells)
     })
   })
 
@@ -437,6 +490,27 @@ describe('ACD 标准报表选择性导入', () => {
       expect(JSON.parse(title.mergeInfo as string).colSpan).toBe(3)
     })
 
+    it('行次公式格即使套了居中格式也不跨列——否则现金流量表小节行的行次会跑到金额列', () => {
+      // 「二、投资活动产生的现金流量：」行：c0 文本、c1 行次 =B15+1（居中）、c2 金额格为空
+      const rowNo = cell(15, 1, null, {
+        cellType: 'formula',
+        formulaText: '=B15+1',
+        centerAcross: true,
+      })
+      const cells = [cell(15, 0, '二、投资活动产生的现金流量：'), rowNo, cell(15, 2, null), ...body(16, 3)]
+
+      applyCenterAcross(cells)
+      expect(rowNo.mergeInfo).toBeUndefined()
+    })
+
+    it('数字常量格同样不跨列', () => {
+      const rowNo = cell(4, 1, '1', { cellType: 'number', centerAcross: true })
+      const cells = [cell(4, 0, '一、营业收入'), rowNo, cell(4, 2, null), ...body(5, 3)]
+
+      applyCenterAcross(cells)
+      expect(rowNo.mergeInfo).toBeUndefined()
+    })
+
     it('已有合并的不覆盖', () => {
       const title = cell(0, 0, '标题', {
         centerAcross: true,
@@ -517,6 +591,76 @@ describe('ACD 标准报表选择性导入', () => {
     it('行高有上下限', () => {
       expect(estimateRowHeights([cell(0, 0, 'font-size-200')])[0]).toBeLessThanOrEqual(96)
       expect(estimateRowHeights([cell(0, 0, 'font-size-6')])[0]).toBeGreaterThanOrEqual(24)
+    })
+  })
+
+  describe('按 vts 版面确定列宽与行高', () => {
+    const text = (rowIndex: number, colIndex: number, textValue: string, styleKey = 'font-size-13 border-all') => ({
+      rowIndex,
+      colIndex,
+      cellType: 'text' as const,
+      textValue,
+      formulaText: null,
+      styleKey,
+    })
+
+    it('vts 给出的列宽优先于内容估算，允许比估算下限更窄', () => {
+      const cells = [text(0, 0, '货币资金'), text(0, 1, '行次'), text(0, 2, '期末余额')]
+      const widths = resolveColumnWidths(cells, {
+        colWidthsPx: [193, 36, undefined],
+        rowHeightsPx: [],
+      })
+
+      expect(widths[0]).toBe(193)
+      expect(widths[1]).toBe(36) // 原报表的行次列就是这么窄，不套 60 的估算下限
+      expect(widths[2]).toBe(estimateColumnWidths(cells)[2]) // 没给的列退回估算
+    })
+
+    it('没有版面信息时与内容估算一致', () => {
+      const cells = [text(0, 0, '货币资金'), text(0, 1, '行次')]
+      expect(resolveColumnWidths(cells)).toEqual(estimateColumnWidths(cells))
+    })
+
+    it('vts 给出的行高优先；文字在列宽内折成两行时把行撑高', () => {
+      const cells = [
+        text(0, 0, '负债和所有者权益(或股东权益)总计'),
+        text(1, 0, '货币资金'),
+        text(2, 0, '存货'),
+      ]
+      const heights = resolveRowHeights(cells, [90], {
+        colWidthsPx: [90],
+        rowHeightsPx: [29, 29, 45],
+      })
+
+      // 15 个汉字 x 13 + 2 个半角括号 x 7.8 ≈ 211px，在 78px 可用宽度里要折 3 行：3 x 13 x 1.35 + 6 ≈ 59
+      expect(heights[0]).toBeGreaterThan(45)
+      expect(heights[0]).toBe(59)
+      // 单行文字放得下时沿用 vts 行高
+      expect(heights[1]).toBe(29)
+      expect(heights[2]).toBe(45)
+    })
+
+    it('vts 行高小于字号所需时按字号抬高，避免文字被截', () => {
+      const heights = resolveRowHeights([text(0, 0, '单位：元', 'font-size-15')], [300], {
+        colWidthsPx: [300],
+        rowHeightsPx: [16],
+      })
+      expect(heights[0]).toBe(Math.round(15 * 1.35 + 6))
+    })
+
+    it('跨列合并的标题按合并后的总宽度判断是否折行', () => {
+      const title = {
+        ...text(0, 0, '资 产 负 债 表', 'font-size-32 font-bold'),
+        mergeInfo: JSON.stringify({ rowSpan: 1, colSpan: 4 }),
+      }
+      const heights = resolveRowHeights([title], [70, 70, 70, 70], {
+        colWidthsPx: [70, 70, 70, 70],
+        rowHeightsPx: [64],
+      })
+      // 9 个字符 ≈ 5x32 + 4x19 = 237px，跨 4 列共 268px 可用，算一行；沿用 vts 的 64
+      expect(heights[0]).toBe(64)
+      // 若只按第一列 58px 可用宽度算，会被误判成 4 行以上而撑到 179px
+      expect(resolveRowHeights([{ ...title, mergeInfo: null }], [70], undefined)[0]).toBeGreaterThan(64)
     })
   })
 

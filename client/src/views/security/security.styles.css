@@ -115,7 +115,7 @@
 
 .backup-meta-value {
   font-family: 'SF Mono', 'Menlo', monospace;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   font-weight: 600;
   color: var(--text-primary);
 }

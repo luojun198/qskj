@@ -170,13 +170,13 @@ onMounted(load)
   padding: 10px 16px; border-bottom: 1px solid var(--el-border-color-light);
   background: var(--el-bg-color); flex-shrink: 0; gap: 12px;
 }
-.bom-tree-header__left { display: flex; align-items: center; gap: 8px; font-size: 14px; min-width: 0; }
+.bom-tree-header__left { display: flex; align-items: center; gap: 8px; font-size: var(--cw-text-base); min-width: 0; }
 .bom-tree-header__sep { color: var(--el-text-color-placeholder); }
 .bom-tree-header__title { font-weight: 600; color: var(--el-text-color-primary); white-space: nowrap; }
-.bom-tree-header__meta { color: var(--el-text-color-secondary); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bom-tree-header__meta { color: var(--el-text-color-secondary); font-size: var(--cw-text-base); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bom-tree-header__spec { color: var(--el-text-color-placeholder); }
 .bom-tree-header__right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-.bom-tree-qty-label { font-size: 13px; color: var(--el-text-color-secondary); }
+.bom-tree-qty-label { font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }
 
 .bom-tree-body { flex: 1; min-height: 0; padding: 12px 16px 0; overflow: hidden; }
 
@@ -189,10 +189,10 @@ onMounted(load)
 .bom-tree-summary {
   display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
   padding: 10px 16px; border-top: 1px solid var(--el-border-color-light);
-  background: var(--el-bg-color); flex-shrink: 0; font-size: 13px; color: var(--el-text-color-secondary);
+  background: var(--el-bg-color); flex-shrink: 0; font-size: var(--cw-text-base); color: var(--el-text-color-secondary);
 }
 .bom-tree-summary b { color: var(--el-text-color-primary); }
 .bom-tree-summary__sep { flex: 1; }
-.bom-tree-summary .money { color: var(--el-color-primary); font-size: 15px; }
+.bom-tree-summary .money { color: var(--el-color-primary); font-size: var(--cw-text-lg); }
 .bom-tree-summary .money--strong { color: var(--el-color-danger); font-size: 16px; }
 </style>

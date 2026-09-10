@@ -290,7 +290,7 @@ onMounted(async () => {
 .scm-stock-page { padding: 12px 16px; }
 .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
 .filter-dim { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; }
-.filter-dim__label { font-size: 13px; color: var(--el-text-color-regular); }
+.filter-dim__label { font-size: var(--cw-text-base); color: var(--el-text-color-regular); }
 .negative-number {
   color: var(--el-color-danger);
   font-weight: 600;

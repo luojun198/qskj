@@ -386,7 +386,7 @@ async function handleSave() {
 .dict-nav__title { font-size: 12px; color: var(--el-text-color-secondary); padding: 4px 12px 8px; }
 .dict-nav__item {
   display: block; width: 100%; text-align: left; border: none; background: transparent;
-  padding: 9px 12px; margin-bottom: 2px; border-radius: 6px; font-size: 14px;
+  padding: 9px 12px; margin-bottom: 2px; border-radius: 6px; font-size: var(--cw-text-base);
   color: var(--el-text-color-regular); cursor: pointer; transition: background .15s, color .15s;
 }
 .dict-nav__item:hover { background: var(--el-fill-color-light); }
@@ -402,7 +402,7 @@ async function handleSave() {
 .salvage-tip-content { font-size: 12px; line-height: 1.6; }
 .salvage-tip-title {
   font-weight: 600;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   margin-bottom: 6px;
   color: #e6f0ff;
 }

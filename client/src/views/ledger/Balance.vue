@@ -14,15 +14,14 @@
           @clear="fetchData"
           @keyup.enter="fetchData"
         />
-        <el-select
-          v-model="filters.account_level"
-          placeholder="科目级次"
-          clearable
-          class="filter-ctl--sm"
-          @change="fetchData"
-        >
-          <el-option v-for="level in 4" :key="level" :label="`展开到${level}级`" :value="level" />
-        </el-select>
+        <AccountLevelButtons
+          :at-top="levelFilter.atTop.value"
+          :at-bottom="levelFilter.atBottom.value"
+          @top="levelFilter.goTop"
+          @up="levelFilter.goUp"
+          @down="levelFilter.goDown"
+          @bottom="levelFilter.goBottom"
+        />
         <el-divider direction="vertical" />
         <el-checkbox v-model="hideNoActivity">隐藏未发生</el-checkbox>
         <el-divider direction="vertical" />
@@ -216,6 +215,8 @@ import { useLedgerWideTable, type LedgerColDef } from '@/composables/useLedgerWi
 import { useFillHeightTable } from '@/composables/useFillHeightTable'
 import { exportStyledTable } from '@/utils/exportStyledExcel'
 import AccountScopeAlert from '@/components/AccountScopeAlert.vue'
+import AccountLevelButtons from '@/components/ledger/AccountLevelButtons.vue'
+import { useAccountLevelFilter } from '@/composables/useAccountLevelFilter'
 import HiprintDialog from '@/components/print/HiprintDialog.vue'
 import { buildTablePrintHtml } from '@/utils/printTemplateHiprint'
 import { useUserStore } from '@/stores/user'
@@ -237,9 +238,17 @@ const years = Array.from({ length: new Date().getFullYear() - 2000 + 1 }, (_, i)
 const filters = ref<any>({
   year: new Date().getFullYear(),
   account_code: '',
-  account_level: null,
   include_unposted: true,
 })
+
+/** 数据里出现过的最深级次；按级次过滤后的返回不能代表真实深度，故取累计最大值 */
+const deepestLevel = ref(0)
+// 顶层 / 上级 / 下级 / 底层：默认底层（不限级次），与科目维护同一套按钮与快捷键
+const levelFilter = useAccountLevelFilter({
+  getMaxLevel: () => deepestLevel.value,
+  onChange: () => fetchData(),
+})
+const accountLevel = levelFilter.accountLevel
 
 /** 仅展示已有凭证的月份（1..lastActiveMonth） */
 const displayMonths = computed(() =>
@@ -525,11 +534,15 @@ async function fetchData() {
   try {
     const params: any = { year: filters.value.year }
     if (filters.value.account_code) params.account_code = filters.value.account_code
-    if (filters.value.account_level) params.account_level = filters.value.account_level
+    if (accountLevel.value) params.account_level = accountLevel.value
     if (filters.value.include_unposted) params.include_unposted = 'true'
 
     const res = await request.get<any>('/ledger/general-ledger', { params })
     list.value = res.data || []
+    deepestLevel.value = Math.max(
+      deepestLevel.value,
+      ...list.value.map((row: any) => Number(row.level) || 0)
+    )
     lastActiveMonth.value = Number((res as { lastActiveMonth?: number }).lastActiveMonth) || 0
     initialLoaded.value = true
     await afterTableLayout()
@@ -578,7 +591,7 @@ onMounted(async () => {
 .balance-tag {
   padding: 2px 10px;
   border-radius: 4px;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   font-weight: 500;
 }
 .balance-tag.ok {

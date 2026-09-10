@@ -48,9 +48,9 @@ onMounted(load)
 <style scoped>
 .scm-rpt-page { display: flex; flex-direction: column; height: 100%; padding: 12px 16px; }
 .rpt-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
-.rpt-title { font-size: 15px; font-weight: 600; }
+.rpt-title { font-size: var(--cw-text-lg); font-weight: 600; }
 .rpt-sub { font-size: 12px; color: var(--el-text-color-secondary); }
-.rpt-hint { margin-left: auto; font-size: 13px; color: var(--el-text-color-secondary); }
+.rpt-hint { margin-left: auto; font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }
 .rpt-body { flex: 1; min-height: 0; }
 .rpt-primary { color: var(--el-color-primary); }
 </style>

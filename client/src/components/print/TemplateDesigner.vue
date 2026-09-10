@@ -1441,10 +1441,10 @@ async function handleSave() {
       paper_size: template.value.paper_size,
       paper_width: template.value.paper_width,
       paper_height: template.value.paper_height,
-      margin_top: template.value.margin_top,
-      margin_bottom: template.value.margin_bottom,
-      margin_left: template.value.margin_left,
-      margin_right: template.value.margin_right,
+      margin_top: Number(template.value.margin_top) || 0,
+      margin_bottom: Number(template.value.margin_bottom) || 0,
+      margin_left: Number(template.value.margin_left) || 0,
+      margin_right: Number(template.value.margin_right) || 0,
       elements: elements.value,
     }
 
@@ -1715,7 +1715,8 @@ function equalHeight() {
 }
 
 .canvas {
-  background: #fff;
+  /* 页边距区域用浅灰底，内容区白底，改边距时肉眼可见 */
+  background: #dfe3e8;
   box-sizing: border-box;
   overflow: visible;
 }
@@ -1724,6 +1725,8 @@ function equalHeight() {
   position: relative;
   width: 100%;
   height: 100%;
+  background: #fff;
+  box-shadow: inset 0 0 0 1px rgba(64, 158, 255, 0.35);
 }
 
 :deep(.vdr) {

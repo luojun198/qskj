@@ -181,7 +181,7 @@ function emitMove() {
 }
 
 .cell-address {
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   color: #909399;
 }
 

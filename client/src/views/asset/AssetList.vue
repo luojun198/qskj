@@ -158,7 +158,8 @@
             </el-col>
             <el-col :span="12">
               <el-form-item label="已计提月份">
-                <el-input-number v-model="form.depr_months_done" :min="0" :precision="0" style="width:100%" @change="onDeprMonthsChange" />
+                <el-input-number v-model="form.depr_months_done" :min="0" :precision="0" :disabled="!!editId" style="width:100%" @change="onDeprMonthsChange" />
+                <span v-if="editId" class="tip-text">已提月数由折旧计提维护，不能手工修改</span>
               </el-form-item>
             </el-col>
             <el-col :span="8">
@@ -754,7 +755,7 @@ async function handleDispose() {
 .table-container { flex: 1; overflow: hidden; padding: 0 16px 0; }
 .table-footer { padding: 8px 16px; display: flex; justify-content: flex-end; border-top: 1px solid var(--el-border-color-lighter); }
 .dispose-info { margin-bottom: 4px; }
-.dispose-preview { display: flex; align-items: center; gap: 4px; padding: 8px 12px; background: var(--el-color-warning-light-9); border-radius: 4px; font-size: 14px; margin-top: 8px; }
+.dispose-preview { display: flex; align-items: center; gap: 4px; padding: 8px 12px; background: var(--el-color-warning-light-9); border-radius: 4px; font-size: var(--cw-text-base); margin-top: 8px; }
 .tip-text { margin-left: 8px; font-size: 12px; color: var(--el-text-color-secondary); }
 .voucher-gen-area {
   padding: 12px;

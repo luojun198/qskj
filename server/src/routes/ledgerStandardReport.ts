@@ -144,7 +144,8 @@ router.get('/:id/compute', auth, (req: AuthRequest, res) => {
 
     const rawCells = db
       .prepare(
-        'SELECT id, row_index, col_index, text_value, formula_text FROM rh_standard_report_cells WHERE report_id = ? ORDER BY row_index ASC, col_index ASC'
+        // cell_type 必须带上：数字常量格（行次列的 5/6/7）要靠它进入求值，否则 =B12+1 读到的是空
+        'SELECT id, row_index, col_index, text_value, formula_text, cell_type, format_text, style_key, side FROM rh_standard_report_cells WHERE report_id = ? ORDER BY row_index ASC, col_index ASC'
       )
       .all(req.params.id) as {
       id: string

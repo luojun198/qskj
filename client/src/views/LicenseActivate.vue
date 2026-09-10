@@ -136,7 +136,7 @@ async function handleActivate() {
 <style scoped>
 .activate-subtitle {
   margin: 8px 0 0;
-  font-size: 14px;
+  font-size: var(--cw-text-base);
   color: #909399;
   font-weight: normal;
 }
@@ -152,7 +152,7 @@ async function handleActivate() {
 .activate-label {
   display: block;
   margin-bottom: 6px;
-  font-size: 13px;
+  font-size: var(--cw-text-base);
   color: #606266;
 }
 

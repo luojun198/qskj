@@ -266,4 +266,35 @@ describe('updateAccountSetStartDateFromXt', () => {
     }
     expect(row.start_date).toBe('2026-01-01')
   })
+
+  it('preferXt：完整导入时 xt_kzrq 覆盖占位建账日期，并同步 fiscal_year 为建账年度', () => {
+    // 路由层建账时只能填「当年 1 月 1 日」占位值，年中开账账套必须以 ACD 为准
+    const db = createAccountSetDb('2026-01-01')
+    const xt = new Map([['xt_kzrq', '2025.12.01']])
+    const result = updateAccountSetStartDateFromXt(db, 'set1', xt, { preferXt: true })
+
+    expect(result).toBe('2025-12-01')
+    const row = db
+      .prepare('SELECT start_date, fiscal_year FROM account_sets WHERE id = ?')
+      .get('set1') as { start_date: string; fiscal_year: number }
+    expect(row.start_date).toBe('2025-12-01')
+    expect(row.fiscal_year).toBe(2025)
+    const param = db
+      .prepare(
+        `SELECT param_value FROM system_params WHERE account_set_id='set1' AND param_key='start_date'`
+      )
+      .get() as { param_value: string }
+    expect(param.param_value).toBe('2025-12-01')
+  })
+
+  it('preferXt 但 ACD 缺 xt_kzrq：回退为保留账套已有建账日期', () => {
+    const db = createAccountSetDb('2026-03-01')
+    const result = updateAccountSetStartDateFromXt(db, 'set1', new Map(), { preferXt: true })
+
+    expect(result).toBe('2026-03-01')
+    const row = db.prepare('SELECT start_date FROM account_sets WHERE id = ?').get('set1') as {
+      start_date: string
+    }
+    expect(row.start_date).toBe('2026-03-01')
+  })
 })

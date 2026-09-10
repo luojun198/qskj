@@ -1,7 +1,7 @@
 <template>
   <div class="page doc-field-defs-page">
     <!-- 顶部导航 -->
-    <div class="dfd-header">
+    <div class="dfd-header toolbar">
       <div class="dfd-header__left">
         <el-button link size="small" @click="goBack"><el-icon><ArrowLeft /></el-icon>返回</el-button>
         <span class="dfd-header__sep">/</span>
@@ -19,7 +19,7 @@
         description="配置单据自定义字段需要「供应链参数」权限，请联系管理员开通。" />
 
       <template v-else>
-        <div class="dfd-toolbar">
+        <div class="dfd-toolbar toolbar">
           <span class="dfd-label">单据类型</span>
           <el-select v-model="currentType" filterable placeholder="请选择单据类型" style="width:260px" size="small" @change="loadDefs">
             <el-option v-for="t in types" :key="t.code" :label="configuredTypes.has(t.code) ? `${t.name}（${t.code}）  ● 已配置` : `${t.name}（${t.code}）`" :value="t.code" />
@@ -315,25 +315,25 @@ onMounted(async () => {
   padding: 10px 16px; border-bottom: 1px solid var(--el-border-color-light);
   background: var(--el-bg-color); flex-shrink: 0;
 }
-.dfd-header__left { display: flex; align-items: center; gap: 6px; font-size: 14px; }
+.dfd-header__left { display: flex; align-items: center; gap: 6px; font-size: var(--cw-text-base); }
 .dfd-header__sep { color: var(--el-text-color-placeholder); }
 .dfd-header__title { font-weight: 600; color: var(--el-text-color-primary); }
 .dfd-header__right { display: flex; gap: 8px; }
 .dfd-body { flex: 1; overflow: auto; padding: 14px 16px; }
 .dfd-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
 .dfd-overview { margin-bottom: 18px; padding: 10px 12px; background: var(--el-fill-color-light); border: 1px solid var(--el-border-color-lighter); border-radius: var(--radius-sm, 4px); }
-.dfd-overview__hd { font-weight: 600; font-size: 13px; color: var(--el-text-color-primary); margin-bottom: 8px; }
-.dfd-overview__empty { font-size: 13px; color: var(--el-text-color-placeholder); }
+.dfd-overview__hd { font-weight: 600; font-size: var(--cw-text-base); color: var(--el-text-color-primary); margin-bottom: 8px; }
+.dfd-overview__empty { font-size: var(--cw-text-base); color: var(--el-text-color-placeholder); }
 .dfd-overview__table { cursor: pointer; }
 .dfd-overview__table :deep(.dfd-ov-row-active) { background: var(--el-color-primary-light-9); }
 .dfd-overview__table :deep(.dfd-ov-row-active td) { font-weight: 600; }
-.dfd-label { font-size: 13px; color: var(--el-text-color-regular); }
+.dfd-label { font-size: var(--cw-text-base); color: var(--el-text-color-regular); }
 .dfd-tip { font-size: 12px; color: var(--el-text-color-secondary); }
 .dfd-section { margin-bottom: 18px; }
 .dfd-section__hd { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
-.dfd-section__title { font-weight: 600; font-size: 14px; color: var(--el-text-color-primary); }
-.dfd-empty { color: var(--el-text-color-placeholder); font-size: 13px; padding: 10px 0; text-align: center; }
+.dfd-section__title { font-weight: 600; font-size: var(--cw-text-base); color: var(--el-text-color-primary); }
+.dfd-empty { color: var(--el-text-color-placeholder); font-size: var(--cw-text-base); padding: 10px 0; text-align: center; }
 .dfd-muted { color: var(--el-text-color-placeholder); }
 .dfd-hint-icon { font-size: 12px; vertical-align: -1px; color: var(--el-text-color-placeholder); }
-.dfd-copy-tip { font-size: 13px; color: var(--el-text-color-regular); margin: 0 0 12px; }
+.dfd-copy-tip { font-size: var(--cw-text-base); color: var(--el-text-color-regular); margin: 0 0 12px; }
 </style>
