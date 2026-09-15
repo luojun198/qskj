@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3'
-import { buildInitBalanceSumExpr } from './initBalanceScope.js'
+import { buildLedgerOpeningExpr, resolvePreBookRangeFlags } from './initBalanceScope.js'
 import {
   appendAccountScopeCondition,
   type AccountScopeContext,
@@ -79,6 +79,9 @@ export interface AuxMultiColumnQueryInput {
   /** mode=counter 时过滤对方科目编码前缀 */
   accountCode?: string
   accountScope?: AccountScopeContext
+  /** FIX-150：账套启用日 / 是否具备 opening·pre_book 列，用于期初口径 */
+  accountSetStartDate?: string
+  preBookEnabled?: boolean
 }
 
 export interface AuxMultiColumnCategoryInfo {
@@ -664,7 +667,12 @@ export function resolveAuxMultiColumnColumnSources(
 
 // ===================== 期初余额 =====================
 
-function queryInitBalance(db: Database.Database, ctx: CollectContext, year: number) {
+function queryInitBalance(
+  db: Database.Database,
+  ctx: CollectContext,
+  year: number,
+  opening: { preBookEnabled: boolean; initIncludesPreBook: boolean } = { preBookEnabled: false, initIncludesPreBook: true }
+) {
   const itemIds = ctx.items.map(item => item.id)
   const itemCodes = ctx.items.map(item => item.code).filter(Boolean)
   const idPlaceholders = itemIds.map(() => '?').join(',')
@@ -687,7 +695,7 @@ function queryInitBalance(db: Database.Database, ctx: CollectContext, year: numb
 
   const rows = db
     .prepare(
-      `SELECT ib.account_id, a.direction, ${buildInitBalanceSumExpr('ib')} as init_balance
+      `SELECT ib.account_id, a.direction, ${buildLedgerOpeningExpr(opening)} as init_balance
        FROM init_balances ib
        JOIN accounts a ON a.id = ib.account_id
        WHERE ${conditions.join(' AND ')}
@@ -744,8 +752,19 @@ export function queryAuxMultiColumnLedger(
 
   const columnKeys = new Set(columns.map(column => column.key))
 
-  // 期初 = 期初余额表 + 区间前发生额（借正贷负）
-  let initBalance = queryInitBalance(db, ctx, year)
+  // 期初 = 年初余额（+ 归属日早于区间起点的账前发生额）+ 区间前发生额（借正贷负）
+  // FIX-150：与总账 / 余额表同口径；账前发生额无对方科目明细，落在区间内时无法分栏，仅计入期初判断
+  const preBook = resolvePreBookRangeFlags({
+    accountSetStartDate: input.accountSetStartDate,
+    preBookEnabled: input.preBookEnabled,
+    startDate: rangeStart,
+    endDate: rangeEnd,
+    yearStartDate: yearStart,
+  })
+  let initBalance = queryInitBalance(db, ctx, year, {
+    preBookEnabled: preBook.preBookEnabled,
+    initIncludesPreBook: preBook.initIncludesPreBook,
+  })
   for (const hit of preHits) {
     initBalance += hit.direction === 'debit' ? hit.amount : -hit.amount
   }

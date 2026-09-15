@@ -92,7 +92,9 @@ describe('ledgerQuery', () => {
       pageSize: 20,
     })
     expect(query.initBalanceSql).toContain('ib.aux_item_id = ?')
-    expect(query.initBalanceSql).toContain('ve.dept_id = ?')
+    // FIX-152：辅助过滤改为 aux_data JSON + legacy 固定列双匹配
+    expect(query.initBalanceSql).toContain('ve.dept_id IN (?)')
+    expect(query.initBalanceSql).toContain("json_extract(ve.aux_data, '$.dept.id') IN (?)")
     expect(query.initBalanceParams).toContain('dept:dept-1')
     expect(query.initBalanceSql).not.toContain("COALESCE(ib.aux_item_id, '') = ''")
   })
@@ -181,5 +183,27 @@ describe('ledgerQuery', () => {
     expect(query.foreignInitBalanceParams).toContain('USD')
     // 区间原币期初只取叶子科目，避免父科目重复
     expect(query.foreignInitBalanceSql).toContain('NOT EXISTS')
+  })
+
+  it('FIX-148：编码区间单边界（只传 start 或只传 end）时期初 / 原币期初 / 账前发生额也走区间分支且占位符对齐', () => {
+    for (const extra of [{ accountCodeStart: '1002' }, { accountCodeEnd: '1002zzz' }]) {
+      const query = buildLedgerDetailQuery({
+        accountSetId: 'as-1',
+        startDate: '2026-02-01',
+        endDate: '2026-03-31',
+        page: 1,
+        pageSize: 20,
+        preBookEnabled: true,
+        accountSetStartDate: '2026-03-01', // 账前发生额归属 2026-02-28，落在区间内
+        ...extra,
+      })
+      expect(query.initBalanceSql).not.toMatch(/SELECT 0 as init_balance/)
+      expect(query.initBalanceSql).toContain('init_balances')
+      expect((query.initBalanceSql.match(/\?/g) || []).length).toBe(query.initBalanceParams.length)
+      expect((query.foreignInitBalanceSql.match(/\?/g) || []).length).toBe(query.foreignInitBalanceParams.length)
+      expect(query.foreignInitBalanceSql).not.toMatch(/SELECT 0 as foreign_init_balance/)
+      expect((query.preBookSql.match(/\?/g) || []).length).toBe(query.preBookParams.length)
+      expect(query.preBookSql).not.toBe('SELECT 0 as pre_book_debit, 0 as pre_book_credit')
+    }
   })
 })

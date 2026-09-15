@@ -276,3 +276,57 @@ export function buildPreBookSumExpr(
       ELSE SUM(CASE WHEN ${detailFilter} THEN COALESCE(${col}, 0) ELSE 0 END)
     END`
 }
+
+/**
+ * FIX-150：账簿期初的单一出口。
+ *  - preBookEnabled=false（老库缺列）：回退 init_balance（启用时点余额）
+ *  - preBookEnabled=true：年初余额（opening）+ 账前发生额（仅当其归属日早于查询起点，即 initIncludesPreBook）
+ * 结果按科目方向签名（借方科目借正、贷方科目贷正），需外层 JOIN accounts 别名 accountAlias。
+ */
+export function buildLedgerOpeningExpr(params: {
+  preBookEnabled: boolean
+  initIncludesPreBook: boolean
+  alias?: string
+  accountAlias?: string
+  cols?: InitBalanceColumnSet
+}): string {
+  const alias = params.alias ?? 'ib'
+  const accountAlias = params.accountAlias ?? 'a'
+  const cols = params.cols ?? AMOUNT_INIT_COLUMNS
+  if (!params.preBookEnabled) return buildInitBalanceSumExpr(alias, cols)
+  const opening = buildOpeningBalanceSumExpr(alias, accountAlias, cols)
+  if (!params.initIncludesPreBook) return opening
+  const preBook = buildDirectionSignedNetSql(
+    `${accountAlias}.direction`,
+    buildPreBookSumExpr('debit', alias, cols),
+    buildPreBookSumExpr('credit', alias, cols)
+  )
+  return `(${opening}) + (${preBook})`
+}
+
+/**
+ * FIX-153 / P1-账簿-6：期初链式上溯。
+ *
+ * 余额类查询的「期初 / 期末」= 某年度 init_balances + 该年度年初起的凭证累计。若上年未年结，
+ * 本年 init_balances 没有行，期末会丢掉整个上年及以前。这里从 year 往前找到最近一个
+ * 有期初行的年度（账套级），凭证累计下限也改从该年年初起，链式补上未年结年度的发生额。
+ * 找不到任何期初行时回退到账套最早凭证年度（全部凭证累计）。
+ */
+export function resolveOpeningBaseYear(
+  db: { prepare: (sql: string) => { get: (...args: any[]) => any } },
+  accountSetId: string,
+  year: number,
+  maxBack = 20
+): number {
+  const hasInit = db.prepare('SELECT 1 FROM init_balances WHERE account_set_id = ? AND year = ? LIMIT 1')
+  let y = year
+  for (let i = 0; i < maxBack; i++) {
+    if (hasInit.get(accountSetId, y)) return y
+    y -= 1
+  }
+  const earliest = db
+    .prepare('SELECT MIN(year) AS y FROM vouchers WHERE account_set_id = ?')
+    .get(accountSetId) as { y: number | null } | undefined
+  const minVoucherYear = Number(earliest?.y)
+  return Number.isFinite(minVoucherYear) && minVoucherYear > 0 ? Math.min(minVoucherYear, year) : year
+}

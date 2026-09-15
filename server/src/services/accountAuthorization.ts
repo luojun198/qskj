@@ -511,13 +511,17 @@ export function assertAuxAllAccountsClearAllowed(
 }
 
 /** 账簿结果行按 account_id 过滤（用于汇总后剔除未授权科目） */
-export function filterLedgerRowsByScope<T extends { account_id?: string }>(
-  ctx: AccountScopeContext | undefined,
-  rows: T[]
-): T[] {
+export function filterLedgerRowsByScope<
+  T extends { account_id?: string | null; is_supplemented_parent?: boolean },
+>(ctx: AccountScopeContext | undefined, rows: T[]): T[] {
   if (!ctx || ctx.bypass || !ctx.restricted) return rows
   if (ctx.allowedAccountIds.size === 0) return []
-  return rows.filter(row => row.account_id && ctx.allowedAccountIds.has(row.account_id))
+  // FIX-154：JS 补出的父科目行（金额只汇总自已授权子科目）保留，否则受限用户看到的层级残缺
+  return rows.filter(
+    row =>
+      row.is_supplemented_parent === true ||
+      (row.account_id && ctx.allowedAccountIds.has(row.account_id))
+  )
 }
 
 /** 校验科目编码前缀是否落在授权范围内（至少有一个匹配科目已授权） */
@@ -528,14 +532,15 @@ export function assertAccountCodePrefixInScope(
   codePrefix: string | undefined
 ): string | null {
   if (!ctx || ctx.bypass || !ctx.restricted || !codePrefix?.trim()) return null
-  const row = database
+  // FIX-154：此前 LIMIT 1 任取首行判权，父科目未授权而子科目已授权时误报 403（或反之过宽）；
+  // 改为「前缀下任一科目已授权即放行」，后续行级 filterLedgerRowsByScope 再剔除未授权科目
+  const rows = database
     .prepare(
       `SELECT id FROM accounts
-       WHERE account_set_id = ? AND code LIKE ? AND is_enabled = 1
-       LIMIT 1`
+       WHERE account_set_id = ? AND code LIKE ? AND is_enabled = 1`
     )
-    .get(accountSetId, `${codePrefix.trim()}%`) as { id: string } | undefined
-  if (!row) return null
-  if (!ctx.allowedAccountIds.has(row.id)) return '无权查看该科目范围的数据'
+    .all(accountSetId, `${codePrefix.trim()}%`) as Array<{ id: string }>
+  if (rows.length === 0) return null
+  if (!rows.some(row => ctx.allowedAccountIds.has(row.id))) return '无权查看该科目范围的数据'
   return null
 }

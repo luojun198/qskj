@@ -1,4 +1,4 @@
-import { AUX_LEGACY_COLUMNS } from '../utils/auxLedgerQuery.js'
+import { AUX_LEGACY_COLUMNS, appendAuxItemMatchParams, buildAuxItemMatchCondition } from '../utils/auxLedgerQuery.js'
 import { CLOSING_VOUCHER_TYPE_JOIN_SQL, NOT_CLOSING_VOUCHER_SQL } from '../utils/closingVoucherSql.js'
 import { buildDirectionSignedNetSql, buildSignedEntryAmountSql } from '../utils/accountBalance.js'
 import {
@@ -188,6 +188,8 @@ export function buildLedgerGeneralQuery(filters: {
   accountSetStartDate?: string
   /** init_balances 是否具备 opening / pre_book 相关列；老库缺列时回退旧口径 */
   preBookEnabled?: boolean
+  /** FIX-153：期初链式上溯——返回某年度实际可用的期初基准年（上年未年结时往前找） */
+  resolveOpeningBaseYear?: (year: number) => number
 }) {
   // 如果没有指定日期，使用当前年月
   const now = new Date()
@@ -205,6 +207,11 @@ export function buildLedgerGeneralQuery(filters: {
   const endDateYear = new Date(endDate).getFullYear()
   const startDateYearStart = `${startDateYear}-01-01`
   const endDateYearStart = `${endDateYear}-01-01`
+  // FIX-153：上年未年结时 init_balances(year) 无行，期初 / 期末改用最近有期初行的年度作基准，凭证从该年年初累计
+  const startBaseYear = filters.resolveOpeningBaseYear?.(startDateYear) ?? startDateYear
+  const endBaseYear = filters.resolveOpeningBaseYear?.(endDateYear) ?? endDateYear
+  const startBaseYearStart = `${startBaseYear}-01-01`
+  const endBaseYearStart = `${endBaseYear}-01-01`
   // 本年累计的起始日期：endDate 所在年度的 1 月 1 日（中国财务"本年累计"按 endDate 所在年统计）
   const yearStartDate = endDateYearStart
 
@@ -390,8 +397,8 @@ export function buildLedgerGeneralQuery(filters: {
       const p: SqlParam[] = []
       // FIX-002 / P0-4：期初余额取 startDate 所在年度的 init_balances，
       // 凭证累加范围 [startDateYearStart, startDate)
-      p.push(filters.accountSetId, startDateYear)
-      p.push(filters.accountSetId, startDateYearStart, startDate)
+      p.push(filters.accountSetId, startBaseYear)
+      p.push(filters.accountSetId, startBaseYearStart, startDate)
       // 本期借方 / 贷方
       for (const _ of [0, 1]) {
         if (currentIncludesPreBook) p.push(filters.accountSetId, preBookYear)
@@ -404,8 +411,8 @@ export function buildLedgerGeneralQuery(filters: {
       }
       // FIX-002 / P0-4：期末余额取 endDate 所在年度的 init_balances，
       // 凭证累加范围 [endDateYearStart, endDate]
-      p.push(filters.accountSetId, endDateYear)
-      p.push(filters.accountSetId, endDateYearStart, endDate)
+      p.push(filters.accountSetId, endBaseYear)
+      p.push(filters.accountSetId, endBaseYearStart, endDate)
       p.push(...accountParams)
       return p
     })(),
@@ -990,14 +997,15 @@ export function buildLedgerDetailQuery(filters: {
   }
 
   // 辅助核算筛选
-  let auxVoucherField: string | undefined
+  // FIX-152：改用 buildAuxItemMatchCondition（aux_data JSON 双 key + legacy 固定列），
+  // 自定义辅助类目此前因无 legacy 列而不拼任何条件，静默返回全量分录
+  let auxMatchSql = ''
+  const auxMatchParams: SqlParam[] = []
   if (filters.auxType && filters.auxId) {
-    const legacy = AUX_LEGACY_COLUMNS[filters.auxType]
-    if (legacy) {
-      auxVoucherField = legacy.id
-      conditions.push(`ve.${legacy.id} = ?`)
-      params.push(filters.auxId)
-    }
+    auxMatchSql = buildAuxItemMatchCondition(filters.auxType, '?', { categoryId: filters.auxType })
+    appendAuxItemMatchParams(auxMatchParams, filters.auxType, [filters.auxId], { categoryId: filters.auxType })
+    conditions.push(auxMatchSql)
+    params.push(...auxMatchParams)
   }
   const auxItemIdKey =
     filters.auxType && filters.auxId ? `${filters.auxType}:${filters.auxId}` : ''
@@ -1042,7 +1050,7 @@ export function buildLedgerDetailQuery(filters: {
     extraParams: SqlParam[],
     amountExpr = 've.amount'
   ) => {
-    const auxClause = auxVoucherField ? ` AND ve.${auxVoucherField} = ?` : ''
+    const auxClause = auxMatchSql ? ` AND ${auxMatchSql}` : ''
     return {
       sql: `(SELECT SUM(
              CASE WHEN a.direction = 'debit'
@@ -1065,7 +1073,7 @@ export function buildLedgerDetailQuery(filters: {
         yearStartDate,
         balanceStartDate,
         ...extraParams,
-        ...(auxVoucherField ? [filters.auxId as string] : []),
+        ...auxMatchParams,
       ] as SqlParam[],
     }
   }
@@ -1113,15 +1121,21 @@ export function buildLedgerDetailQuery(filters: {
   const balanceStartDate = filters.startDate || `${y}-01-01`
   const yearStartDate = `${y}-01-01`
 
-  if (filters.accountCodeStart && filters.accountCodeEnd) {
-    const initTable = buildInitFromTableSql(
-      'AND a.account_set_id = ? AND a.code >= ? AND a.code <= ?',
-      [filters.accountSetId, filters.accountCodeStart, filters.accountCodeEnd]
-    )
-    const voucherInit = buildVoucherInitBeforeStartSql(
-      'AND a.account_set_id = ? AND a.code >= ? AND a.code <= ?',
-      [filters.accountSetId, filters.accountCodeStart, filters.accountCodeEnd]
-    )
+  // FIX-148 / GL-06：编码区间支持单边界（与上方分录侧一致），期初 / 原币期初 / 账前发生额三处共用
+  const hasCodeRange = Boolean(filters.accountCodeStart || filters.accountCodeEnd)
+  const rangeWhereSql =
+    'AND a.account_set_id = ?' +
+    (filters.accountCodeStart ? ' AND a.code >= ?' : '') +
+    (filters.accountCodeEnd ? ' AND a.code <= ?' : '')
+  const rangeWhereParams: SqlParam[] = [
+    filters.accountSetId,
+    ...(filters.accountCodeStart ? [filters.accountCodeStart] : []),
+    ...(filters.accountCodeEnd ? [filters.accountCodeEnd] : []),
+  ]
+
+  if (hasCodeRange) {
+    const initTable = buildInitFromTableSql(rangeWhereSql, rangeWhereParams)
+    const voucherInit = buildVoucherInitBeforeStartSql(rangeWhereSql, rangeWhereParams)
     initBalanceSql = `
       SELECT
         ${initTable.sql} + COALESCE(${voucherInit.sql}, 0) as init_balance
@@ -1152,12 +1166,12 @@ export function buildLedgerDetailQuery(filters: {
   const FX_AMOUNT = 'COALESCE(ve.foreign_amount, 0)'
   let foreignInitBalanceSql: string
   let foreignInitBalanceParams: SqlParam[]
-  if (filters.accountCodeStart && filters.accountCodeEnd) {
+  if (hasCodeRange) {
     const currencyClause = rangeCurrency ? " AND UPPER(COALESCE(a.currency_code, '')) = ?" : ''
     const currencyParams: SqlParam[] = rangeCurrency ? [rangeCurrency] : []
     const voucherInit = buildVoucherInitBeforeStartSql(
-      `AND a.account_set_id = ? AND a.code >= ? AND a.code <= ?${currencyClause}`,
-      [filters.accountSetId, filters.accountCodeStart, filters.accountCodeEnd, ...currencyParams],
+      `${rangeWhereSql}${currencyClause}`,
+      [...rangeWhereParams, ...currencyParams],
       FX_AMOUNT
     )
     foreignInitBalanceSql = `
@@ -1168,7 +1182,7 @@ export function buildLedgerDetailQuery(filters: {
          WHERE ib.account_set_id = ?
            AND ib.year = ?
            AND COALESCE(ib.aux_item_id, '') = ''
-           AND a.account_set_id = ? AND a.code >= ? AND a.code <= ?${currencyClause}
+           ${rangeWhereSql}${currencyClause}
            ${INIT_BALANCE_LEAF_ACCOUNTS_ONLY}),
         0
       ) + COALESCE(${voucherInit.sql}, 0) as foreign_init_balance
@@ -1176,9 +1190,7 @@ export function buildLedgerDetailQuery(filters: {
     foreignInitBalanceParams = [
       filters.accountSetId,
       y,
-      filters.accountSetId,
-      filters.accountCodeStart,
-      filters.accountCodeEnd,
+      ...rangeWhereParams,
       ...currencyParams,
       ...voucherInit.params,
     ]
@@ -1217,21 +1229,15 @@ export function buildLedgerDetailQuery(filters: {
       preBookDate >= balanceStartDate &&
       (!filters.endDate || preBookDate <= filters.endDate)
     if (inRange && !auxItemIdKey) {
-      if (filters.accountCodeStart && filters.accountCodeEnd) {
-        preBookSql = buildScopedPreBookSumSql(
-          'AND a.account_set_id = ? AND a.code >= ? AND a.code <= ?'
-        )
+      if (hasCodeRange) {
+        preBookSql = buildScopedPreBookSumSql(rangeWhereSql)
         preBookParams = [
           filters.accountSetId,
           y,
-          filters.accountSetId,
-          filters.accountCodeStart,
-          filters.accountCodeEnd,
+          ...rangeWhereParams,
           filters.accountSetId,
           y,
-          filters.accountSetId,
-          filters.accountCodeStart,
-          filters.accountCodeEnd,
+          ...rangeWhereParams,
         ]
       } else if (filters.accountId) {
         preBookSql = buildScopedPreBookSumSql('AND ib.account_id = ?', { leafAccountsOnly: false })
@@ -1443,10 +1449,13 @@ export function supplementMissingParents(
     parentCodes.forEach(parentCode => {
       if (!accountMap.has(parentCode)) {
         const parentAccount = db
-          .prepare('SELECT code, name, direction, level FROM accounts WHERE code = ? AND account_set_id = ?')
+          .prepare('SELECT id, code, name, direction, level FROM accounts WHERE code = ? AND account_set_id = ?')
           .get(parentCode, accountSetId) as any
 
+        // FIX-154：补出的父行带 account_id 与标记，科目授权过滤时不再整行丢弃（其金额只汇总自已授权的子科目）
         const parentRow = {
+          account_id: parentAccount ? parentAccount.id : null,
+          is_supplemented_parent: true,
           account_code: parentCode,
           account_name: parentAccount ? parentAccount.name : '-',
           direction: parentAccount ? parentAccount.direction : row.direction,
@@ -1595,10 +1604,13 @@ export function supplementMissingParentsWithMonths(
     parentCodes.forEach(parentCode => {
       if (!accountMap.has(parentCode)) {
         const parentAccount = db
-          .prepare('SELECT code, name, direction, level FROM accounts WHERE code = ? AND account_set_id = ?')
+          .prepare('SELECT id, code, name, direction, level FROM accounts WHERE code = ? AND account_set_id = ?')
           .get(parentCode, accountSetId) as any
 
+        // FIX-154：同 supplementMissingParents
         const parentRow: any = {
+          account_id: parentAccount ? parentAccount.id : null,
+          is_supplemented_parent: true,
           account_code: parentCode,
           account_name: parentAccount ? parentAccount.name : '-',
           direction: parentAccount ? parentAccount.direction : row.direction,
@@ -1756,6 +1768,8 @@ export function buildQuantityBalanceQuery(filters: {
   accountSetStartDate?: string
   /** init_balances 是否具备 opening / pre_book 相关列；老库缺列时回退旧口径 */
   preBookEnabled?: boolean
+  /** FIX-153：期初链式上溯——返回某年度实际可用的期初基准年（上年未年结时往前找） */
+  resolveOpeningBaseYear?: (year: number) => number
 }) {
   const now = new Date()
   const defaultStartDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
@@ -1768,6 +1782,11 @@ export function buildQuantityBalanceQuery(filters: {
   const endDateYear = new Date(endDate).getFullYear()
   const startDateYearStart = `${startDateYear}-01-01`
   const endDateYearStart = `${endDateYear}-01-01`
+  // FIX-153：上年未年结时 init_balances(year) 无行，期初 / 期末改用最近有期初行的年度作基准，凭证从该年年初累计
+  const startBaseYear = filters.resolveOpeningBaseYear?.(startDateYear) ?? startDateYear
+  const endBaseYear = filters.resolveOpeningBaseYear?.(endDateYear) ?? endDateYear
+  const startBaseYearStart = `${startBaseYear}-01-01`
+  const endBaseYearStart = `${endBaseYear}-01-01`
   const yearStartDate = endDateYearStart
 
   const {
@@ -1910,8 +1929,8 @@ export function buildQuantityBalanceQuery(filters: {
       const p: SqlParam[] = []
       // 期初：数量、金额各一份（init_balances 占位符 + 凭证区间占位符）
       for (const _ of [0, 1]) {
-        p.push(filters.accountSetId, startDateYear)
-        p.push(filters.accountSetId, startDateYearStart, startDate)
+        p.push(filters.accountSetId, startBaseYear)
+        p.push(filters.accountSetId, startBaseYearStart, startDate)
       }
       // 本期借方（数量、金额）、本期贷方（数量、金额）
       for (const _ of [0, 1, 2, 3]) {
@@ -1925,8 +1944,8 @@ export function buildQuantityBalanceQuery(filters: {
       }
       // 结余：数量、金额各一份
       for (const _ of [0, 1]) {
-        p.push(filters.accountSetId, endDateYear)
-        p.push(filters.accountSetId, endDateYearStart, endDate)
+        p.push(filters.accountSetId, endBaseYear)
+        p.push(filters.accountSetId, endBaseYearStart, endDate)
       }
       p.push(...accountParams)
       return p
@@ -1962,6 +1981,8 @@ export function buildForeignBalanceQuery(filters: {
   accountSetStartDate?: string
   /** init_balances 是否具备 opening / pre_book 相关列；老库缺列时回退旧口径 */
   preBookEnabled?: boolean
+  /** FIX-153：期初链式上溯——返回某年度实际可用的期初基准年（上年未年结时往前找） */
+  resolveOpeningBaseYear?: (year: number) => number
   /** init_balances 是否具备 foreign_opening / foreign_pre_book 列 */
   foreignPreBookEnabled?: boolean
 }) {
@@ -1976,6 +1997,11 @@ export function buildForeignBalanceQuery(filters: {
   const endDateYear = new Date(endDate).getFullYear()
   const startDateYearStart = `${startDateYear}-01-01`
   const endDateYearStart = `${endDateYear}-01-01`
+  // FIX-153：上年未年结时 init_balances(year) 无行，期初 / 期末改用最近有期初行的年度作基准，凭证从该年年初累计
+  const startBaseYear = filters.resolveOpeningBaseYear?.(startDateYear) ?? startDateYear
+  const endBaseYear = filters.resolveOpeningBaseYear?.(endDateYear) ?? endDateYear
+  const startBaseYearStart = `${startBaseYear}-01-01`
+  const endBaseYearStart = `${endBaseYear}-01-01`
   const yearStartDate = endDateYearStart
 
   const {
@@ -2136,8 +2162,8 @@ export function buildForeignBalanceQuery(filters: {
       const p: SqlParam[] = []
       // 期初：原币、本位币各一份（init_balances 占位符 + 凭证区间占位符）
       for (const _ of [0, 1]) {
-        p.push(filters.accountSetId, startDateYear)
-        p.push(filters.accountSetId, startDateYearStart, startDate)
+        p.push(filters.accountSetId, startBaseYear)
+        p.push(filters.accountSetId, startBaseYearStart, startDate)
       }
       // 本期借方（原币、本位币）、本期贷方（原币、本位币）
       for (const isForeignSide of [true, false, true, false]) {
@@ -2155,8 +2181,8 @@ export function buildForeignBalanceQuery(filters: {
       }
       // 期末：原币、本位币各一份
       for (const _ of [0, 1]) {
-        p.push(filters.accountSetId, endDateYear)
-        p.push(filters.accountSetId, endDateYearStart, endDate)
+        p.push(filters.accountSetId, endBaseYear)
+        p.push(filters.accountSetId, endBaseYearStart, endDate)
       }
       p.push(...accountParams)
       return p

@@ -17,7 +17,7 @@ import {
   type VoucherLike,
 } from './voucherPosting.js'
 import { buildForeignBalanceQuery } from './ledgerQuery.js'
-import { hasPreBookColumns, hasForeignPreBookColumns } from './initBalanceScope.js'
+import { hasPreBookColumns, hasForeignPreBookColumns, resolveOpeningBaseYear } from './initBalanceScope.js'
 import { peekAccountSetStartDate } from './accountSetDefaults.js'
 import { getAutoTransferVoucherDate, validateAutoTransferPeriod } from './autoTransfer.js'
 
@@ -315,6 +315,7 @@ export function previewFxRevaluation(params: {
     accountSetStartDate: peekAccountSetStartDate(db as any, accountSetId),
     preBookEnabled: hasPreBookColumns(db as any),
     foreignPreBookEnabled: hasForeignPreBookColumns(db as any),
+    resolveOpeningBaseYear: year => resolveOpeningBaseYear(db as any, accountSetId, year),
   })
   const balanceRows = db.prepare(query.sql).all(...query.params) as Array<{
     account_id: string

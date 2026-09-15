@@ -12,7 +12,7 @@ import {
   VAT_PARENT_NAMES,
   type VatColumnSpec,
 } from '../config/vatLedger.js'
-import { buildInitBalanceSumExpr, buildPreBookSumExpr, resolvePreBookDate } from './initBalanceScope.js'
+import { buildLedgerOpeningExpr, buildPreBookSumExpr, resolvePreBookRangeFlags } from './initBalanceScope.js'
 
 export interface VatColumnSetting {
   key: string
@@ -323,10 +323,21 @@ export function queryVatLedger(db: Database.Database, input: VatLedgerQueryInput
 
   const inClause = accountIds.map(() => '?').join(', ')
 
-  // 期初（贷方性质）：年初 init_balance（按科目方向签名）转为贷方性质 + 年初到区间起点前的分录
+  // FIX-150：期初（贷方性质）= 年初余额（opening，按科目方向签名）+ 归属日早于区间起点的账前发生额，
+  // 转为贷方性质后再加年初到区间起点前的分录
+  const preBook = resolvePreBookRangeFlags({
+    accountSetStartDate: input.accountSetStartDate,
+    preBookEnabled: input.preBookEnabled,
+    startDate: rangeStart,
+    endDate: rangeEnd,
+    yearStartDate: yearStart,
+  })
   const initRows = db
     .prepare(
-      `SELECT ib.account_id, a.direction, ${buildInitBalanceSumExpr('ib')} as init_balance
+      `SELECT ib.account_id, a.direction, ${buildLedgerOpeningExpr({
+        preBookEnabled: preBook.preBookEnabled,
+        initIncludesPreBook: preBook.initIncludesPreBook,
+      })} as init_balance
        FROM init_balances ib
        JOIN accounts a ON a.id = ib.account_id
        WHERE ib.account_set_id = ? AND ib.year = ? AND ib.account_id IN (${inClause})
@@ -380,9 +391,8 @@ export function queryVatLedger(db: Database.Database, input: VatLedgerQueryInput
       yearAmounts[col.key] += signed
     }
   }
-  if (input.preBookEnabled) {
-    const preBookDate = resolvePreBookDate(input.accountSetStartDate, y)
-    if (preBookDate >= yearStart && preBookDate <= rangeEnd) {
+  if (preBook.yearIncludesPreBook) {
+    {
       const preRows = db
         .prepare(
           `SELECT ib.account_id,

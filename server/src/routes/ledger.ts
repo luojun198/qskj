@@ -69,7 +69,7 @@ import {
 } from '../services/accountAuthorization.js'
 import { AUX_BALANCE_ITEM_BATCH, MAX_PAGE_SIZE, parsePageSizeParam } from '../utils/listLimits.js'
 import { peekAccountSetStartDate } from '../services/accountSetDefaults.js'
-import { hasPreBookColumns, hasForeignPreBookColumns } from '../services/initBalanceScope.js'
+import { hasPreBookColumns, hasForeignPreBookColumns, resolveOpeningBaseYear } from '../services/initBalanceScope.js'
 import { resolveClosingExchangeRate } from '../services/fxRevaluation.js'
 
 /** 统一解析「含未记账」布尔参数：兼容 true / 1 / 'true' / '1'（各端点原口径不一） */
@@ -185,6 +185,7 @@ router.get('/general', (req: AuthRequest, res) => {
     accountScope: req.accountScope,
     accountSetStartDate: peekAccountSetStartDate(db, req.accountSetId || ''),
     preBookEnabled: hasPreBookColumns(db),
+    resolveOpeningBaseYear: year => resolveOpeningBaseYear(db, req.accountSetId || '', year),
   })
 
   let list = db.prepare(query.sql).all(...query.params) as any[]
@@ -464,6 +465,7 @@ router.get('/quantity-balance', requirePermission('ledger:qty'), (req: AuthReque
     accountScope: req.accountScope,
     accountSetStartDate: peekAccountSetStartDate(db, req.accountSetId || ''),
     preBookEnabled: hasPreBookColumns(db),
+    resolveOpeningBaseYear: year => resolveOpeningBaseYear(db, req.accountSetId || '', year),
   })
 
   // 数量核算科目按 is_quantity 平铺，不补父科目、不向上汇总
@@ -550,6 +552,7 @@ router.get('/foreign-balance', (req: AuthRequest, res) => {
     accountSetStartDate: peekAccountSetStartDate(db, req.accountSetId || ''),
     preBookEnabled: hasPreBookColumns(db),
     foreignPreBookEnabled: hasForeignPreBookColumns(db),
+    resolveOpeningBaseYear: year => resolveOpeningBaseYear(db, req.accountSetId || '', year),
   })
   const list = db.prepare(query.sql).all(...query.params) as ForeignBalanceRow[]
 
@@ -1646,9 +1649,11 @@ router.post('/aux-balance', (req: AuthRequest, res) => {
 
     const buildSummaryAmountSelects = (amountRef: string, prefix: string) => {
       const signed = buildSignedEntryAmountSql('a.direction', 've.direction', amountRef)
+      // FIX-151：与明细路径（P1-14）同口径——期初 / 期末凭证只累计当年年初起的分录，
+      // 否则与 init_balances 年结行合并时把上年活动重复计入
       return `
         COALESCE(SUM(CASE
-          WHEN v.voucher_date < ? THEN ${signed}
+          WHEN v.voucher_date >= ? AND v.voucher_date < ? THEN ${signed}
           ELSE 0
         END), 0) as ${prefix}init_balance,
         COALESCE(SUM(CASE
@@ -1660,7 +1665,7 @@ router.post('/aux-balance', (req: AuthRequest, res) => {
           THEN ${amountRef} ELSE 0
         END), 0) as ${prefix}current_credit,
         COALESCE(SUM(CASE
-          WHEN v.voucher_date <= ? THEN ${signed}
+          WHEN v.voucher_date >= ? AND v.voucher_date <= ? THEN ${signed}
           ELSE 0
         END), 0) as ${prefix}end_balance`
     }
@@ -1679,12 +1684,15 @@ router.post('/aux-balance', (req: AuthRequest, res) => {
       WHERE ve.id IN (SELECT DISTINCT entry_id FROM _tmp_aux_entry_ids)
       GROUP BY ve.account_code, ve.account_name, a.direction, ${withForeign ? entryCurrencyExpr : "''"}
     `
+    const summaryYearStartDate = start_date ? `${new Date(start_date).getFullYear()}-01-01` : '1900-01-01'
     const summaryDateParams = [
-      start_date || '1900-01-01',
+      summaryYearStartDate,             // init 下限：当年年初
+      start_date || '1900-01-01',       // init 上限：< start_date
       start_date || '1900-01-01',
       end_date || '9999-12-31',
       start_date || '1900-01-01',
       end_date || '9999-12-31',
+      summaryYearStartDate,             // end 下限：当年年初
       end_date || '9999-12-31',
     ]
     const accountSummaryBalanceParams = [
@@ -2732,6 +2740,7 @@ function parseAuxItemIdsParam(raw: unknown): string[] {
 }
 
 function parseAuxMultiColumnInput(req: AuthRequest, source: 'query' | 'body') {
+  const db = getDb()
   const raw: any = source === 'query' ? req.query : req.body || {}
   const pick = (queryKey: string, bodyKey: string) =>
     source === 'query' ? raw[queryKey] : raw[bodyKey] ?? raw[queryKey]
@@ -2745,8 +2754,11 @@ function parseAuxMultiColumnInput(req: AuthRequest, source: 'query' | 'body') {
     year: Number(pick('year', 'year')) || new Date().getFullYear(),
     startMonth: Number(pick('start_month', 'startMonth')) || 1,
     endMonth: Number(pick('end_month', 'endMonth')) || 12,
-    includeUnposted: String(pick('include_unposted', 'includeUnposted') ?? '') === 'true'
-      || pick('include_unposted', 'includeUnposted') === true,
+    // FIX-147 / GL-04 漏网：统一走 includeUnpostedFlag，前端传 1 / '1' 也生效
+    includeUnposted: includeUnpostedFlag(pick('include_unposted', 'includeUnposted')),
+    // FIX-150：期初口径与总账一致（年初余额 + 账前归属判断）
+    accountSetStartDate: peekAccountSetStartDate(db, req.accountSetId || ''),
+    preBookEnabled: hasPreBookColumns(db),
     accountCode: (() => {
       const value = pick('account_code', 'accountCode')
       return typeof value === 'string' && value.trim() ? value.trim() : undefined

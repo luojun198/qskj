@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3'
-import { buildInitBalanceSumExpr } from './initBalanceScope.js'
+import { buildLedgerOpeningExpr, buildPreBookSumExpr, resolvePreBookRangeFlags } from './initBalanceScope.js'
 
 export const MULTI_COLUMN_PARAM_KEY = 'ledger:multi_column_map'
 
@@ -279,9 +279,21 @@ export function queryMultiColumnLedger(db: Database.Database, input: MultiColumn
   const inClause = accountIds.map(() => '?').join(', ')
   const columnByAccount = new Map(columns.map(column => [column.accountId, column]))
 
+  // FIX-149 / FIX-150：账前发生额归属与总账/余额表同口径——归属日早于区间起点并入期初，
+  // 落在本年内且不晚于区间终点计入本年累计；期初用年初余额（opening）而非启用时点余额
+  const preBook = resolvePreBookRangeFlags({
+    accountSetStartDate: input.accountSetStartDate,
+    preBookEnabled: input.preBookEnabled,
+    startDate: rangeStart,
+    endDate: rangeEnd,
+    yearStartDate: yearStart,
+  })
   const initRows = db
     .prepare(
-      `SELECT ib.account_id, a.direction, ${buildInitBalanceSumExpr('ib')} as init_balance
+      `SELECT ib.account_id, a.direction, ${buildLedgerOpeningExpr({
+        preBookEnabled: preBook.preBookEnabled,
+        initIncludesPreBook: preBook.initIncludesPreBook,
+      })} as init_balance
        FROM init_balances ib JOIN accounts a ON a.id=ib.account_id
        WHERE ib.account_set_id=? AND ib.year=? AND ib.account_id IN (${inClause})
        GROUP BY ib.account_id`
@@ -317,6 +329,25 @@ export function queryMultiColumnLedger(db: Database.Database, input: MultiColumn
   initBalance = round2(initBalance)
 
   const yearAmounts = emptyAmounts(columns)
+  if (preBook.yearIncludesPreBook) {
+    const preRows = db
+      .prepare(
+        `SELECT ib.account_id,
+           ${buildPreBookSumExpr('debit', 'ib')} as pre_debit,
+           ${buildPreBookSumExpr('credit', 'ib')} as pre_credit
+         FROM init_balances ib
+         WHERE ib.account_set_id=? AND ib.year=? AND ib.account_id IN (${inClause})
+         GROUP BY ib.account_id`
+      )
+      .all(input.accountSetId, year, ...accountIds) as Array<{ account_id: string; pre_debit: number; pre_credit: number }>
+    for (const r of preRows) {
+      const column = columnByAccount.get(r.account_id)
+      if (!column) continue
+      const d = Number(r.pre_debit) || 0
+      const c = Number(r.pre_credit) || 0
+      yearAmounts[column.key] += column.side === 'debit' ? d - c : c - d
+    }
+  }
   if (rangeStart > yearStart) {
     const before = db
       .prepare(
