@@ -21,9 +21,9 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 - **椤圭洰鍚嶇О**锛欳W Finance锛堣储鍔¤璐︾郴缁燂級
 - **椤圭洰绫诲瀷**锛歁onorepo锛坣pm workspaces锛?- **鎶€鏈爤**锛?  - 鍓嶇锛歏ue 3 + TypeScript + Vite + Element Plus + Pinia
   - 鍚庣锛歂ode.js + Express + TypeScript + SQLite (better-sqlite3)
-  - 娴嬭瘯锛歏itest锛堝崟鍏冩祴璇曪級+ Playwright锛圗2E娴嬭瘯锛?- **鍓嶇鍦板潃**锛歨ttp://localhost:5175
-- **鍚庣鍦板潃**锛歨ttp://localhost:3005
-- **鏁版嵁搴撲綅缃?*锛歚data/finance.db`锛堝紑鍙戠幆澧冿級
+  - 娴嬭瘯锛歏itest锛堝崟鍏冩祴璇曪級+ Playwright锛圗2E娴嬭瘯锛?- **鍓嶇鍦板潃**锛歨ttp://localhost:5275
+- **鍚庣鍦板潃**锛歨ttp://localhost:3105
+- **鏁版嵁搴撲綅缃?*锛歚data/finance-0523.db`锛堝紑鍙戠幆澧冿級
 
 ## 甯哥敤寮€鍙戝懡浠?
 ### 鍚姩鏈嶅姟
@@ -177,7 +177,7 @@ utils/           # 宸ュ叿鍑芥暟
 ```
 
 ### 鏂瑰紡浜岋細鎵嬪姩閲嶅惎锛圥owerShell锛?```powershell
-# 1. 鍏抽棴鍗犵敤绔彛鐨勮繘绋?foreach ($port in @(3005, 5175, 5173, 5174)) {
+# 1. 鍏抽棴鍗犵敤绔彛鐨勮繘绋?foreach ($port in @(3105, 5275)) {
     $pids = Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique
     foreach ($p in $pids) { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue }
 }

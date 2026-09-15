@@ -22,10 +22,20 @@ export default defineConfig({
     },
   ],
 
-  webServer: {
-    command: 'npm run dev',
-    url: 'http://127.0.0.1:5275',
-    reuseExistingServer: !process.env.CI,
-    timeout: 120000,
-  },
+  webServer: [
+    {
+      command: 'npm run dev',
+      url: 'http://127.0.0.1:5275',
+      reuseExistingServer: !process.env.CI,
+      timeout: 120000,
+    },
+    {
+      // 后端（fixtures 通过 /api/auth/account-sets 真实登录，必须先起 3105）
+      command: 'npm run dev:server',
+      cwd: '..',
+      url: 'http://127.0.0.1:3105/api/auth/account-sets',
+      reuseExistingServer: !process.env.CI,
+      timeout: 120000,
+    },
+  ],
 })

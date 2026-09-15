@@ -135,8 +135,10 @@ test.describe('出纳管理', () => {
     const matched = verifyData.data.rows.find((r: any) => r.id === jId)
     expect(matched?.reconciled).toBe(1)
 
-    // 清理
+    // 清理：先撤销对账（解绑），再删日记账与对账单，避免遗留孤立对账单
+    await request.post(`${API}/api/cashier/reconcile/cancel`, { headers: H, data: { journal_id: jId } })
     await request.delete(`${API}/api/cashier/journal/${jId}`, { headers: H })
+    await request.delete(`${API}/api/cashier/bank-statement/${sId}`, { headers: H })
   })
 
   test('结算方式字典 API 返回正确格式', async ({ request }) => {

@@ -26,6 +26,17 @@ export default defineConfig({
   server: {
     // 当前分支(cw0523)独立端口 5275，与原项目 cw(5175)可同时运行
     port: 5275,
+    // 开发模式：服务启动后预转换首屏与凭证录入链路上的大模块（Entry.vue / VoucherEntryForm.vue 等），
+    // 避免第一次打开凭证录入时 200+ 个模块现场转换、把同一进程里的 /api 代理响应一起拖慢
+    warmup: {
+      clientFiles: [
+        './src/views/Layout.vue',
+        './src/views/voucher/Entry.vue',
+        './src/components/voucher/VoucherEntryForm.vue',
+        './src/components/voucher/VoucherDraftList.vue',
+        './src/components/print/BatchPrintDialog.vue',
+      ],
+    },
     proxy: {
       '/api': {
         target: 'http://localhost:3105',
