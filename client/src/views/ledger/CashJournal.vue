@@ -62,6 +62,7 @@
     <div v-if="queried" ref="tableContainerRef" class="table-summary-scroll table-summary-scroll--wide">
     <el-table
       ref="tableRef"
+      v-loading="loading"
       :height="tableHeight"
       :data="list"
       :style="{ width: `${ledgerTableWidth}px` }"
@@ -184,7 +185,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onActivated, watch } from 'vue'
+import { ref, computed, nextTick, onMounted, onActivated, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { Printer, Search, Download } from '@element-plus/icons-vue'
@@ -207,6 +208,8 @@ import { ACCOUNT_SELECT_POPPER_CLASS } from '@/utils/accountSelectDisplay'
 import HiprintDialog from '@/components/print/HiprintDialog.vue'
 import { buildTablePrintHtml } from '@/utils/printTemplateHiprint'
 import { useUserStore } from '@/stores/user'
+import { useRacedQuery } from '@/composables/useRacedQuery'
+import { fetchAllPages } from '@/utils/ledgerFetchAll'
 
 const route = useRoute()
 const { accountSetName } = storeToRefs(useUserStore())
@@ -292,11 +295,12 @@ async function printPage() {
     showWarning('请先选择科目后再打印')
     return
   }
-  const params = buildQueryParams(1, 10000)
-  const res = await request.get<any>('/ledger/cash-journal', { params })
-  const entries = res.data || []
-  const entriesWithSubtotals = insertMonthlySubtotals(entries, null)
-  printData.value = [buildOpeningBalanceRow((res as any).initBalance || 0), ...entriesWithSubtotals]
+  // FIX-158：分页循环拉全量，不再 1 万条截断
+  const all = await fetchAllPages<any, any>((page, size) =>
+    request.get<any>('/ledger/cash-journal', { params: buildQueryParams(page, size) })
+  )
+  const entriesWithSubtotals = insertMonthlySubtotals(all.rows, null)
+  printData.value = [buildOpeningBalanceRow(all.first?.initBalance || 0), ...entriesWithSubtotals]
   hiprintVisible.value = true
 }
 
@@ -560,6 +564,10 @@ function insertMonthlySubtotals(entries: any[], account: any): any[] {
   return result
 }
 
+// FIX-157：请求序号防竞态
+const raced = useRacedQuery()
+const loading = raced.loading
+
 async function fetchData() {
   if (isScopeBlocked.value) {
     queried.value = false
@@ -575,7 +583,8 @@ async function fetchData() {
     return
   }
   const params = buildQueryParams(currentPage.value, pageSize.value)
-  const res = await request.get<any>('/ledger/cash-journal', { params })
+  const res = await raced.run(() => request.get<any>('/ledger/cash-journal', { params }))
+  if (!res) return
   queried.value = true
   const entries = res.data || []
   const entriesWithSubtotals = insertMonthlySubtotals(entries, null)
@@ -610,17 +619,29 @@ function onAccountSelectOpen(visible: boolean) {
 }
 
 /** 默认/快捷：现金日记账（1001 及其子科目；无 1001 时按 is_cash 范围） */
-async function applyCashScope() {
-  filters.value.account_type = ''
-  const cashAccount = cashBankAccounts.value.find(a => a.code === '1001')
-  if (cashAccount) {
-    filters.value.account_id = cashAccount.id
-  } else {
-    filters.value.account_id = ''
-    filters.value.account_type = 'cash'
+// FIX-156：程序设值时跳过 account_type watcher，否则 watcher 会把刚设好的 account_id 清空
+let suppressTypeWatch = false
+async function applyQuickScope(code: '1001' | '1002', fallbackType: 'cash' | 'bank') {
+  suppressTypeWatch = true
+  try {
+    filters.value.account_type = ''
+    const account = cashBankAccounts.value.find(a => a.code === code)
+    if (account) {
+      filters.value.account_id = account.id
+    } else {
+      filters.value.account_id = ''
+      filters.value.account_type = fallbackType
+    }
+    await nextTick()
+  } finally {
+    suppressTypeWatch = false
   }
   currentPage.value = 1
   await fetchData()
+}
+
+async function applyCashScope() {
+  await applyQuickScope('1001', 'cash')
 }
 
 async function quickFilterCash() {
@@ -629,17 +650,10 @@ async function quickFilterCash() {
 }
 
 // 快捷筛选：银行日记账 (1002及其所有子科目)
+// FIX-156：先拉科目列表再 find（原实现顺序相反，首次点击列表为空找不到 1002）
 async function quickFilterBank() {
-  // 查找1002银行存款科目
-  const bankAccount = cashBankAccounts.value.find(a => a.code === '1002')
-  if (bankAccount) {
-    filters.value.account_id = bankAccount.id
-  } else {
-    filters.value.account_id = ''
-  }
-  filters.value.account_type = ''
   await fetchCashBankAccounts()
-  fetchData()
+  await applyQuickScope('1002', 'bank')
 }
 
 async function exportData() {
@@ -648,11 +662,11 @@ async function exportData() {
     return
   }
   // 导出全部数据
-  const params = buildQueryParams(1, 10000)
-  const res = await request.get<any>('/ledger/cash-journal', { params })
-  const entries = res.data || []
-  const entriesWithSubtotals = insertMonthlySubtotals(entries, null)
-  const allData = [buildOpeningBalanceRow((res as any).initBalance || 0), ...entriesWithSubtotals]
+  const all = await fetchAllPages<any, any>((page, size) =>
+    request.get<any>('/ledger/cash-journal', { params: buildQueryParams(page, size) })
+  )
+  const entriesWithSubtotals = insertMonthlySubtotals(all.rows, null)
+  const allData = [buildOpeningBalanceRow(all.first?.initBalance || 0), ...entriesWithSubtotals]
   const dateRange = isDateFilterActive()
     ? `${filters.value.start_date || '不限'}_${filters.value.end_date || '不限'}`
     : `${filters.value.year || new Date().getFullYear()}_${filters.value.period || new Date().getMonth() + 1}`
@@ -715,6 +729,7 @@ async function exportData() {
 watch(
   () => filters.value.account_type,
   () => {
+    if (suppressTypeWatch) return
     filters.value.account_id = ''
     // 刷新科目列表
     fetchCashBankAccounts()

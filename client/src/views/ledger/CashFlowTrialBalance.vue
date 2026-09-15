@@ -254,6 +254,7 @@ import { useSystemParamsStore } from '@/stores/systemParams'
 import VoucherEntryDialogHost from '@/components/voucher/VoucherEntryDialogHost.vue'
 import { exportStyledTable, exportStyledWorkbook, type ExportColumnDef } from '@/utils/exportStyledExcel'
 import { useListColumnWidth } from '@/composables/useColumnWidthMemory'
+import { useRacedQuery } from '@/composables/useRacedQuery'
 
 const { tableRef, colWidth, onDragEnd, widths } = useListColumnWidth('ledger_cf_trial_balance')
 function cw(key: string, fallback: number) { return colWidth(key, fallback) }
@@ -330,23 +331,22 @@ const EntryColumns = defineComponent({
       h(ElTableColumn, { prop: 'voucherNo', label: '凭证号', width: '120' }),
       h(ElTableColumn, { prop: 'accountCode', label: '科目编码', width: '100' }),
       h(ElTableColumn, { prop: 'accountName', label: '科目名称', minWidth: '140' }),
-      h(ElTableColumn, {
-        label: '方向',
-        width: '70',
-        default: ({ row }: { row: VoucherCheckEntry }) => (row.direction === 'debit' ? '借' : '贷'),
-      }),
-      h(ElTableColumn, {
-        label: '金额',
-        width: '120',
-        align: 'right',
-        default: ({ row }: { row: VoucherCheckEntry }) => formatAmount(row.amount),
-      }),
-      h(ElTableColumn, {
-        prop: 'status',
-        label: '状态',
-        width: '80',
-        default: ({ row }: { row: VoucherCheckEntry }) => statusLabel(row.status),
-      }),
+      // FIX-155：default 是插槽不是 prop，必须走 h() 第三参数，否则三列渲染为空
+      h(
+        ElTableColumn,
+        { label: '方向', width: '70' },
+        { default: ({ row }: { row: VoucherCheckEntry }) => (row.direction === 'debit' ? '借' : '贷') }
+      ),
+      h(
+        ElTableColumn,
+        { label: '金额', width: '120', align: 'right' },
+        { default: ({ row }: { row: VoucherCheckEntry }) => formatAmount(row.amount) }
+      ),
+      h(
+        ElTableColumn,
+        { prop: 'status', label: '状态', width: '80' },
+        { default: ({ row }: { row: VoucherCheckEntry }) => statusLabel(row.status) }
+      ),
     ]
   },
 })
@@ -355,7 +355,9 @@ const router = useRouter()
 const systemParamsStore = useSystemParamsStore()
 const enabled = computed(() => systemParamsStore.enableCashFlow)
 
-const loading = ref(false)
+// FIX-157：请求序号防竞态，loading 由 raced 统一维护
+const raced = useRacedQuery()
+const loading = raced.loading
 const checkLoading = ref(false)
 const activeTab = ref<'trial' | 'check'>('trial')
 const data = ref<TrialBalanceData | null>(null)
@@ -406,11 +408,6 @@ function amountClass(value: number) {
   return ''
 }
 
-async function fetchTrialData() {
-  const res = await request.get<any>('/ledger/cash-flow-trial-balance', { params: buildParams() })
-  data.value = res.data
-}
-
 async function fetchCheckData() {
   const res = await request.get<any>('/ledger/cash-flow-voucher-check', { params: buildParams() })
   checkData.value = res.data
@@ -418,14 +415,21 @@ async function fetchCheckData() {
 
 async function fetchAll() {
   if (!enabled.value) return
-  loading.value = true
   checkLoading.value = true
   try {
-    await Promise.all([fetchTrialData(), fetchCheckData()])
+    const params = buildParams()
+    const result = await raced.run(() =>
+      Promise.all([
+        request.get<any>('/ledger/cash-flow-trial-balance', { params }),
+        request.get<any>('/ledger/cash-flow-voucher-check', { params }),
+      ])
+    )
+    if (!result) return
+    data.value = result[0].data
+    checkData.value = result[1].data
   } catch (error) {
     showOperationError('查询现金流量试算平衡表', error)
   } finally {
-    loading.value = false
     checkLoading.value = false
   }
 }

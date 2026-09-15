@@ -225,12 +225,15 @@ import {
   buildBalanceSheetSummaryValues,
 } from '@/utils/ledgerExportBuilders'
 import { splitBalanceToDebitCredit, sumBalanceSides } from '@/utils/exportLedgerHelpers'
+import { useRacedQuery } from '@/composables/useRacedQuery'
 
 const { containerRef: tableContainerRef, tableHeight, relayoutAfterData } = useFillHeightTable({ flow: true })
 
 const list = ref<any[]>([])
 const lastActiveMonth = ref(0)
-const loading = ref(false)
+// FIX-157：请求序号防竞态，loading 由 raced 统一维护
+const raced = useRacedQuery()
+const loading = raced.loading
 const initialLoaded = ref(false)
 const hideNoActivity = ref(true)
 const years = Array.from({ length: new Date().getFullYear() - 2000 + 1 }, (_, i) => new Date().getFullYear() - i)
@@ -508,14 +511,14 @@ function getSummaries(param: { columns: TableColumnCtx<any>[]; data: any[] }) {
 }
 
 async function fetchData() {
-  loading.value = true
-  try {
+  {
     const params: any = { year: filters.value.year }
     if (filters.value.account_code) params.account_code = filters.value.account_code
     if (accountLevel.value) params.account_level = accountLevel.value
     if (filters.value.include_unposted) params.include_unposted = 'true'
 
-    const res = await request.get<any>('/ledger/general-ledger', { params })
+    const res = await raced.run(() => request.get<any>('/ledger/general-ledger', { params }))
+    if (!res) return
     list.value = res.data || []
     deepestLevel.value = Math.max(
       deepestLevel.value,
@@ -524,8 +527,6 @@ async function fetchData() {
     lastActiveMonth.value = Number((res as { lastActiveMonth?: number }).lastActiveMonth) || 0
     initialLoaded.value = true
     await afterTableLayout()
-  } finally {
-    loading.value = false
   }
 }
 

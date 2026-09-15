@@ -300,6 +300,8 @@ import { exportStyledTable, exportStyledWorkbook, type ExportColumnDef } from '@
 import { formatSignedBalanceAmount } from '@/utils/exportLedgerHelpers'
 import { ACCOUNT_SELECT_POPPER_CLASS } from '@/utils/accountSelectDisplay'
 import { ElMessage } from 'element-plus'
+import { useRacedQuery } from '@/composables/useRacedQuery'
+import { fetchAllPages } from '@/utils/ledgerFetchAll'
 
 /** 同一组件挂两条路由：/ledger/detail（本位币明细账）与 /ledger/foreign-detail（外币明细账） */
 const props = withDefaults(defineProps<{ mode?: 'base' | 'foreign' }>(), { mode: 'base' })
@@ -340,7 +342,9 @@ const filters = ref<any>({
   currency_code: '',
 })
 
-const loading = ref(false)
+// FIX-157：请求序号防竞态，loading 由 raced 统一维护
+const raced = useRacedQuery()
+const loading = raced.loading
 const initialLoaded = ref(false)
 const accounts = ref<any[]>([])
 const accountsLoaded = ref(false)
@@ -567,10 +571,10 @@ function readPreBook(res: any): { debit: number; credit: number } {
 /**
  * 明细账取数的唯一实现：参数拼装 + 子科目判定 + running_balance 累计。
  * 原先 fetchData / fetchAccountDetailRows / exportData 各写一遍，改一处必漏两处。
- * 差异仅 pageSize（页面 100000、导出 10000）由调用方传入，其余口径必须完全一致。
+ * pageSize 只是分页拉取的页大小；FIX-158 后无论页面还是导出都循环拉完全部分录，不再截断。
  */
 async function fetchDetailPayload(account: any, pageSize: number) {
-  const params: any = { page: 1, pageSize, year: getLedgerYear() }
+  const params: any = { year: getLedgerYear() }
 
   // 有子科目时按编码区间取数（含下级发生额），否则按科目 id 精确取
   const hasChildren = accounts.value.some(
@@ -595,10 +599,14 @@ async function fetchDetailPayload(account: any, pageSize: number) {
   if (filters.value.auditor_name) params.auditor_name = filters.value.auditor_name
   if (filters.value.include_unposted) params.include_unposted = 'true'
 
-  const res = await request.get<any>('/ledger/detail', { params })
-  const openingBalance = (res as any).initBalance || 0
-  const openingForeignBalance = Number((res as any).foreignInitBalance) || 0
-  const entries = res.data || []
+  const all = await fetchAllPages<any, any>(
+    (page, size) => request.get<any>('/ledger/detail', { params: { ...params, page, pageSize: size } }),
+    { pageSize }
+  )
+  const res: any = all.first || {}
+  const openingBalance = res.initBalance || 0
+  const openingForeignBalance = Number(res.foreignInitBalance) || 0
+  const entries = all.rows
 
   // 余额按科目方向累计：借方科目「借增贷减」，贷方科目「贷增借减」；原币余额同口径并行累计
   let balance = openingBalance
@@ -616,7 +624,7 @@ async function fetchDetailPayload(account: any, pageSize: number) {
   const entriesWithSubtotals = insertMonthlySubtotals(entries, account, readPreBook(res))
   return {
     initBalance: openingBalance,
-    total: (res as any).total || 0,
+    total: all.total || 0,
     rows: [buildCarryForwardRow(openingBalance, openingForeignBalance), ...entriesWithSubtotals],
   }
 }
@@ -1050,19 +1058,13 @@ async function fetchData() {
     return
   }
 
-  loading.value = true
-  try {
-
-  const payload = await fetchDetailPayload(account, 100000)
+  const payload = await raced.run(() => fetchDetailPayload(account, 100000))
+  if (!payload) return
   initBalance.value = payload.initBalance
   total.value = payload.total
   list.value = payload.rows
   initialLoaded.value = true
   await afterTableLayout()
-
-  } finally {
-    loading.value = false
-  }
 }
 
 function handleQuery() {

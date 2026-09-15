@@ -299,6 +299,7 @@ import { useDrillDownNavigate } from '@/composables/useDrillDownNavigate'
 import { useLedgerWideTable } from '@/composables/useLedgerWideTable'
 import { useFillHeightTable } from '@/composables/useFillHeightTable'
 import { formatAmount } from '@/utils/format'
+import { sumBalanceSides } from '@/utils/exportLedgerHelpers'
 import HiprintDialog from '@/components/print/HiprintDialog.vue'
 import { buildTablePrintHtml } from '@/utils/printTemplateHiprint'
 import { exportStyledTable } from '@/utils/exportStyledExcel'
@@ -306,12 +307,15 @@ import { buildQuantityBalanceExportColumns } from '@/utils/ledgerExportBuilders'
 import AccountScopeAlert from '@/components/AccountScopeAlert.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import { useUserStore } from '@/stores/user'
+import { useRacedQuery } from '@/composables/useRacedQuery'
 
 const { drillDown } = useDrillDownNavigate()
 const { accountSetName } = storeToRefs(useUserStore())
 
 const list = ref<any[]>([])
-const loading = ref(false)
+// FIX-157：请求序号防竞态，loading 由 raced 统一维护
+const raced = useRacedQuery()
+const loading = raced.loading
 const initialLoaded = ref(false)
 const hideZero = ref(true)
 const indentAccounts = ref(false)
@@ -421,13 +425,27 @@ function sumOf(field: string): number {
   return list.value.reduce((sum, row) => sum + (Number(row[field]) || 0), 0)
 }
 
+/**
+ * FIX-159：余额合计分侧累加（借方性质余额与贷方性质余额各归一侧），再按净额给方向，
+ * 与行显示「+/- + 绝对值」口径一致；此前直接带符号相加会把 -100 与 +80 抵成 -20 且无方向
+ */
+function balanceSideTotal(field: 'init_balance' | 'end_balance') {
+  const { debit, credit } = sumBalanceSides(list.value as any[], field)
+  const net = debit - credit
+  return { amount: Math.abs(net), label: net > 0 ? '借' : net < 0 ? '贷' : '平' }
+}
+
 function getSummaries(param: { columns: TableColumnCtx<any>[] }) {
   return param.columns.map(column => {
     switch (resolveSummaryColumnKey(column)) {
       case 'account_code':
         return '合计'
+      case 'init_direction':
+        return balanceSideTotal('init_balance').label
+      case 'end_direction':
+        return balanceSideTotal('end_balance').label
       case 'init_balance':
-        return formatAmount(sumOf('init_balance'))
+        return formatAmount(balanceSideTotal('init_balance').amount)
       case 'current_debit':
         return formatAmount(sumOf('current_debit'))
       case 'current_credit':
@@ -437,7 +455,7 @@ function getSummaries(param: { columns: TableColumnCtx<any>[] }) {
       case 'year_credit':
         return formatAmount(sumOf('year_credit'))
       case 'end_balance':
-        return formatAmount(sumOf('end_balance'))
+        return formatAmount(balanceSideTotal('end_balance').amount)
       default:
         return ''
     }
@@ -447,21 +465,17 @@ function getSummaries(param: { columns: TableColumnCtx<any>[] }) {
 // ========== 取数 ==========
 
 async function fetchData() {
-  loading.value = true
-  try {
-    const params: any = {}
-    if (filters.value.start_date) params.start_date = filters.value.start_date
-    if (filters.value.end_date) params.end_date = filters.value.end_date
-    if (filters.value.account_code) params.account_code = filters.value.account_code
-    if (filters.value.include_unposted) params.include_unposted = 'true'
+  const params: any = {}
+  if (filters.value.start_date) params.start_date = filters.value.start_date
+  if (filters.value.end_date) params.end_date = filters.value.end_date
+  if (filters.value.account_code) params.account_code = filters.value.account_code
+  if (filters.value.include_unposted) params.include_unposted = 'true'
 
-    const res = await request.get<any[]>('/ledger/quantity-balance', { params })
-    list.value = res.data || []
-    initialLoaded.value = true
-    await afterTableLayout()
-  } finally {
-    loading.value = false
-  }
+  const res = await raced.run(() => request.get<any[]>('/ledger/quantity-balance', { params }))
+  if (!res) return
+  list.value = res.data || []
+  initialLoaded.value = true
+  await afterTableLayout()
 }
 
 // ========== 导出 / 打印 ==========
@@ -548,9 +562,9 @@ function buildPrintHtml(ctx?: { fontSize?: number }): string {
       '合计',
       '',
       '',
+      balanceSideTotal('init_balance').label,
       '',
-      '',
-      formatAmount(sumOf('init_balance')),
+      formatAmount(balanceSideTotal('init_balance').amount),
       '',
       formatAmount(sumOf('current_debit')),
       '',
@@ -559,10 +573,10 @@ function buildPrintHtml(ctx?: { fontSize?: number }): string {
       formatAmount(sumOf('year_debit')),
       '',
       formatAmount(sumOf('year_credit')),
+      balanceSideTotal('end_balance').label,
       '',
       '',
-      '',
-      formatAmount(sumOf('end_balance')),
+      formatAmount(balanceSideTotal('end_balance').amount),
     ],
   })
 }

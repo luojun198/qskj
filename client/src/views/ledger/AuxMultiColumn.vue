@@ -179,6 +179,7 @@ import {
 } from '@/api/ledgerAuxMultiColumn'
 
 /** 辅助项目下拉一次最多列出的条数，超出提示用关键词筛选 */
+import { useRacedQuery } from '@/composables/useRacedQuery'
 const AUX_ITEM_PAGE_SIZE = 500
 
 const { accountSetName } = storeToRefs(useUserStore())
@@ -215,7 +216,9 @@ const availableAuxItems = ref<Array<{ id: string; code: string; name: string }>>
 const auxItemsLoading = ref(false)
 const auxItemTruncated = ref(false)
 const settingsDraft = ref<AuxMultiColumnAccount[]>([])
-const loading = ref(false)
+// FIX-157：请求序号防竞态，loading 由 raced 统一维护
+const raced = useRacedQuery()
+const loading = raced.loading
 const initialLoaded = ref(false)
 const errorMessage = ref('')
 const settingsVisible = ref(false)
@@ -331,9 +334,10 @@ async function loadSettings() {
 async function fetchData() {
   if (!canQuery.value) { rows.value = []; columns.value = []; initialLoaded.value = true; return }
   if (filters.value.startMonth > filters.value.endMonth) filters.value.endMonth = filters.value.startMonth
-  loading.value = true; errorMessage.value = ''
+  errorMessage.value = ''
   try {
-    const data = await getAuxMultiColumnLedger(currentQuery())
+    const data = await raced.run(() => getAuxMultiColumnLedger(currentQuery()))
+    if (!data) return
     category.value = data?.category || category.value
     mainAccount.value = data?.account || null
     columns.value = data?.columns || []
@@ -343,7 +347,7 @@ async function fetchData() {
   } catch (error: any) {
     rows.value = []; initialLoaded.value = true
     errorMessage.value = error?.response?.data?.message || error?.message || '辅助项目多栏明细账查询失败'
-  } finally { loading.value = false }
+  }
 }
 
 function resetResult() {

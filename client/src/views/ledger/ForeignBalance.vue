@@ -322,6 +322,7 @@ import {
 import AccountScopeAlert from '@/components/AccountScopeAlert.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import { useUserStore } from '@/stores/user'
+import { useRacedQuery } from '@/composables/useRacedQuery'
 
 /**
  * 外币余额表。
@@ -340,7 +341,9 @@ const totals = ref<Record<string, ForeignBalanceTotals> | null>(null)
 /** 各币种期末汇率，来自后端 rates（与期末调汇同一条回退链） */
 const rates = ref<Record<string, number>>({})
 const currencies = ref<Currency[]>([])
-const loading = ref(false)
+// FIX-157：请求序号防竞态，loading 由 raced 统一维护
+const raced = useRacedQuery()
+const loading = raced.loading
 const initialLoaded = ref(false)
 const hideZero = ref(true)
 
@@ -503,8 +506,7 @@ function getSummaries(param: { columns: TableColumnCtx<any>[] }) {
 // ========== 取数 ==========
 
 async function fetchData() {
-  loading.value = true
-  try {
+  {
     const params: any = {}
     if (filters.value.start_date) params.start_date = filters.value.start_date
     if (filters.value.end_date) params.end_date = filters.value.end_date
@@ -515,14 +517,13 @@ async function fetchData() {
     }
     if (filters.value.include_unposted) params.include_unposted = 'true'
 
-    const res = await request.get('/ledger/foreign-balance', { params })
+    const res = await raced.run(() => request.get('/ledger/foreign-balance', { params }))
+    if (!res) return
     list.value = (res as any).data || []
     totals.value = ((res as any).summary || null) as Record<string, ForeignBalanceTotals> | null
     rates.value = ((res as any).rates || {}) as Record<string, number>
     initialLoaded.value = true
     await afterTableLayout()
-  } finally {
-    loading.value = false
   }
 }
 

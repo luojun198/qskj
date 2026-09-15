@@ -143,6 +143,7 @@ import {
   type MultiColumnMainAccount,
 } from '@/api/ledgerMultiColumn'
 
+import { useRacedQuery } from '@/composables/useRacedQuery'
 const { accountSetName } = storeToRefs(useUserStore())
 const baseDataStore = useBaseDataStore()
 const currentYear = new Date().getFullYear()
@@ -152,7 +153,9 @@ const rows = ref<MultiColumnLedgerRow[]>([])
 const columns = ref<MultiColumnAccount[]>([])
 const mainAccount = ref<MultiColumnMainAccount | null>(null)
 const settingsDraft = ref<MultiColumnAccount[]>([])
-const loading = ref(false)
+// FIX-157：请求序号防竞态，loading 由 raced 统一维护
+const raced = useRacedQuery()
+const loading = raced.loading
 const initialLoaded = ref(false)
 const errorMessage = ref('')
 const settingsVisible = ref(false)
@@ -209,9 +212,10 @@ async function loadSettings() {
 async function fetchData() {
   ensureMonthRange()
   if (!filters.value.accountId) { rows.value = []; initialLoaded.value = true; return }
-  loading.value = true; errorMessage.value = ''
+  errorMessage.value = ''
   try {
-    const data = await getMultiColumnLedger({ accountId: filters.value.accountId, year: filters.value.year, startMonth: filters.value.startMonth, endMonth: filters.value.endMonth, includeUnposted: filters.value.includeUnposted })
+    const data = await raced.run(() => getMultiColumnLedger({ accountId: filters.value.accountId, year: filters.value.year, startMonth: filters.value.startMonth, endMonth: filters.value.endMonth, includeUnposted: filters.value.includeUnposted }))
+    if (!data) return
     mainAccount.value = data?.main || mainAccount.value
     columns.value = data?.columns || columns.value
     rows.value = data?.rows || []
@@ -219,7 +223,7 @@ async function fetchData() {
     await afterTableLayout()
   } catch (error: any) {
     rows.value = []; initialLoaded.value = true; errorMessage.value = error?.response?.data?.message || error?.message || '多栏账查询失败'
-  } finally { loading.value = false }
+  }
 }
 async function onAccountChange() { rows.value = []; initialLoaded.value = false; await loadSettings(); await fetchData() }
 async function handleQuery() { await fetchData() }

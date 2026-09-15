@@ -181,6 +181,7 @@ import { useListColumnWidth } from '@/composables/useColumnWidthMemory'
 import { useBaseDataStore } from '@/stores/baseData'
 import { useSystemParamsStore } from '@/stores/systemParams'
 import { useUserStore } from '@/stores/user'
+import { useRacedQuery } from '@/composables/useRacedQuery'
 
 interface SummaryRow {
   account_code: string
@@ -211,7 +212,9 @@ async function handleHeaderDragEnd(newWidth: number, oldWidth: number, column: a
 
 const list = ref<SummaryRow[]>([])
 const users = ref<UserItem[]>([])
-const loading = ref(false)
+// FIX-157：请求序号防竞态，loading 由 raced 统一维护
+const raced = useRacedQuery()
+const loading = raced.loading
 // 首屏先弹条件窗，与经典总账「点菜单 → 先问条件」的操作顺序一致
 const optionsVisible = ref(true)
 const printVisible = ref(false)
@@ -292,19 +295,21 @@ function currentVoucherTypeLabel() {
 }
 
 async function handleSummarize() {
-  loading.value = true
-  try {
-    const res = await request.get<SummaryRow[]>('/ledger/voucher-summary', {
-      params: {
-        year: form.value.year,
-        period: form.value.period,
-        voucher_type_id: form.value.voucherTypeId || undefined,
-        voucher_no_start: form.value.voucherNoStart || undefined,
-        voucher_no_end: form.value.voucherNoEnd || undefined,
-        level: form.value.level === 'detail' ? 'detail' : 'top',
-        scope: form.value.scope,
-      },
-    })
+  {
+    const res = await raced.run(() =>
+      request.get<SummaryRow[]>('/ledger/voucher-summary', {
+        params: {
+          year: form.value.year,
+          period: form.value.period,
+          voucher_type_id: form.value.voucherTypeId || undefined,
+          voucher_no_start: form.value.voucherNoStart || undefined,
+          voucher_no_end: form.value.voucherNoEnd || undefined,
+          level: form.value.level === 'detail' ? 'detail' : 'top',
+          scope: form.value.scope,
+        },
+      })
+    )
+    if (!res) return
     list.value = res.data || []
     const meta = (res as any).meta || {}
     resultMeta.value = {
@@ -315,8 +320,6 @@ async function handleSummarize() {
     }
     optionsVisible.value = false
     await relayoutAfterData()
-  } finally {
-    loading.value = false
   }
 }
 

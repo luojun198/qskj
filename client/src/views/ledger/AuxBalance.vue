@@ -548,6 +548,7 @@ import HiprintDialog from '@/components/print/HiprintDialog.vue'
 import { buildTablePrintHtml } from '@/utils/printTemplateHiprint'
 import { useUserStore } from '@/stores/user'
 import { getCurrencies, type Currency } from '@/api/currency'
+import { useRacedQuery } from '@/composables/useRacedQuery'
 
 /**
  * foreign=true 时为「辅助项目外币余额表」：只统计外币核算科目，
@@ -636,7 +637,9 @@ const clientSidePagination = ref(false)
 const loadProgress = ref({ loaded: 0, total: 0 })
 const summaryLoading = ref(false)
 const LOAD_ALL_PAGE_SIZE = 1000
-const loading = ref(false)
+// FIX-157：请求序号防竞态，loading 由 raced 统一维护
+const raced = useRacedQuery()
+const loading = raced.loading
 
 const loadProgressPercent = computed(() => {
   const { loaded, total: t } = loadProgress.value
@@ -1147,7 +1150,6 @@ async function fetchDataChunked() {
 }
 
 async function fetchDataServerPage() {
-  loading.value = true
   clientSidePagination.value = false
   allRows.value = []
   try {
@@ -1155,7 +1157,8 @@ async function fetchDataServerPage() {
       page: currentPage.value,
       pageSize: pageSize.value,
     })
-    const res: any = await request.post<any>('/ledger/aux-balance', params)
+    const res: any = await raced.run(() => request.post<any>('/ledger/aux-balance', params))
+    if (!res) return
     list.value = res.data || []
     total.value = res.total ?? 0
     grandTotals.value = res.totals || null
@@ -1170,8 +1173,6 @@ async function fetchDataServerPage() {
     console.error('查询辅助项目余额表失败:', error)
     const msg = error?.response?.data?.error || error?.message || '查询失败'
     ElMessage.error(msg)
-  } finally {
-    loading.value = false
   }
 }
 

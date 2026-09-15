@@ -293,6 +293,7 @@ import AccountScopeAlert from '@/components/AccountScopeAlert.vue'
 import AccountLevelButtons from '@/components/ledger/AccountLevelButtons.vue'
 import { useAccountLevelFilter } from '@/composables/useAccountLevelFilter'
 import { useUserStore } from '@/stores/user'
+import { useRacedQuery } from '@/composables/useRacedQuery'
 
 const { drillDown } = useDrillDownNavigate()
 const { accountSetName } = storeToRefs(useUserStore())
@@ -302,7 +303,9 @@ const list = ref<any[]>([])
  * 否则展开到 2 级时会被误判为已到底；页面默认按底层加载，首屏就能拿到真实深度。
  */
 const deepestLevel = ref(0)
-const loading = ref(false)
+// FIX-157：请求序号防竞态，loading 由 raced 统一维护
+const raced = useRacedQuery()
+const loading = raced.loading
 const initialLoaded = ref(false)
 const hideZero = ref(true)
 
@@ -552,8 +555,7 @@ function getSummaries(param: { columns: TableColumnCtx<any>[]; data: any[] }) {
 }
 
 async function fetchData() {
-  loading.value = true
-  try {
+  {
     const params: any = {}
     if (filters.value.start_date) params.start_date = filters.value.start_date
     if (filters.value.end_date) params.end_date = filters.value.end_date
@@ -564,7 +566,8 @@ async function fetchData() {
     }
     if (filters.value.include_unposted) params.include_unposted = 'true'
 
-    const res = await request.get<any[]>('/ledger/general', { params })
+    const res = await raced.run(() => request.get<any[]>('/ledger/general', { params }))
+    if (!res) return
     list.value = res.data
     deepestLevel.value = Math.max(
       deepestLevel.value,
@@ -572,8 +575,6 @@ async function fetchData() {
     )
     initialLoaded.value = true
     await afterTableLayout()
-  } finally {
-    loading.value = false
   }
 }
 

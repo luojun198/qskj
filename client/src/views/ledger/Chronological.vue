@@ -49,6 +49,7 @@
     <div ref="tableContainerRef" class="table-summary-scroll table-summary-scroll--wide">
     <el-table
       ref="tableRef"
+      v-loading="loading"
       :height="tableHeight"
       :data="list"
       :style="{ width: `${ledgerTableWidth}px` }"
@@ -148,6 +149,8 @@ import HiprintDialog from '@/components/print/HiprintDialog.vue'
 import { buildTablePrintHtml } from '@/utils/printTemplateHiprint'
 import { exportStyledTable, type ExportColumnDef } from '@/utils/exportStyledExcel'
 import AccountScopeAlert from '@/components/AccountScopeAlert.vue'
+import { useRacedQuery } from '@/composables/useRacedQuery'
+import { fetchAllPages } from '@/utils/ledgerFetchAll'
 
 const list = ref<any[]>([])
 const total = ref(0)
@@ -357,9 +360,14 @@ function buildQueryParams(page: number, size: number) {
   return params
 }
 
+// FIX-157：请求序号防竞态（改页大小时 size-change + current-change 连发两个请求）
+const raced = useRacedQuery()
+const loading = raced.loading
+
 async function fetchData() {
   const params = buildQueryParams(currentPage.value, pageSize.value)
-  const res = await request.get<any>('/ledger/chronological', { params })
+  const res = await raced.run(() => request.get<any>('/ledger/chronological', { params }))
+  if (!res) return
   const entries = res.data || []
   const entriesWithSubtotals = insertMonthlySubtotals(entries)
   list.value = entriesWithSubtotals
@@ -368,9 +376,10 @@ async function fetchData() {
 }
 
 async function exportData() {
-  const params = buildQueryParams(1, 10000)
-  const res = await request.get<any>('/ledger/chronological', { params })
-  const entries = res.data || []
+  // FIX-158：分页循环拉全量，不再 1 万条截断
+  const { rows: entries } = await fetchAllPages<any, any>((page, size) =>
+    request.get<any>('/ledger/chronological', { params: buildQueryParams(page, size) })
+  )
   const entriesWithSubtotals = insertMonthlySubtotals(entries)
   const allData = entriesWithSubtotals
   const dateRange = isDateFilterActive()

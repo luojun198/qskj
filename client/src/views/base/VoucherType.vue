@@ -30,9 +30,10 @@
           <span class="voucher-type-name">{{ row.name }}</span>
         </template>
       </el-table-column>
-      <el-table-column prop="is_closing" label="结转类型" :width="colWidth('is_closing', 90)" align="center">
+      <el-table-column column-key="is_closing" label="结转类型" :width="colWidth('is_closing', 90)" align="center">
         <template #default="{ row }">
           <el-tag v-if="row.is_closing" size="small" type="warning">结转</el-tag>
+          <span v-else></span>
         </template>
       </el-table-column>
       <el-table-column column-key="操作" label="操作" :width="colWidth('操作', 112)" fixed="right">

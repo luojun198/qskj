@@ -205,6 +205,7 @@ import {
   type VatLedgerRow,
 } from '@/api/ledgerVat'
 
+import { useRacedQuery } from '@/composables/useRacedQuery'
 const { accountSetName } = storeToRefs(useUserStore())
 const currentYear = new Date().getFullYear()
 const years = Array.from({ length: currentYear - 2000 + 1 }, (_, index) => currentYear - index)
@@ -217,7 +218,9 @@ const filters = ref({
 const columns = ref<VatColumn[]>([])
 const rows = ref<VatLedgerRow[]>([])
 const parent = ref<{ code: string; name: string } | null>(null)
-const loading = ref(false)
+// FIX-157：请求序号防竞态，loading 由 raced 统一维护
+const raced = useRacedQuery()
+const loading = raced.loading
 const initialLoaded = ref(false)
 const errorMessage = ref('')
 const settingsVisible = ref(false)
@@ -299,15 +302,17 @@ async function loadSettings() {
 
 async function fetchData() {
   ensureMonthRange()
-  loading.value = true
   errorMessage.value = ''
   try {
-    const data = await getVatLedger({
-      year: filters.value.year,
-      startMonth: filters.value.startMonth,
-      endMonth: filters.value.endMonth,
-      includeUnposted: filters.value.includeUnposted,
-    })
+    const data = await raced.run(() =>
+      getVatLedger({
+        year: filters.value.year,
+        startMonth: filters.value.startMonth,
+        endMonth: filters.value.endMonth,
+        includeUnposted: filters.value.includeUnposted,
+      })
+    )
+    if (!data) return
     columns.value = data?.columns || columns.value
     parent.value = data?.parent || parent.value
     rows.value = data?.rows || []
@@ -317,8 +322,6 @@ async function fetchData() {
     rows.value = []
     initialLoaded.value = true
     errorMessage.value = error?.response?.data?.message || error?.message || '增值税明细账查询失败'
-  } finally {
-    loading.value = false
   }
 }
 
