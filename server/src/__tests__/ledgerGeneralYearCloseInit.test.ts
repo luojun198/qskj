@@ -60,8 +60,8 @@ function setup(withYearCloseRow: boolean) {
   return db
 }
 
-function query(db: Database.Database) {
-  const q = buildGeneralLedgerQuery({ accountSetId: SET_ID, year: 2026, preBookEnabled: false })
+function query(db: Database.Database, includeUnposted = false) {
+  const q = buildGeneralLedgerQuery({ accountSetId: SET_ID, year: 2026, preBookEnabled: false, includeUnposted })
   expect((q.sql.match(/\?/g) || []).length).toBe(q.params.length)
   return db.prepare(q.sql).get(...q.params) as any
 }
@@ -77,5 +77,21 @@ describe('FIX-129 年结后总分类账期初', () => {
     const row = query(setup(false))
     // 旧口径：无年初行 → 累计上年凭证净额 250（缺上年 init 行 100 属 FIX-153 范围）
     expect(row.init_balance).toBeCloseTo(250, 2)
+  })
+
+  it('含未记账：年结期初只含已过账，上年未记账凭证单独累回（不双计已过账）', () => {
+    const db = setup(true)
+    db.prepare(`INSERT INTO vouchers VALUES ('v-draft', ?, '2025-11-20', 2025, 11, 'draft', 'vt-ji')`).run(SET_ID)
+    db.prepare(`INSERT INTO voucher_entries VALUES ('e-draft', ?, 'v-draft', 'a-1001', '1001', '库存现金', 'debit', 15)`).run(SET_ID)
+    expect(query(db, false).init_balance).toBeCloseTo(350, 2)
+    expect(query(db, true).init_balance).toBeCloseTo(365, 2)
+  })
+
+  it('含未记账但期初行为手工录入（非年结）：不额外累计', () => {
+    const db = setup(true)
+    db.prepare(`UPDATE init_balances SET source = 'manual' WHERE id = 'ib-2026'`).run()
+    db.prepare(`INSERT INTO vouchers VALUES ('v-draft', ?, '2025-11-20', 2025, 11, 'draft', 'vt-ji')`).run(SET_ID)
+    db.prepare(`INSERT INTO voucher_entries VALUES ('e-draft', ?, 'v-draft', 'a-1001', '1001', '库存现金', 'debit', 15)`).run(SET_ID)
+    expect(query(db, true).init_balance).toBeCloseTo(350, 2)
   })
 })

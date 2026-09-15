@@ -679,7 +679,28 @@ export function buildGeneralLedgerQuery(filters: {
             : buildAccountInitBalanceExpr('a.id')
         } + CASE WHEN EXISTS (
           SELECT 1 FROM init_balances ib0 WHERE ib0.account_set_id = ? AND ib0.year = ?
-        ) THEN 0 ELSE COALESCE(
+        ) THEN ${
+          filters.includeUnposted
+            ? `CASE WHEN EXISTS (
+                SELECT 1 FROM init_balances ib1
+                WHERE ib1.account_set_id = ? AND ib1.year = ? AND ib1.source = 'year_close_auto'
+              ) THEN COALESCE(
+                -- FIX-129 补充：年结期初只含已过账凭证，「含未记账」口径下把上年未记账凭证单独累回来
+                (SELECT
+                   CASE WHEN a.direction = 'debit'
+                     THEN SUM(CASE WHEN ve.direction = 'debit' THEN ve.amount ELSE -ve.amount END)
+                     ELSE SUM(CASE WHEN ve.direction = 'credit' THEN ve.amount ELSE -ve.amount END)
+                   END
+                 FROM voucher_entries ve
+                 JOIN vouchers v ON v.id = ve.voucher_id
+                 WHERE ve.account_id = a.id
+                   AND ve.account_set_id = ?
+                   AND v.status IN ('draft', 'audited')
+                   AND v.voucher_date < ?),
+                0
+              ) ELSE 0 END`
+            : '0'
+        } ELSE COALESCE(
           (SELECT
              CASE WHEN a.direction = 'debit'
                THEN SUM(CASE WHEN ve.direction = 'debit' THEN ve.amount ELSE -ve.amount END)
@@ -708,6 +729,8 @@ export function buildGeneralLedgerQuery(filters: {
       // FIX-129：本年是否已有期初行（有则不累计上年凭证）
       filters.accountSetId,
       y,
+      // FIX-129 补充：含未记账时，年结自动行 + 上年未记账凭证
+      ...(filters.includeUnposted ? [filters.accountSetId, y, filters.accountSetId, `${y}-01-01`] : []),
       // 期初余额凭证查询
       filters.accountSetId,
       `${y}-01-01`,
