@@ -132,7 +132,7 @@ export function buildCashFlowReconciliation(
   const validation = validateStaticCashFlowReport(staticData)
   const result: CashFlowReconciliation = { validation }
 
-  const indirect = buildIndirectMethodSchedule(db, accountSetId, year, period, scope)
+  const indirect = buildIndirectMethodSchedule(db, accountSetId, year, period, scope, accountScope)
   result.indirectMethod = indirect
 
   const netOperatingStatic = activityNet(staticData.operatingActivities)

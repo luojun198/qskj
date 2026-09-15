@@ -35,7 +35,7 @@ function seedSmallBusinessSet(db: Database, accountSetId: string) {
       current_debit REAL,
       current_credit REAL
     );
-    CREATE TABLE voucher_types (id TEXT PRIMARY KEY, account_set_id TEXT, name TEXT);
+    CREATE TABLE voucher_types (id TEXT PRIMARY KEY, account_set_id TEXT, name TEXT, is_closing INTEGER DEFAULT 0);
     CREATE TABLE vouchers (
       id TEXT PRIMARY KEY, account_set_id TEXT, voucher_type_id TEXT,
       year INTEGER, period INTEGER, status TEXT
@@ -84,8 +84,8 @@ function seedSmallBusinessSet(db: Database, accountSetId: string) {
   bal('2202', 5, 0, 150)
 
   // 损益（收入/费用）以凭证建模：净利润须用「排除结转凭证的发生额」计算（P1-19）。
-  db.prepare(`INSERT INTO voucher_types VALUES ('vt-jz', ?, '记账')`).run(accountSetId)
-  db.prepare(`INSERT INTO voucher_types VALUES ('vt-jzz', ?, '结转')`).run(accountSetId)
+  db.prepare(`INSERT INTO voucher_types VALUES ('vt-jz', ?, '记账', 0)`).run(accountSetId)
+  db.prepare(`INSERT INTO voucher_types VALUES ('vt-jzz', ?, '结转', 1)`).run(accountSetId)
   const addVoucher = (id: string, typeId: string, period: number) =>
     db.prepare(`INSERT INTO vouchers VALUES (?, ?, ?, 2026, ?, 'posted')`).run(id, accountSetId, typeId, period)
   const addEntry = (voucherId: string, accountId: string, direction: string, amount: number) =>

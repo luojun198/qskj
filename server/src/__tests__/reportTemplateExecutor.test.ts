@@ -435,7 +435,7 @@ describe('reportTemplateExecutor', () => {
         year INTEGER, period INTEGER, current_debit REAL, current_credit REAL
       );
       CREATE TABLE voucher_types (
-        id TEXT PRIMARY KEY, account_set_id TEXT, name TEXT
+        id TEXT PRIMARY KEY, account_set_id TEXT, name TEXT, is_closing INTEGER DEFAULT 0
       );
       CREATE TABLE vouchers (
         id TEXT PRIMARY KEY, account_set_id TEXT, voucher_type_id TEXT,
@@ -619,6 +619,38 @@ describe('reportTemplateExecutor', () => {
       expect(result.get('A1')!.status).toBe('error')
       expect(result.get('B2')!.status).toBe('ok')
       expect(result.get('B2')!.numeric_value).toBe(20)
+    })
+
+    it('FIX-144：错误沿公式链传播，SUM 区域内含出错格时合计也报错而不是静默跳过', () => {
+      const result = run([
+        cell('a', 0, 0, null, '10'),
+        cell('b', 1, 0, '=1/0'),
+        cell('c', 2, 0, '=SUM(A1:A2)'),
+        cell('d', 3, 0, '=A3+5'),
+        cell('e', 4, 0, '=A1*2'),
+      ])
+      expect(result.get('A2')!.display_value).toBe('#DIV/0!')
+      expect(result.get('A3')!.status).toBe('error')
+      expect(result.get('A3')!.display_value).toBe('#DIV/0!')
+      expect(result.get('A4')!.status).toBe('error')
+      expect(result.get('A5')!.numeric_value).toBe(20)
+    })
+
+    it('FIX-144：表级 error_count 统计出错格数', () => {
+      const [sheet] = executeTemplateSheets(
+        [
+          {
+            id: 'sheet-1',
+            report_definition_id: 'report-1',
+            sheet_key: 'sheet1',
+            sheet_name: 'errors',
+            sheet_index: 0,
+            cells: [cell('a', 0, 0, '=1/0'), cell('b', 1, 0, '=A1+1'), cell('c', 2, 0, null, '3')],
+          },
+        ] as any,
+        { db: createMockDb(0) as any, accountSetId: 'account-set-1', year: 2026, period: 1 }
+      )
+      expect(sheet.error_count).toBe(2)
     })
   })
 })

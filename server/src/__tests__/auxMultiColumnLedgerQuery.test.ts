@@ -37,7 +37,7 @@ function createDb() {
     CREATE TABLE aux_items (
       id TEXT PRIMARY KEY, account_set_id TEXT, type TEXT, code TEXT, name TEXT, status TEXT DEFAULT 'active'
     );
-    CREATE TABLE voucher_types (id TEXT PRIMARY KEY, account_set_id TEXT, name TEXT);
+    CREATE TABLE voucher_types (id TEXT PRIMARY KEY, account_set_id TEXT, name TEXT, is_closing INTEGER DEFAULT 0);
     CREATE TABLE vouchers (
       id TEXT PRIMARY KEY, account_set_id TEXT, voucher_no TEXT, voucher_date TEXT,
       voucher_type_id TEXT, year INTEGER, period INTEGER, status TEXT

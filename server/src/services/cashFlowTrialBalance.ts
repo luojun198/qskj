@@ -1,8 +1,7 @@
 import type { Database } from 'better-sqlite3'
 import {
-  detectStaticReportStandard,
   getCashFlowConfig,
-  resolveAccountingStandard,
+  resolveStaticReportStandard,
   type ResolvedAccountingStandard,
 } from './staticReportConfig.js'
 import { expandFlowAccountCodes } from './staticCashFlowExpand.js'
@@ -139,9 +138,7 @@ function getActivityLabels(standard: ResolvedAccountingStandard) {
 }
 
 function resolveStaticStandard(db: Database, accountSetId: string) {
-  const resolved = resolveAccountingStandard(db, accountSetId)
-  if (resolved === 'custom') return detectStaticReportStandard(db, accountSetId)
-  return resolved
+  return resolveStaticReportStandard(db, accountSetId)
 }
 
 function signedNetFromTotals(

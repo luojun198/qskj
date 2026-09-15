@@ -73,7 +73,8 @@ function setup(options?: { withPreBookColumns?: boolean }) {
     CREATE TABLE voucher_types (
       id TEXT PRIMARY KEY,
       account_set_id TEXT,
-      name TEXT
+      name TEXT,
+      is_closing INTEGER DEFAULT 0
     );
     CREATE TABLE vouchers (
       id TEXT PRIMARY KEY,
@@ -126,8 +127,8 @@ function setup(options?: { withPreBookColumns?: boolean }) {
     ).run(SET_ID, ACC_ID, INIT_AT_START)
   }
 
-  db.prepare(`INSERT INTO voucher_types VALUES ('vt-normal', ?, '记账')`).run(SET_ID)
-  db.prepare(`INSERT INTO voucher_types VALUES ('vt-transfer', ?, '结转')`).run(SET_ID)
+  db.prepare(`INSERT INTO voucher_types VALUES ('vt-normal', ?, '记账', 0)`).run(SET_ID)
+  db.prepare(`INSERT INTO voucher_types VALUES ('vt-transfer', ?, '结转', 1)`).run(SET_ID)
   db.prepare(
     `INSERT INTO vouchers VALUES ('v1', ?, '2025-12-20', 2025, 12, 'posted', 'vt-normal')`
   ).run(SET_ID)

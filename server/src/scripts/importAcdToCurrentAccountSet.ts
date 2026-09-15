@@ -2570,11 +2570,12 @@ function importVoucherTypes(
     .all(accountSetId) as Array<any>
   const existingByCode = new Map(existing.map(item => [String(item.code || '').trim(), item]))
 
+  // FIX-143：ACD 的「结转」「结转结余」等类型名自动打 is_closing 标志
   const insertStmt = db.prepare(
-    'INSERT INTO voucher_types (id, account_set_id, name, code, description, sort_order) VALUES (?, ?, ?, ?, ?, ?)'
+    'INSERT INTO voucher_types (id, account_set_id, name, code, description, sort_order, is_closing) VALUES (?, ?, ?, ?, ?, ?, ?)'
   )
   const updateStmt = db.prepare(
-    'UPDATE voucher_types SET name=?, description=?, sort_order=? WHERE id=?'
+    'UPDATE voucher_types SET name=?, description=?, sort_order=?, is_closing=? WHERE id=?'
   )
 
   rows.forEach((row, index) => {
@@ -2591,14 +2592,14 @@ function importVoucherTypes(
     if (!existingRow) {
       stats.voucherTypes.inserted += 1
       if (!dryRun) {
-        insertStmt.run(uuidv4(), accountSetId, name, code, 'ACD 导入', index)
+        insertStmt.run(uuidv4(), accountSetId, name, code, 'ACD 导入', index, name.includes('结转') ? 1 : 0)
       }
       return
     }
 
     stats.voucherTypes.updated += 1
     if (!dryRun) {
-      updateStmt.run(name, 'ACD 导入', index, existingRow.id)
+      updateStmt.run(name, 'ACD 导入', index, name.includes('结转') ? 1 : existingRow.is_closing ? 1 : 0, existingRow.id)
     }
   })
 }

@@ -8,6 +8,7 @@ import {
   isAnchorFunction,
   FormulaError,
   type FormulaValue,
+  type FormulaErrorCode,
 } from './reportFormula.js'
 
 type ExecuteContext = {
@@ -58,6 +59,8 @@ type TemplateSheetInput = {
 
 export type ExecutedTemplateSheet = TemplateSheetInput & {
   cells: ExecutedTemplateCell[]
+  /** FIX-144：本表出错单元格数（含被错误格传染的公式格），前端据此提示 */
+  error_count: number
 }
 
 function getCellAddress(rowIndex: number, colIndex: number) {
@@ -502,7 +505,8 @@ function isFormulaLike(value: string | null) {
 function executeFormula(
   formulaText: string,
   context: ExecuteContext,
-  cellValues: Map<string, FormulaValue>
+  cellValues: Map<string, FormulaValue>,
+  errorCells: Map<string, FormulaErrorCode> = new Map()
 ): FormulaValue {
   // `@-ye(...)` 这类把负号写在 @ 后面的历史写法，先归一成 `-@ye(...)`
   const expression = formulaText.replace(/@([+-])\s*([a-z_][\w]*)\(/gi, '$1@$2(')
@@ -510,7 +514,15 @@ function executeFormula(
   return evaluateFormula(
     expression,
     {
-      getCell: address => cellValues.get(address),
+      // FIX-144：仿 Excel 让错误沿公式链传播——引用到出错格（含 SUM 区域内）时整格报错，
+      // 而不是把出错格当空格跳过，让合计「平衡」在错误数字上
+      getCell: address => {
+        const code = errorCells.get(address)
+        if (code) {
+          throw new FormulaError(code, `引用的单元格 ${address} 出错（${code}）`)
+        }
+        return cellValues.get(address)
+      },
       callAnchor: (name, rawArgs) => callAnchorFunction(name, rawArgs, context),
     },
     isAnchorFunction
@@ -591,7 +603,8 @@ function executeCell(
   context: ExecuteContext,
   cellValues: Map<string, FormulaValue>,
   circular?: Set<string>,
-  amountCells: Set<string> = new Set()
+  amountCells: Set<string> = new Set(),
+  errorCells: Map<string, FormulaErrorCode> = new Map()
 ) {
   const address = getCellAddress(cell.row_index, cell.col_index)
   const formulaSource = cell.formula_text || cell.text_value || ''
@@ -601,6 +614,7 @@ function executeCell(
   try {
     if (shouldTreatAsFormula && formulaSource && circular?.has(address)) {
       // 循环引用不能求值：继续算下去只会得到一个看起来正常的错数，必须显式报错
+      errorCells.set(address, '#CIRCULAR!')
       return {
         ...cell,
         address,
@@ -613,7 +627,7 @@ function executeCell(
     }
 
     if (shouldTreatAsFormula && formulaSource) {
-      const value = executeFormula(formulaSource, context, cellValues)
+      const value = executeFormula(formulaSource, context, cellValues, errorCells)
       cellValues.set(address, value)
 
       // IF(...) 之类可能返回文本或布尔，此时没有数值可言，只出显示值
@@ -668,12 +682,14 @@ function executeCell(
       error: null,
     }
   } catch (error) {
+    const code: FormulaErrorCode = error instanceof FormulaError ? error.code : '#ERROR'
+    errorCells.set(address, code)
     return {
       ...cell,
       address,
       raw_value: rawValue,
       // 能给出 Excel 错误码就给（#DIV/0! / #NAME? / #VALUE! ...），比笼统的 #ERROR 好定位
-      display_value: error instanceof FormulaError ? error.code : '#ERROR',
+      display_value: code,
       numeric_value: null,
       status: 'error' as const,
       error: error instanceof Error ? error.message : '公式执行失败',
@@ -693,8 +709,9 @@ export function executeTemplateSheets(sheets: TemplateSheetInput[], context: Exe
       const { ordered: orderedCells, circular } = topoSortCells(sheet.cells)
       // 按拓扑顺序执行，结果 Map 保持原始行列顺序输出
       const resultMap = new Map<string, ReturnType<typeof executeCell>>()
+      const errorCells = new Map<string, FormulaErrorCode>()
       for (const cell of orderedCells) {
-        const executed = executeCell(cell, context, cellValues, circular, amountCells)
+        const executed = executeCell(cell, context, cellValues, circular, amountCells, errorCells)
         resultMap.set(executed.address, executed)
       }
       // 按原始行列顺序输出
@@ -706,6 +723,7 @@ export function executeTemplateSheets(sheets: TemplateSheetInput[], context: Exe
       return {
         ...sheet,
         cells: executedCells,
+        error_count: errorCells.size,
       }
     })
 }

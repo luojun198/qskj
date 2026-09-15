@@ -131,6 +131,19 @@
         </span>
       </div>
 
+      <!-- FIX-144：出错格会沿公式链传播到合计，这里汇总提示，格内以红色标出 -->
+      <el-alert
+        v-if="viewMode === 'compute' && computedErrorCells.length"
+        class="compute-error-alert"
+        type="error"
+        show-icon
+        :closable="false"
+      >
+        <template #title>
+          本次取数有 {{ computedErrorCells.length }} 个单元格出错（{{ computedErrorSummary }}），引用它们的合计也已标红，请检查公式或科目
+        </template>
+      </el-alert>
+
       <StandardReportStyleToolbar
         v-if="currentReport && viewMode === 'template'"
         :style="grid.currentStyle.value"
@@ -387,9 +400,14 @@ const runCompute = async () => {
       grid.computedMap.value = map
       grid.showComputed.value = viewMode.value === 'compute'
     } else {
+      // 失败时清空旧结果，避免换期间后仍显示过期数据
+      computedCells.value = null
+      grid.computedMap.value = new Map()
       ElMessage.error(res.message || '计算失败')
     }
   } catch (error: any) {
+    computedCells.value = null
+    grid.computedMap.value = new Map()
     ElMessage.error(error.message || '计算出错')
   } finally {
     computing.value = false
@@ -503,6 +521,17 @@ const templateCellMap = computed(() => {
 })
 
 // 计算结果索引：`row_col` -> 计算单元格
+/** FIX-144：出错单元格（含被传染的公式格） */
+const computedErrorCells = computed(() =>
+  (computedCells.value || []).filter(cell => cell.status === 'error')
+)
+const computedErrorSummary = computed(() =>
+  computedErrorCells.value
+    .slice(0, 5)
+    .map(cell => `${cell.address || `${cell.row_index + 1}行${cell.col_index + 1}列`} ${cell.display_value}`)
+    .join('，') + (computedErrorCells.value.length > 5 ? ' …' : '')
+)
+
 const computedCellMap = computed(() => {
   const map = new Map<string, RhStandardReportComputedCell>()
   for (const cell of computedCells.value || []) {
@@ -835,6 +864,10 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.compute-error-alert {
+  margin: 4px 0 8px;
+}
+
 .standard-report-container {
   display: flex;
   flex-direction: column;

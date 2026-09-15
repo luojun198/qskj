@@ -1,4 +1,5 @@
 import { AUX_LEGACY_COLUMNS } from '../utils/auxLedgerQuery.js'
+import { CLOSING_VOUCHER_TYPE_JOIN_SQL, NOT_CLOSING_VOUCHER_SQL } from '../utils/closingVoucherSql.js'
 import { buildDirectionSignedNetSql, buildSignedEntryAmountSql } from '../utils/accountBalance.js'
 import {
   buildInitBalanceSumExpr,
@@ -554,9 +555,8 @@ export function buildGeneralLedgerQuery(filters: {
   const statusCondition = filters.includeUnposted
     ? "v.status IN ('draft', 'audited', 'posted')"
     : "v.status = 'posted'"
-  const transferJoin = filters.excludeTransfer
-    ? "JOIN voucher_types vt ON vt.id = v.voucher_type_id AND vt.name != '结转'"
-    : ''
+  // FIX-143 / GL-09：按 is_closing 标志排除结转凭证；LEFT JOIN 保证无凭证类型的分录不被连带丢弃
+  const transferJoin = filters.excludeTransfer ? CLOSING_VOUCHER_TYPE_JOIN_SQL : ''
 
   // 科目筛选条件
   const conditions: string[] = ['a.account_set_id = ?', 'a.is_enabled = 1']
@@ -578,6 +578,7 @@ export function buildGeneralLedgerQuery(filters: {
     statusCondition,
     'v.voucher_date >= ?',
     'v.voucher_date <= ?',
+    ...(filters.excludeTransfer ? [NOT_CLOSING_VOUCHER_SQL] : []),
   ]
   const cteParams: SqlParam[] = [filters.accountSetId, `${y}-01-01`, `${y}-12-31`]
   appendAccountScopeCondition(filters.accountScope, 've.account_id', cteConditions, cteParams)

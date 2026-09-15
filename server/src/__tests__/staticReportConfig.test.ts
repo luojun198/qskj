@@ -65,13 +65,15 @@ describe('staticReportConfig', () => {
 
   it('政府会计制度收入费用科目应对齐 2019 政府会计制度', () => {
     const incomeStatement = getIncomeStatementConfig('government')
-    expect(incomeStatement.revenueGroups.捐赠收入).toEqual(['4603', '4601'])
+    // FIX-141：编码跨组唯一，4601 只归非同级财政拨款收入
+    expect(incomeStatement.revenueGroups.捐赠收入).toEqual(['4603'])
+    expect(incomeStatement.revenueGroups.非同级财政拨款收入).toEqual(['4601'])
     expect(incomeStatement.revenueGroups.投资收益).toEqual(['4602'])
     expect(incomeStatement.revenueGroups.利息收入).toEqual(['4604', '4701'])
     expect(incomeStatement.revenueGroups.其他收入).toEqual(['4609', '4901'])
-    expect(incomeStatement.expenseGroups.资产处置费用).toEqual(['5301', '5901'])
-    expect(incomeStatement.expenseGroups.上缴上级费用).toEqual(['5401', '5301'])
-    expect(incomeStatement.expenseGroups.所得税费用).toEqual(['5801', '5501'])
+    expect(incomeStatement.expenseGroups.资产处置费用).toEqual(['5301'])
+    expect(incomeStatement.expenseGroups.上缴上级费用).toEqual(['5401'])
+    expect(incomeStatement.expenseGroups.所得税费用).toEqual(['5801'])
     expect(incomeStatement.expenseGroups.利息费用).toEqual(['5701'])
     expect(incomeStatement.expenseGroups.其他费用).toEqual(['5901', '5601'])
   })
@@ -96,9 +98,10 @@ describe('staticReportConfig', () => {
   it('政府会计制度现金流量表应包含投资筹资分项行次', () => {
     const cashFlow = getCashFlowConfig('government')
     expect(cashFlow.operatingInflowCodes['财政拨款收到的现金']).toEqual(['4001'])
-    expect(cashFlow.investingInflowCodes['取得投资收益收到的现金']).toContain('4602')
-    expect(cashFlow.investingInflowCodes['取得投资收益收到的现金']).toContain('4701')
+    // FIX-141：4701（利息收入）归日常活动、4001 只计一次
+    expect(cashFlow.investingInflowCodes['取得投资收益收到的现金']).toEqual(['4602'])
+    expect(cashFlow.operatingInflowCodes['其他日常活动收到的现金']).toContain('4701')
     expect(cashFlow.investingOutflowCodes['对外投资支付的现金']).toContain('1501')
-    expect(cashFlow.financingInflowCodes['财政资本性项目拨款收到的现金']).toEqual(['4001'])
+    expect(cashFlow.financingInflowCodes['财政资本性项目拨款收到的现金']).toEqual([])
   })
 })

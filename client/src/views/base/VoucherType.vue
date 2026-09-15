@@ -30,6 +30,11 @@
           <span class="voucher-type-name">{{ row.name }}</span>
         </template>
       </el-table-column>
+      <el-table-column prop="is_closing" label="结转类型" :width="colWidth('is_closing', 90)" align="center">
+        <template #default="{ row }">
+          <el-tag v-if="row.is_closing" size="small" type="warning">结转</el-tag>
+        </template>
+      </el-table-column>
       <el-table-column column-key="操作" label="操作" :width="colWidth('操作', 112)" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" size="small" @click="openDialog('edit', row)"
@@ -54,6 +59,12 @@
           ><el-input v-model="form.code" :disabled="dialogType === 'edit'"
         /></el-form-item>
         <el-form-item label="类型名称" required><el-input v-model="form.name" /></el-form-item>
+        <el-form-item label="结转类型">
+          <el-switch v-model="form.is_closing" :active-value="1" :inactive-value="0" />
+          <span style="margin-left: 8px; color: var(--el-text-color-secondary); font-size: 12px"
+            >勾选后该类型凭证视为结转凭证：科目分析、利润表取数、间接法与现金流量表估算会排除其分录</span
+          >
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -116,7 +127,7 @@ async function fetchData() {
 
 function openDialog(t: string, row?: any) {
   dialogType.value = t
-  form.value = t === 'add' ? { code: '', name: '' } : { ...row }
+  form.value = t === 'add' ? { code: '', name: '', is_closing: 0 } : { is_closing: 0, ...row }
   dialogVisible.value = true
 }
 

@@ -127,6 +127,46 @@ export function resolveAccountingStandard(
   return param
 }
 
+/**
+ * FIX-145：报表取数统一用这个入口拿准则。
+ *  - 尊重账套参数 `accounting_standard`（显式配置优先；`custom` 无静态配置时回退自动探测）
+ *  - 短 TTL 缓存：一次报表计算里每个 @取数格 / 每个科目都会问一遍准则，探测要全表扫科目，
+ *    缓存后同一账套几秒内只探测一次
+ */
+const STANDARD_CACHE_TTL_MS = 5000
+let standardCacheEpoch = 0
+const standardCache = new WeakMap<
+  object,
+  Map<string, { standard: StaticReportStandard; expires: number; epoch: number }>
+>()
+
+export function resolveStaticReportStandard(db: Database, accountSetId: string): StaticReportStandard {
+  const now = Date.now()
+  let perDb = standardCache.get(db as object)
+  if (!perDb) {
+    perDb = new Map()
+    standardCache.set(db as object, perDb)
+  }
+  const hit = perDb.get(accountSetId)
+  if (hit && hit.expires > now && hit.epoch === standardCacheEpoch) return hit.standard
+
+  let resolved: ResolvedAccountingStandard
+  try {
+    resolved = resolveAccountingStandard(db, accountSetId)
+  } catch {
+    // 老库 / 测试库无 system_params 时回退自动探测
+    resolved = 'custom'
+  }
+  const standard = resolved === 'custom' ? detectStaticReportStandard(db, accountSetId) : resolved
+  perDb.set(accountSetId, { standard, expires: now + STANDARD_CACHE_TTL_MS, epoch: standardCacheEpoch })
+  return standard
+}
+
+/** 账套参数变更 / 测试时手动失效缓存 */
+export function clearStaticReportStandardCache() {
+  standardCacheEpoch += 1
+}
+
 export function getBalanceSheetConfig(standard: StaticReportStandard): BalanceSheetConfig {
   if (standard === 'small_business') {
     return {
@@ -330,8 +370,9 @@ export function getIncomeStatementConfig(standard: StaticReportStandard): Income
       经营收入: ['4401'],
       非同级财政拨款收入: ['4601'],
       投资收益: ['4602'],
-      // 4603 为官方编码；4601/4701/4801/4901 为旧版账套常见编码，按科目名称匹配
-      捐赠收入: ['4603', '4601'],
+      // FIX-141：任一编码只能属于一个组（cashFlowIndirectMethod 逐组累加不去重，
+      // 跨组重复会把同一科目算两遍）。4701/4801/4901 为旧版账套编码，与官方编码不冲突。
+      捐赠收入: ['4603'],
       利息收入: ['4604', '4701'],
       租金收入: ['4605', '4801'],
       其他收入: ['4609', '4901'],
@@ -340,11 +381,11 @@ export function getIncomeStatementConfig(standard: StaticReportStandard): Income
       业务活动费用: ['5001'],
       单位管理费用: ['5101'],
       经营费用: ['5201'],
-      // 5301–5901 段：官方编码 + 旧版账套常见编码（按科目名称区分）
-      资产处置费用: ['5301', '5901'],
-      上缴上级费用: ['5401', '5301'],
-      对附属单位补助费用: ['5501', '5401'],
-      所得税费用: ['5801', '5501'],
+      // FIX-141：去掉跨组重复的旧版编码，5601 归入其他费用
+      资产处置费用: ['5301'],
+      上缴上级费用: ['5401'],
+      对附属单位补助费用: ['5501'],
+      所得税费用: ['5801'],
       利息费用: ['5701'],
       其他费用: ['5901', '5601'],
     },

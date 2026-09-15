@@ -22,7 +22,7 @@ type RangeValue = { kind: 'range'; values: Array<FormulaValue | undefined> }
 type EvalValue = FormulaValue | RangeValue | undefined
 
 /** Excel 风格的错误码，直接作为单元格显示值 */
-export type FormulaErrorCode = '#DIV/0!' | '#VALUE!' | '#NAME?' | '#REF!' | '#NUM!' | '#N/A'
+export type FormulaErrorCode = '#DIV/0!' | '#VALUE!' | '#NAME?' | '#REF!' | '#NUM!' | '#N/A' | '#ERROR' | '#CIRCULAR!'
 
 export class FormulaError extends Error {
   constructor(

@@ -1,10 +1,11 @@
 import type { Database } from 'better-sqlite3'
 import type { BalanceQueryDb } from './reportBalance.js'
+import type { AccountScopeContext } from './accountAuthorization.js'
 import { getBatchBalances, getPeriodRangeSumExcludeTransfer } from './reportBalance.js'
 import { getIndirectMethodMapping } from '../config/staticCashFlowIndirectMappings.js'
 import type { IndirectAdjustmentKind } from '../config/staticCashFlowIndirectMappings.js'
 import {
-  detectStaticReportStandard,
+  resolveStaticReportStandard,
   getIncomeStatementConfig,
   type StaticReportStandard,
 } from './staticReportConfig.js'
@@ -37,11 +38,13 @@ function sumExpandedBalance(
   accountSetId: string,
   patterns: string[],
   year: number,
-  period: number
+  period: number,
+  accountScope?: AccountScopeContext
 ): number {
   const codes = expandFlowAccountCodes(db as any, accountSetId, patterns)
   if (codes.length === 0) return 0
-  const map = getBatchBalances(db as any, accountSetId, codes, year, period)
+  // FIX-142：间接法附注同样受科目授权范围约束，与主表直接法一致
+  const map = getBatchBalances(db as any, accountSetId, codes, year, period, accountScope)
   let total = 0
   for (const code of codes) {
     total += map.get(code) || 0
@@ -55,15 +58,16 @@ function balanceChange(
   patterns: string[],
   year: number,
   period: number,
-  scope: CashFlowReportScope
+  scope: CashFlowReportScope,
+  accountScope?: AccountScopeContext
 ): number {
-  const end = sumExpandedBalance(db, accountSetId, patterns, year, period)
+  const end = sumExpandedBalance(db, accountSetId, patterns, year, period, accountScope)
   // P1-17：本月/本年累计的期初均为「上一期末余额」。period-1=0 即年初余额；
   // 旧实现 month + period<=1 误取 0，导致 1 月间接法把期末全额当本月变动。
   const begin =
     scope === 'ytd'
-      ? sumExpandedBalance(db, accountSetId, patterns, year, 0)
-      : sumExpandedBalance(db, accountSetId, patterns, year, period - 1)
+      ? sumExpandedBalance(db, accountSetId, patterns, year, 0, accountScope)
+      : sumExpandedBalance(db, accountSetId, patterns, year, period - 1, accountScope)
   return round2(end - begin)
 }
 
@@ -87,9 +91,10 @@ export function calcNetProfitForPeriod(
   year: number,
   period: number,
   standard?: StaticReportStandard,
-  scope: CashFlowReportScope = 'ytd'
+  scope: CashFlowReportScope = 'ytd',
+  accountScope?: AccountScopeContext
 ): { netProfit: number; profitLabel: string; standardName: string } {
-  const resolvedStandard = standard ?? detectStaticReportStandard(db as any, accountSetId)
+  const resolvedStandard = standard ?? resolveStaticReportStandard(db as any, accountSetId)
   const incomeConfig = getIncomeStatementConfig(resolvedStandard)
   const indirectMapping = getIndirectMethodMapping(resolvedStandard)
 
@@ -100,7 +105,7 @@ export function calcNetProfitForPeriod(
   let totalRevenue = 0
   for (const groupCodes of Object.values(incomeConfig.revenueGroups)) {
     for (const code of groupCodes) {
-      const sum = getPeriodRangeSumExcludeTransfer(db, accountSetId, code, year, fromPeriod, period)
+      const sum = getPeriodRangeSumExcludeTransfer(db, accountSetId, code, year, fromPeriod, period, accountScope)
       totalRevenue += Math.abs(sum.credit - sum.debit)
     }
   }
@@ -108,7 +113,7 @@ export function calcNetProfitForPeriod(
   let totalExpense = 0
   for (const groupCodes of Object.values(incomeConfig.expenseGroups)) {
     for (const code of groupCodes) {
-      const sum = getPeriodRangeSumExcludeTransfer(db, accountSetId, code, year, fromPeriod, period)
+      const sum = getPeriodRangeSumExcludeTransfer(db, accountSetId, code, year, fromPeriod, period, accountScope)
       totalExpense += sum.debit - sum.credit
     }
   }
@@ -126,9 +131,10 @@ export function buildIndirectMethodSchedule(
   accountSetId: string,
   year: number,
   period: number,
-  scope: CashFlowReportScope = 'month'
+  scope: CashFlowReportScope = 'month',
+  accountScope?: AccountScopeContext
 ): IndirectMethodSchedule {
-  const standard = detectStaticReportStandard(db as any, accountSetId)
+  const standard = resolveStaticReportStandard(db as any, accountSetId)
   const mapping = getIndirectMethodMapping(standard)
   const { netProfit, profitLabel, standardName } = calcNetProfitForPeriod(
     db,
@@ -136,14 +142,15 @@ export function buildIndirectMethodSchedule(
     year,
     period,
     standard,
-    scope
+    scope,
+    accountScope
   )
 
   const adjustments: IndirectMethodLine[] = []
   let operatingCashNet = netProfit
 
   for (const line of mapping.adjustments) {
-    const change = balanceChange(db, accountSetId, line.patterns, year, period, scope)
+    const change = balanceChange(db, accountSetId, line.patterns, year, period, scope, accountScope)
     const amount = adjustmentAmount(change, line.kind)
     if (Math.abs(amount) < 0.005) continue
     adjustments.push({ label: line.label, amount })

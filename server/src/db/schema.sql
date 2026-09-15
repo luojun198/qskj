@@ -145,6 +145,7 @@ CREATE TABLE IF NOT EXISTS voucher_types (
   code TEXT NOT NULL,
   description TEXT,
   sort_order INTEGER DEFAULT 0,
+  is_closing INTEGER NOT NULL DEFAULT 0, -- FIX-143：结转类凭证标志，账簿/报表按此排除结转分录
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

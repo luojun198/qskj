@@ -22,7 +22,7 @@ function setup() {
       id TEXT PRIMARY KEY, account_set_id TEXT, account_id TEXT, year INTEGER, period INTEGER,
       init_balance REAL, init_debit REAL DEFAULT 0, init_credit REAL DEFAULT 0, aux_item_id TEXT
     );
-    CREATE TABLE voucher_types (id TEXT PRIMARY KEY, account_set_id TEXT, name TEXT);
+    CREATE TABLE voucher_types (id TEXT PRIMARY KEY, account_set_id TEXT, name TEXT, is_closing INTEGER DEFAULT 0);
     CREATE TABLE vouchers (
       id TEXT PRIMARY KEY, account_set_id TEXT, voucher_date TEXT, year INTEGER, period INTEGER,
       status TEXT, voucher_type_id TEXT
@@ -39,7 +39,7 @@ function setup() {
        ('a-6602001', ?, '6602001', '通讯费', 'debit', 2),
        ('a-6602009', ?, '6602009', '职工薪酬', 'debit', 2)`
   ).run(SET_ID, SET_ID, SET_ID)
-  db.prepare(`INSERT INTO voucher_types VALUES ('vt-ji', ?, '记'), ('vt-jz', ?, '结转')`).run(SET_ID, SET_ID)
+  db.prepare(`INSERT INTO voucher_types VALUES ('vt-ji', ?, '记', 0), ('vt-jz', ?, '结转', 1)`).run(SET_ID, SET_ID)
 
   // 12 月：通讯费 450.21、职工薪酬 16341.55（记账凭证）
   db.prepare(`INSERT INTO vouchers VALUES ('v1', ?, '2026-12-10', 2026, 12, 'posted', 'vt-ji')`).run(SET_ID)
@@ -87,5 +87,24 @@ describe('科目分析：排除结转凭证', () => {
     const rows = run(db, false)
     expect(rows.get('6602001').month12_credit).toBeCloseTo(450.21, 2)
     expect(rows.get('6602009').month12_credit).toBeCloseTo(16341.55, 2)
+  })
+
+  it('FIX-143：按 is_closing 标志排除（名称「结转结余」也命中），无凭证类型的分录不被连带丢弃', () => {
+    const db = setup()
+    db.prepare(`INSERT INTO voucher_types VALUES ('vt-jzjy', ?, '结转结余', 1), ('vt-zz', ?, '转账', 1)`).run(SET_ID, SET_ID)
+    // 结转结余凭证：通讯费贷 100（应被排除）
+    db.prepare(`INSERT INTO vouchers VALUES ('v3', ?, '2026-11-30', 2026, 11, 'posted', 'vt-jzjy')`).run(SET_ID)
+    db.prepare(`INSERT INTO voucher_entries VALUES ('e5', ?, 'v3', 'a-6602001', '6602001', '通讯费', 'credit', 100)`).run(SET_ID)
+    // 名称不含「结转」但勾了标志（应被排除）
+    db.prepare(`INSERT INTO vouchers VALUES ('v4', ?, '2026-11-30', 2026, 11, 'posted', 'vt-zz')`).run(SET_ID)
+    db.prepare(`INSERT INTO voucher_entries VALUES ('e6', ?, 'v4', 'a-6602001', '6602001', '通讯费', 'credit', 30)`).run(SET_ID)
+    // 无凭证类型的分录：借 7（不能因 INNER JOIN 丢失）
+    db.prepare(`INSERT INTO vouchers VALUES ('v5', ?, '2026-11-05', 2026, 11, 'posted', NULL)`).run(SET_ID)
+    db.prepare(`INSERT INTO voucher_entries VALUES ('e7', ?, 'v5', 'a-6602001', '6602001', '通讯费', 'debit', 7)`).run(SET_ID)
+
+    const rows = run(db, true)
+    const comm = rows.get('6602001')
+    expect(comm.month11_credit).toBe(0)
+    expect(comm.month11_debit).toBeCloseTo(7, 2)
   })
 })

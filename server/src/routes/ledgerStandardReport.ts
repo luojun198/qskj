@@ -200,12 +200,16 @@ router.get('/:id/compute', auth, (req: AuthRequest, res) => {
       display_value: cell.display_value,
       numeric_value: cell.numeric_value,
       status: cell.status,
+      // FIX-144：出错格带地址与原因，前端汇总提示
+      address: cell.address,
+      error: cell.status === 'error' ? cell.error : null,
     }))
 
     const maxRow = cells.reduce((max, cell) => Math.max(max, cell.row_index), 0)
     const maxCol = cells.reduce((max, cell) => Math.max(max, cell.col_index), 0)
+    const errorCount = executedSheet?.error_count ?? cells.filter(c => c.status === 'error').length
 
-    res.json({ code: 0, data: { year, period, maxRow, maxCol, cells } })
+    res.json({ code: 0, data: { year, period, maxRow, maxCol, cells, errorCount } })
   } catch (error: any) {
     console.error('[standard-report] 报表计算失败:', error)
     res.status(500).json({ code: 500, message: error.message })

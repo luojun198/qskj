@@ -164,6 +164,14 @@ import {
   down as addQuantityAccountingDown,
 } from './migrations/20260909_add_quantity_accounting.js'
 import {
+  up as voucherTypeIsClosingUp,
+  down as voucherTypeIsClosingDown,
+} from './migrations/20260915_voucher_type_is_closing.js'
+import {
+  up as backfillInitBalanceOpeningUp,
+  down as backfillInitBalanceOpeningDown,
+} from './migrations/20260915_backfill_init_balance_opening.js'
+import {
   up as fixBalanceSheetTemplateFormulasUp,
   down as fixBalanceSheetTemplateFormulasDown,
 } from './migrations/20260531_fix_balance_sheet_template_formulas.js'
@@ -2042,5 +2050,17 @@ export const migrations: Migration[] = [
     name: 'add_quantity_accounting',
     up: addQuantityAccountingUp,
     down: addQuantityAccountingDown,
+  },
+  {
+    version: 121,
+    name: 'voucher_type_is_closing',
+    up: voucherTypeIsClosingUp,
+    down: voucherTypeIsClosingDown,
+  },
+  {
+    version: 122,
+    name: 'backfill_init_balance_opening',
+    up: backfillInitBalanceOpeningUp,
+    down: backfillInitBalanceOpeningDown,
   },
 ]

@@ -15,7 +15,7 @@ import { MONEY_EPSILON } from '../utils/amountUtils.js'
 import type { CashFlowReportScope } from '../services/cashFlowIndirectMethod.js'
 import {
   collectCashFlowCodes,
-  detectStaticReportStandard,
+  resolveStaticReportStandard,
   getCashFlowConfig,
 } from '../services/staticReportConfig.js'
 import { buildCashFlowReconciliation } from '../services/cashFlowReconciliation.js'
@@ -46,11 +46,13 @@ router.get('/cash-flow', (req: AuthRequest, res) => {
   const p = Number(period) || new Date().getMonth() + 1
   const scope = parseCashFlowScope(scopeQuery)
   const accountSetId = req.accountSetId!
-  const standard = detectStaticReportStandard(db, accountSetId)
+  const standard = resolveStaticReportStandard(db, accountSetId)
   const config = getCashFlowConfig(standard)
   const flowPatterns = collectCashFlowCodes(config)
   const expandedCodes = expandFlowAccountCodes(db, accountSetId, flowPatterns)
   const fromPeriod = scope === 'ytd' ? 1 : p
+  // FIX-143：静态现金流量表按损益/权益科目发生额估算，必须排除结转凭证（结转损益 / 利润分配结转），
+  // 否则 3103/5xxx 等行次被结转分录重复命中
   const periodSumMap = getBatchPeriodRangeSums(
     db,
     accountSetId,
@@ -58,7 +60,8 @@ router.get('/cash-flow', (req: AuthRequest, res) => {
     y,
     fromPeriod,
     p,
-    req.accountScope
+    req.accountScope,
+    { excludeClosing: true }
   )
 
   const calcPeriodFlow = (patterns: string[], isDebit: boolean): number =>

@@ -71,6 +71,8 @@ export interface RhStandardReportComputedCell {
   display_value: string
   numeric_value: number | null
   status: 'ok' | 'error'
+  address?: string
+  error?: string | null
 }
 
 export interface RhStandardReportComputed {

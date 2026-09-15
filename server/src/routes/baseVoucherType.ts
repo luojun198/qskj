@@ -26,12 +26,14 @@ router.get('/voucher-types', (req: AuthRequest, res) => {
 })
 
 router.post('/voucher-types', operationLog('新增凭证类型', '基础设置'), (req: AuthRequest, res) => {
-  const { name, code, description, sort_order } = req.body
+  const { name, code, description, sort_order, is_closing } = req.body
   const db = getDb()
   const id = uuidv4()
+  // FIX-143：结转标志未显式传入时按名称含「结转」推断
+  const closing = is_closing === undefined ? (String(name || '').includes('结转') ? 1 : 0) : is_closing ? 1 : 0
   db.prepare(
-    'INSERT INTO voucher_types (id, account_set_id, name, code, description, sort_order) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run(id, req.accountSetId, name, code, description, sort_order || 0)
+    'INSERT INTO voucher_types (id, account_set_id, name, code, description, sort_order, is_closing) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  ).run(id, req.accountSetId, name, code, description, sort_order || 0, closing)
   res.json({ code: 0, message: '创建成功', data: { id } })
 })
 
@@ -40,11 +42,21 @@ router.put(
   operationLog('修改凭证类型', '基础设置'),
   (req: AuthRequest, res) => {
     const { id } = req.params
-    const { name, code, description, sort_order } = req.body
+    const { name, code, description, sort_order, is_closing } = req.body
     const db = getDb()
-    db.prepare(
-      'UPDATE voucher_types SET name=?, code=?, description=?, sort_order=? WHERE id=?'
-    ).run(name, code, description, sort_order, id)
+    if (is_closing === undefined) {
+      db.prepare('UPDATE voucher_types SET name=?, code=?, description=?, sort_order=? WHERE id=?').run(
+        name,
+        code,
+        description,
+        sort_order,
+        id
+      )
+    } else {
+      db.prepare(
+        'UPDATE voucher_types SET name=?, code=?, description=?, sort_order=?, is_closing=? WHERE id=?'
+      ).run(name, code, description, sort_order, is_closing ? 1 : 0, id)
+    }
     res.json({ code: 0, message: '更新成功' })
   }
 )

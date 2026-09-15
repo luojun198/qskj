@@ -1,4 +1,5 @@
 import type { Database } from 'better-sqlite3'
+import { CLOSING_VOUCHER_TYPE_JOIN_SQL, NOT_CLOSING_VOUCHER_SQL } from '../utils/closingVoucherSql.js'
 import {
   filterAccountIdsByScope,
   type AccountScopeContext,
@@ -12,7 +13,7 @@ import {
 } from './initBalanceScope.js'
 import { peekAccountSetStartDate } from './accountSetDefaults.js'
 import {
-  detectStaticReportStandard,
+  resolveStaticReportStandard,
   getProfitLossAccountCodePrefixes,
 } from './staticReportConfig.js'
 
@@ -484,7 +485,8 @@ function isProfitLossAccountCode(
   accountCode: string
 ): boolean {
   try {
-    const standard = detectStaticReportStandard(db as never, accountSetId)
+    // FIX-145：尊重显式准则配置 + 短 TTL 缓存，避免每个单元格全科目探测
+    const standard = resolveStaticReportStandard(db as never, accountSetId)
     return getProfitLossAccountCodePrefixes(standard).some(prefix =>
       String(accountCode).startsWith(prefix)
     )
@@ -494,7 +496,7 @@ function isProfitLossAccountCode(
 }
 
 /**
- * 从凭证分录直接汇总区间发生额，排除结转凭证（voucher_types.name = '结转'）
+ * 从凭证分录直接汇总区间发生额，排除结转凭证（FIX-143：按 voucher_types.is_closing 标志 / 名称含「结转」）
  * 用于 @jqy 函数，取结转前的净发生额。
  *
  * FIX-105：中途启用的账套，启用前的发生额没有凭证明细，只有 init_balances.pre_book_*
@@ -535,14 +537,14 @@ export function getPeriodRangeSumExcludeTransfer(
         SUM(CASE WHEN ve.direction = 'credit' THEN ve.amount ELSE 0 END) as total_credit
       FROM voucher_entries ve
       JOIN vouchers v ON v.id = ve.voucher_id
-      JOIN voucher_types vt ON vt.id = v.voucher_type_id
+      ${CLOSING_VOUCHER_TYPE_JOIN_SQL}
       WHERE v.account_set_id = ?
         AND ve.account_id IN (${placeholders})
         AND v.year = ?
         AND v.period >= ?
         AND v.period <= ?
         AND v.status = 'posted'
-        AND vt.name != '结转'
+        AND ${NOT_CLOSING_VOUCHER_SQL}
     `
       )
       .get(accountSetId, ...leafIds, year, from, to) as any
@@ -587,7 +589,9 @@ export function getBatchPeriodRangeSums(
   year: number,
   fromPeriod: number,
   toPeriod: number,
-  accountScope?: AccountScopeContext
+  accountScope?: AccountScopeContext,
+  /** FIX-143：为 true 时改从 voucher_entries 聚合并排除结转凭证（account_balances 无法区分凭证类型） */
+  options?: { excludeClosing?: boolean }
 ): Map<string, { debit: number; credit: number }> {
   const result = new Map<string, { debit: number; credit: number }>()
 
@@ -609,9 +613,22 @@ export function getBatchPeriodRangeSums(
     }
 
     const idPlaceholders = allIds.map(() => '?').join(',')
-    const periodRows = db
-      .prepare(
-        `SELECT account_id,
+    const periodSql = options?.excludeClosing
+      ? `SELECT ve.account_id,
+                SUM(CASE WHEN ve.direction = 'debit' THEN ve.amount ELSE 0 END) AS d,
+                SUM(CASE WHEN ve.direction = 'credit' THEN ve.amount ELSE 0 END) AS c
+         FROM voucher_entries ve
+         JOIN vouchers v ON v.id = ve.voucher_id
+         ${CLOSING_VOUCHER_TYPE_JOIN_SQL}
+         WHERE v.account_set_id = ?
+           AND ve.account_id IN (${idPlaceholders})
+           AND v.year = ?
+           AND v.period >= ?
+           AND v.period <= ?
+           AND v.status = 'posted'
+           AND ${NOT_CLOSING_VOUCHER_SQL}
+         GROUP BY ve.account_id`
+      : `SELECT account_id,
                 SUM(current_debit) AS d,
                 SUM(current_credit) AS c
          FROM account_balances
@@ -621,7 +638,8 @@ export function getBatchPeriodRangeSums(
            AND period >= ?
            AND period <= ?
          GROUP BY account_id`
-      )
+    const periodRows = db
+      .prepare(periodSql)
       .all(accountSetId, ...allIds, year, fromPeriod, toPeriod) as Array<{
       account_id: string
       d: number | null
