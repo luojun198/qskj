@@ -13,6 +13,7 @@ import {
 } from '../db/permissions.js'
 import { mapAcdCashFlowJd } from '../utils/acdCashFlow.js'
 import { parseKmbmRow } from '../utils/acdKmbmParse.js'
+import { buildAuxItemId } from '../utils/auxItemId.js'
 import { calcForeignInitBalance } from '../utils/initBalanceForeign.js'
 import { buildVoucherNo, getMaxVoucherNoSeqInPeriod } from '../services/voucherEntry.js'
 import {
@@ -77,8 +78,11 @@ type ParsedTables = {
   auxDeptInitBalances: AcdRow[] // bmnc - 部门期初
   auxPersonInitBalances: AcdRow[] // grnc - 个人期初
   auxProjectInitBalances: AcdRow[] // xmnc - 项目期初
+  auxFundSourceInitBalances: AcdRow[] // zjnc - 资金来源期初
   /** fbgl - 外币汇率 */
   currencies: AcdRow[]
+  /** bzk - 币种档案（bz/hl/bwbz/qtbz） */
+  currencyArchives: AcdRow[]
   // 出纳模块原始表
   cashierJournal: AcdRow[] // cn_mx - 出纳日记账明细
   cashierInitBalances: AcdRow[] // cn_nc - 出纳期初
@@ -501,7 +505,10 @@ function parseAcdTables(acdFilePathOrBuffer: string | Buffer, acdBuffer?: Buffer
     for (let i = 0; i < Math.min(rows.length, 5); i++) {
       const row = rows[i]
       if (row.length !== expectedCols.length) {
-        // 列数不匹配时静默处理，不输出警告
+        // 列数不符可能是 \t 切分错位，必须告警而非静默丢弃
+        audit.warnings.push(
+          `表 ${tableName} 第 ${i + 1} 行列数为 ${row.length}，data_stru 预期 ${expectedCols.length}，可能字段错位`
+        )
         break
       }
     }
@@ -618,7 +625,9 @@ function parseAcdTables(acdFilePathOrBuffer: string | Buffer, acdBuffer?: Buffer
   const auxDeptInitBalanceContent = getTable('bmnc.txt')
   const auxPersonInitBalanceContent = getTable('grnc.txt')
   const auxProjectInitBalanceContent = getTable('xmnc.txt')
+  const auxFundSourceInitBalanceContent = getTable('zjnc.txt')
   const currenciesContent = getTable('fbgl.txt')
+  const currencyArchiveContent = getTable('bzk.txt')
 
   // 出纳模块表
   const cashierJournalContent = getTable('cn_mx.txt')
@@ -667,7 +676,9 @@ function parseAcdTables(acdFilePathOrBuffer: string | Buffer, acdBuffer?: Buffer
     auxDeptInitBalances: splitTableRows(auxDeptInitBalanceContent),
     auxPersonInitBalances: splitTableRows(auxPersonInitBalanceContent),
     auxProjectInitBalances: splitTableRows(auxProjectInitBalanceContent),
+    auxFundSourceInitBalances: splitTableRows(auxFundSourceInitBalanceContent),
     currencies: splitTableRows(currenciesContent),
+    currencyArchives: splitTableRows(currencyArchiveContent),
     cashierJournal: splitTableRows(cashierJournalContent),
     cashierInitBalances: splitTableRows(cashierInitBalanceContent),
     bankStatements: splitTableRows(bankStatementContent),
@@ -1863,7 +1874,7 @@ function importCashFlowAuxItems(
   const existingAuxCodes = new Set(existingAux.map(item => item.code))
 
   const existingCfCodes = new Set<string>()
-  let insertCfStmt: ReturnType<typeof db.prepare> | null = null
+  let insertCfStmt: any = null
   if (syncCashFlowTable) {
     const existingCf = db
       .prepare('SELECT code FROM cash_flow_items WHERE account_set_id = ?')
@@ -1940,7 +1951,10 @@ function importAuxItems(
   codeIndex: number,
   nameIndex: number,
   stats: ImportStats,
-  dryRun: boolean
+  dryRun: boolean,
+  extra?: (
+    row: AcdRow
+  ) => { field_values?: Record<string, string>; remark?: string } | undefined
 ): number {
   if (rows.length === 0) return 0
 
@@ -1951,8 +1965,8 @@ function importAuxItems(
   const existingCodes = new Set(existing.map(item => item.code))
 
   const insertStmt = db.prepare(`
-    INSERT INTO aux_items (id, account_set_id, type, code, name, status, field_values, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, 'active', '{}', datetime('now'), datetime('now'))
+    INSERT INTO aux_items (id, account_set_id, type, code, name, status, remark, field_values, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 'active', ?, ?, datetime('now'), datetime('now'))
   `)
 
   let imported = 0
@@ -1964,8 +1978,13 @@ function importAuxItems(
     if (!code || !name) continue
     if (existingCodes.has(code)) continue
 
+    const ext = extra?.(row)
+    const fieldValues =
+      ext?.field_values && Object.keys(ext.field_values).length > 0
+        ? JSON.stringify(ext.field_values)
+        : '{}'
     if (!dryRun) {
-      insertStmt.run(uuidv4(), accountSetId, categoryId, code, name)
+      insertStmt.run(uuidv4(), accountSetId, categoryId, code, name, ext?.remark || null, fieldValues)
     }
     imported++
   }
@@ -2009,8 +2028,36 @@ function importAuxiliaryData(
     if (count > 0) stats.importedTables.push('xmk.txt')
   }
 
-  // 导入往来单位（dwk）
+  // 导入往来单位（dwk）：额外保留地址/联系人/电话/开户行/账号/税号（列 2..8、11），
+  // 写入 field_values（供自定义字段展示），并拼一段可读 remark。
   if (tables.auxCustomers.length > 0) {
+    const dwkExtra = (row: AcdRow) => {
+      const fv: Record<string, string> = {}
+      const put = (key: string, idx: number) => {
+        const v = (row[idx] || '').trim()
+        if (v) fv[key] = v
+      }
+      put('address', 2)
+      put('postal_code', 3)
+      put('contact', 4)
+      put('phone', 5)
+      put('bank_name', 6)
+      put('bank_account', 7)
+      put('tax_no', 8)
+      put('short_name', 11)
+      if (Object.keys(fv).length === 0) return undefined
+      const remark = [
+        fv.address && `地址:${fv.address}`,
+        fv.contact && `联系人:${fv.contact}`,
+        fv.phone && `电话:${fv.phone}`,
+        fv.bank_name && `开户行:${fv.bank_name}`,
+        fv.bank_account && `账号:${fv.bank_account}`,
+        fv.tax_no && `税号:${fv.tax_no}`,
+      ]
+        .filter(Boolean)
+        .join('；')
+      return { field_values: fv, remark: remark || undefined }
+    }
     const count = importAuxItems(
       accountSetId,
       'customer',
@@ -2019,7 +2066,8 @@ function importAuxiliaryData(
       0, // dwbm
       1, // dw_mc
       stats,
-      dryRun
+      dryRun,
+      dwkExtra
     )
     totalImported += count
     stats.auxiliaryData.customers = count
@@ -2385,7 +2433,7 @@ export function parseAcdStartDate(s: string | undefined | null): string | null {
  *   的账套会被记成次年 1 月开账，期初页面的年度、账前累计列、期间状态全都对不上。
  */
 export function updateAccountSetStartDateFromXt(
-  db: { prepare: (sql: string) => { run: (...args: unknown[]) => unknown; get: (...args: unknown[]) => unknown } },
+  db: { prepare: (sql: string) => any },
   accountSetId: string,
   xt: Map<string, string>,
   options: { preferXt?: boolean } = {}
@@ -2621,16 +2669,16 @@ function importAccounts(accountSetId: string, rows: AcdRow[], stats: ImportStats
     INSERT INTO accounts (
       id, account_set_id, code, name, direction, level, parent_id,
       is_cash, is_bank, is_aux, aux_types, require_cash_flow,
-      is_foreign, currency_code,
+      is_foreign, currency_code, is_quantity, quantity_unit,
       is_enabled, allow_delete, created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, datetime('now'), datetime('now'))
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, datetime('now'), datetime('now'))
   `)
   const updateStmt = db.prepare(`
     UPDATE accounts
     SET name=?, direction=?, level=?, parent_id=?,
         is_cash=?, is_bank=?, is_aux=?, aux_types=?, require_cash_flow=?,
-        is_foreign=?, currency_code=?,
+        is_foreign=?, currency_code=?, is_quantity=?, quantity_unit=?,
         updated_at=datetime('now')
     WHERE id=?
   `)
@@ -2676,7 +2724,9 @@ function importAccounts(accountSetId: string, rows: AcdRow[], stats: ImportStats
           auxTypes,
           item.isCash || item.isBank ? 1 : 0,
           isForeign,
-          currencyCode
+          currencyCode,
+          item.isQuantity ? 1 : 0,
+          item.quantityUnit
         )
       }
       continue
@@ -2697,6 +2747,8 @@ function importAccounts(accountSetId: string, rows: AcdRow[], stats: ImportStats
         item.isCash || item.isBank ? 1 : 0,
         isForeign,
         currencyCode,
+        item.isQuantity ? 1 : 0,
+        item.quantityUnit,
         existingRow.id
       )
     }
@@ -2808,6 +2860,58 @@ export function importCurrencies(
         stats.warnings.push(`币种 ${code} 汇率写入失败: ${err?.message || err}`)
       }
     }
+  }
+}
+
+/**
+ * bzk 币种档案（bz/hl/bwbz/qtbz）：补齐 fbgl 未覆盖的币种。
+ * 仅新增、不覆盖：已存在的币种（来自 fbgl 或手工维护）保持不动。
+ */
+export function importCurrencyArchive(
+  accountSetId: string,
+  bzkRows: AcdRow[],
+  stats: ImportStats,
+  dryRun = false,
+  db: ReturnType<typeof getDb> = getDb()
+): void {
+  if (!bzkRows || bzkRows.length === 0) return
+  const baseCode = (
+    ((db
+      .prepare(
+        "SELECT param_value FROM system_params WHERE account_set_id=? AND param_key='base_currency' LIMIT 1"
+      )
+      .get(accountSetId) as { param_value?: string } | undefined)?.param_value || 'RMB')
+  )
+    .trim()
+    .toUpperCase()
+
+  const existing = db
+    .prepare('SELECT code FROM currencies WHERE account_set_id=?')
+    .all(accountSetId) as Array<{ code: string }>
+  const existingCodes = new Set(existing.map(r => String(r.code || '').trim().toUpperCase()))
+
+  const ins = db.prepare(
+    `INSERT INTO currencies
+       (id, account_set_id, code, name, is_base, default_rate, begin_rate, end_rate, rate_decimals, is_enabled, sort_order, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,1,?,datetime('now'),datetime('now'))`
+  )
+
+  let inserted = 0
+  for (const row of bzkRows) {
+    const code = (row[0] || '').trim().toUpperCase()
+    if (!code || code === 'BWB') continue
+    if (existingCodes.has(code)) continue
+    const isBase = (row[2] || '').trim() === '1' || code === baseCode ? 1 : 0
+    const rate = parseAcdNumber(row[1]) || 1
+    if (!dryRun) {
+      ins.run(uuidv4(), accountSetId, code, code, isBase, rate, rate, rate, 4, existingCodes.size)
+    }
+    existingCodes.add(code)
+    inserted += 1
+  }
+  if (inserted > 0) {
+    stats.currencies.inserted += inserted
+    stats.importedTables.push('bzk.txt')
   }
 }
 
@@ -2942,6 +3046,23 @@ export const AUX_NC_COLUMNS: NcColumns = {
   nc_df_b: 10,
   jq_jf_b: 11,
   jq_df_b: 12,
+}
+
+/**
+ * zjnc（资金来源期初）：lybm, kmbm, nf, bz, nc_jf, nc_df, jq_jf, jq_df, fbs, ys, *_b x4, yjd, lj_* x4。
+ * 与 dwnc 布局不同：科目在 index 1、辅助编码在 index 0、年份在 index 2、币别在 index 3。
+ */
+export const FUND_SOURCE_NC_COLUMNS: NcColumns = {
+  bz: 3,
+  nc_jf: 4,
+  nc_df: 5,
+  jq_jf: 6,
+  jq_df: 7,
+  nf: 2,
+  nc_jf_b: 10,
+  nc_df_b: 11,
+  jq_jf_b: 12,
+  jq_df_b: 13,
 }
 
 /** 润衡年初表里的本位币行标记 */
@@ -3183,10 +3304,36 @@ function insertInitBalanceRow(
 
 /**
  * 辅助期初：dwnc（往来单位）/ bmnc（部门）/ grnc（个人）/ xmnc（项目）。
- * 每行 = 某科目 × 某辅助项目 × 年份 的年初 + 建账前累计，写成 aux_item_id='<类目code>:<项目id>' 的明细行。
+ * 每行 = 某科目 × 某辅助项目 × 年份 的年初 + 建账前累计，写成 aux_item_id='<前缀>:<项目id>' 的明细行。
  * 科目汇总行（aux_item_id=''）已由 nc.txt 写入且账簿取数「汇总行优先」，这里不重算汇总，
  * 只在明细合计与汇总行不一致时给出警告。
  */
+/**
+ * ACD 辅助类目 code → 系统 aux_item_id 键。
+ * 必须与凭证侧 buildAuxItemId 生成的键一致（固定列前缀 + aux_data 类目键），
+ * 否则辅助期初行与 account_balances 的辅助桶（复合键，如 supp:x|customer:x）对不上，期初取不到。
+ */
+const AUX_FIXED_COLUMN: Record<string, string> = {
+  dept: 'dept_id',
+  project: 'project_id',
+  proj: 'project_id',
+  customer: 'supplier_id',
+  supplier: 'supplier_id',
+  supp: 'supplier_id',
+  person: 'person_id',
+  pers: 'person_id',
+  func_class: 'func_class_id',
+  func: 'func_class_id',
+}
+
+function buildAuxInitItemId(categoryCode: string, itemId: string): string {
+  const fixedColumn = AUX_FIXED_COLUMN[categoryCode]
+  const entry: Record<string, unknown> = {}
+  if (fixedColumn) entry[fixedColumn] = itemId
+  entry.aux_data = { [categoryCode]: { id: itemId } }
+  return buildAuxItemId(entry)
+}
+
 function importAuxInitBalances(
   accountSetId: string,
   tables: ParsedTables,
@@ -3194,11 +3341,29 @@ function importAuxInitBalances(
   dryRun: boolean
 ) {
   const db = getDb()
-  const sources: Array<{ table: string; categoryCode: string; rows: AcdRow[] }> = [
+  const sources: Array<{
+    table: string
+    categoryCode: string
+    rows: AcdRow[]
+    /** 科目编码列（默认 0） */
+    kmbmIndex?: number
+    /** 辅助项目编码列（默认 1） */
+    itemIndex?: number
+    /** 金额/年份/币别列位置（默认 AUX_NC_COLUMNS） */
+    columns?: NcColumns
+  }> = [
     { table: 'dwnc.txt', categoryCode: 'customer', rows: tables.auxCustomerInitBalances },
     { table: 'bmnc.txt', categoryCode: 'dept', rows: tables.auxDeptInitBalances },
     { table: 'grnc.txt', categoryCode: 'person', rows: tables.auxPersonInitBalances },
     { table: 'xmnc.txt', categoryCode: 'project', rows: tables.auxProjectInitBalances },
+    {
+      table: 'zjnc.txt',
+      categoryCode: 'fund_source',
+      rows: tables.auxFundSourceInitBalances,
+      kmbmIndex: 1,
+      itemIndex: 0,
+      columns: FUND_SOURCE_NC_COLUMNS,
+    },
   ]
   if (sources.every(source => source.rows.length === 0)) return
 
@@ -3244,38 +3409,38 @@ function importAuxInitBalances(
     }
     stats.importedTables.push(source.table)
 
-    for (const row of pickBaseCurrencyRows(source.rows, AUX_NC_COLUMNS.bz)) {
-      const account = accountByCode.get((row[0] || '').trim())
-      const itemCode = (row[1] || '').trim()
+    for (const row of pickBaseCurrencyRows(source.rows, (source.columns ?? AUX_NC_COLUMNS).bz)) {
+      const account = accountByCode.get((row[source.kmbmIndex ?? 0] || '').trim())
+      const itemCode = (row[source.itemIndex ?? 1] || '').trim()
       const itemId = itemCode ? auxItemIdByTypeAndCode.get(`${categoryId}|${itemCode}`) : undefined
       if (!account || !itemId) {
         skipped += 1
         continue
       }
-      const auxItemId = `${source.categoryCode}:${itemId}`
+      const auxItemId = buildAuxInitItemId(source.categoryCode, itemId)
       const key = `${account.id}|${auxItemId}`
       auxItemIdByKey.set(key, auxItemId)
-      const parsed = parseAcdNcAmounts(row, AUX_NC_COLUMNS, fallbackYear)
+      const parsed = parseAcdNcAmounts(row, source.columns ?? AUX_NC_COLUMNS, fallbackYear)
       accumulateInitBalanceRow(preparedByYear, parsed.year, key, account.direction, parsed, account.id)
       matched += 1
     }
 
     for (const row of source.rows) {
-      const account = accountByCode.get((row[0] || '').trim())
+      const account = accountByCode.get((row[source.kmbmIndex ?? 0] || '').trim())
       if (!account || Number(account.is_foreign) !== 1) continue
       const currencyCode = String(account.currency_code || '')
         .trim()
         .toUpperCase()
       if (!currencyCode) continue
-      const bz = (row[AUX_NC_COLUMNS.bz] || '').trim().toUpperCase()
+      const bz = (row[(source.columns ?? AUX_NC_COLUMNS).bz] || '').trim().toUpperCase()
       if (bz !== currencyCode) continue
-      const itemCode = (row[1] || '').trim()
+      const itemCode = (row[source.itemIndex ?? 1] || '').trim()
       const itemId = itemCode ? auxItemIdByTypeAndCode.get(`${categoryId}|${itemCode}`) : undefined
       if (!itemId) continue
-      const auxItemId = `${source.categoryCode}:${itemId}`
+      const auxItemId = buildAuxInitItemId(source.categoryCode, itemId)
       const key = `${account.id}|${auxItemId}`
       auxItemIdByKey.set(key, auxItemId)
-      const parsed = parseAcdNcForeignAmounts(row, AUX_NC_COLUMNS, fallbackYear)
+      const parsed = parseAcdNcForeignAmounts(row, source.columns ?? AUX_NC_COLUMNS, fallbackYear)
       applyForeignInitAmounts(preparedByYear, parsed.year, key, account.direction, parsed, account.id)
     }
   }
@@ -4034,6 +4199,7 @@ function importVouchers(
 
   let entryCount = 0
   let renumberedVouchers = 0
+  let skippedMissingAccounts = 0
 
   // 按月按类型追踪凭证编号（仅用于润衡凭证号冲突时补号）
   const voucherNoMap = new Map<string, number>()
@@ -4116,6 +4282,7 @@ function importVouchers(
         foreignAmount: number | null
       }> = []
 
+      let voucherMissingAccount = false
       for (let i = 0; i < groupEntries.length; i++) {
         const row = groupEntries[i]
         const kmbm = (row[5] || '').trim()
@@ -4133,6 +4300,7 @@ function importVouchers(
         const xjbm = (row[26] || '').trim()
 
         const account = accountMap.get(kmbm)
+        if (!account) voucherMissingAccount = true
         const mapped = mapAcdEntryAmount(jf, df)
         if (!mapped) continue
         const { direction, amount } = mapped
@@ -4210,6 +4378,12 @@ function importVouchers(
         })
 
         if (direction === 'debit') totalAmount += amount
+      }
+
+      // 科目缺失的凭证整体跳过，避免 account_id 为 NULL 触发 NOT NULL 约束、导致整批导入回滚
+      if (voucherMissingAccount) {
+        skippedMissingAccounts++
+        continue
       }
 
       if (preparedEntries.length === 0) continue
@@ -4293,6 +4467,11 @@ function importVouchers(
       `凭证分录有 ${unresolvedAuxRefs} 处辅助项目编码在辅助档案中找不到，已按无辅助导入`
     )
   }
+  if (skippedMissingAccounts > 0) {
+    stats.warnings.push(
+      `有 ${skippedMissingAccounts} 张凭证引用了账套中不存在的科目，已整张跳过（避免导入中断）`
+    )
+  }
   if (renumberedVouchers > 0) {
     stats.warnings.push(
       `有 ${renumberedVouchers} 张凭证的润衡凭证号与账套已有凭证冲突，已顺序补号`
@@ -4363,12 +4542,23 @@ async function runImport(options: Options): Promise<ImportStats> {
     updateAccountSetStartDateFromXt(db, accountSet.id, tables.xt)
   }
 
+  // CLI 路径同样落库科目编码长度/级数，保证账簿 getCodeLengths 与导入切分规则一致（原仅 App 路径写）
+  if (!options.dryRun) {
+    let codeLengths = extractAccountCodeLengthsFromXt(tables.xt)
+    if (!codeLengths) codeLengths = inferAccountCodeLengths(tables.accounts)
+    const inferredLevels = inferAccountLevelsFromAccounts(tables.accounts)
+    applyAccountCodeConfigToDb(db, accountSet.id, inferredLevels, codeLengths)
+  }
+
   const execute = () => {
     importSystemParams(accountSet.id, tables.xt, stats, options.dryRun)
     importPeriodClosing(accountSet.id, tables.xt, stats, options.dryRun)
     importVoucherTypes(accountSet.id, tables.voucherTypes, stats, options.dryRun)
-    importAccounts(accountSet.id, tables.accounts, stats, options.dryRun)
+    // 先导币种，保证 importAccounts 读取到的 baseCurrency 正确（原顺序相反）
     importCurrencies(accountSet.id, tables.currencies, tables.xt, stats, options.dryRun)
+    // bzk 补齐 fbgl 未覆盖的币种
+    importCurrencyArchive(accountSet.id, tables.currencyArchives, stats, options.dryRun)
+    importAccounts(accountSet.id, tables.accounts, stats, options.dryRun)
     importAuxiliaryData(accountSet.id, tables, stats, options.dryRun)
     importInitBalances(accountSet.id, tables.initBalances, stats, options.dryRun)
     importAuxInitBalances(accountSet.id, tables, stats, options.dryRun)
@@ -4450,8 +4640,11 @@ export async function importAcdToAccountSet(
     importSystemParams(accountSet.id, tables.xt, stats, false)
     importPeriodClosing(accountSet.id, tables.xt, stats, false)
     importVoucherTypes(accountSet.id, tables.voucherTypes, stats, false)
-    importAccounts(accountSet.id, tables.accounts, stats, false)
+    // 先导币种，保证 importAccounts 读取到的 baseCurrency 正确（原顺序相反）
     importCurrencies(accountSet.id, tables.currencies, tables.xt, stats, false)
+    // bzk 补齐 fbgl 未覆盖的币种
+    importCurrencyArchive(accountSet.id, tables.currencyArchives, stats, false)
+    importAccounts(accountSet.id, tables.accounts, stats, false)
     // 辅助核算主数据（dwk/bmk/grk/xmk/xjll_xm/zjly）：辅助期初与凭证分录辅助项都依赖它，
     // 过去只有模板导入会调用，完整导入里辅助科目挂着 is_aux 却没有任何辅助项目可选。
     importAuxiliaryData(accountSet.id, tables, stats, false)

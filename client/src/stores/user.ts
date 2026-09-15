@@ -29,7 +29,7 @@ function isAuthFailure(error: unknown): boolean {
 function extractUserInfo(res: ApiResponse<UserInfo>): UserInfo {
   if (res.data) return res.data
   const { code: _code, message: _message, total: _total, summary: _summary, ...rest } = res
-  return rest as UserInfo
+  return rest as unknown as UserInfo
 }
 
 export const useUserStore = defineStore('user', () => {

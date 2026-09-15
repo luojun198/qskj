@@ -1,9 +1,21 @@
 <template>
   <div class="page page-ledger">
     <div class="page-header">
-      <h3>明细账</h3>
+      <h3>{{ pageTitle }}</h3>
       <div class="filter-row">
         <DrillDownReturnButton />
+        <el-select v-model="book" style="width: 150px">
+          <el-option v-for="b in LEDGER_BOOK_OPTIONS" :key="b.value" :label="b.label" :value="b.value" />
+        </el-select>
+        <el-select
+          v-if="hasForeign"
+          v-model="filters.currency_code"
+          clearable
+          placeholder="全部币种"
+          style="width: 120px"
+        >
+          <el-option v-for="c in currencies" :key="c.code" :label="`${c.code} ${c.name}`" :value="c.code" />
+        </el-select>
         <el-select
           v-model="filters.account_id"
           filterable
@@ -12,7 +24,7 @@
           :popper-class="ACCOUNT_SELECT_POPPER_CLASS"
           clearable
         >
-          <el-option v-for="a in accounts" :key="a.id" :label="`${a.code} ${a.name}`" :value="a.id" />
+          <el-option v-for="a in selectableAccounts" :key="a.id" :label="`${a.code} ${a.name}`" :value="a.id" />
         </el-select>
         <el-date-picker
           v-model="filters.start_date"
@@ -34,6 +46,11 @@
         <el-button plain @click="printPage"><el-icon><Printer /></el-icon>打印</el-button>
         <el-button plain @click="openBatchDialog('print')">连续打印</el-button>
         <el-button plain @click="openBatchDialog('export')">批量另存</el-button>
+        <el-divider direction="vertical" />
+        <el-checkbox v-model="filters.include_unposted" @change="handleQuery">含未记账</el-checkbox>
+        <el-button plain @click="showAdvancedFilter = !showAdvancedFilter">
+          {{ showAdvancedFilter ? '收起筛选' : '高级筛选' }}
+        </el-button>
       </div>
       <div v-if="showAdvancedFilter" class="filter-row" style="margin-top: 8px">
         <el-input v-model="filters.summary_keyword" placeholder="摘要关键词" clearable style="width: 160px" />
@@ -96,13 +113,9 @@
         align="right"
       >
         <template #default="{ row }">
-          {{
-            row.is_monthly_subtotal || row.is_yearly_subtotal
-              ? ''
-              : row.direction === 'debit'
-                ? formatAmount(row.foreign_amount)
-                : ''
-          }}
+          <template v-if="row.is_monthly_subtotal">{{ formatAmount(row.monthly_foreign_debit) }}</template>
+          <template v-else-if="row.is_yearly_subtotal">{{ formatAmount(row.yearly_foreign_debit) }}</template>
+          <template v-else>{{ row.direction === 'debit' ? formatAmount(row.foreign_amount) : '' }}</template>
         </template>
       </el-table-column>
       <el-table-column
@@ -113,14 +126,19 @@
         align="right"
       >
         <template #default="{ row }">
-          {{
-            row.is_monthly_subtotal || row.is_yearly_subtotal
-              ? ''
-              : row.direction === 'credit'
-                ? formatAmount(row.foreign_amount)
-                : ''
-          }}
+          <template v-if="row.is_monthly_subtotal">{{ formatAmount(row.monthly_foreign_credit) }}</template>
+          <template v-else-if="row.is_yearly_subtotal">{{ formatAmount(row.yearly_foreign_credit) }}</template>
+          <template v-else>{{ row.direction === 'credit' ? formatAmount(row.foreign_amount) : '' }}</template>
         </template>
+      </el-table-column>
+      <el-table-column
+        v-if="showForeignColumns"
+        column-key="原币余额"
+        label="原币余额"
+        :width="colWidth('原币余额', 120)"
+        align="right"
+      >
+        <template #default="{ row }">{{ formatAmount(Math.abs(row.foreign_running_balance || 0)) }}</template>
       </el-table-column>
       <el-table-column
         v-if="showQuantityColumns"
@@ -231,8 +249,8 @@
     <HiprintDialog
       v-model="hiprintVisible"
       template-type="ledger"
-      template-key="ledger:detail"
-      title="明细账"
+      :template-key="printTemplateKey"
+      :title="pageTitle"
       :get-print-html="buildPrintHtml"
       default-paper="A4"
       default-orientation="landscape"
@@ -241,7 +259,7 @@
     <DetailBatchAccountsDialog
       v-model="batchDialogVisible"
       :mode="batchMode"
-      :accounts="accounts"
+      :accounts="selectableAccounts"
       :running="batchRunning"
       :progress-done="batchProgressDone"
       :progress-total="batchProgressTotal"
@@ -272,6 +290,7 @@ import {
 } from '@/composables/useLedgerVoucherNavigate'
 import { useVoucherModalRestore } from '@/composables/useVoucherModalRestore'
 import { formatAmount } from '@/utils/format'
+import { getCurrencies, type Currency } from '@/api/currency'
 import HiprintDialog from '@/components/print/HiprintDialog.vue'
 import DetailBatchAccountsDialog, {
   type DetailBatchMode,
@@ -282,10 +301,45 @@ import { formatSignedBalanceAmount } from '@/utils/exportLedgerHelpers'
 import { ACCOUNT_SELECT_POPPER_CLASS } from '@/utils/accountSelectDisplay'
 import { ElMessage } from 'element-plus'
 
+/** 同一组件挂两条路由：/ledger/detail（本位币明细账）与 /ledger/foreign-detail（外币明细账） */
+const props = withDefaults(defineProps<{ mode?: 'base' | 'foreign' }>(), { mode: 'base' })
+const isForeignLedger = computed(() => props.mode === 'foreign')
+const basePath = computed(() => (isForeignLedger.value ? '/ledger/foreign-detail' : '/ledger/detail'))
+
+/** 账册：三栏 / 复币 / 数量 / 数量复币，页内切换；路由 prop 只决定初始值，query.book 可覆盖 */
+type LedgerBook = 'three' | 'foreign' | 'quantity' | 'quantity-foreign'
+const LEDGER_BOOK_OPTIONS: Array<{ value: LedgerBook; label: string; templateKey: string }> = [
+  { value: 'three', label: '三栏明细账', templateKey: 'ledger:detail' },
+  { value: 'foreign', label: '复币明细账', templateKey: 'ledger:foreign-detail' },
+  { value: 'quantity', label: '数量明细账', templateKey: 'ledger:quantity-detail' },
+  { value: 'quantity-foreign', label: '数量复币明细账', templateKey: 'ledger:quantity-foreign-detail' },
+]
+const isLedgerBook = (v: unknown): v is LedgerBook => LEDGER_BOOK_OPTIONS.some(b => b.value === v)
+const book = ref<LedgerBook>(isForeignLedger.value ? 'foreign' : 'three')
+const bookOption = computed(() => LEDGER_BOOK_OPTIONS.find(b => b.value === book.value)!)
+const hasForeign = computed(() => book.value === 'foreign' || book.value === 'quantity-foreign')
+const hasQuantity = computed(() => book.value === 'quantity' || book.value === 'quantity-foreign')
+const pageTitle = computed(() => bookOption.value.label)
+const printTemplateKey = computed(() => bookOption.value.templateKey)
+const currencies = ref<Currency[]>([])
+
 const route = useRoute()
 const { accountSetName } = storeToRefs(useUserStore())
 const initBalance = ref(0)
 const list = ref<any[]>([])
+const filters = ref<any>({
+  account_id: '',
+  start_date: '',
+  end_date: '',
+  summary_keyword: '',
+  min_amount: '',
+  max_amount: '',
+  maker_name: '',
+  auditor_name: '',
+  include_unposted: true,
+  currency_code: '',
+})
+
 const loading = ref(false)
 const initialLoaded = ref(false)
 const accounts = ref<any[]>([])
@@ -297,11 +351,67 @@ const { isBlocked: isScopeBlocked, emptyDescription: scopeEmptyDescription } = u
   accountsCount,
 })
 
+const selectedAccount = computed(() => {
+  if (!filters.value.account_id) return null
+  return accounts.value.find(a => a.id === filters.value.account_id)
+})
+
+/** 科目下拉按账册过滤（复币→外币科目且可按币种筛，数量→数量科目）；selectedAccount 仍从全量里找，保证下钻按 account_code 匹配 */
+const selectableAccounts = computed(() => {
+  if (!hasForeign.value && !hasQuantity.value) return accounts.value
+  const cur = String(filters.value.currency_code || '').trim().toUpperCase()
+  const matches = (a: any) => {
+    if (hasForeign.value) {
+      if (Number(a.is_foreign) !== 1) return false
+      if (cur && String(a.currency_code || '').toUpperCase() !== cur) return false
+    }
+    if (hasQuantity.value && Number(a.is_quantity) !== 1) return false
+    return true
+  }
+  // 父科目本身通常不勾外币/数量标志，但只要有后代命中就允许选它（拉出所有子科目分录）
+  const matchedCodes = accounts.value.filter(matches).map(a => String(a.code))
+  return accounts.value.filter(a => {
+    const code = String(a.code)
+    return matchedCodes.some(mc => mc === code || (mc.startsWith(code) && mc.length > code.length))
+  })
+})
+
+const showForeignColumns = computed(() => hasForeign.value)
+const showQuantityColumns = computed(() => hasQuantity.value)
+
+// 切换账册/币种后当前科目若已不在候选内则清空；仍合法则按新账册重查
+watch([book, () => filters.value.currency_code], () => {
+  if (!accountQueryReady.value) return
+  if (filters.value.account_id && !selectableAccounts.value.some(a => a.id === filters.value.account_id)) {
+    filters.value.account_id = ''
+    list.value = []
+    total.value = 0
+    return
+  }
+  if (filters.value.account_id) fetchData()
+})
+
+// 列定义需跟随外币/数量列的显隐变化，否则表格定宽只按 8 个固定列计算，右侧列会被截断
 const ledgerColumnDefs = computed(() => [
   { key: 'voucher_date', fallback: 100 },
   { key: 'voucher_no', fallback: 130 },
   { key: 'summary', fallback: 180 },
   { key: 'opposite_accounts', fallback: 200 },
+  ...(showForeignColumns.value
+    ? [
+        { key: 'exchange_rate', fallback: 90 },
+        { key: '原币借方', fallback: 110 },
+        { key: '原币贷方', fallback: 110 },
+        { key: '原币余额', fallback: 120 },
+      ]
+    : []),
+  ...(showQuantityColumns.value
+    ? [
+        { key: '单价', fallback: 100 },
+        { key: '数量借方', fallback: 110 },
+        { key: '数量贷方', fallback: 110 },
+      ]
+    : []),
   { key: '借方', fallback: 140 },
   { key: '贷方', fallback: 140 },
   { key: '方向', fallback: 60 },
@@ -311,24 +421,9 @@ const ledgerColumnDefs = computed(() => [
 const { containerRef: tableContainerRef, tableHeight, relayoutAfterData } = useFillHeightTable({ flow: true })
 
 const { tableRef, colWidth, ledgerTableWidth, handleHeaderDragEnd, afterTableLayout } =
-  useLedgerWideTable('ledger_detail', ledgerColumnDefs, { afterLayout: relayoutAfterData })
+  useLedgerWideTable(isForeignLedger.value ? 'ledger_foreign_detail' : 'ledger_detail', ledgerColumnDefs, { afterLayout: relayoutAfterData })
 
 const total = ref(0)
-
-const selectedAccount = computed(() => {
-  if (!filters.value.account_id) return null
-  return accounts.value.find(a => a.id === filters.value.account_id)
-})
-
-const showForeignColumns = computed(
-  () => Number(selectedAccount.value?.is_foreign) === 1 || list.value.some((r: any) => r.foreign_amount)
-)
-
-const showQuantityColumns = computed(
-  () =>
-    Number((selectedAccount.value as any)?.is_quantity) === 1 ||
-    list.value.some((r: any) => r.quantity)
-)
 
 /** 数量：6 位小数；0 或小计行留空 */
 function formatQuantityCell(value: number | null | undefined): string {
@@ -396,8 +491,24 @@ function directionLabel(row: any, account?: any): string {
 
 function buildDetailPrintHtmlFor(account: any, rows: any[]): string {
   const title = account
-    ? `明细账 —— ${account.code} ${account.name}`
-    : '明细账'
+    ? `${pageTitle.value} —— ${account.code} ${account.name}`
+    : pageTitle.value
+  const sub = (r: any) => r.is_monthly_subtotal || r.is_yearly_subtotal
+  const quantityColumns = hasQuantity.value
+    ? [
+        { label: '单价', align: 'right' as const, render: (r: any) => (sub(r) || r.is_carry_forward ? '' : formatUnitPriceCell(r.unit_price)) },
+        { label: '数量借方', align: 'right' as const, render: (r: any) => (sub(r) || r.is_carry_forward ? '' : r.direction === 'debit' ? formatQuantityCell(r.quantity) : '') },
+        { label: '数量贷方', align: 'right' as const, render: (r: any) => (sub(r) || r.is_carry_forward ? '' : r.direction === 'credit' ? formatQuantityCell(r.quantity) : '') },
+      ]
+    : []
+  const foreignColumns = hasForeign.value
+    ? [
+        { label: '汇率', align: 'right' as const, render: (r: any) => (sub(r) || r.is_carry_forward ? '' : r.exchange_rate ?? '') },
+        { label: '原币借方', align: 'right' as const, render: (r: any) => (r.is_monthly_subtotal ? formatAmount(r.monthly_foreign_debit) : r.is_yearly_subtotal ? formatAmount(r.yearly_foreign_debit) : r.direction === 'debit' ? formatAmount(r.foreign_amount) : '') },
+        { label: '原币贷方', align: 'right' as const, render: (r: any) => (r.is_monthly_subtotal ? formatAmount(r.monthly_foreign_credit) : r.is_yearly_subtotal ? formatAmount(r.yearly_foreign_credit) : r.direction === 'credit' ? formatAmount(r.foreign_amount) : '') },
+        { label: '原币余额', align: 'right' as const, render: (r: any) => formatAmount(Math.abs(r.foreign_running_balance || 0)) },
+      ]
+    : []
   return buildTablePrintHtml<any>({
     title,
     subtitle: `账套：${accountSetName.value || '未命名账套'}　${printDateLabel.value}`,
@@ -410,6 +521,8 @@ function buildDetailPrintHtmlFor(account: any, rows: any[]): string {
       { label: '凭证号', align: 'center', render: r => formatVoucherNo(r) },
       { label: '摘要', align: 'left', render: r => r.summary || (r.is_monthly_subtotal ? '本月合计' : r.is_yearly_subtotal ? '本年累计' : '') },
       { label: '对方科目', align: 'left', render: r => r.opposite_accounts || '' },
+      ...foreignColumns,
+      ...quantityColumns,
       { label: '借方', align: 'right', render: r => (r.is_monthly_subtotal ? formatAmount(r.monthly_debit) : r.is_yearly_subtotal ? formatAmount(r.yearly_debit) : r.direction === 'debit' ? formatAmount(r.amount) : '') },
       { label: '贷方', align: 'right', render: r => (r.is_monthly_subtotal ? formatAmount(r.monthly_credit) : r.is_yearly_subtotal ? formatAmount(r.yearly_credit) : r.direction === 'credit' ? formatAmount(r.amount) : '') },
       { label: '方向', align: 'center', render: r => directionLabel(r, account) },
@@ -471,6 +584,8 @@ async function fetchDetailPayload(account: any, pageSize: number) {
     params.account_id = account.id
   }
 
+  // 复币账册选了币种：父科目区间只拉该币种子科目的分录与原币期初
+  if (hasForeign.value && filters.value.currency_code) params.currency_code = filters.value.currency_code
   if (filters.value.start_date) params.start_date = filters.value.start_date
   if (filters.value.end_date) params.end_date = filters.value.end_date
   if (filters.value.summary_keyword) params.summary_keyword = filters.value.summary_keyword
@@ -482,22 +597,27 @@ async function fetchDetailPayload(account: any, pageSize: number) {
 
   const res = await request.get<any>('/ledger/detail', { params })
   const openingBalance = (res as any).initBalance || 0
+  const openingForeignBalance = Number((res as any).foreignInitBalance) || 0
   const entries = res.data || []
 
-  // 余额按科目方向累计：借方科目「借增贷减」，贷方科目「贷增借减」
+  // 余额按科目方向累计：借方科目「借增贷减」，贷方科目「贷增借减」；原币余额同口径并行累计
   let balance = openingBalance
+  let foreignBalance = openingForeignBalance
   for (const entry of entries) {
     const isIncrease =
       account?.direction === 'debit' ? entry.direction === 'debit' : entry.direction === 'credit'
     balance += isIncrease ? entry.amount : -entry.amount
     entry.running_balance = balance
+    const fx = Number(entry.foreign_amount) || 0
+    foreignBalance += isIncrease ? fx : -fx
+    entry.foreign_running_balance = foreignBalance
   }
 
   const entriesWithSubtotals = insertMonthlySubtotals(entries, account, readPreBook(res))
   return {
     initBalance: openingBalance,
     total: (res as any).total || 0,
-    rows: [buildCarryForwardRow(openingBalance), ...entriesWithSubtotals],
+    rows: [buildCarryForwardRow(openingBalance, openingForeignBalance), ...entriesWithSubtotals],
   }
 }
 
@@ -506,6 +626,54 @@ async function fetchAccountDetailRows(account: any) {
 }
 
 function buildExportColumns(account: any): ExportColumnDef[] {
+  const skip = (row: any) => row.is_monthly_subtotal || row.is_yearly_subtotal || row.is_carry_forward
+  const quantityColumns: ExportColumnDef[] = hasQuantity.value
+    ? [
+        { label: '单价', width: colWidth('单价', 100), align: 'right', value: row => (skip(row) ? '' : formatUnitPriceCell(row.unit_price)) },
+        { label: '数量借方', width: colWidth('数量借方', 110), align: 'right', value: row => (skip(row) || row.direction !== 'debit' ? '' : formatQuantityCell(row.quantity)) },
+        { label: '数量贷方', width: colWidth('数量贷方', 110), align: 'right', value: row => (skip(row) || row.direction !== 'credit' ? '' : formatQuantityCell(row.quantity)) },
+      ]
+    : []
+  const foreignColumns: ExportColumnDef[] = hasForeign.value
+    ? [
+        {
+          label: '汇率',
+          width: colWidth('exchange_rate', 90),
+          align: 'right',
+          value: row =>
+            row.is_monthly_subtotal || row.is_yearly_subtotal || row.is_carry_forward ? '' : row.exchange_rate ?? '',
+        },
+        {
+          label: '原币借方',
+          width: colWidth('原币借方', 110),
+          align: 'right',
+          type: 'amount',
+          value: row => {
+            if (row.is_monthly_subtotal) return row.monthly_foreign_debit
+            if (row.is_yearly_subtotal) return row.yearly_foreign_debit
+            return row.direction === 'debit' && !row.is_carry_forward ? row.foreign_amount : ''
+          },
+        },
+        {
+          label: '原币贷方',
+          width: colWidth('原币贷方', 110),
+          align: 'right',
+          type: 'amount',
+          value: row => {
+            if (row.is_monthly_subtotal) return row.monthly_foreign_credit
+            if (row.is_yearly_subtotal) return row.yearly_foreign_credit
+            return row.direction === 'credit' && !row.is_carry_forward ? row.foreign_amount : ''
+          },
+        },
+        {
+          label: '原币余额',
+          width: colWidth('原币余额', 120),
+          align: 'right',
+          type: 'amount',
+          value: row => formatSignedBalanceAmount(row.foreign_running_balance || 0, false),
+        },
+      ]
+    : []
   return [
     { label: '日期', width: colWidth('voucher_date', 100), value: row => row.voucher_date },
     { label: '凭证号', width: colWidth('voucher_no', 130), value: row => row.voucher_no },
@@ -515,6 +683,8 @@ function buildExportColumns(account: any): ExportColumnDef[] {
       width: colWidth('opposite_accounts', 200),
       value: row => row.opposite_accounts || '',
     },
+    ...foreignColumns,
+    ...quantityColumns,
     {
       label: '借方',
       width: colWidth('借方', 140),
@@ -652,7 +822,7 @@ function getOpeningBalanceLabel() {
   return '期初余额'
 }
 
-function buildCarryForwardRow(balance: number) {
+function buildCarryForwardRow(balance: number, foreignBalance = 0) {
   const startDate = filters.value.start_date || `${getLedgerYear()}-01-01`
   const balanceDate = isYearStartDate(startDate) ? startDate : getPreviousDate(startDate)
   return {
@@ -665,6 +835,7 @@ function buildCarryForwardRow(balance: number) {
     direction: '',
     amount: 0,
     running_balance: balance,
+    foreign_running_balance: foreignBalance,
     is_carry_forward: true,
   }
 }
@@ -692,6 +863,10 @@ function insertMonthlySubtotals(
   let monthlyCredit = 0
   let yearlyDebit = preBookDebit
   let yearlyCredit = preBookCredit
+  let monthlyFxDebit = 0
+  let monthlyFxCredit = 0
+  let yearlyFxDebit = 0
+  let yearlyFxCredit = 0
   let currentYear = ''
   
   for (let i = 0; i < entries.length; i++) {
@@ -699,14 +874,10 @@ function insertMonthlySubtotals(
     const entryMonth = entry.voucher_date.substring(0, 7)
     const entryYear = entry.voucher_date.substring(0, 4)
     
-    if (entryYear !== currentYear) {
-      // 跨年时重置累计；首个年度沿用账前发生额作为起点
-      const isFirstYear = currentYear === ''
-      currentYear = entryYear
-      yearlyDebit = isFirstYear ? preBookDebit : 0
-      yearlyCredit = isFirstYear ? preBookCredit : 0
-    }
-    
+    // 跨年重置累计：延后到「本月合计/本年累计」推送之后再重置，
+    // 否则上一年 12 月的“本年累计”会在重置后变成 0（跨年累计清零 bug）
+    const yearChanged = entryYear !== currentYear
+
     if (currentMonth && entryMonth !== currentMonth) {
       result.push({
         id: `__monthly_subtotal_${currentMonth}__`,
@@ -721,6 +892,9 @@ function insertMonthlySubtotals(
         is_monthly_subtotal: true,
         monthly_debit: monthlyDebit,
         monthly_credit: monthlyCredit,
+        monthly_foreign_debit: monthlyFxDebit,
+        monthly_foreign_credit: monthlyFxCredit,
+        foreign_running_balance: result[result.length - 1].foreign_running_balance,
       })
       
       result.push({
@@ -736,18 +910,38 @@ function insertMonthlySubtotals(
         is_yearly_subtotal: true,
         yearly_debit: yearlyDebit,
         yearly_credit: yearlyCredit,
+        yearly_foreign_debit: yearlyFxDebit,
+        yearly_foreign_credit: yearlyFxCredit,
+        foreign_running_balance: result[result.length - 1].foreign_running_balance,
       })
       
       monthlyDebit = 0
       monthlyCredit = 0
+      monthlyFxDebit = 0
+      monthlyFxCredit = 0
+    }
+
+    if (yearChanged) {
+      // 首个年度沿用账前发生额作为起点；跨年则从 0 重新累计
+      const isFirstYear = currentYear === ''
+      currentYear = entryYear
+      yearlyDebit = isFirstYear ? preBookDebit : 0
+      yearlyCredit = isFirstYear ? preBookCredit : 0
+      yearlyFxDebit = 0
+      yearlyFxCredit = 0
     }
     
+    const fx = Number(entry.foreign_amount) || 0
     if (entry.direction === 'debit') {
       monthlyDebit += entry.amount
       yearlyDebit += entry.amount
+      monthlyFxDebit += fx
+      yearlyFxDebit += fx
     } else if (entry.direction === 'credit') {
       monthlyCredit += entry.amount
       yearlyCredit += entry.amount
+      monthlyFxCredit += fx
+      yearlyFxCredit += fx
     }
     
     currentMonth = entryMonth
@@ -768,6 +962,9 @@ function insertMonthlySubtotals(
       is_monthly_subtotal: true,
       monthly_debit: monthlyDebit,
       monthly_credit: monthlyCredit,
+      monthly_foreign_debit: monthlyFxDebit,
+      monthly_foreign_credit: monthlyFxCredit,
+      foreign_running_balance: result[result.length - 1].foreign_running_balance,
     })
     
     result.push({
@@ -783,29 +980,20 @@ function insertMonthlySubtotals(
       is_yearly_subtotal: true,
       yearly_debit: yearlyDebit,
       yearly_credit: yearlyCredit,
+      yearly_foreign_debit: yearlyFxDebit,
+      yearly_foreign_credit: yearlyFxCredit,
+      foreign_running_balance: result[result.length - 1].foreign_running_balance,
     })
   }
   
   return result
 }
 
-const filters = ref<any>({
-  account_id: '',
-  start_date: '',
-  end_date: '',
-  summary_keyword: '',
-  min_amount: '',
-  max_amount: '',
-  maker_name: '',
-  auditor_name: '',
-  include_unposted: true,
-})
-
 const entryDialogHostRef = ref<InstanceType<typeof VoucherEntryDialogHost> | null>(null)
 const { tryRestoreVoucherModal } = useVoucherModalRestore(entryDialogHostRef)
 
 const { handleLedgerRowDblClick } = useLedgerVoucherNavigate({
-  returnLabel: '明细账',
+  returnLabel: () => pageTitle.value,
   getReturnQuery: () => ({
     account_id: filters.value.account_id || '',
     start_date: filters.value.start_date || '',
@@ -900,7 +1088,7 @@ async function exportData() {
   }
 
   const { rows: exportRows } = await fetchDetailPayload(account, 10000)
-  const accountName = account ? `${account.code}_${account.name}` : '明细账'
+  const accountName = account ? `${account.code}_${account.name}` : pageTitle.value
   const dateRange =
     filters.value.start_date && filters.value.end_date
       ? `${filters.value.start_date}_${filters.value.end_date}`
@@ -911,74 +1099,12 @@ async function exportData() {
     printDateLabel.value,
   ].filter(Boolean)
 
-  const columns: ExportColumnDef[] = [
-    {
-      label: '日期',
-      width: colWidth('voucher_date', 100),
-      value: row => row.voucher_date,
-    },
-    {
-      label: '凭证号',
-      width: colWidth('voucher_no', 130),
-      value: row => row.voucher_no,
-    },
-    {
-      label: '摘要',
-      width: colWidth('summary', 180),
-      value: row => row.summary,
-    },
-    {
-      label: '对方科目',
-      width: colWidth('opposite_accounts', 200),
-      value: row => row.opposite_accounts || '',
-    },
-    {
-      label: '借方',
-      width: colWidth('借方', 140),
-      align: 'right',
-      type: 'amount',
-      value: row => {
-        if (row.is_monthly_subtotal) return row.monthly_debit
-        if (row.is_yearly_subtotal) return row.yearly_debit
-        return row.direction === 'debit' && !row.is_carry_forward ? row.amount : ''
-      },
-    },
-    {
-      label: '贷方',
-      width: colWidth('贷方', 140),
-      align: 'right',
-      type: 'amount',
-      value: row => {
-        if (row.is_monthly_subtotal) return row.monthly_credit
-        if (row.is_yearly_subtotal) return row.yearly_credit
-        return row.direction === 'credit' && !row.is_carry_forward ? row.amount : ''
-      },
-    },
-    {
-      label: '方向',
-      width: colWidth('方向', 60),
-      align: 'center',
-      value: row => {
-        if (row.running_balance === 0) return '平'
-        if (row.running_balance > 0) {
-          return account?.direction === 'debit' ? '借' : '贷'
-        }
-        return account?.direction === 'debit' ? '贷' : '借'
-      },
-    },
-    {
-      label: '余额',
-      width: colWidth('余额', 140),
-      align: 'right',
-      type: 'amount',
-      value: row => formatSignedBalanceAmount(row.running_balance, false),
-    },
-  ]
+  const columns = buildExportColumns(account)
 
   await exportStyledTable({
     fileName: `${accountName}_${dateRange}.xlsx`,
-    sheetName: '明细账',
-    title: '明细账',
+    sheetName: pageTitle.value,
+    title: pageTitle.value,
     subtitle: subtitleParts.join('  '),
     columns,
     rows: exportRows,
@@ -989,6 +1115,11 @@ async function exportData() {
 async function syncFromRouteQuery() {
   const hasRouteAccount = route.query.account_id || route.query.account_code
   const hasRouteDates = route.query.start_date || route.query.end_date
+
+  if (isLedgerBook(route.query.book)) book.value = route.query.book
+  if (typeof route.query.currency_code === 'string') {
+    filters.value.currency_code = route.query.currency_code.toUpperCase()
+  }
 
   if (route.query.account_id) {
     filters.value.account_id = route.query.account_id as string
@@ -1024,7 +1155,7 @@ async function syncFromRouteQuery() {
 watch(
   () => route.fullPath,
   async (newPath, oldPath) => {
-    if (!newPath.startsWith('/ledger/detail')) return
+    if (route.path !== basePath.value) return
     if (!oldPath || oldPath === newPath) return
     if (!accountQueryReady.value) return
     await syncFromRouteQuery()
@@ -1032,10 +1163,19 @@ watch(
 )
 
 onMounted(async () => {
-  await fetchAccounts()
+  await Promise.all([fetchAccounts(), fetchCurrencies()])
   await syncFromRouteQuery()
   accountQueryReady.value = true
 })
+
+async function fetchCurrencies() {
+  try {
+    const res = await getCurrencies()
+    currencies.value = (res.data || []).filter((c: Currency) => !c.is_base)
+  } catch {
+    currencies.value = []
+  }
+}
 
 onActivated(() => {
   void tryRestoreVoucherModal()

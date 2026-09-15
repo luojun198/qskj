@@ -483,13 +483,14 @@ export function buildEntriesFromTransferItems(params: {
   items: TransferItemConfig[]
   accounts: Array<{ id: string; code: string; name: string; direction: string }>
   getBalanceByCode: (code: string) =>
-    | { end_balance?: number | null }
+    | { end_balance?: number | null; aux_item_id?: string | null }
     | null
     | Array<{
         account_id: string
         account_code: string
         account_name: string
         end_balance?: number | null
+        aux_item_id?: string | null
       }>
 }) {
   const entries: AutoTransferPreviewEntry[] = []
@@ -1558,7 +1559,7 @@ export function createAutoTransferVoucher(params: {
       .run(params.userId, params.userName, voucherId)
 
     const entryPayloads = buildVoucherEntryPayloads({
-      db: params.db,
+      db: params.db as any,
       accountSetId: params.accountSetId,
       voucherId,
       entries: preview.entries,
@@ -1735,7 +1736,7 @@ export function createTransferVoucherForType(params: {
       .run(params.userId, params.userName, voucherId)
 
     const entryPayloads = buildVoucherEntryPayloads({
-      db: params.db,
+      db: params.db as any,
       accountSetId: params.accountSetId,
       voucherId,
       entries: preview.entries,

@@ -183,7 +183,7 @@ export function buildUpgradedTemplatePayload(template: PrintTemplate) {
   return {
     payload: {
       name: template.name,
-      paper_size: template.paper_size === 'a4' ? 'A4' : template.paper_size === 'a5' ? 'A5' : template.paper_size,
+      paper_size: String(template.paper_size).toLowerCase() === 'a4' ? 'A4' : String(template.paper_size).toLowerCase() === 'a5' ? 'A5' : template.paper_size,
       paper_width: template.paper_width,
       paper_height: template.paper_height,
       margin_top: template.margin_top,

@@ -13,7 +13,7 @@
  * 会计准则「未来适用法」：变动一律不重算历史折旧，只影响后续期间。
  * 剩余期间摊余逻辑见 fixedAssetDepreciation.getRemainingBaseForAsset。
  */
-import type Database from 'better-sqlite3'
+import type { Database } from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
 import {
   insertAssetVoucher,
@@ -895,7 +895,7 @@ export function revokeAssetChange(params: {
     .get(changeId, accountSetId) as any
   if (!change) throw new Error('变动记录不存在')
 
-  const kind = change.change_kind as AssetChangeKind
+  const kind = String(change.change_kind || '')
   if (kind === 'dispose') {
     throw new Error('处置记录请在资产卡片上使用「撤销处置」')
   }

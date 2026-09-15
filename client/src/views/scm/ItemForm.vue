@@ -30,7 +30,7 @@
                 <el-tree-select
                   v-model="form.parent_id"
                   :data="treeSelectData"
-                  :props="{ value: 'id', label: 'displayLabel', children: 'children' }"
+                  :props="{ value: 'id', label: 'displayLabel', children: 'children' } as any"
                   check-strictly filterable clearable
                   placeholder="不选则为顶级"
                   style="width:100%"

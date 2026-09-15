@@ -2,6 +2,7 @@ import { v4 as uuidv4 } from 'uuid'
 import type { Database } from 'better-sqlite3'
 import { buildBatchVoucherQuery } from './voucherQuery.js'
 import type { AccountScopeContext } from './accountAuthorization.js'
+import { getVoucherUndeletableReason } from './voucherDelete.js'
 import { yuanToCents, centsToYuan, MONEY_EPSILON } from '../utils/amountUtils.js'
 import {
   accountHasAuxAccounting,
@@ -183,11 +184,18 @@ export function validateVoucherDate(params: {
  * 用于借贷平衡比较，避免浮点累加误差（修复 P0-6，见 debug/修复日志.md FIX-001）
  */
 function getEntryAmountCents(entry: VoucherEntryInput): number {
+  // FIX-131：amount 是落库与过账的真实依据，平衡校验必须按它重算；
+  // 客户端可自行传入的 amount_cents 不再优先，否则「amount 不平 + amount_cents 相等」可绕过校验。
+  // 仅当 amount 缺失（如从 DB 读出的旧行只带 cents）时才回退到 amount_cents。
+  const amount = Number(entry.amount)
+  if (entry.amount !== undefined && entry.amount !== null && Number.isFinite(amount)) {
+    return yuanToCents(amount)
+  }
   const ac = (entry as any).amount_cents
   if (typeof ac === 'number' && Number.isFinite(ac) && Number.isInteger(ac)) {
     return ac
   }
-  return yuanToCents(Number(entry.amount) || 0)
+  return 0
 }
 
 /**
@@ -214,6 +222,11 @@ export function getVoucherBalanceError(entries: VoucherEntryInput[]) {
 }
 
 export function getVoucherUpdateBalanceError(entries: VoucherEntryInput[]) {
+  // FIX-130：修改路径同样要求至少两条分录，否则 entries: [] 借 0 = 贷 0 通过后会清空整张凭证
+  const countError = validateVoucherEntryCount(entries)
+  if (countError) {
+    return countError
+  }
   if (!isVoucherBalanced(entries)) {
     return '借贷不平衡'
   }
@@ -1595,13 +1608,15 @@ export function findPostedVoucher(
 }
 
 export function buildBatchDeletePreviewData(
-  vouchers: Array<{ status?: string; voucher_no?: string | null }>
+  vouchers: Array<{ id?: string; status?: string; voucher_no?: string | null; source?: string | null }>
 ) {
-  const postedVoucher = findPostedVoucher(vouchers)
+  // FIX-132：预览与执行同一守卫（posted / cashier / asset_*）
+  const blockedVoucher = vouchers.find(v => getVoucherUndeletableReason({ id: v.id || '', ...v }))
   return {
     count: vouchers.length,
-    blocked: Boolean(postedVoucher),
-    blockedVoucherNo: postedVoucher?.voucher_no || null,
+    blocked: Boolean(blockedVoucher),
+    blockedVoucherNo: blockedVoucher?.voucher_no || null,
+    blockedReason: blockedVoucher ? getVoucherUndeletableReason({ id: blockedVoucher.id || '', ...blockedVoucher }) : null,
     firstVoucherNo: vouchers[0]?.voucher_no || null,
     lastVoucherNo: vouchers[vouchers.length - 1]?.voucher_no || null,
   }

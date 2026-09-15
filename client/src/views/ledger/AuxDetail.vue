@@ -916,11 +916,8 @@ function insertMonthlySubtotals(entries: any[], account: any): any[] {
     const entryMonth = entry.voucher_date.substring(0, 7)
     const entryYear = entry.voucher_date.substring(0, 4)
 
-    if (entryYear !== currentYear) {
-      currentYear = entryYear
-      yearlyDebit = 0
-      yearlyCredit = 0
-    }
+    // 跨年重置累计延后到小计推送之后，避免上一年 12 月“本年累计”被清零
+    const yearChanged = entryYear !== currentYear
 
     if (currentMonth && entryMonth !== currentMonth) {
       result.push({
@@ -951,6 +948,12 @@ function insertMonthlySubtotals(entries: any[], account: any): any[] {
 
       monthlyDebit = 0
       monthlyCredit = 0
+    }
+
+    if (yearChanged) {
+      currentYear = entryYear
+      yearlyDebit = 0
+      yearlyCredit = 0
     }
 
     if (entry.direction === 'debit') {
@@ -1100,7 +1103,29 @@ async function fetchData(options?: { loadAll?: boolean }) {
     if (filters.value.auditor_name) params.auditor_name = filters.value.auditor_name
     if (filters.value.include_unposted) params.include_unposted = true
 
-    const res = await request.post<any>('/ledger/aux-detail', params)
+    // 「全部加载」时分页循环拉取，避免后端单页上限（MAX_PAGE_SIZE=1000）导致 >1000 条被静默截断
+    let res: any
+    if (options?.loadAll) {
+      const first = await request.post<any>('/ledger/aux-detail', {
+        ...params,
+        page: 1,
+        pageSize: LOAD_ALL_PAGE_SIZE,
+      })
+      const totalCount = Number(first.total) || 0
+      const pages = Math.max(1, Math.ceil(totalCount / LOAD_ALL_PAGE_SIZE))
+      const all = [...(first.data || [])]
+      for (let pg = 2; pg <= pages; pg++) {
+        const r = await request.post<any>('/ledger/aux-detail', {
+          ...params,
+          page: pg,
+          pageSize: LOAD_ALL_PAGE_SIZE,
+        })
+        all.push(...(r.data || []))
+      }
+      res = { ...first, data: all }
+    } else {
+      res = await request.post<any>('/ledger/aux-detail', params)
+    }
 
     const entries = res.data || []
     const initBalance = (res as any).initBalance || 0

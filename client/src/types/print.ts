@@ -203,7 +203,7 @@ export interface VoucherEntryPrintData {
   cash_flow_name?: string
   aux_data?: Record<string, { id: string; name: string; field_values?: Record<string, any> }>  // 辅助项目数据
   /** 服务端已扁平化的辅助项目名称：aux_<类别code> → 项目名 */
-  [auxField: `aux_${string}`]: string | undefined
+  [auxField: `aux_${string}`]: any
 }
 
 // 凭证打印数据

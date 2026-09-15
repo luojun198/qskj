@@ -21,7 +21,7 @@
         <template #default="{ row }">
           <el-tag v-if="row.partner_type === 'supplier'" type="warning" size="small">供应商</el-tag>
           <el-tag v-else-if="row.partner_type === 'customer'" type="success" size="small">客户</el-tag>
-          <el-tag v-else type="" size="small">双向</el-tag>
+          <el-tag v-else type="info" size="small">双向</el-tag>
           <el-tag v-if="row.is_outsource === 1" type="danger" size="small" effect="plain" style="margin-left:4px">委外厂</el-tag>
         </template>
       </el-table-column>

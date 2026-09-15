@@ -120,6 +120,8 @@ export function useFillHeightTable(options: UseFillHeightTableOptions = {}) {
   const { flow = false } = options
   const containerRef = ref<HTMLElement>()
   const tableHeight = ref<number | undefined>(undefined)
+  /** el-table 实例 ref（供模板 ref="tableRef" 与列宽/布局联动使用） */
+  const tableRef = ref<any>()
   let observer: ResizeObserver | null = null
 
   function disconnect() {
@@ -234,5 +236,5 @@ export function useFillHeightTable(options: UseFillHeightTableOptions = {}) {
     })
   }
 
-  return { containerRef, tableHeight, updateHeight, relayoutAfterData }
+  return { containerRef, tableRef, tableHeight, updateHeight, relayoutAfterData }
 }

@@ -990,9 +990,9 @@ function printPage() {
 function buildPrintHtml(): string {
   const acc = currentAccount.value
   const rows = enrichedDisplayRows.value
-  type PrintCol = { label: string; align: 'left' | 'center' | 'right'; render: (r: any) => string }
+  type PrintCol = { label: string; align: 'left' | 'center' | 'right'; render: (r: any, i?: number) => string }
   const columns: PrintCol[] = [
-    { label: '序', align: 'center', render: (r, i) => String(i + 1) },
+    { label: '序', align: 'center', render: (r, i) => String((i ?? 0) + 1) },
     { label: '编码', align: 'left', render: r => r.itemCode || '' },
     { label: '名称', align: 'left', render: r => r.itemName || '' },
     {

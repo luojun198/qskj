@@ -39,9 +39,9 @@ function sumExpandedBalance(
   year: number,
   period: number
 ): number {
-  const codes = expandFlowAccountCodes(db, accountSetId, patterns)
+  const codes = expandFlowAccountCodes(db as any, accountSetId, patterns)
   if (codes.length === 0) return 0
-  const map = getBatchBalances(db, accountSetId, codes, year, period)
+  const map = getBatchBalances(db as any, accountSetId, codes, year, period)
   let total = 0
   for (const code of codes) {
     total += map.get(code) || 0
@@ -89,7 +89,7 @@ export function calcNetProfitForPeriod(
   standard?: StaticReportStandard,
   scope: CashFlowReportScope = 'ytd'
 ): { netProfit: number; profitLabel: string; standardName: string } {
-  const resolvedStandard = standard ?? detectStaticReportStandard(db, accountSetId)
+  const resolvedStandard = standard ?? detectStaticReportStandard(db as any, accountSetId)
   const incomeConfig = getIncomeStatementConfig(resolvedStandard)
   const indirectMapping = getIndirectMethodMapping(resolvedStandard)
 
@@ -128,7 +128,7 @@ export function buildIndirectMethodSchedule(
   period: number,
   scope: CashFlowReportScope = 'month'
 ): IndirectMethodSchedule {
-  const standard = detectStaticReportStandard(db, accountSetId)
+  const standard = detectStaticReportStandard(db as any, accountSetId)
   const mapping = getIndirectMethodMapping(standard)
   const { netProfit, profitLabel, standardName } = calcNetProfitForPeriod(
     db,

@@ -115,3 +115,49 @@ describe('useAccountForm', () => {
     expect(names).toEqual(['部门:财务部', '项目'])
   })
 })
+
+describe('科目编码按系统参数生成与校验（4-3-3）', () => {
+  const accountLevels = ref(3)
+  const accountCodeLengths = ref([4, 3, 3])
+  const auxCategories = ref<any[]>([])
+  const auxItemById = ref(new Map<string, any>())
+  const auxItemsByCategory = ref(new Map<string, any[]>())
+  let c: ReturnType<typeof useAccountForm>
+
+  const flat = [
+    { id: 'p2202', code: '2202', name: '应付账款', level: 1, parent_id: null, direction: 'credit' },
+  ]
+  const flatten = (nodes: any[]) => nodes
+
+  beforeEach(() => {
+    c = useAccountForm(
+      auxCategories,
+      { auxItemById, auxItemsByCategory },
+      { accountLevels, accountCodeLengths }
+    )
+  })
+
+  it('无子科目时按第 2 级分段长度补足 3 位后缀', async () => {
+    c.form.value = { code: '', parent_id: null, aux_list: [] }
+    await c.onParentChange('p2202', flat, flatten)
+    expect(c.form.value.code).toBe('2202001')
+    expect(c.form.value.level).toBe(2)
+  })
+
+  it('已有子科目时按分段长度递增', async () => {
+    const withChild = [...flat, { id: 'c1', code: '2202001', parent_id: 'p2202', level: 2 }]
+    c.form.value = { code: '', parent_id: null, aux_list: [] }
+    await c.onParentChange('p2202', withChild, flatten)
+    expect(c.form.value.code).toBe('2202002')
+  })
+
+  it('校验 6 位编码时给出第 2 级应为 7 位的提示', () => {
+    c.form.value = { code: '220201', parent_id: 'p2202', aux_list: [] }
+    expect(c.validateCode(flat)).toContain('第2级科目编码长度应为7位')
+  })
+
+  it('7 位编码通过校验', () => {
+    c.form.value = { code: '2202001', parent_id: 'p2202', aux_list: [] }
+    expect(c.validateCode(flat)).toBeNull()
+  })
+})

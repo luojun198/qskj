@@ -1,6 +1,25 @@
 <template>
   <div class="page page-flow-query">
-    
+    <div class="filter-row" style="padding:12px 16px 0">
+      <el-select v-model="filters.account_code" filterable placeholder="选择科目" class="filter-ctl--md" @change="handleQuery">
+        <el-option-group v-if="cashAccounts.length" label="现金科目">
+          <el-option v-for="a in cashAccounts" :key="a.code" :label="`${a.code} ${a.name}`" :value="a.code" />
+        </el-option-group>
+        <el-option-group v-if="bankAccounts.length" label="银行存款科目">
+          <el-option v-for="a in bankAccounts" :key="a.code" :label="`${a.code} ${a.name}`" :value="a.code" />
+        </el-option-group>
+      </el-select>
+      <el-date-picker v-model="filters.start_date" type="date" value-format="YYYY-MM-DD" placeholder="开始日期" class="filter-ctl--md" @change="handleQuery" />
+      <span>至</span>
+      <el-date-picker v-model="filters.end_date" type="date" value-format="YYYY-MM-DD" placeholder="结束日期" class="filter-ctl--md" @change="handleQuery" />
+      <el-select v-model="filters.currency" placeholder="币种" class="filter-ctl--xs" @change="handleQuery">
+        <el-option v-for="c in currencies" :key="c" :label="c" :value="c" />
+      </el-select>
+      <el-button type="primary" @click="handleQuery"><el-icon><Search /></el-icon>查询</el-button>
+      <el-button plain :disabled="!journalResult" @click="handleExport"><el-icon><Download /></el-icon>导出</el-button>
+      <el-button plain :disabled="!journalResult" @click="handlePrint"><el-icon><Printer /></el-icon>打印</el-button>
+    </div>
+
     <!-- 余额摘要 -->
     <div v-if="journalResult" class="balance-summary">
       <span>期初余额：<b>{{ fmt(journalResult.opening) }}</b></span>
@@ -89,17 +108,23 @@ const rows = computed(() => {
 const rowClassName = ({ row }: any) => row._is_opening ? 'opening-row' : ''
 
 const now = new Date()
-const filters = ref({ account_code: '', start_date: `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-01`, end_date: '' })
+const currencies = ref<string[]>(['RMB'])
+const filters = ref({ account_code: '', currency: 'RMB', start_date: `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-01`, end_date: '' })
 
 const fmt = (v: number) => v === 0 ? '0.00' : v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
 onMounted(async () => {
   const res = await cashierApi.getAccounts()
+  const curRes = await cashierApi.getCurrencies().catch(() => null)
+  if (curRes && curRes.code === 0 && Array.isArray(curRes.data) && curRes.data.length) {
+    currencies.value = curRes.data
+  }
   if (res.code === 0) {
     accounts.value = res.data
     
     if (route.query.start_date) filters.value.start_date = route.query.start_date as string
     if (route.query.end_date) filters.value.end_date = route.query.end_date as string
+    if (route.query.currency) filters.value.currency = route.query.currency as string
 
     if (route.query.account_code) {
       filters.value.account_code = route.query.account_code as string
@@ -115,6 +140,7 @@ async function handleQuery() {
   if (!filters.value.account_code) return
   const res = await cashierApi.getJournal({
     account_code: filters.value.account_code,
+    currency: filters.value.currency || undefined,
     start_date: filters.value.start_date || undefined,
     end_date: filters.value.end_date || undefined,
   })

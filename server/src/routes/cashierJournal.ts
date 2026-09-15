@@ -10,6 +10,7 @@ import { assertAccountIdInScope, type AccountScopeContext } from '../services/ac
 import { createPreReinitializeBackup } from '../services/systemReinitialize.js'
 import {
   listCashierAccounts,
+  listCashierCurrencies,
   listJournal,
   autoReconcile,
   manualReconcile,
@@ -64,9 +65,12 @@ const router = Router()
 router.use(authMiddleware)
 
 // ── 出纳模块权限守卫：按路径映射所需权限（admin '*' 自动放行） ──────────
-const CASHIER_PERMISSION_RULES: Array<{ re: RegExp; perm: string }> = [
+const CASHIER_PERMISSION_RULES: Array<{ re: RegExp; perm: string; alsoPerms?: string[] }> = [
   { re: /^\/cashier\/params/,            perm: 'cashier:param' },
-  { re: /^\/cashier\/settle-type(\/|$)/, perm: 'cashier:param' },   // 单数=结算方式增删改/初始化
+  // 结算方式：菜单权限为 cashier:dict；兼容历史 cashier:param 授权
+  { re: /^\/cashier\/settle-type(\/|$)/, perm: 'cashier:dict', alsoPerms: ['cashier:param'] },
+  // 结算方式字典读取：出纳各页面与供应链单据都会读取
+  { re: /^\/cashier\/settle-types(\/|$)/, perm: 'cashier:dict', alsoPerms: ['cashier:param', 'cashier:journal'] },
   { re: /^\/cashier\/init-balance/,      perm: 'cashier:initbal' },
   { re: /^\/cashier\/bank-statement\/import/, perm: 'cashier:import' },
   { re: /^\/cashier\/bank-statement/,    perm: 'cashier:reconcile' },
@@ -82,8 +86,13 @@ router.use((req: AuthRequest, res, next) => {
   if (req.permissions?.includes('*')) return next()
   // 收付款单只需读取现金/银行末级科目；允许往来岗位读取账户，不扩大日记账增删改权限。
   if (req.method === 'GET' && req.path === '/cashier/accounts' && req.permissions?.includes('scm:arap')) return next()
+  // 供应链单据读取结算方式字典
+  if (req.method === 'GET' && req.path === '/cashier/settle-types' && req.permissions?.some(p => p.startsWith('scm:'))) return next()
   const rule = CASHIER_PERMISSION_RULES.find(r => r.re.test(req.path))
-  if (rule && !req.permissions?.includes(rule.perm)) {
+  const allowed = rule
+    ? req.permissions?.includes(rule.perm) || (rule.alsoPerms?.some(p => req.permissions?.includes(p)) ?? false)
+    : true
+  if (rule && !allowed) {
     return res.status(403).json({ code: 403, message: '无此操作权限' })
   }
   next()
@@ -189,6 +198,11 @@ function ensureDefaultCashierDicts(db: any, accountSetId: string) {
 router.get('/cashier/accounts', (req: AuthRequest, res) => {
   const asid = req.accountSetId || ''
   res.json({ code: 0, data: listCashierAccounts(asid, req.accountScope) })
+})
+
+// ── 出纳币别列表（含本位币，供前端币种切换） ────────────
+router.get('/cashier/currencies', (req: AuthRequest, res) => {
+  res.json({ code: 0, data: listCashierCurrencies(req.accountSetId || '') })
 })
 
 // ── 期初余额 ─────────────────────────────────────────────
@@ -341,7 +355,7 @@ router.delete(
     let deletedVoucher: { voucher_no: string; status: string } | null = null
     if (existing.voucher_no) {
       const voucher = db.prepare(
-        'SELECT id, voucher_no, status FROM vouchers WHERE account_set_id=? AND year=? AND period=? AND voucher_no=? AND source=?'
+        'SELECT id, voucher_no, status FROM vouchers WHERE account_set_id=? AND year=? AND period=? AND CAST(voucher_no AS TEXT)=CAST(? AS TEXT) AND source=?'
       ).get(req.accountSetId, existing.voucher_year, existing.voucher_month, existing.voucher_no, 'cashier') as any
       if (voucher) {
         if (voucher.status === 'posted') {
@@ -442,6 +456,17 @@ router.post(
   }
 )
 
+// DELETE /cashier/bank-statement/:id — 删除未对账的银行对账单
+router.delete('/cashier/bank-statement/:id', operationLog('删除对账单', '出纳管理'), (req: AuthRequest, res) => {
+  const db = getDb()
+  const row = db.prepare('SELECT id, matched FROM bank_statement WHERE id=? AND account_set_id=?')
+    .get(req.params.id, req.accountSetId) as any
+  if (!row) return res.status(404).json({ code: 404, message: '记录不存在' })
+  if (row.matched) return res.status(400).json({ code: 400, message: '已对账的对账单不能删除，请先撤销对账' })
+  db.prepare('DELETE FROM bank_statement WHERE id=? AND account_set_id=?').run(req.params.id, req.accountSetId)
+  res.json({ code: 0, data: { ok: true } })
+})
+
 // ── 银行自动对账 ──────────────────────────────────────────
 router.post(
   '/cashier/reconcile/auto',
@@ -504,17 +529,25 @@ router.post(
   '/cashier/delete-vouchers',
   operationLog('批量删除出纳凭证', '出纳管理'),
   (req: AuthRequest, res) => {
-    const { start_date, end_date } = req.body
+    const { account_code, start_date, end_date } = req.body
     const db = getDb()
     const asId = req.accountSetId || ''
 
-    // 直接从 vouchers 表查 source='cashier' 的凭证，按日期范围过滤
-    const conds = [`account_set_id=?`, `source='cashier'`]
+    // 直接从 vouchers 表查 source='cashier' 的凭证，按日期范围过滤。
+    // 指定 account_code 时，只删除被该科目出纳日记账关联的凭证，避免误删其他现金/银行账户的出纳凭证。
+    const conds = [`v.account_set_id=?`, `v.source='cashier'`]
     const vals: any[] = [asId]
-    if (start_date) { conds.push('voucher_date >= ?'); vals.push(start_date) }
-    if (end_date)   { conds.push('voucher_date <= ?'); vals.push(end_date) }
+    if (account_code) {
+      conds.push(`EXISTS (SELECT 1 FROM cashier_journal j
+        WHERE j.account_set_id = v.account_set_id AND j.account_code = ?
+          AND CAST(j.voucher_no AS TEXT) = CAST(v.voucher_no AS TEXT)
+          AND j.voucher_year = v.year AND j.voucher_month = v.period)`)
+      vals.push(account_code)
+    }
+    if (start_date) { conds.push('v.voucher_date >= ?'); vals.push(start_date) }
+    if (end_date)   { conds.push('v.voucher_date <= ?'); vals.push(end_date) }
     const vouchers = db.prepare(
-      `SELECT id, voucher_no, status, year, period, voucher_type_id FROM vouchers WHERE ${conds.join(' AND ')}`
+      `SELECT v.id, v.voucher_no, v.status, v.year, v.period, v.voucher_type_id FROM vouchers v WHERE ${conds.join(' AND ')}`
     ).all(...vals) as any[]
 
     let deleted = 0, skipped = 0
@@ -534,11 +567,17 @@ router.post(
       }
       // 删完后统一清零：日记账中 voucher_no 非空但对应凭证已不存在的记录
       // 同时清掉 counter_account：该对方科目是生成/编辑凭证时回写进来的，凭证删除后应一并还原为空，便于重新生成时重新挂账
+      const clearConds = [
+        'account_set_id=?',
+        'voucher_no IS NOT NULL',
+        `NOT EXISTS (SELECT 1 FROM vouchers v2 WHERE v2.account_set_id=cashier_journal.account_set_id
+          AND v2.year=cashier_journal.voucher_year AND v2.period=cashier_journal.voucher_month
+          AND CAST(v2.voucher_no AS TEXT)=CAST(cashier_journal.voucher_no AS TEXT))`,
+      ]
+      const clearVals: any[] = [asId]
+      if (account_code) { clearConds.push('account_code=?'); clearVals.push(account_code) }
       db.prepare(`UPDATE cashier_journal SET voucher_year=NULL,voucher_month=NULL,voucher_type=NULL,voucher_no=NULL,counter_account=NULL
-        WHERE account_set_id=? AND voucher_no IS NOT NULL
-          AND NOT EXISTS (SELECT 1 FROM vouchers v2 WHERE v2.account_set_id=cashier_journal.account_set_id
-            AND v2.year=cashier_journal.voucher_year AND v2.period=cashier_journal.voucher_month
-            AND CAST(v2.voucher_no AS TEXT)=CAST(cashier_journal.voucher_no AS TEXT))`).run(asId)
+        WHERE ${clearConds.join(' AND ')}`).run(...clearVals)
     })
     tx()
     res.json({ code: 0, data: { deleted, skipped, deletedNos, affectedGroups: [...groupMap.values()] } })
@@ -594,6 +633,7 @@ router.get('/cashier/journal/search', (req: AuthRequest, res) => {
   const data = searchJournals({
     accountSetId: req.accountSetId || '',
     accountCodes: query.account_codes ? query.account_codes.split(',') : undefined,
+    currency: query.currency || undefined,
     startDate: query.start_date || undefined,
     endDate: query.end_date || undefined,
     summary: query.summary || undefined,
@@ -615,16 +655,16 @@ router.get('/cashier/journal/search', (req: AuthRequest, res) => {
 // ── 出纳日报 ─────────────────────────────────────────────
 
 router.get('/cashier/daily-report', (req: AuthRequest, res) => {
-  const { start_date, end_date } = req.query as Record<string, string>
+  const { start_date, end_date, currency } = req.query as Record<string, string>
   if (!start_date || !end_date) return res.status(400).json({ code: 400, message: '日期区间不能为空' })
-  const data = getAccountBalanceReport({ accountSetId: req.accountSetId || '', startDate: start_date, endDate: end_date })
+  const data = getAccountBalanceReport({ accountSetId: req.accountSetId || '', startDate: start_date, endDate: end_date, currency })
   res.json({ code: 0, data })
 })
 
 // ── 资金收支汇总表 ──────────────────────────────────────────
 
 router.get('/cashier/summary-report', (req: AuthRequest, res) => {
-  const { start_date, end_date, group_by } = req.query as Record<string, string>
+  const { start_date, end_date, currency, group_by } = req.query as Record<string, string>
   if (!['counter_account', 'settle_type', 'month'].includes(group_by)) {
     return res.status(400).json({ code: 400, message: '无效的分组维度' })
   }
@@ -632,18 +672,10 @@ router.get('/cashier/summary-report', (req: AuthRequest, res) => {
     accountSetId: req.accountSetId || '',
     startDate: start_date,
     endDate: end_date,
+    currency,
     groupBy: group_by as 'counter_account' | 'settle_type' | 'month'
   })
   res.json({ code: 0, data })
-})
-
-// ── 结算方式字典 ──────────────────────────────────────────
-router.get('/cashier/settle-types', (req: AuthRequest, res) => {
-  const db = getDb()
-  const list = db
-    .prepare('SELECT code, name FROM settle_type WHERE account_set_id = ? ORDER BY code')
-    .all(req.accountSetId || '')
-  res.json({ code: 0, data: list })
 })
 
 // ── 出纳初始化（清理所有出纳数据） ───────────────────────

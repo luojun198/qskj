@@ -210,7 +210,7 @@
               :model-value="isReportNavVisible(row)"
               size="small"
               :title="isReportNavVisible(row) ? '点击停用导航显示' : '点击启用导航显示'"
-              @change="(value: boolean) => setSortDraftEnabled($index, value)"
+              @change="(value: any) => setSortDraftEnabled($index, value)"
             />
           </template>
         </el-table-column>

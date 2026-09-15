@@ -1,6 +1,22 @@
 <template>
   <div class="page page-summary">
-    
+    <div class="filter-row" style="padding:12px 16px 0">
+      <el-date-picker v-model="dateRange[0]" type="date" value-format="YYYY-MM-DD" placeholder="开始日期" class="filter-ctl--md" @change="load" />
+      <span>至</span>
+      <el-date-picker v-model="dateRange[1]" type="date" value-format="YYYY-MM-DD" placeholder="结束日期" class="filter-ctl--md" @change="load" />
+      <el-select v-model="currency" placeholder="币种" class="filter-ctl--xs" @change="load">
+        <el-option v-for="c in currencies" :key="c" :label="c" :value="c" />
+      </el-select>
+      <el-select v-model="groupBy" placeholder="分组维度" class="filter-ctl--md" @change="load">
+        <el-option label="按月份" value="month" />
+        <el-option label="按结算方式" value="settle_type" />
+        <el-option label="按对方科目" value="counter_account" />
+      </el-select>
+      <el-button type="primary" @click="load"><el-icon><Search /></el-icon>查询</el-button>
+      <el-button plain :disabled="!rows.length" @click="handleExport"><el-icon><Download /></el-icon>导出</el-button>
+      <el-button plain :disabled="!rows.length" @click="handlePrint"><el-icon><Printer /></el-icon>打印</el-button>
+    </div>
+
     <div v-if="rows.length" class="report-body">
       <h4 class="report-title">
         资金收支汇总表
@@ -65,6 +81,8 @@ function cw(key: string, fallback: number) { return colWidth(key, fallback) }
 const today = new Date().toISOString().slice(0, 10)
 const dateRange = ref<[string, string]>([`${today.slice(0, 8)}01`, today])
 const groupBy = ref<'counter_account' | 'settle_type' | 'month'>('month')
+const currency = ref('RMB')
+const currencies = ref<string[]>(['RMB'])
 const rows = ref<any[]>([])
 const loading = ref(false)
 
@@ -94,7 +112,13 @@ function summarize({ columns }: any) {
   return sums
 }
 
-onMounted(load)
+onMounted(async () => {
+  const curRes = await cashierApi.getCurrencies().catch(() => null)
+  if (curRes && curRes.code === 0 && Array.isArray(curRes.data) && curRes.data.length) {
+    currencies.value = curRes.data
+  }
+  await load()
+})
 
 async function load() {
   loading.value = true
@@ -102,6 +126,7 @@ async function load() {
     const res = await cashierApi.getCashFlowSummary({
       start_date: dateRange.value?.[0],
       end_date: dateRange.value?.[1],
+      currency: currency.value,
       group_by: groupBy.value
     })
     if ((res as any).code === 0) {

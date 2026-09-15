@@ -589,7 +589,7 @@ router.post('/switch-operator', authMiddleware, (req: AuthRequest, res) => {
     user.id,
     req.accountSetId,
     req.sessionId || undefined
-  ).filter(session => !isSessionIdleExpired(db, session.last_seen_at, req.remember))
+  ).filter(session => !isSessionIdleExpired(db, session.last_seen_at, req.remember === true))
   const otherIpSession = findOtherIpActiveSession(activeSessions, currentLoginIp, db)
 
   if (otherIpSession && !forceLogin) {

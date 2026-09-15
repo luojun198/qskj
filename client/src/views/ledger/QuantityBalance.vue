@@ -575,6 +575,7 @@ function handleRowDblClick(row: any) {
   else if (row.account_code) query.account_code = row.account_code
   if (filters.value.start_date) query.start_date = filters.value.start_date
   if (filters.value.end_date) query.end_date = filters.value.end_date
+  query.book = Number(row.is_foreign) === 1 ? 'quantity-foreign' : 'quantity'
 
   drillDown('/ledger/detail', query, '库存数量金额表', {
     start_date: filters.value.start_date || '',

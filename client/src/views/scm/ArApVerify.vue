@@ -228,7 +228,7 @@ async function onSideChange(value: string | number | boolean | undefined) {
   const query = { ...route.query, side: nextSide }
   if (partnerCode.value && !partners.value.some(partner => partner.code === partnerCode.value && partnerMatchesArapSide(partner, nextSide))) {
     partnerCode.value = ''
-    query.partner_code = undefined
+    ;(query as any).partner_code = undefined
   }
   if (route.query.side === nextSide) {
     await router.replace({ path: route.path, query })

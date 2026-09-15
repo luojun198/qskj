@@ -1,9 +1,10 @@
 import type Database from 'better-sqlite3'
 
 export function up(db: Database.Database) {
-  db.exec(`
-    ALTER TABLE cashier_init_balance ADD COLUMN init_date TEXT;
-  `)
+  const cols = (db.prepare('PRAGMA table_info(cashier_init_balance)').all() as any[]).map((c: any) => c.name)
+  if (!cols.includes('init_date')) {
+    db.exec(`ALTER TABLE cashier_init_balance ADD COLUMN init_date TEXT;`)
+  }
 }
 
 export function down(db: Database.Database) {

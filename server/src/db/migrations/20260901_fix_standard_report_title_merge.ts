@@ -20,7 +20,7 @@ function normalizeTitle(value: string | null) {
 
 const TITLE_STYLE_KEY = 'align-center font-size-18 font-bold'
 
-export const up: Migration = (db: Database) => {
+export const up: Migration['up'] = (db: Database) => {
   const tableExists = db
     .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`)
     .get('rh_standard_report_cells')
@@ -87,7 +87,7 @@ export const up: Migration = (db: Database) => {
   }
 }
 
-export const down: Migration = (db: Database) => {
+export const down: Migration['down'] = (db: Database) => {
   const tableExists = db
     .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`)
     .get('rh_standard_report_cells')

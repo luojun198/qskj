@@ -515,7 +515,7 @@ function updateFilteredList() {
 
   // 2.6 仅看有库存（按全仓合计判断 _stock_total，而非本仓库存——避免当前仓库无货但其他仓有货的物料被漏掉）
   if (stockOnly.value) {
-    items = items.filter(i => (Number(i._stock_total) || 0) > 0)
+    items = items.filter(i => (Number((i as any)._stock_total) || 0) > 0)
   }
 
   // 3. 关键字过滤

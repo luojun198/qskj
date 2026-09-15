@@ -27,7 +27,7 @@
             <el-checkbox
               v-for="p in group.permissions"
               :key="p.code"
-              v-model="selectedPermissions"
+              v-model="(selectedPermissions as any)"
               :label="p.code"
               size="small"
             >{{ p.name }}</el-checkbox>

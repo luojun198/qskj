@@ -389,7 +389,7 @@ export function getPartnerBalanceSummary(db: Database.Database, accountSetId: st
     const names = db.prepare(`SELECT code, name, partner_type FROM scm_partner WHERE account_set_id=? AND code IN (${summary.map(() => '?').join(',')})`)
       .all(accountSetId, ...summary.map(s => s.partner_code)) as any[]
     const nm = new Map<string, any>(names.map((n: any) => [n.code, n]))
-    for (const s of summary) { s.partner_name = nm.get(s.partner_code)?.name || null; s.partner_type = nm.get(s.partner_code)?.partner_type || null }
+    for (const s of summary) { (s as any).partner_name = nm.get(s.partner_code)?.name || null; (s as any).partner_type = nm.get(s.partner_code)?.partner_type || null }
   }
   return {
     summary,

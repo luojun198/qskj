@@ -578,7 +578,7 @@ async function saveFieldDefs() {
 
   fieldConfigSaving.value = true
   try {
-    await scmApi.saveItemFieldDefs(fields)
+    await scmApi.saveItemFieldDefs(fields as any)
     ElMessage.success('字段配置已保存')
     await loadFieldDefs()
     fieldConfigVisible.value = false

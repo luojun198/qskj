@@ -36,7 +36,7 @@ export function ensureUserRoleLink(
     .prepare('SELECT id FROM roles WHERE id = ? AND account_set_id = ?')
     .get(roleId, accountSetId) as { id: string } | undefined
   if (!role) {
-    if (database.prepare('PRAGMA table_info(users)').all().some((c: { name: string }) => c.name === 'role_id')) {
+    if (database.prepare('PRAGMA table_info(users)').all().some((c: any) => c.name === 'role_id')) {
       database.prepare('UPDATE users SET role_id = NULL WHERE id = ?').run(userId)
     }
     return

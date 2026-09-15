@@ -1,7 +1,7 @@
 import type { Database } from 'better-sqlite3'
 import type { Migration } from '../migrations.js'
 
-export const up: Migration = (db: Database) => {
+export const up: Migration['up'] = (db: Database) => {
   // 独立标准报表主表
   db.exec(`
     CREATE TABLE IF NOT EXISTS rh_standard_reports (
@@ -39,7 +39,7 @@ export const up: Migration = (db: Database) => {
   `)
 }
 
-export const down: Migration = (db: Database) => {
+export const down: Migration['down'] = (db: Database) => {
   db.exec(`DROP TABLE IF EXISTS rh_standard_report_cells`)
   db.exec(`DROP TABLE IF EXISTS rh_standard_reports`)
 }

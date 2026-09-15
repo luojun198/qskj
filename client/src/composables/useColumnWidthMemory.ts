@@ -16,7 +16,7 @@ export function resolveTableColumnKey(column: any): string | undefined {
 /** 列宽变化或表格挂载后触发布局（解决 el-table 不跟新 width 的问题） */
 export function bindTableColumnLayout(
   widths: Ref<SizeMemory>,
-  tableRef: Ref<{ doLayout?: () => void } | undefined>
+  tableRef: Ref<any>
 ) {
   let relayoutPending = false
 
@@ -129,7 +129,7 @@ export function useColumnWidthMemory(
     save()
   }
 
-  function bindTable(tableRef: Ref<{ doLayout?: () => void } | undefined>) {
+  function bindTable(tableRef: Ref<any>) {
     bindTableColumnLayout(widths, tableRef)
   }
 
@@ -168,7 +168,7 @@ export function useColumnWidthMemory(
 
 /** 列表页标准列宽记忆（含 tableRef、bindTable、keep-alive 重新加载） */
 export function useListColumnWidth(tableKey: string, options?: { storageKey?: string }) {
-  const tableRef = ref<{ doLayout?: () => void }>()
+  const tableRef = ref<any>()
   const memory = useColumnWidthMemory(tableKey, options)
   memory.bindTable(tableRef)
   onActivated(() => {
@@ -258,7 +258,7 @@ export function bindAuxTableHorizontalScrollSync(_root: HTMLElement) {
 
 /** 同步宽表表头/表体/合计行 table 宽度，避免右侧与外框留缝 */
 export function syncAuxTableBodyWidth(
-  tableRef: Ref<{ $el?: HTMLElement } | undefined>,
+  tableRef: Ref<any>,
   widthPx: number
 ) {
   if (!Number.isFinite(widthPx) || widthPx <= 0) return
@@ -349,7 +349,7 @@ export function useAuxWideTable(
 
 /** 辅助账簿列表列宽记忆：不绑定 doLayout，避免与固定表格宽度互相触发 */
 export function useAuxColumnWidth(tableKey: string, options?: { storageKey?: string }) {
-  const tableRef = ref<{ doLayout?: () => void }>()
+  const tableRef = ref<any>()
   const memory = useColumnWidthMemory(tableKey, options)
   // 不在 onActivated 再次 load，避免列宽对象替换触发表格重算（列宽已在创建时 load）
   return {

@@ -452,7 +452,7 @@ async function openPrint(mode: 'card' | 'label') {
     mode === 'card' ? buildAssetCardHtml(assets, qrMap) : buildAssetLabelHtml(assets, qrMap)
   printVisible.value = true
 }
-const dicts = ref<AssetDicts>({ category: [], status: [], purpose: [], dept: [] })
+const dicts = ref<AssetDicts>({ category: [], status: [], purpose: [], dept: [] } as any)
 const filters = reactive({ keyword: '', category_code: '', status_code: '', dept_code: '' })
 const pagination = reactive({ page: 1, page_size: 20, total: 0 })
 
@@ -738,8 +738,9 @@ async function handleDispose() {
     if (res.code === 0) {
       disposeVisible.value = false
       ElMessage.success('处置成功')
-      if (res.data.voucher) {
-        ElMessage.success(`已生成清理凭证 ${res.data.voucher.voucherNo || ''}`)
+      const rd: any = res.data
+      if (rd.voucher) {
+        ElMessage.success(`已生成清理凭证 ${rd.voucher.voucherNo || ''}`)
       }
       handleQuery()
     }

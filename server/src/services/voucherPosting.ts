@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid'
-import { centsToYuan } from '../utils/amountUtils.js'
+import { centsToYuan, yuanToCents } from '../utils/amountUtils.js'
 import { buildAuxItemId as buildAuxItemIdUtil } from '../utils/auxItemId.js'
 import { calcSignedBalance } from '../utils/accountBalance.js'
 import { checkPostingIntegrity } from './postingIntegrityCheck.js'
@@ -26,6 +26,7 @@ export interface VoucherLike {
   year: number
   period: number
   status: 'draft' | 'audited' | 'posted'
+  voucher_no?: string
 }
 
 export interface PostingContext {
@@ -101,6 +102,24 @@ function resolvePostingEntries(
   return dbEntries.length > 0 ? dbEntries : entries
 }
 
+/** 按分录 amount 重算借贷（整数分），不平时返回错误文案 */
+export function getPostingBalanceError(entries: VoucherEntryLike[]): string | null {
+  if (!entries || entries.length === 0) {
+    return '凭证没有分录，不能记账'
+  }
+  let debitCents = 0
+  let creditCents = 0
+  for (const entry of entries) {
+    const cents = yuanToCents(Number(entry.amount) || 0)
+    if (entry.direction === 'debit') debitCents += cents
+    else creditCents += cents
+  }
+  if (debitCents !== creditCents) {
+    return `凭证借贷不平衡，拒绝记账：借方 ${centsToYuan(debitCents).toFixed(2)} != 贷方 ${centsToYuan(creditCents).toFixed(2)}`
+  }
+  return null
+}
+
 export function applyVoucherPosting(
   db: any,
   voucher: VoucherLike,
@@ -124,6 +143,13 @@ export function applyVoucherPosting(
   }
 
   const resolvedEntries = resolvePostingEntries(db, voucher.id, entries)
+
+  // FIX-131：过账前最后一道借贷平衡闸，按落库 amount 在整数分域重算，
+  // 杜绝任何调用方（手工/结转/调汇/推凭）绕过录入校验把不平凭证写进 account_balances
+  const balanceError = getPostingBalanceError(resolvedEntries)
+  if (balanceError) {
+    throw new Error(balanceError)
+  }
 
   const integrityCheck = checkPostingIntegrity(
     db,

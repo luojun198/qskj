@@ -59,8 +59,8 @@ export function applyStandardReportHeaderLayout(db: Database) {
   apply()
 }
 
-export const up: Migration = (db: Database) => {
+export const up: Migration['up'] = (db: Database) => {
   applyStandardReportHeaderLayout(db)
 }
 
-export const down: Migration = () => {}
+export const down: Migration['down'] = () => {}

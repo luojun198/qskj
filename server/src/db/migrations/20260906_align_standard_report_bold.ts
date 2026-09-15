@@ -8,7 +8,7 @@ import { collectBoldAlignments } from '../../services/reportBoldAlignment.js'
  * 导入侧已加同一道归一化，这里只是把存量报表补齐；只加不减，可重复执行。
  * down 不回收：无法区分「迁移补的」与「用户后来手工加的」加粗，回滚会误删用户样式。
  */
-export const up: Migration = (db: Database) => {
+export const up: Migration['up'] = (db: Database) => {
   const tableExists = db
     .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`)
     .get('rh_standard_report_cells')
@@ -48,4 +48,4 @@ export const up: Migration = (db: Database) => {
   }
 }
 
-export const down: Migration = () => {}
+export const down: Migration['down'] = () => {}

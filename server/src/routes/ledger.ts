@@ -72,6 +72,23 @@ import { peekAccountSetStartDate } from '../services/accountSetDefaults.js'
 import { hasPreBookColumns, hasForeignPreBookColumns } from '../services/initBalanceScope.js'
 import { resolveClosingExchangeRate } from '../services/fxRevaluation.js'
 
+/** 统一解析「含未记账」布尔参数：兼容 true / 1 / 'true' / '1'（各端点原口径不一） */
+function includeUnpostedFlag(raw: unknown): boolean {
+  return raw === true || raw === 1 || raw === 'true' || raw === '1'
+}
+
+/** 明细/日记/序时账前端会一次性拉较大结果集，设上限避免超大 LIMIT 拖垮服务 */
+const MAX_BULK_PAGE_SIZE = 100000
+function clampBulkPageSize(raw: unknown, fallback = 100): number {
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n <= 0) return fallback
+  return Math.min(Math.floor(n), MAX_BULK_PAGE_SIZE)
+}
+function clampPage(raw: unknown): number {
+  const n = Number(raw)
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1
+}
+
 /** 外币余额表一行：本位币与原币成对，与 buildForeignBalanceQuery 的 SELECT 列一一对应 */
 interface ForeignBalanceTotals {
   foreign_init_balance: number
@@ -164,7 +181,7 @@ router.get('/general', (req: AuthRequest, res) => {
     accountCodeStart: account_code_start as string | undefined,
     accountCodeEnd: account_code_end as string | undefined,
     filterTypes: undefined,
-    includeUnposted: include_unposted === 'true',
+    includeUnposted: includeUnpostedFlag(include_unposted),
     accountScope: req.accountScope,
     accountSetStartDate: peekAccountSetStartDate(db, req.accountSetId || ''),
     preBookEnabled: hasPreBookColumns(db),
@@ -231,6 +248,7 @@ router.get('/detail', (req: AuthRequest, res) => {
     max_amount,
     account_code_start,
     account_code_end,
+    currency_code,
     include_unposted,
     page = 1,
     pageSize = 100,
@@ -260,9 +278,10 @@ router.get('/detail', (req: AuthRequest, res) => {
     maxAmount: max_amount ? Number(max_amount) : undefined,
     accountCodeStart: account_code_start as string | undefined,
     accountCodeEnd: account_code_end as string | undefined,
-    includeUnposted: include_unposted === 'true',
-    page: Number(page),
-    pageSize: Number(pageSize),
+    currencyCode: typeof currency_code === 'string' ? currency_code : undefined,
+    includeUnposted: includeUnpostedFlag(include_unposted),
+    page: clampPage(page),
+    pageSize: clampBulkPageSize(pageSize),
     accountScope: req.accountScope,
     accountSetStartDate: peekAccountSetStartDate(db, req.accountSetId || ''),
     preBookEnabled: hasPreBookColumns(db),
@@ -275,18 +294,10 @@ router.get('/detail', (req: AuthRequest, res) => {
     | { pre_book_debit?: number; pre_book_credit?: number }
     | undefined
 
-  let foreignInitBalance = 0
-  if (account_id && typeof account_id === 'string') {
-    const y = Number(year) || (start_date ? new Date(String(start_date)).getFullYear() : new Date().getFullYear())
-    const fxInit = db
-      .prepare(
-        `SELECT COALESCE(SUM(foreign_init_balance), 0) AS foreign_init_balance
-         FROM init_balances
-         WHERE account_set_id = ? AND account_id = ? AND year = ? AND COALESCE(aux_item_id, '') = ''`
-      )
-      .get(req.accountSetId, account_id, y) as { foreign_init_balance?: number } | undefined
-    foreignInitBalance = Number(fxInit?.foreign_init_balance) || 0
-  }
+  const fxInit = db.prepare(query.foreignInitBalanceSql).get(...query.foreignInitBalanceParams) as
+    | { foreign_init_balance?: number }
+    | undefined
+  const foreignInitBalance = Number(fxInit?.foreign_init_balance) || 0
 
   res.json({
     code: 0,
@@ -449,7 +460,7 @@ router.get('/quantity-balance', requirePermission('ledger:qty'), (req: AuthReque
     startDate: start_date as string | undefined,
     endDate: end_date as string | undefined,
     accountCode: account_code as string | undefined,
-    includeUnposted: include_unposted === 'true' || include_unposted === '1',
+    includeUnposted: includeUnpostedFlag(include_unposted),
     accountScope: req.accountScope,
     accountSetStartDate: peekAccountSetStartDate(db, req.accountSetId || ''),
     preBookEnabled: hasPreBookColumns(db),
@@ -534,7 +545,7 @@ router.get('/foreign-balance', (req: AuthRequest, res) => {
     accountCode: account_code as string | undefined,
     currencyCode: currency_code as string | undefined,
     filterTypes: filterTypesArray,
-    includeUnposted: include_unposted === 'true',
+    includeUnposted: includeUnpostedFlag(include_unposted),
     accountScope: req.accountScope,
     accountSetStartDate: peekAccountSetStartDate(db, req.accountSetId || ''),
     preBookEnabled: hasPreBookColumns(db),
@@ -588,6 +599,8 @@ router.get('/balance', (req: AuthRequest, res) => {
     year: year as string | number | undefined,
     period: period as string | number | undefined,
     accountScope: req.accountScope,
+    accountSetStartDate: peekAccountSetStartDate(db, req.accountSetId || ''),
+    preBookEnabled: hasPreBookColumns(db),
   })
   let list = db.prepare(query.sql).all(...query.params) as any[]
 
@@ -724,7 +737,7 @@ router.get('/subject-analysis', (req: AuthRequest, res) => {
   const rows = queryMonthlyLedgerRows(req, db, {
     year: year as string | number | undefined,
     accountCode: code,
-    includeUnposted: include_unposted === 'true',
+    includeUnposted: includeUnpostedFlag(include_unposted),
     excludeTransfer: true,
   })
 
@@ -764,7 +777,7 @@ router.get('/general-ledger', (req: AuthRequest, res) => {
   const result = queryMonthlyLedgerRows(req, db, {
     year: year as string | number | undefined,
     accountCode: account_code as string | undefined,
-    includeUnposted: include_unposted === 'true',
+    includeUnposted: includeUnpostedFlag(include_unposted),
   })
 
   // 如果指定了科目级次，在汇总计算完成后过滤展示
@@ -828,7 +841,7 @@ router.get('/general-ledger', (req: AuthRequest, res) => {
   }
 
   const y = Number(year) || new Date().getFullYear()
-  const voucherStatusCondition = include_unposted === 'true'
+  const voucherStatusCondition = includeUnpostedFlag(include_unposted)
     ? "v.status IN ('draft', 'audited', 'posted')"
     : "v.status = 'posted'"
   const lastMonthRow = db
@@ -892,9 +905,9 @@ router.get('/cash-journal', (req: AuthRequest, res) => {
     minAmount: min_amount ? Number(min_amount) : undefined,
     maxAmount: max_amount ? Number(max_amount) : undefined,
     oppositeAccountCode: opposite_account_code as string | undefined,
-    includeUnposted: include_unposted === 'true',
-    page: Number(page),
-    pageSize: Number(pageSize),
+    includeUnposted: includeUnpostedFlag(include_unposted),
+    page: clampPage(page),
+    pageSize: clampBulkPageSize(pageSize),
     accountScope: req.accountScope,
   })
 
@@ -943,14 +956,14 @@ router.get('/chronological', (req: AuthRequest, res) => {
     period: period as string | number | undefined,
     startDate: start_date as string | undefined,
     endDate: end_date as string | undefined,
-    includeUnposted: include_unposted === 'true',
+    includeUnposted: includeUnpostedFlag(include_unposted),
     summaryKeyword: summary_keyword as string | undefined,
     minAmount: min_amount as string | number | undefined,
     maxAmount: max_amount as string | number | undefined,
     makerName: maker_name as string | undefined,
     auditorName: auditor_name as string | undefined,
-    page: Number(page),
-    pageSize: Number(pageSize),
+    page: clampPage(page),
+    pageSize: clampBulkPageSize(pageSize),
     accountScope: req.accountScope,
   })
 
@@ -1054,7 +1067,7 @@ router.post('/aux-balance', (req: AuthRequest, res) => {
   }
 
   // 兼容布尔值和字符串
-  const statusValue = (include_unposted === true || include_unposted === 'true')
+  const statusValue = includeUnpostedFlag(include_unposted)
     ? ['draft', 'audited', 'posted']
     : ['posted']
 
@@ -2007,7 +2020,7 @@ router.post('/aux-detail', (req: AuthRequest, res) => {
   }
 
   // 构建凭证状态过滤条件（兼容布尔值和字符串）
-  const statusValue = (include_unposted === true || include_unposted === 'true')
+  const statusValue = includeUnpostedFlag(include_unposted)
     ? ['draft', 'audited', 'posted']
     : ['posted']
   const statusPlaceholders = statusValue.map(() => '?').join(',')
@@ -2597,7 +2610,7 @@ router.get('/cash-flow-trial-balance', (req: AuthRequest, res) => {
     const year = Number(req.query.year) || new Date().getFullYear()
     const period = Number(req.query.period) || new Date().getMonth() + 1
     const scope: CashFlowTrialBalanceScope = req.query.scope === 'ytd' ? 'ytd' : 'month'
-    const includeUnposted = req.query.include_unposted === 'true'
+    const includeUnposted = includeUnpostedFlag(req.query.include_unposted)
 
     const data = getCashFlowTrialBalance(getDb(), accountSetId, year, period, scope, includeUnposted)
     res.json({ code: 0, data })
@@ -2617,7 +2630,7 @@ router.get('/cash-flow-voucher-check', (req: AuthRequest, res) => {
     const year = Number(req.query.year) || new Date().getFullYear()
     const period = Number(req.query.period) || new Date().getMonth() + 1
     const scope: CashFlowTrialBalanceScope = req.query.scope === 'ytd' ? 'ytd' : 'month'
-    const includeUnposted = req.query.include_unposted === 'true'
+    const includeUnposted = includeUnpostedFlag(req.query.include_unposted)
 
     const data = getCashFlowVoucherCheck(getDb(), accountSetId, year, period, scope, includeUnposted)
     res.json({ code: 0, data })
@@ -2697,7 +2710,7 @@ router.get('/multi-column', requirePermission('ledger:multirow'), (req: AuthRequ
       year: Number(req.query.year) || new Date().getFullYear(),
       startMonth: Number(req.query.start_month) || 1,
       endMonth: Number(req.query.end_month) || 12,
-      includeUnposted: req.query.include_unposted === 'true',
+      includeUnposted: includeUnpostedFlag(req.query.include_unposted),
       accountSetStartDate: peekAccountSetStartDate(db, accountSetId),
       preBookEnabled: hasPreBookColumns(db),
     })
@@ -2871,7 +2884,7 @@ router.get('/vat-detail', requirePermission('ledger:detail'), (req: AuthRequest,
       year: Number(req.query.year) || new Date().getFullYear(),
       startMonth: Number(req.query.start_month) || 1,
       endMonth: Number(req.query.end_month) || 12,
-      includeUnposted: req.query.include_unposted === 'true',
+      includeUnposted: includeUnpostedFlag(req.query.include_unposted),
       accountSetStartDate: peekAccountSetStartDate(db, accountSetId),
       preBookEnabled: hasPreBookColumns(db),
     })

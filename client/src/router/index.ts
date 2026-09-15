@@ -238,6 +238,7 @@ const routes: RouteRecordRaw[] = [
         path: 'ledger/detail',
         name: 'DetailLedger',
         component: () => import('@/views/ledger/Detail.vue'),
+        props: { mode: 'base' },
         meta: { title: '明细账', icon: 'Document', parent: '账簿管理' },
       },
       {
@@ -281,6 +282,18 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/ledger/ForeignBalance.vue'),
         meta: {
           title: '外币余额表',
+          icon: 'Coins',
+          parent: '账簿管理',
+          requiresForeignCurrency: true,
+        },
+      },
+      {
+        path: 'ledger/foreign-detail',
+        name: 'ForeignDetailLedger',
+        component: () => import('@/views/ledger/Detail.vue'),
+        props: { mode: 'foreign' },
+        meta: {
+          title: '外币明细账',
           icon: 'Coins',
           parent: '账簿管理',
           requiresForeignCurrency: true,

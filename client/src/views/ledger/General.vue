@@ -46,6 +46,8 @@
           >统计未记账凭证</el-checkbox
         >
         <el-divider direction="vertical" />
+        <el-checkbox v-model="hideZero">隐藏零值</el-checkbox>
+        <el-divider direction="vertical" />
         <el-button type="primary" @click="fetchData"
           ><el-icon><Search /></el-icon>查询</el-button
         >

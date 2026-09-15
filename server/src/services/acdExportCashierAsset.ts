@@ -7,7 +7,7 @@
  *   2. acd_raw 为空时按列顺序从结构化字段重组（仅覆盖已映射列）
  * 列顺序严格按 data_stru.txt（由 acd_reader.py 解析确认）。
  */
-import type Database from 'better-sqlite3'
+import type { Database } from 'better-sqlite3'
 import iconv from 'iconv-lite'
 
 // ── 工具 ──────────────────────────────────────────────────
@@ -81,6 +81,26 @@ const ZC_SYDW_COLS = ['sydw','dw_mc'] as const
 
 export function exportCnMx(db: Database, accountSetId: string): Buffer {
   const rows = db.prepare('SELECT * FROM cashier_journal WHERE account_set_id=? ORDER BY biz_date,seq,created_at').all(accountSetId) as any[]
+  // CW 出纳生成凭证时，cashier_journal.voucher_type 存的是凭证类型 UUID、voucher_no 是「记-001」字符串；
+  // 润衡 cn_mx 的 p_pzlx/p_pzbh 是整数。导出时映射回润衡可识别的数值，保证可逆还原。
+  const vtCodeById = new Map<string, string>(
+    (db.prepare('SELECT id, code FROM voucher_types WHERE account_set_id=?').all(accountSetId) as any[])
+      .map(v => [String(v.id), String(v.code ?? '')])
+  )
+  const acdType = (v: any): string => {
+    if (v == null || v === '') return ''
+    const s = String(v)
+    const mapped = vtCodeById.get(s)
+    if (mapped) return mapped
+    return /^\d+$/.test(s) ? s : ''
+  }
+  const acdNo = (v: any): string => {
+    if (v == null || v === '') return ''
+    const s = String(v)
+    const m = s.match(/(\d+)\s*$/)
+    if (m) return String(Number.parseInt(m[1], 10))
+    return /^\d+$/.test(s) ? s : ''
+  }
   const bufs: Buffer[] = []
   // 静态行序号（ACD dzd_xh 格式）
   for (const r of rows) {
@@ -104,8 +124,8 @@ export function exportCnMx(db: Database, accountSetId: string): Buffer {
       dwbm: r => s(r.unit_code),
       p_nf: r => s(r.voucher_year),
       p_yf: r => s(r.voucher_month),
-      p_pzlx: r => s(r.voucher_type),
-      p_pzbh: r => s(r.voucher_no),
+      p_pzlx: r => acdType(r.voucher_type),
+      p_pzbh: r => acdNo(r.voucher_no),
     })
     bufs.push(rowToGbkLine(cells))
   }

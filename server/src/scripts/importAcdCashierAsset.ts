@@ -30,6 +30,26 @@ function normDate(v: string | undefined): string | null {
   if (!m) return null
   return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`
 }
+/**
+ * rq 缺失/非法时，用 cn_mx 的 nf/yf/dd（年/月/日）拼日期。
+ * 否则 biz_date 为 NULL 会触发 cashier_journal.biz_date NOT NULL，整批导入回滚。
+ */
+function dateFromYmd(nf: string | undefined, yf: string | undefined, dd: string | undefined): string | null {
+  const y = Number.parseInt((nf ?? '').trim(), 10)
+  const m = Number.parseInt((yf ?? '').trim(), 10)
+  const d = Number.parseInt((dd ?? '').trim(), 10)
+  if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return null
+  if (y < 1900 || m < 1 || m > 12 || d < 1 || d > 31) return null
+  return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+}
+/**
+ * ACD 标志位：空 或 '0' 视为未置位，其余视为已置位。
+ * 不能直接用字符串真值判断，否则 '0' 会被误判为 true。
+ */
+function isFlagSet(v: string | undefined): boolean {
+  const t = (v ?? '').trim()
+  return t !== '' && t !== '0'
+}
 /** 整行原始数据保存为 JSON，保证可逆还原 */
 function rawJson(row: AcdRow): string {
   return JSON.stringify(row)
@@ -85,21 +105,34 @@ export function importCashierTables(
          unit_code, reconciled, voucher_year, voucher_month, voucher_type, voucher_no, acd_raw, created_by)
        VALUES (@id,@asid,@km,@bz,@rq,@xh,@zy,@jf,@df,@dfkm,@dw,@khyh,@yhzh,@dwbm,@gzm,@pnf,@pyf,@plx,@pbh,@raw,@lrr)`
     )
+    // 幂等：按「科目+日期+序号+借贷+摘要」去重，重复导入同一账套不产生重复行
+    const existingJournalKeys = new Set<string>(
+      (db.prepare('SELECT account_code, biz_date, seq, debit, credit, summary FROM cashier_journal WHERE account_set_id=?').all(accountSetId) as any[])
+        .map(r => `${r.account_code}|${r.biz_date}|${r.seq}|${r.debit}|${r.credit}|${r.summary ?? ''}`)
+    )
+    let skippedNoDate = 0
+    let skippedDup = 0
     for (const row of tables.cashierJournal) {
       const km = s(row[0])
       if (!km) continue
+      // biz_date NOT NULL：rq 非法时用 nf/yf/dd 兜底，仍无则跳过，避免整批导入回滚
+      const bizDate = normDate(row[2]) ?? dateFromYmd(row[4], row[5], row[6])
+      if (!bizDate) { skippedNoDate++; continue }
+      const dedupKey = `${km}|${bizDate}|${int(row[3]) ?? 0}|${num(row[8])}|${num(row[9])}|${s(row[7]) ?? ''}`
+      if (existingJournalKeys.has(dedupKey)) { skippedDup++; continue }
+      existingJournalKeys.add(dedupKey)
       if (!dryRun)
         ins.run({
           id: uuidv4(),
           asid: accountSetId,
           km,
           bz: s(row[1]) || 'RMB',
-          rq: normDate(row[2]),
+          rq: bizDate,
           xh: int(row[3]) ?? 0,
           zy: s(row[7]),
           jf: num(row[8]),
           df: num(row[9]),
-          gzm: s(row[12]) ? 1 : 0,
+          gzm: isFlagSet(row[12]) ? 1 : 0,
           lrr: s(row[13]),
           dfkm: s(row[15]),
           dw: s(row[17]), // g_qymc 对方单位
@@ -114,6 +147,12 @@ export function importCashierTables(
         })
       stats.cashier.journal++
     }
+    if (skippedNoDate > 0) {
+      stats.warnings.push(`出纳日记账有 ${skippedNoDate} 行日期缺失或非法，已跳过`)
+    }
+    if (skippedDup > 0) {
+      stats.warnings.push(`出纳日记账有 ${skippedDup} 行与库中重复，已跳过`)
+    }
     stats.importedTables.push('cn_mx.txt')
   }
 
@@ -124,25 +163,38 @@ export function importCashierTables(
         (id, account_set_id, account_code, biz_date, debit, credit, settle_type, bill_no, matched, match_batch, source, acd_raw)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
     )
+    // 幂等：按「科目+日期+借贷+票据号」去重，重复导入不产生重复对账单
+    const existingStatementKeys = new Set<string>(
+      (db.prepare('SELECT account_code, biz_date, debit, credit, bill_no FROM bank_statement WHERE account_set_id=?').all(accountSetId) as any[])
+        .map(r => `${r.account_code}|${r.biz_date}|${r.debit}|${r.credit}|${r.bill_no ?? ''}`)
+    )
+    let skippedDupStmt = 0
     for (const row of tables.bankStatements) {
       const km = s(row[2])
       if (!km) continue
+      const bizDate = normDate(row[1])
+      const dedupKey = `${km}|${bizDate}|${num(row[3])}|${num(row[4])}|${s(row[6]) ?? ''}`
+      if (existingStatementKeys.has(dedupKey)) { skippedDupStmt++; continue }
+      existingStatementKeys.add(dedupKey)
       if (!dryRun)
         ins.run(
           uuidv4(),
           accountSetId,
           km,
-          normDate(row[1]),
+          bizDate,
           num(row[3]),
           num(row[4]),
           s(row[5]),
           s(row[6]),
-          s(row[7]) ? 1 : 0,
+          isFlagSet(row[7]) ? 1 : 0,
           int(row[8]),
           'import',
           rawJson(row)
         )
       stats.cashier.bankStatements++
+    }
+    if (skippedDupStmt > 0) {
+      stats.warnings.push(`银行对账单有 ${skippedDupStmt} 行与库中重复，已跳过`)
     }
     stats.importedTables.push('yhdzd.txt')
   }

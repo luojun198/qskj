@@ -4,13 +4,12 @@ import { authMiddleware, AuthRequest, requirePermission, operationLog } from '..
 import {
   buildBatchAuditPreviewData,
   buildBatchDeletePreviewData,
-  deleteBatchVouchers,
-  findPostedVoucher,
   getBatchVoucherFilters,
   loadBatchDraftVouchers,
   loadBatchFilteredVouchers,
   validateBatchVoucherFilters,
 } from '../services/voucherEntry.js'
+import { deleteVouchersWithRefs } from '../services/voucherDelete.js'
 import { validateInitBalanceBalancedForYears } from '../services/initBalanceTrial.js'
 import { applyVoucherPosting, applyVoucherUnpost } from '../services/voucherPosting.js'
 
@@ -95,17 +94,12 @@ router.post(
       return res.status(400).json({ code: 400, message: '未找到符合条件的凭证' })
     }
 
-    const postedVoucher = findPostedVoucher(vouchers)
-    if (postedVoucher) {
-      return res
-        .status(400)
-        .json({ code: 400, message: `存在已记账凭证，无法批量删除：${postedVoucher.voucher_no}` })
+    // FIX-132：与单张删除共用来源守卫（posted / cashier / asset_*）与关联清理（冲红、调汇、供应链回写）
+    try {
+      deleteVouchersWithRefs(db, req.accountSetId || '', vouchers)
+    } catch (err) {
+      return res.status(400).json({ code: 400, message: (err as Error).message })
     }
-
-    deleteBatchVouchers({ db, vouchers })
-    // 清除供应链单据上的 voucher_id 回写（若有），避免单据既不能重新生成凭证也无法反审核
-    const clearScmRef = db.prepare('UPDATE scm_doc SET voucher_id=NULL WHERE account_set_id=? AND voucher_id=?')
-    for (const v of vouchers) clearScmRef.run(req.accountSetId, v.id)
 
     res.json({
       code: 0,

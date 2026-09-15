@@ -1,6 +1,6 @@
 import axios, { type AxiosRequestConfig } from 'axios'
 import { ElMessage } from 'element-plus'
-import { ApiResponse } from '@cw/shared-types'
+import type { ApiResponse } from '@cw/shared-types'
 import { getStateErrorMessage, readStateError } from '@/utils/stateRecovery'
 
 export type RequestConfig = AxiosRequestConfig & {

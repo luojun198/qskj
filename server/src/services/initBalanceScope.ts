@@ -18,6 +18,7 @@
  * 否则同一科目会再次出现两套期初数。
  */
 
+import type { Database } from 'better-sqlite3'
 import { buildDirectionSignedNetSql } from '../utils/accountBalance.js'
 
 /**
@@ -120,7 +121,7 @@ export function buildOpeningBalanceSumExpr(
  */
 const preBookColumnCache = new WeakMap<object, boolean>()
 
-export function hasPreBookColumns(db: { prepare: (sql: string) => { all: () => unknown[] } }): boolean {
+export function hasPreBookColumns(db: Database): boolean {
   const key = db as unknown as object
   const cached = preBookColumnCache.get(key)
   if (cached !== undefined) return cached
@@ -147,9 +148,7 @@ export function hasPreBookColumns(db: { prepare: (sql: string) => { all: () => u
  */
 const foreignPreBookColumnCache = new WeakMap<object, boolean>()
 
-export function hasForeignPreBookColumns(db: {
-  prepare: (sql: string) => { all: () => unknown[] }
-}): boolean {
+export function hasForeignPreBookColumns(db: Database): boolean {
   const key = db as unknown as object
   const cached = foreignPreBookColumnCache.get(key)
   if (cached !== undefined) return cached

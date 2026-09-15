@@ -7,6 +7,21 @@
           <el-icon><Check /></el-icon>
           保存
         </el-button>
+        <el-button plain :disabled="locked" @click="handleDownloadTemplate">
+          <el-icon><Document /></el-icon>下载模板
+        </el-button>
+        <el-upload
+          :auto-upload="false"
+          :show-file-list="false"
+          accept=".xlsx,.xls"
+          :disabled="locked"
+          :on-change="handleImport"
+        >
+          <el-button plain :disabled="locked"><el-icon><Upload /></el-icon>导入</el-button>
+        </el-upload>
+        <el-button plain @click="handleExport">
+          <el-icon><Download /></el-icon>导出
+        </el-button>
       </div>
     </div>
     <div ref="tableContainerRef" class="table-container">
@@ -72,13 +87,27 @@ onMounted(async () => {
   locked.value = !!isLocked
 
   const existing = new Map((ibRows ?? []).map((r: any) => [`${r.account_code}::${r.currency}`, r.balance]))
-  rows.value = (acRes.data ?? []).map((a: any) => ({
-    account_code: a.code,
-    account_name: acMap.get(a.code) as string | undefined,
-    currency: 'RMB',
-    balance: existing.get(`${a.code}::RMB`) ?? 0,
-    _dirty: false,
-  }))
+  // 每个科目至少一行 RMB；已在库中存在的非本位币期初也一并列出，避免外币出纳期初导入后不可见/不可改
+  const currenciesByCode = new Map<string, Set<string>>()
+  for (const r of (ibRows ?? []) as any[]) {
+    if (!currenciesByCode.has(r.account_code)) currenciesByCode.set(r.account_code, new Set())
+    currenciesByCode.get(r.account_code)!.add(r.currency)
+  }
+  const built: Row[] = []
+  for (const a of (acRes.data ?? [])) {
+    const set = currenciesByCode.get(a.code) ?? new Set<string>()
+    set.add('RMB')
+    for (const cur of set) {
+      built.push({
+        account_code: a.code,
+        account_name: acMap.get(a.code) as string | undefined,
+        currency: cur,
+        balance: (existing.get(`${a.code}::${cur}`) as number) ?? 0,
+        _dirty: false,
+      })
+    }
+  }
+  rows.value = built.sort((x, y) => x.account_code.localeCompare(y.account_code) || x.currency.localeCompare(y.currency))
 })
 
 async function handleSaveAll() {

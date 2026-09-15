@@ -29,7 +29,7 @@ function addColumnIfMissing(db: Database, table: string, column: string, definit
   db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
 }
 
-export const up: Migration = (db: Database) => {
+export const up: Migration['up'] = (db: Database) => {
   // 单元格：对齐 report_cells 的字段集
   // 注意 cell_type 不加 CHECK 约束——SQLite 的 ALTER TABLE ADD COLUMN 无法回头补 CHECK，
   // 取值合法性由写接口保证（'text' | 'formula' | 'number' | 'empty' | 'merged'）。
@@ -80,7 +80,7 @@ export const up: Migration = (db: Database) => {
   }
 }
 
-export const down: Migration = () => {
+export const down: Migration['down'] = () => {
   // SQLite 早期版本不支持 DROP COLUMN，且这些列均可为空/带默认值，
   // 保留它们不会影响旧代码读写，故回滚为空操作。
 }

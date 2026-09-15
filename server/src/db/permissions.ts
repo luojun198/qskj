@@ -389,7 +389,7 @@ export const PRESET_ROLES = [
       'base:account', 'base:summary', 'base:template',
       'period:init',
       'cashier:journal', 'cashier:initbal', 'cashier:reconcile',
-      'cashier:voucher', 'cashier:import', 'cashier:report', 'cashier:param',
+      'cashier:voucher', 'cashier:import', 'cashier:report', 'cashier:param', 'cashier:dict',
       'asset:view', 'asset:edit', 'asset:dict', 'asset:depr',
       'asset:dispose', 'asset:inventory', 'asset:report', 'asset:param',
       'asset:change', 'asset:impair', 'asset:requisition',

@@ -47,6 +47,7 @@ export interface ScmItem {
   batch_flag?: number
   is_asset?: number
   is_leaf?: number
+  parent_id?: string | null
   field_values?: Record<string, any>
   supplier_code?: string
   default_warehouse_code?: string

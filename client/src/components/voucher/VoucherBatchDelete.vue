@@ -37,7 +37,7 @@
             {{ previewData.lastVoucherNo || '-' }}
           </div>
           <div v-if="previewData.blockedVoucherNo" style="margin-top: 4px; color: #f56c6c">
-            命中已记账凭证：{{ previewData.blockedVoucherNo }}，当前条件下不可删除
+            {{ previewData.blockedReason || '命中已记账凭证' }}：{{ previewData.blockedVoucherNo }}，当前条件下不可删除
           </div>
         </div>
       </el-form-item>
@@ -82,6 +82,7 @@ const previewData = ref({
   firstVoucherNo: null as string | null,
   lastVoucherNo: null as string | null,
   blockedVoucherNo: null as string | null,
+  blockedReason: null as string | null,
 })
 
 watch(
@@ -109,6 +110,7 @@ async function handlePreview() {
       firstVoucherNo: string | null
       lastVoucherNo: string | null
       blockedVoucherNo: string | null
+      blockedReason?: string | null
     }>('/voucher/vouchers/batch-delete/preview', {
       start_date,
       end_date,
@@ -121,6 +123,7 @@ async function handlePreview() {
       firstVoucherNo: res.data?.firstVoucherNo || null,
       lastVoucherNo: res.data?.lastVoucherNo || null,
       blockedVoucherNo: res.data?.blockedVoucherNo || null,
+      blockedReason: res.data?.blockedReason || null,
     }
   } finally {
     previewing.value = false
@@ -172,6 +175,6 @@ async function handleDelete() {
 function handleClose() {
   visible.value = false
   form.value = { dateRange: [], voucher_type_ids: [], start_no: '', end_no: '' }
-  previewData.value = { count: null, firstVoucherNo: null, lastVoucherNo: null, blockedVoucherNo: null }
+  previewData.value = { count: null, firstVoucherNo: null, lastVoucherNo: null, blockedVoucherNo: null, blockedReason: null }
 }
 </script>

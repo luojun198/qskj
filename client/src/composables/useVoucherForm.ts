@@ -72,7 +72,7 @@ export function useVoucherForm(auxCategories: Ref<any[]>) {
     if (entry.id) {
       next.id = entry.id
     }
-    next.account_id = entry.account_id || ''
+    next.account_id = String(entry.account_id ?? '')
     next.account_code = entry.account_code || ''
     next.account_name = entry.account_name || ''
     next.summary = entry.summary || ''
@@ -119,8 +119,8 @@ export function useVoucherForm(auxCategories: Ref<any[]>) {
     for (const cat of auxCategories.value) {
       const dynamicKey = `_${cat.code}_id`
       const fixedKey = `${cat.code}_id`
-      if (!next[dynamicKey]) {
-        next[dynamicKey] = entry[dynamicKey] || entry[fixedKey] || ''
+      if (!(next as any)[dynamicKey]) {
+        ;(next as any)[dynamicKey] = (entry as any)[dynamicKey] || (entry as any)[fixedKey] || ''
       }
     }
 
@@ -189,9 +189,9 @@ export function useVoucherForm(auxCategories: Ref<any[]>) {
       entries.push(createEntry())
     }
     form.value = {
-      id: voucher.id,
-      voucher_type_id: voucher.voucher_type_id || '',
-      voucher_no: voucher.voucher_no || '',
+      id: String(voucher.id),
+      voucher_type_id: String(voucher.voucher_type_id ?? ''),
+      voucher_no: String(voucher.voucher_no ?? ''),
       voucher_date: voucher.voucher_date,
       entries,
       remark: voucher.remark || '',

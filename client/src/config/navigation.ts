@@ -111,6 +111,7 @@ const ROUTE_PERMISSION_MAP: Record<string, string | string[]> = {
   '/ledger/cash-journal': ['ledger:cash', 'ledger:bank'],
   '/ledger/cash-flow-trial-balance': 'ledger:cashflow',
   '/ledger/foreign-balance': 'ledger:foreign',
+  '/ledger/foreign-detail': 'ledger:foreign',
   '/ledger/quantity-balance': 'ledger:qty',
   '/ledger/voucher-summary': 'ledger:vsummary',
   '/ledger/subject-analysis': 'ledger:balance',
@@ -365,6 +366,13 @@ function getStaticNavApps(enableCashFlow: boolean, enableForeignCurrency = false
     ledgerItems.push({
       path: '/ledger/foreign-balance',
       title: '外币余额表',
+      permission: 'ledger:foreign',
+      requiresForeignCurrency: true,
+      icon: 'Coins',
+    })
+    ledgerItems.push({
+      path: '/ledger/foreign-detail',
+      title: '外币明细账',
       permission: 'ledger:foreign',
       requiresForeignCurrency: true,
       icon: 'Coins',

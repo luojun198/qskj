@@ -48,11 +48,7 @@ function rowCredit(row: InitBalanceRow): number {
 
 /** 按末级科目汇总期初借贷（避免父科目重复累加；辅助科目取科目汇总行，见 initBalanceScope） */
 export function getInitBalanceTrialTotals(
-  db: {
-    prepare: (sql: string) => {
-      all: (...args: unknown[]) => Array<{ id: string } | InitBalanceRow>
-    }
-  },
+  db: { prepare: (sql: string) => any },
   accountSetId: string,
   year: number
 ): InitBalanceTrialTotals {

@@ -33,7 +33,7 @@
             <el-table-column label="日期" prop="date" width="105" />
             <el-table-column label="类型" width="80" align="center">
               <template #default="{ row }">
-                <el-tag :type="entryTagType(row.type)" size="small">{{ entryTypeLabel(row.type) }}</el-tag>
+                <el-tag :type="entryTagType(row.type) as any" size="small">{{ entryTypeLabel(row.type) }}</el-tag>
               </template>
             </el-table-column>
             <el-table-column label="摘要" prop="summary" min-width="160" show-overflow-tooltip />

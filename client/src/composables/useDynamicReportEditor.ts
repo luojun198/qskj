@@ -25,6 +25,7 @@ type TemplateSheet = {
 type ExecutionCell = {
   id: string
   display_value: string
+  numeric_value?: number | string | null
   error: string | null
   status: 'ok' | 'error'
 }

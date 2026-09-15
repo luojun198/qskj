@@ -224,7 +224,7 @@ import {
   buildBalanceSheetExportColumns,
   buildBalanceSheetSummaryValues,
 } from '@/utils/ledgerExportBuilders'
-import { splitBalanceToDebitCredit } from '@/utils/exportLedgerHelpers'
+import { splitBalanceToDebitCredit, sumBalanceSides } from '@/utils/exportLedgerHelpers'
 
 const { containerRef: tableContainerRef, tableHeight, relayoutAfterData } = useFillHeightTable({ flow: true })
 
@@ -399,32 +399,19 @@ const isBalanced = computed(() => {
   const data = list.value
   const t = 0.01
   // 叶节点 = 当前数据集里没有任何以本科目编码为前缀的子项；
-  // 不依赖具体级次，避免"展开到 3 级但数据最深只到 2 级"时漏掉行。
+  // 不依赖具体级次，避免“展开到 3 级但数据最深只到 2 级”时漏掉行。
   const leafData = data.filter(
     row => !data.some(r => r.account_code !== row.account_code && r.account_code.startsWith(row.account_code))
   )
-  const initDebit = leafData.reduce(
-    (s, r) => s + (r.direction === 'debit' && r.init_balance > 0 ? r.init_balance : 0),
-    0
-  )
-  const initCredit = leafData.reduce(
-    (s, r) => s + (r.direction === 'credit' && r.init_balance > 0 ? r.init_balance : 0),
-    0
-  )
+  // 用 sumBalanceSides 按科目方向拆分借贷，反方向（负数）余额会落到另一侧，避免被漏计
+  const init = sumBalanceSides(leafData, 'init_balance')
+  const end = sumBalanceSides(leafData, 'end_balance')
   const yearDebit = leafData.reduce((s, r) => s + (r.year_debit || 0), 0)
   const yearCredit = leafData.reduce((s, r) => s + (r.year_credit || 0), 0)
-  const endDebit = leafData.reduce(
-    (s, r) => s + (r.direction === 'debit' && r.end_balance > 0 ? r.end_balance : 0),
-    0
-  )
-  const endCredit = leafData.reduce(
-    (s, r) => s + (r.direction === 'credit' && r.end_balance > 0 ? r.end_balance : 0),
-    0
-  )
   return (
-    Math.abs(initDebit - initCredit) < t &&
+    Math.abs(init.debit - init.credit) < t &&
     Math.abs(yearDebit - yearCredit) < t &&
-    Math.abs(endDebit - endCredit) < t
+    Math.abs(end.debit - end.credit) < t
   )
 })
 
@@ -469,22 +456,13 @@ function getSummaries(param: { columns: TableColumnCtx<any>[]; data: any[] }) {
     r => !all.some(o => o.account_code !== r.account_code && o.account_code.startsWith(r.account_code))
   )
 
-  const calcInitDebit = leafData.reduce(
-    (s, r) => s + (r.direction === 'debit' && r.init_balance > 0 ? r.init_balance : 0),
-    0
-  )
-  const calcInitCredit = leafData.reduce(
-    (s, r) => s + (r.direction === 'credit' && r.init_balance > 0 ? r.init_balance : 0),
-    0
-  )
-  const calcEndDebit = leafData.reduce(
-    (s, r) => s + (r.direction === 'debit' && r.end_balance > 0 ? r.end_balance : 0),
-    0
-  )
-  const calcEndCredit = leafData.reduce(
-    (s, r) => s + (r.direction === 'credit' && r.end_balance > 0 ? r.end_balance : 0),
-    0
-  )
+  // 用 sumBalanceSides 按科目方向拆分，反方向（负数）余额落到另一侧，合计不再漏计
+  const initSides = sumBalanceSides(leafData, 'init_balance')
+  const endSides = sumBalanceSides(leafData, 'end_balance')
+  const calcInitDebit = initSides.debit
+  const calcInitCredit = initSides.credit
+  const calcEndDebit = endSides.debit
+  const calcEndCredit = endSides.credit
   const calcYearDebit = leafData.reduce((s, r) => s + (r.year_debit || 0), 0)
   const calcYearCredit = leafData.reduce((s, r) => s + (r.year_credit || 0), 0)
 

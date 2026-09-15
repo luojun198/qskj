@@ -3,6 +3,14 @@
     
     <!-- 盘点列表 / 盘点详情 -->
     <template v-if="!currentInventory">
+      <div class="list-toolbar" style="padding: 0 16px 8px">
+        <el-button type="primary" size="small" @click="openCreateDialog">
+          <el-icon><Plus /></el-icon>新建盘点
+        </el-button>
+        <el-button plain size="small" :loading="loading" @click="loadList">
+          <el-icon><Refresh /></el-icon>刷新
+        </el-button>
+      </div>
       <el-table ref="tableRef" :data="inventories" size="small" border stripe highlight-current-row
         @row-click="openInventory" style="cursor:pointer" @header-dragend="onDragEnd">
         <el-table-column label="盘点名称" prop="name" min-width="160" :width="widths.name" />
@@ -165,20 +173,26 @@ function cw(key: string, fallback: number) { return colWidth(key, fallback) }
 const fmtAmt = (v: number) =>
   v == null || v === 0 ? '0.00' : v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
-const statusTag = (s: string) => ({ draft: 'info', in_progress: 'warning', completed: 'success' }[s] || 'info')
+const statusTag = (s: string): any => ({ draft: 'info', in_progress: 'warning', completed: 'success' }[s] || 'info')
 const statusLabel = (s: string) => ({ draft: '草稿', in_progress: '盘点中', completed: '已完成' }[s] || s)
-const itemStatusTag = (s: string) => ({ normal: 'success', surplus: 'warning', deficit: 'danger', damaged: 'danger' }[s] || 'info')
+const itemStatusTag = (s: string): any => ({ normal: 'success', surplus: 'warning', deficit: 'danger', damaged: 'danger' }[s] || 'info')
 const itemStatusLabel = (s: string) => ({ normal: '正常', surplus: '盘盈', deficit: '盘亏', damaged: '损毁' }[s] || s)
 
 // ── 盘点列表 ──────────────────────────────────────────
 const inventories = ref<InventorySummary[]>([])
+const loading = ref(false)
 const createVisible = ref(false)
 const creating = ref(false)
 const createForm = ref({ name: '', inventory_date: '', remark: '', generate_voucher: false })
 
 async function loadList() {
-  const res = await fixedAssetApi.getInventories()
-  if (res.code === 0) inventories.value = res.data
+  loading.value = true
+  try {
+    const res = await fixedAssetApi.getInventories()
+    if (res.code === 0) inventories.value = res.data
+  } finally {
+    loading.value = false
+  }
 }
 
 function openCreateDialog() {

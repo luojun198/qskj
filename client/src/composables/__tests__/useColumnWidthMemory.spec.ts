@@ -12,13 +12,13 @@ describe('useColumnWidthMemory', () => {
   beforeEach(() => {
     vi.stubGlobal('localStorage', {
       store: {} as Record<string, string>,
-      getItem(key: string) {
+      getItem(this: any, key: string) {
         return this.store[key] ?? null
       },
-      setItem(key: string, value: string) {
+      setItem(this: any, key: string, value: string) {
         this.store[key] = value
       },
-      removeItem(key: string) {
+      removeItem(this: any, key: string) {
         delete this.store[key]
       },
     })

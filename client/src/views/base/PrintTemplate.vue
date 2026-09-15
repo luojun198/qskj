@@ -129,7 +129,7 @@ const handleEdit = (template: PrintTemplate) => {
 
 async function upgradeTemplate(template: PrintTemplate, openDesigner = true) {
   const { payload, warnings } = buildUpgradedTemplatePayload(template)
-  await updatePrintTemplate(template.id, payload)
+  await updatePrintTemplate(template.id, payload as any)
   if (openDesigner) {
     if (warnings.length) ElMessage.warning(warnings[0])
     else ElMessage.success('已升级，可在设计器中核对分录表')

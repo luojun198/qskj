@@ -457,12 +457,9 @@ function insertMonthlySubtotals(entries: any[], account: any): any[] {
     const entryMonth = entry.voucher_date.substring(0, 7)
     const entryYear = entry.voucher_date.substring(0, 4)
     
-    if (entryYear !== currentYear) {
-      currentYear = entryYear
-      yearlyDebit = 0
-      yearlyCredit = 0
-    }
-    
+    // 跨年重置累计延后到小计推送之后，避免上一年 12 月“本年累计”被清零
+    const yearChanged = entryYear !== currentYear
+
     if (currentMonth && entryMonth !== currentMonth) {
       result.push({
         id: `__monthly_subtotal_${currentMonth}__`,
@@ -502,6 +499,12 @@ function insertMonthlySubtotals(entries: any[], account: any): any[] {
       
       monthlyDebit = 0
       monthlyCredit = 0
+    }
+
+    if (yearChanged) {
+      currentYear = entryYear
+      yearlyDebit = 0
+      yearlyCredit = 0
     }
     
     if (entry.direction === 'debit') {

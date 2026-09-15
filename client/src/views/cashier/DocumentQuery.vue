@@ -1,6 +1,46 @@
 <template>
   <div class="page page-document-query">
-    
+    <div class="filter-row" style="padding:0 16px 8px">
+      <el-select
+        v-model="filters.account_codes"
+        multiple
+        collapse-tags
+        collapse-tags-tooltip
+        clearable
+        filterable
+        placeholder="科目（可多选）"
+        class="filter-ctl--lg"
+      >
+        <el-option v-for="a in accounts" :key="a.code" :label="`${a.code} ${a.name}`" :value="a.code" />
+      </el-select>
+      <el-select v-model="filters.currency" clearable placeholder="币种" class="filter-ctl--xs">
+        <el-option v-for="c in currencies" :key="c" :label="c" :value="c" />
+      </el-select>
+      <el-date-picker
+        v-model="dateRange"
+        type="daterange"
+        value-format="YYYY-MM-DD"
+        start-placeholder="开始日期"
+        end-placeholder="结束日期"
+        class="filter-ctl--lg"
+      />
+      <el-input v-model="filters.summary" placeholder="摘要" clearable class="filter-ctl--sm" @keyup.enter="handleQuery" />
+      <el-input v-model="filters.counter_unit" placeholder="对方单位" clearable class="filter-ctl--sm" @keyup.enter="handleQuery" />
+      <el-select v-model="filters.reconciled" clearable placeholder="对账状态" class="filter-ctl--sm">
+        <el-option label="已对账" :value="1" />
+        <el-option label="未对账" :value="0" />
+      </el-select>
+      <el-select v-model="filters.has_voucher" clearable placeholder="关联凭证" class="filter-ctl--sm">
+        <el-option label="已生成" :value="1" />
+        <el-option label="未生成" :value="0" />
+      </el-select>
+      <el-button type="primary" @click="handleQuery"><el-icon><Search /></el-icon>查询</el-button>
+      <el-button plain @click="resetFilters(); handleQuery()">重置</el-button>
+      <el-divider direction="vertical" />
+      <el-button plain :disabled="!rows.length" @click="handleExport"><el-icon><Download /></el-icon>导出</el-button>
+      <el-button plain :disabled="!rows.length" @click="handlePrint"><el-icon><Printer /></el-icon>打印</el-button>
+    </div>
+
     <!-- 流水表格 -->
     <div ref="tableContainerRef" class="table-container">
       <el-table ref="tableRef" :data="rows" :height="tableHeight" border stripe size="small" class="compact-data-table" v-loading="loading" @header-dragend="onDragEnd">
@@ -65,7 +105,8 @@ bindTable(tableRef)
 const accounts = ref<{ code: string; name: string; is_cash: number; is_bank: number }[]>([])
 const cashAccounts = computed(() => accounts.value.filter(a => a.is_cash))
 const bankAccounts = computed(() => accounts.value.filter(a => a.is_bank && !a.is_cash))
-const settleTypes = ref<{ code: string; name: string }[]>([])
+  const settleTypes = ref<{ code: string; name: string }[]>([])
+  const currencies = ref<string[]>(['RMB'])
 
 function getCurrentMonthRange(): [string, string] {
   const now = new Date()
@@ -85,6 +126,7 @@ const total = ref(0)
 
 const filters = ref({
   account_codes: [] as string[],
+  currency: '',
   summary: '',
   settle_types: [] as string[],
   bill_no: '',
@@ -100,6 +142,7 @@ const filters = ref({
 const activeFilterCount = computed(() => {
   let count = 0
   if (filters.value.account_codes?.length > 0) count++
+  if (filters.value.currency) count++
   if (dateRange.value?.length) count++
   if (filters.value.settle_types?.length > 0) count++
   if (filters.value.bill_no) count++
@@ -124,18 +167,22 @@ const getSettleTypeName = (code: string) => {
 const fmt = (v: number) => v === 0 ? '0.00' : v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
 onMounted(async () => {
-  const [accRes, stRes] = await Promise.all([
+  const [accRes, stRes, curRes] = await Promise.all([
     cashierApi.getAccounts(),
-    cashierApi.getSettleTypes()
+    cashierApi.getSettleTypes(),
+    cashierApi.getCurrencies().catch(() => null),
   ])
   if (accRes.code === 0) accounts.value = accRes.data
   if (stRes.code === 0) settleTypes.value = stRes.data
+  if (curRes && curRes.code === 0 && Array.isArray(curRes.data) && curRes.data.length) currencies.value = curRes.data
+  await loadData()
 })
 
 function resetFilters() {
   dateRange.value = getCurrentMonthRange()
   filters.value = {
     account_codes: [],
+    currency: '',
     summary: '',
     settle_types: [],
     bill_no: '',

@@ -19,8 +19,8 @@ export function up(db: Database.Database) {
       summary TEXT,                          -- zy 摘要
       debit REAL NOT NULL DEFAULT 0,         -- jf 借方(收入)
       credit REAL NOT NULL DEFAULT 0,        -- df 贷方(支出)
-      settle_type TEXT,                      -- 结算方式 jslb
-      bill_no TEXT,                          -- 票据号
+      settle_type TEXT,                      -- 结算方式（人工录入；cn_mx 无对应列）
+      bill_no TEXT,                          -- 票据号（人工录入；cn_mx 无对应列）
       counter_unit TEXT,                     -- g_qymc 对方单位
       counter_account TEXT,                  -- dfkm 对方科目
       bank_name TEXT,                        -- khyh 开户行

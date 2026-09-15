@@ -24,6 +24,10 @@ export type ParsedKmbmRow = {
   isForeign: boolean
   /** bz 币种编码（大写）；空则 null */
   currencyCode: string | null
+  /** sls=1：数量核算科目 */
+  isQuantity: boolean
+  /** dw 计量单位；非数量科目或占位值（如 '0'）时为 null */
+  quantityUnit: string | null
 }
 
 export function mapDirectionFromYefx(yefx: string | undefined, accountCode: string): 'debit' | 'credit' {
@@ -82,6 +86,10 @@ export function parseKmbmRow(row: AcdKmbmRow): ParsedKmbmRow | null {
   const isCashClass = (row[22] || '0').trim() === '1'
   const { isCash, isBank } = resolveCashBankFlags(code, name, isCashClass)
   const bz = (row[7] || '').trim().toUpperCase()
+  // 6 sls 数量核算标志；8 dw 计量单位（'0' 为占位，不计单位）
+  const isQuantity = (row[6] || '').trim() === '1'
+  const rawUnit = (row[8] || '').trim()
+  const quantityUnit = isQuantity && rawUnit && rawUnit !== '0' ? rawUnit : null
 
   return {
     code,
@@ -98,5 +106,7 @@ export function parseKmbmRow(row: AcdKmbmRow): ParsedKmbmRow | null {
     isBank,
     isForeign: (row[5] || '0').trim() === '1',
     currencyCode: bz || null,
+    isQuantity,
+    quantityUnit,
   }
 }

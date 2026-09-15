@@ -1,6 +1,14 @@
 <template>
   <div class="page page-recon">
-    
+    <div class="filter-row" style="padding: 12px 16px 0">
+      <el-select v-model="accountCode" placeholder="选择银行科目" style="width: 220px" @change="load">
+        <el-option v-for="a in bankAccounts" :key="a.code" :label="`${a.code} ${a.name}`" :value="a.code" />
+      </el-select>
+      <el-date-picker v-model="endDate" type="date" value-format="YYYY-MM-DD" placeholder="截止日期" style="width: 150px" @change="load" />
+      <el-button type="primary" @click="load"><el-icon><Search /></el-icon>查询</el-button>
+      <el-button plain :disabled="!data" @click="handlePrint"><el-icon><Printer /></el-icon>打印</el-button>
+    </div>
+
     <div v-if="data" :key="renderKey" class="recon-body">
       <!-- 余额对照卡片 -->
       <div class="balance-cards">

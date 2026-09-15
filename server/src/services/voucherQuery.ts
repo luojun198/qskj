@@ -85,7 +85,7 @@ export function buildBatchVoucherQuery(
   }
 
   return {
-    sql: `SELECT id, voucher_no, status, maker_id FROM vouchers WHERE ${conditions.join(' AND ')}${scopeSql} ORDER BY voucher_date ASC, voucher_no ASC`,
+    sql: `SELECT id, voucher_no, status, maker_id, source FROM vouchers WHERE ${conditions.join(' AND ')}${scopeSql} ORDER BY voucher_date ASC, voucher_no ASC`,
     params: [...params, ...scopeParams],
   }
 }

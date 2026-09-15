@@ -992,7 +992,7 @@ function mapWorkbookCell(
   if (cell.f) {
     return { cellType: 'formula', textValue: null, formulaText: `=${shiftFormulaRows(cell.f, -1)}` }
   }
-  if (cell.t === 's' || cell.t === 'str') {
+  if ((cell.t as string) === 's' || (cell.t as string) === 'str') {
     const text = repairLatin1Gbk(String(cell.v ?? '')).replace(/\0/g, '').trim()
     if (!text) return null
     const isFormula = text.startsWith('@') || text.startsWith('=')

@@ -429,7 +429,7 @@ export function appendAccountScopeCondition(
   ctx: AccountScopeContext | undefined,
   column: string,
   conditions: string[],
-  params: string[]
+  params: Array<string | number>
 ): void {
   if (!ctx || ctx.bypass || !ctx.restricted) return
   if (ctx.allowedAccountIds.size === 0) {

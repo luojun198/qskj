@@ -21,8 +21,19 @@ export const useSystemParamsStore = defineStore('systemParams', () => {
     return Number.isInteger(y) && y > 1900 ? y : 0
   })
 
+  // 同一时刻多处（Layout / 页面 / 组件）并发调用 load 时共用一个在途请求，避免重复打 /system/params
+  let inflight: Promise<void> | null = null
+
   async function load(force = false) {
     if (loaded.value && !force) return
+    if (inflight) return inflight
+    inflight = doLoad().finally(() => {
+      inflight = null
+    })
+    return inflight
+  }
+
+  async function doLoad() {
     try {
       const res = await request.get<any[]>('/system/params')
       const params = res.data || []

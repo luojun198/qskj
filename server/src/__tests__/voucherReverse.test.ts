@@ -94,8 +94,10 @@ describe('凭证冲红：路由前置校验', () => {
     expect(routes).toContain('红字凭证本身不能再次冲红')
   })
 
-  it('删除凭证时清理冲红关联的对端引用', () => {
-    expect(routes).toMatch(/UPDATE vouchers SET reversed_by_voucher_id=NULL/)
-    expect(routes).toMatch(/UPDATE vouchers SET reversal_of_voucher_id=NULL/)
+  it('删除凭证时清理冲红关联的对端引用（FIX-132 后统一在 voucherDelete 服务）', () => {
+    const svc = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../services/voucherDelete.ts'), 'utf-8')
+    expect(svc).toMatch(/UPDATE vouchers SET reversed_by_voucher_id=NULL/)
+    expect(svc).toMatch(/UPDATE vouchers SET reversal_of_voucher_id=NULL/)
+    expect(routes).toContain('deleteVoucherWithRefs(')
   })
 })

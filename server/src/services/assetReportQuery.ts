@@ -3,7 +3,7 @@
  *
  * 提供折旧汇总表、折旧分配表、资产分类汇总表、资产明细账等报表数据查询
  */
-import Database from 'better-sqlite3'
+import type { Database } from 'better-sqlite3'
 
 // ── 类型定义 ──────────────────────────────────────────────
 

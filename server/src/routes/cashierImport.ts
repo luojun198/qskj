@@ -61,7 +61,8 @@ router.post('/cashier/bank-statement/import/confirm', (req: AuthRequest, res) =>
   // 构建映射：{ excelColIndex: 'biz_date'|'debit'|'credit'|'bill_no'|'settle_type' }
   const colMap: Record<number, string> = {}
   for (const [field, idx] of Object.entries(mapping)) {
-    if (idx != null && idx >= 0) colMap[Number(idx)] = field
+    const n = Number(idx)
+    if (Number.isFinite(n) && n >= 0) colMap[n] = field
   }
 
   let inserted = 0
@@ -140,7 +141,7 @@ function normalizeExcelDate(v: any): string {
     return d.toISOString().slice(0, 10)
   }
   const s = String(v).trim()
-  return s.replace(/\./g, '-')
+  return s.replace(/[./]/g, '-')
 }
 
 export default router

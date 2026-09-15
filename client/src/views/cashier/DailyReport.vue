@@ -1,6 +1,18 @@
 <template>
   <div class="page page-daily">
-    
+    <div class="filter-row" style="padding:12px 16px 0">
+      <el-date-picker v-model="dateRange[0]" type="date" value-format="YYYY-MM-DD" placeholder="开始日期" class="filter-ctl--md" @change="load" />
+      <span>至</span>
+      <el-date-picker v-model="dateRange[1]" type="date" value-format="YYYY-MM-DD" placeholder="结束日期" class="filter-ctl--md" @change="load" />
+      <el-select v-model="currency" placeholder="币种" class="filter-ctl--xs" @change="load">
+        <el-option v-for="c in currencies" :key="c" :label="c" :value="c" />
+      </el-select>
+      <el-button type="primary" @click="load"><el-icon><Search /></el-icon>查询</el-button>
+      <el-button plain :disabled="!displayRows.length" @click="handleExport"><el-icon><Download /></el-icon>导出</el-button>
+      <el-button plain :disabled="!displayRows.length" @click="handlePrint"><el-icon><Printer /></el-icon>打印</el-button>
+      <el-checkbox v-model="showZero">显示零发生额</el-checkbox>
+    </div>
+
     <div v-if="rows.length" class="report-body">
       <h4 class="report-title">
         账户资金余额表
@@ -65,6 +77,8 @@ const rows = ref<any[]>([])
 const data = ref<{ total_income: number; total_expense: number } | null>(null)
 const loading = ref(false)
 const showZero = ref(false)
+const currency = ref('RMB')
+const currencies = ref<string[]>(['RMB'])
 
 const displayRows = computed(() => showZero.value ? rows.value : rows.value.filter(r => r.income || r.expense))
 const netFlow = computed(() => (data.value?.total_income ?? 0) - (data.value?.total_expense ?? 0))
@@ -85,12 +99,18 @@ function summarize({ columns, data: tableData }: any) {
   return sums
 }
 
-onMounted(load)
+onMounted(async () => {
+  const curRes = await cashierApi.getCurrencies().catch(() => null)
+  if (curRes && curRes.code === 0 && Array.isArray(curRes.data) && curRes.data.length) {
+    currencies.value = curRes.data
+  }
+  await load()
+})
 async function load() {
   if (!dateRange.value || !dateRange.value[0] || !dateRange.value[1]) return
   loading.value = true
   try {
-    const res = await cashierApi.getDailyReport(dateRange.value[0], dateRange.value[1])
+    const res = await cashierApi.getDailyReport(dateRange.value[0], dateRange.value[1], currency.value)
     if (res.code === 0) {
       rows.value = res.data.rows
       data.value = { total_income: res.data.total_income, total_expense: res.data.total_expense }

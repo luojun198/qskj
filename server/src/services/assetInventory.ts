@@ -1,7 +1,7 @@
 /**
  * 固定资产盘点服务
  */
-import type Database from 'better-sqlite3'
+import type { Database } from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
 import {
   insertAssetVoucher,
@@ -203,7 +203,7 @@ export function completeInventory(params: {
   surplusAccount?: string
   deficitAccount?: string
   operatorName?: string
-}): { surplusCount: number; deficitCount: number; voucher?: any; voucherWarning?: string } {
+}): { surplusCount: number; deficitCount: number; voucher?: any; voucherWarning?: string | null } {
   const { db, accountSetId, inventoryId, generateVoucher = false, accumAccount = '1602', surplusAccount = '6901', deficitAccount = '6901', operatorName = '系统' } = params
 
   // FIX：完成盘点会写卡片、生成凭证，必须幂等且落在未结账期间，

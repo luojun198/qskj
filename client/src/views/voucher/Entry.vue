@@ -274,6 +274,7 @@
       :saving="quickAccountSaving"
       @parent-change="handleQuickParentChange"
       @save="saveQuickAccount"
+      @save-and-add="saveQuickAccountAndAdd"
     />
   </div>
 </template>
@@ -973,7 +974,7 @@ async function handleTemplateConfirm() {
           const itemId = e[`_${cat.code}_id`]
           if (itemId) {
             const item =
-              voucherAux.getAuxItemFromCache(cat.id, itemId) ||
+              voucherAux.getAuxItemFromCache(String(cat.id), String(itemId)) ||
               (e[`_${cat.code}_name`]
                 ? { id: itemId, name: e[`_${cat.code}_name`] }
                 : null)
@@ -1210,6 +1211,35 @@ const {
 // 快速新增科目
 const quickAccountAuxSelect = useVoucherAuxItems()
 
+// 科目编码规则（系统参数）：快速新增科目时必须按它生成/校验编码
+const accountLevels = ref(6)
+const accountCodeLengths = ref<number[]>([4, 2, 2, 2, 2, 2, 2, 2, 2, 2])
+const accountCodeParamsLoaded = ref(false)
+
+async function ensureAccountCodeParams() {
+  if (accountCodeParamsLoaded.value) return
+  try {
+    const res = await request.get<any[]>('/system/params', { skipErrorToast: true })
+    for (const p of res.data || []) {
+      if (p.param_key === 'account_levels') {
+        accountLevels.value = parseInt(p.param_value) || 6
+      } else if (p.param_key === 'account_code_lengths') {
+        try {
+          const lengths = JSON.parse(p.param_value)
+          if (Array.isArray(lengths) && lengths.length > 0) {
+            accountCodeLengths.value = lengths.map((len: any) => Number(len) || 2)
+          }
+        } catch {
+          /* 保持默认级次长度 */
+        }
+      }
+    }
+  } catch {
+    /* 读取失败时退回默认规则，后端仍会最终校验 */
+  }
+  accountCodeParamsLoaded.value = true
+}
+
 const tableRefForTree = ref<any>(null)
 const {
   form: accountForm,
@@ -1221,7 +1251,11 @@ const {
   onParentChange,
   createAddForm,
   buildSavePayload,
-} = useAccountForm(auxCategories, createFlatAuxLookupRefs(auxItems))
+  validateCode,
+} = useAccountForm(auxCategories, createFlatAuxLookupRefs(auxItems), {
+  accountLevels,
+  accountCodeLengths,
+})
 const {
   treeData,
   getTreeSelectData,
@@ -1488,6 +1522,7 @@ function ensureAuxSelectedForEntry(entry: any) {
 
 async function handleQuickCreateAccount(row: any) {
   quickAddRow.value = row
+  await ensureAccountCodeParams()
   accountForm.value = createAddForm()
   if (!baseDataStore.auxItemsLoaded) {
     await baseDataStore.loadAuxItems()
@@ -1495,29 +1530,59 @@ async function handleQuickCreateAccount(row: any) {
   quickAddAccountVisible.value = true
 }
 
-async function saveQuickAccount() {
+async function saveQuickAccount(options?: { keepOpen?: boolean }) {
   quickAccountSaving.value = true
   try {
+    const codeError = validateCode(accounts.value)
+    if (codeError) {
+      showError(codeError)
+      return
+    }
     const payload = buildSavePayload()
-    await request.post('/base/accounts', payload)
-    quickAddAccountVisible.value = false
-    // 刷新科目列表
-    await fetchOptions()
+    const res = await request.post<{ id: string }>('/base/accounts', payload)
+    // 先把新科目回填到当前分录，再强制刷新科目列表：
+    // 这样下拉建议、编码直选和分录显示都能立即拿到新科目，无需刷新页面/重启服务
+    const newId = res?.data?.id
+    const row = quickAddRow.value
+    if (row && newId) {
+      row.account_id = newId
+      row.account_code = payload.code
+      row.account_name = payload.name
+    }
+    // 强制刷新（绕过 Pinia 缓存，loadAccounts(false) 已加载时会直接 return）
+    await baseDataStore.loadAccounts(true)
     // 自动选中新科目
-    const acc = accounts.value.find((a: any) => a.code === payload.code)
-    if (acc && quickAddRow.value) {
-      quickAddRow.value.account_id = acc.id
-      quickAddRow.value.account_code = acc.code
-      quickAddRow.value.account_name = acc.name
-      onAccountChange(quickAddRow.value)
-      setCurrentEntry(quickAddRow.value)
+    const acc = accounts.value.find((a: any) => a.id === newId || a.code === payload.code)
+    if (acc && row) {
+      row.account_id = acc.id
+      row.account_code = acc.code
+      row.account_name = acc.name
+      onAccountChange(row)
+      setCurrentEntry(row)
+    }
+    if (!options?.keepOpen) {
+      quickAddAccountVisible.value = false
     }
     showSuccess('科目新增成功')
+    if (options?.keepOpen) {
+      await prepareNextQuickAddForm()
+    }
   } catch (error: any) {
     showOperationError('新增科目', error)
   } finally {
     quickAccountSaving.value = false
   }
+}
+
+/** 「保存并新增」：保存后保留弹窗，自动带出同一上级下的下一个可用编码 */
+async function saveQuickAccountAndAdd() {
+  await saveQuickAccount({ keepOpen: true })
+}
+
+async function prepareNextQuickAddForm() {
+  const parentId = accountForm.value.parent_id || null
+  accountForm.value = createAddForm(parentId || undefined)
+  await handleQuickParentChange(parentId || '')
 }
 
 async function handleAiSummary() {
@@ -1635,7 +1700,7 @@ async function handleSubmit(options?: { keepOpen?: boolean }) {
     for (const categoryId of requiredCategoryIds) {
       const category = auxCategories.value.find(cat => cat.id === categoryId)
       if (!category || !entry[`_${category.code}_id`]) continue
-      const requiredFields = (category.fields || []).filter(
+      const requiredFields = (((category as any).fields || []) as any[]).filter(
         (f: any) => f.is_enabled !== 0 && f.show_in_voucher && f.required_in_voucher
       )
       for (const field of requiredFields) {
@@ -1934,7 +1999,7 @@ async function handleRenumber() {
 async function cashFlowItemsFromAux(): Promise<Array<{ code: string; name: string }>> {
   const cat = auxCategories.value.find(c => c.code === 'cash_flow')
   if (!cat) return []
-  const list = await voucherAux.fetchAuxItems(cat.id, { limit: 500 })
+  const list = await voucherAux.fetchAuxItems(String(cat.id), { limit: 500 })
   return list.map(i => ({ code: i.code || '', name: i.name }))
 }
 
@@ -1956,14 +2021,15 @@ async function loadCashFlowItems() {
 
 async function fetchOptions(force = false) {
   await performanceMonitor.measure('fetchOptions', async () => {
-    await systemParamsStore.load(force)
+    // 互不依赖的基础数据并行拉取；现金流量项目依赖 enable_cash_flow 参数，放在其后
     await Promise.all([
+      systemParamsStore.load(force),
       baseDataStore.loadVoucherTypes(force),
       baseDataStore.loadAccounts(force),
       baseDataStore.loadAuxCategories(force),
+      loadAccountSetStartDate(),
     ])
     await loadCashFlowItems()
-    await loadAccountSetStartDate()
     // 加载完辅助核算类别后，为现有分录补充动态字段
     ensureAuxFields()
   })
@@ -2115,7 +2181,7 @@ async function loadTemplateAndCreate(templateId: string) {
     }
 
     // 加载到表单
-    loadVoucher(voucherData)
+    loadVoucher(voucherData as any)
 
     // 清除 ID（表示新增）
     form.value.id = ''
@@ -2174,11 +2240,18 @@ watch(
   }
 )
 
+// keep-alive 下首次挂载会依次触发 onMounted 与 onActivated，
+// 此前两者都跑 bootstrapEntryPage，导致初始化接口全部请求两遍；这里跳过首次 activated
+let activatedOnce = false
 onMounted(() => {
   void bootstrapEntryPage(true)
 })
 
 onActivated(() => {
+  if (!activatedOnce) {
+    activatedOnce = true
+    return
+  }
   void bootstrapEntryPage(false)
 })
 

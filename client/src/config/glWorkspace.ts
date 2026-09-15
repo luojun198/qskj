@@ -199,6 +199,7 @@ export const GL_LINK_COLUMNS: GlLinkColumn[] = [
     label: '明细类',
     items: [
       { path: '/ledger/detail', title: '明细账' },
+      { path: '/ledger/foreign-detail', title: '外币明细账', requires: 'foreign' },
       { path: '/ledger/vat-detail', title: '增值税明细账' },
       { path: '/ledger/multi-column', title: '多栏账' },
       { path: '/ledger/aux-detail', title: '辅助项目明细账' },

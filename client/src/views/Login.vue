@@ -710,7 +710,7 @@ async function handleCreate() {
 
   creating.value = true
   try {
-    const payload = { ...createForm }
+    const payload: any = { ...createForm }
     // 自动从启用日期推算会计年度
     if (payload.start_date) {
       payload.fiscal_year = parseInt(payload.start_date.substring(0, 4), 10)
@@ -723,7 +723,7 @@ async function handleCreate() {
       return
     }
 
-    let result
+    let result: any
     const fromStandardTemplate = payload.use_template && payload.standard_template_id
     if (fromStandardTemplate) {
       result = await request.post('/auth/account-sets/create-from-standard-template', payload, {
@@ -740,7 +740,7 @@ async function handleCreate() {
       throw new Error(result?.message || '创建失败')
     }
 
-    const created = result?.data
+    const created: any = result?.data
     const newAccountSetId = created?.id
     const fallbackAccountSet: AccountSetItem | undefined =
       newAccountSetId && created?.name

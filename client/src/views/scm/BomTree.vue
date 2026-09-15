@@ -46,7 +46,7 @@
         <el-table-column label="规格" prop="spec" min-width="130" show-overflow-tooltip />
         <el-table-column label="性质" width="86" align="center">
           <template #default="{ row }">
-            <el-tag :type="natureTag(row).type" size="small" effect="plain">{{ natureTag(row).label }}</el-tag>
+            <el-tag :type="natureTag(row).type as any" size="small" effect="plain">{{ natureTag(row).label }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="单件用量" prop="per_qty" width="92" align="right">

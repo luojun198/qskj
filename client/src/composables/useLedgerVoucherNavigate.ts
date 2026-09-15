@@ -10,6 +10,8 @@ export type LedgerVoucherRow = {
   voucher_status?: string
   is_opening_balance?: boolean
   is_carry_forward?: boolean
+  is_monthly_subtotal?: boolean
+  is_yearly_subtotal?: boolean
 }
 
 export function resolveLedgerVoucherId(row: LedgerVoucherRow): string | null {
@@ -25,7 +27,7 @@ export function canNavigateToEditVoucher(row: LedgerVoucherRow): boolean {
 }
 
 export interface LedgerVoucherNavigateOptions {
-  returnLabel?: string
+  returnLabel?: string | (() => string)
   getReturnQuery?: () => Record<string, string>
   /** 在当前页打开凭证模态框（草稿可编辑，已审核/已过账只读） */
   openVoucherModal?: (row: LedgerVoucherRow) => void
@@ -65,7 +67,7 @@ export function useLedgerVoucherNavigate(options: LedgerVoucherNavigateOptions =
 
     navigationReturnStore.save({
       path: route.path,
-      label: options.returnLabel || '账簿',
+      label: (typeof options.returnLabel === 'function' ? options.returnLabel() : options.returnLabel) || '账簿',
       query: options.getReturnQuery?.() ?? serializeRouteQuery(route.query as Record<string, unknown>),
     })
 

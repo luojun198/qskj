@@ -581,6 +581,9 @@ const keyOptions = computed(() => {
   if (form.template_type === 'ledger') {
     return [
       { label: '明细账', value: 'ledger:detail' },
+      { label: '外币明细账', value: 'ledger:foreign-detail' },
+      { label: '数量明细账', value: 'ledger:quantity-detail' },
+      { label: '数量复币明细账', value: 'ledger:quantity-foreign-detail' },
       { label: '总账', value: 'ledger:general' },
       { label: '余额表', value: 'ledger:balance' },
       { label: '序时账', value: 'ledger:chronological' },
@@ -697,7 +700,7 @@ const loadExisting = async () => {
     form.name = t.name
     form.template_type = (t.template_type as PrintTemplateType) || 'voucher'
     form.template_key = t.template_key || ''
-    form.paper_size = t.paper_size === 'a4' ? 'A4' : t.paper_size === 'a5' ? 'A5' : t.paper_size || 'custom'
+    form.paper_size = String(t.paper_size).toLowerCase() === 'a4' ? 'A4' : String(t.paper_size).toLowerCase() === 'a5' ? 'A5' : t.paper_size || 'custom'
     form.paper_width = t.paper_width
     form.paper_height = t.paper_height
     form.background_image = t.background_image || ''

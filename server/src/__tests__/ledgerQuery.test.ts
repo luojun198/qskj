@@ -141,4 +141,45 @@ describe('ledgerQuery', () => {
 
     expect(query.initBalanceParams).toHaveLength(placeholderCount)
   })
+
+  it('明细账原币期初 SQL 在科目 id / 编码区间 / 无科目三种分支下参数数量都与占位符一致', () => {
+    const cases = [
+      { accountId: 'acc-1' },
+      { accountCodeStart: '1002', accountCodeEnd: '10029999' },
+      { accountCodeStart: '1002', accountCodeEnd: '10029999', currencyCode: 'usd' },
+      {},
+    ]
+    for (const extra of cases) {
+      const query = buildLedgerDetailQuery({
+        accountSetId: 'as-1',
+        startDate: '2026-03-01',
+        endDate: '2026-03-31',
+        page: 1,
+        pageSize: 20,
+        ...extra,
+      })
+      const placeholderCount = (query.foreignInitBalanceSql.match(/\?/g) || []).length
+      expect(query.foreignInitBalanceParams).toHaveLength(placeholderCount)
+      expect(query.foreignInitBalanceSql).toContain('foreign_init_balance')
+    }
+  })
+
+  it('明细账编码区间带币种时，分录与原币期初都只取该币种子科目', () => {
+    const query = buildLedgerDetailQuery({
+      accountSetId: 'as-1',
+      accountCodeStart: '1002',
+      accountCodeEnd: '10029999',
+      currencyCode: 'usd',
+      startDate: '2026-01-01',
+      endDate: '2026-12-31',
+      page: 1,
+      pageSize: 20,
+    })
+    expect(query.listSql).toContain("UPPER(COALESCE(currency_code, '')) = ?")
+    expect(query.listParams).toContain('USD')
+    expect(query.foreignInitBalanceSql).toContain("UPPER(COALESCE(a.currency_code, '')) = ?")
+    expect(query.foreignInitBalanceParams).toContain('USD')
+    // 区间原币期初只取叶子科目，避免父科目重复
+    expect(query.foreignInitBalanceSql).toContain('NOT EXISTS')
+  })
 })

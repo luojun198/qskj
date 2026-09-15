@@ -3,6 +3,7 @@ import {
   calculateVoucherTotals,
   calculateVoucherTotalsCents,
   getVoucherBalanceError,
+  getVoucherUpdateBalanceError,
   isVoucherBalanced,
   type VoucherEntryInput,
 } from '../services/voucherEntry.js'
@@ -51,13 +52,25 @@ describe('凭证借贷平衡（FIX-001 / P0-6）', () => {
     expect(getVoucherBalanceError(entries)).toContain('借贷不平衡')
   })
 
-  it('优先使用 amount_cents（amount 字段被故意写错也仍按 cents 判平衡）', () => {
-    // amount_cents 是权威，amount 显示用
+  it('FIX-131：amount 是权威，客户端传入的 amount_cents 不能绕过平衡校验', () => {
+    // 旧实现优先信任 amount_cents，「amount 不平 + amount_cents 相等」可通过校验后落库不平
     const entries = [
-      entry('debit', 9999, 10000), // 实际 100.00 元
-      entry('credit', 0, 10000),
+      entry('debit', 100, 10000),
+      entry('credit', 99, 10000),
     ]
+    expect(isVoucherBalanced(entries)).toBe(false)
+    expect(getVoucherBalanceError(entries)).toContain('借贷不平衡')
+  })
+
+  it('FIX-131：amount 缺失时才回退到 amount_cents（DB 旧行）', () => {
+    const entries = [entry('debit', undefined as any, 10000), entry('credit', undefined as any, 10000)]
     expect(isVoucherBalanced(entries)).toBe(true)
+  })
+
+  it('FIX-130：空分录 / 单条分录在修改路径也被拒绝', () => {
+    expect(getVoucherUpdateBalanceError([])).toContain('不能为空')
+    expect(getVoucherUpdateBalanceError([entry('debit', 100)])).toContain('不能为空')
+    expect(getVoucherUpdateBalanceError([entry('debit', 100), entry('credit', 100)])).toBeNull()
   })
 
   it('amount_cents 缺失时回退到 yuanToCents(amount)', () => {

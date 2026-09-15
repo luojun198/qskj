@@ -5,7 +5,7 @@
  * 校验规则集中在 validateImportRow，前端预校验（逐行标红）与后端最终把关共用，
  * 避免两处规则漂移。
  */
-import type Database from 'better-sqlite3'
+import type { Database } from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
 
 /** 导入模板列顺序（前端生成模板与解析都以此为准） */

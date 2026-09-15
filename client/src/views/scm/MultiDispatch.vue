@@ -250,7 +250,7 @@ async function handleShip() {
           '合并出库明细',
           { confirmButtonText: '合并生成', cancelButtonText: '分行生成', type: 'info', distinguishCancelAndClose: true },
         )
-        lines = mergedLines
+        lines = mergedLines as any
       } catch (action) {
         if (action === 'close') return
       }

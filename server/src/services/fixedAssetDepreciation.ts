@@ -4,7 +4,7 @@
  * ACD 折旧方法代码：1=平均年限  2=工作量  3=双倍余额递减  4=年数总和
  * 起折规则（与润衡相同）：syrq 所在月份 次月 开始计提。
  */
-import type Database from 'better-sqlite3'
+import type { Database } from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
 import { deleteVoucherRecords, type VoucherEntryInput } from './voucherEntry.js'
 import {

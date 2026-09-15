@@ -153,7 +153,7 @@
                   placeholder="摘要"
                   size="small"
                   @focus="setCurrentEntry(row)"
-                  @keydown.enter="moveToAccount(row, $event)"
+                  @keydown.enter="moveToAccount(row, $event as KeyboardEvent)"
                 />
                 <span v-else class="entry-readonly-text">{{ row.summary || '-' }}</span>
                 <el-button
@@ -481,7 +481,7 @@
               placeholder="请选择现金流量项目"
               style="width: 320px"
               @change="onCashFlowCodeChange"
-              @keydown="e => onVoucherFieldKeydown(currentEntry, { kind: 'cash_flow' }, e)"
+              @keydown="(e: KeyboardEvent) => onVoucherFieldKeydown(currentEntry, { kind: 'cash_flow' }, e)"
             >
               <el-option
                 v-for="item in cashFlowItems"
@@ -700,7 +700,7 @@
               @visible-change="(v: boolean) => v && onAuxDropdownOpen(cat.id)"
               @change="(id: string) => onAuxItemChange(cat, id)"
               @keydown="
-                e =>
+                (e: KeyboardEvent) =>
                   onVoucherFieldKeydown(currentEntry, { kind: 'aux_select', catCode: cat.code }, e)
               "
             >
@@ -739,7 +739,7 @@
                   :data-voucher-focus="`aux-field-${cat.code}-${field.field_key}`"
                   style="width: 140px"
                   @keydown="
-                    e =>
+                    (e: any) =>
                       onVoucherFieldKeydown(
                         currentEntry,
                         { kind: 'aux_field', catCode: cat.code, fieldKey: field.field_key },
@@ -754,7 +754,7 @@
                   :controls="false"
                   style="width: 140px"
                   @keydown="
-                    e =>
+                    (e: any) =>
                       onVoucherFieldKeydown(
                         currentEntry,
                         { kind: 'aux_field', catCode: cat.code, fieldKey: field.field_key },
@@ -770,7 +770,7 @@
                   value-format="YYYY-MM-DD"
                   style="width: 160px"
                   @keydown="
-                    e =>
+                    (e: any) =>
                       onVoucherFieldKeydown(
                         currentEntry,
                         { kind: 'aux_field', catCode: cat.code, fieldKey: field.field_key },
@@ -785,7 +785,7 @@
                   clearable
                   style="width: 140px"
                   @keydown="
-                    e =>
+                    (e: any) =>
                       onVoucherFieldKeydown(
                         currentEntry,
                         { kind: 'aux_field', catCode: cat.code, fieldKey: field.field_key },
@@ -970,6 +970,73 @@
             <el-icon><Collection /></el-icon>
             转模版
           </el-button>
+          <el-tooltip
+            placement="top"
+            effect="light"
+            :show-after="120"
+            popper-class="voucher-shortcut-tip"
+          >
+            <template #content>
+              <div class="shortcut-tip">
+                <div class="shortcut-tip__title">凭证快捷键</div>
+
+                <div class="shortcut-tip__section">保存与操作</div>
+                <div class="shortcut-tip__row">
+                  <span class="keys"><kbd>Ctrl</kbd><kbd>S</kbd></span><span>保存凭证</span>
+                </div>
+                <div class="shortcut-tip__row">
+                  <span class="keys"><kbd>Ctrl</kbd><kbd>Enter</kbd></span><span>保存并新增</span>
+                </div>
+                <div class="shortcut-tip__row">
+                  <span class="keys"><kbd>Ctrl</kbd><kbd>F</kbd></span><span>上传附件</span>
+                </div>
+                <div class="shortcut-tip__row">
+                  <span class="keys"><kbd>Esc</kbd></span><span>关闭弹窗</span>
+                </div>
+
+                <div class="shortcut-tip__section">分录导航</div>
+                <div class="shortcut-tip__row">
+                  <span class="keys"><kbd>Enter</kbd></span>
+                  <span>摘要→科目→金额，金额再回车跳下一行</span>
+                </div>
+                <div class="shortcut-tip__row">
+                  <span class="keys"><kbd>Tab</kbd></span><span>科目→现金流量/辅助项目→金额</span>
+                </div>
+                <div class="shortcut-tip__row">
+                  <span class="keys"><kbd>↑</kbd><kbd>↓</kbd></span><span>科目建议列表中移动</span>
+                </div>
+                <div class="shortcut-tip__row">
+                  <span class="keys"><kbd>Del</kbd></span><span>清除已选科目</span>
+                </div>
+
+                <div class="shortcut-tip__section">金额快捷</div>
+                <div class="shortcut-tip__row">
+                  <span class="keys"><kbd>=</kbd></span
+                  ><span>在光标所在金额格自动平衡，补足差额</span>
+                </div>
+                <div class="shortcut-tip__row">
+                  <span class="keys"><kbd>Space</kbd></span><span>借贷方向互换</span>
+                </div>
+
+                <div class="shortcut-tip__section">外币 / 数量</div>
+                <div class="shortcut-tip__row">
+                  <span class="keys"><kbd>Enter</kbd><kbd>Space</kbd></span
+                  ><span>打开录入气泡</span>
+                </div>
+                <div class="shortcut-tip__row">
+                  <span class="keys"><kbd>Enter</kbd></span>
+                  <span>外币：金额→汇率；数量：数量→单价→金额</span>
+                </div>
+                <div class="shortcut-tip__row">
+                  <span class="keys"><kbd>=</kbd></span><span>外币金额：按汇率折算差额</span>
+                </div>
+              </div>
+            </template>
+            <el-button plain size="small">
+              <el-icon><QuestionFilled /></el-icon>
+              快捷操作说明
+            </el-button>
+          </el-tooltip>
         </div>
         <div class="submit-controls">
           <el-button @click="handleClose">{{ isReadonly ? '关闭' : '取消' }}</el-button>
@@ -1013,7 +1080,14 @@ import { useKeyboardShortcuts, commonShortcuts } from '@/composables/useKeyboard
 import { showSuccess, showError, showWarning } from '@/composables/useMessage'
 import { buildEntryKey, useVoucherModalReturnStore } from '@/stores/voucherModalReturn'
 import request from '@/api/request'
-import { Document, Upload, Download, Printer, Collection } from '@element-plus/icons-vue'
+import {
+  Document,
+  Upload,
+  Download,
+  Printer,
+  Collection,
+  QuestionFilled,
+} from '@element-plus/icons-vue'
 import { formatAmount } from '@/utils/format'
 import { accountNeedsCashFlowItem, isAuxCategoryExcludedFromAccount } from '@/utils/accountCashFlow'
 import { formatAccountFullPath } from '@/utils/accountPathDisplay'
@@ -1317,6 +1391,11 @@ function onForeignCellKeydown(row: any, side: 'debit' | 'credit', event: Keyboar
     stopEnterBubble(event)
     const el = (event.currentTarget as HTMLElement | null) || findForeignCellEl(row, side)
     void openForeignPopover(row, side, el)
+    return
+  }
+  if (isEqualKey(event)) {
+    event.preventDefault()
+    void autoBalanceForeignAtFocus(row, side)
   }
 }
 
@@ -1546,6 +1625,11 @@ function onQuantityFieldChange(field: 'quantity' | 'unitPrice' | 'amount') {
 }
 
 function onQuantityKeydown(event: KeyboardEvent, field: 'quantity' | 'unitPrice' | 'amount') {
+  if (isEqualKey(event)) {
+    event.preventDefault()
+    autoBalanceQuantityPopover()
+    return
+  }
   if (event.key !== 'Enter') return
   stopEnterBubble(event)
   onQuantityFieldChange(field)
@@ -1555,6 +1639,19 @@ function onQuantityKeydown(event: KeyboardEvent, field: 'quantity' | 'unitPrice'
     focusQuantityInput('amount')
   } else {
     confirmQuantityPopover()
+  }
+}
+
+/** 数量气泡中按 = ：以借贷差额作为金额，并按已填数量反算单价 */
+function autoBalanceQuantityPopover() {
+  const row = quantityPopover.row
+  if (!row) return
+  const amount = computeBalanceAtFocus(row, quantityPopover.side)
+  if (amount <= 0) return
+  const qty = Number(quantityPopover.quantity) || 0
+  quantityPopover.amount = amount
+  if (qty > 0) {
+    quantityPopover.unitPrice = Math.round((amount / qty) * 10000) / 10000
   }
 }
 
@@ -1672,6 +1769,11 @@ function onQuantityCellKeydown(row: any, side: 'debit' | 'credit', event: Keyboa
     stopEnterBubble(event)
     const el = (event.currentTarget as HTMLElement | null) || findQuantityCellEl(row, side)
     openQuantityPopover(row, side, el)
+    return
+  }
+  if (isEqualKey(event)) {
+    event.preventDefault()
+    autoBalanceQuantityAtFocus(row, side)
   }
 }
 
@@ -2601,17 +2703,17 @@ function syncInputAmount(
 
 // ============= 借方金额快捷键 =============
 
+/** 是否为 `=` 键（兼容不同键盘/输入法：优先 key，回退物理键位 code） */
+function isEqualKey(event: KeyboardEvent): boolean {
+  return event.key === '=' || event.code === 'Equal' || event.code === 'NumpadEqual'
+}
+
 function onDebitKeydown(row: VoucherEntry, event: KeyboardEvent) {
   const key = event.key
-  if (key === '=') {
+  if (isEqualKey(event)) {
     event.preventDefault()
-    // = → 自动平衡：计算使借贷平衡所需的差额填入当前行借方
-    const otherDebit = props.totalDebit - (row.debit_amount || 0)
-    const diff = +(props.totalCredit - otherDebit).toFixed(2)
-    if (diff !== 0) {
-      row.debit_amount = diff
-      props.onAmountChange(row, 'debit')
-    }
+    // = → 自动平衡：把差额输入到光标所在的借方格
+    autoBalanceAtFocus(row, 'debit')
   } else if (key === ' ') {
     event.preventDefault()
     // 空格 → 互换方向：当前借方金额移到贷方，清空借方
@@ -2628,15 +2730,10 @@ function onDebitKeydown(row: VoucherEntry, event: KeyboardEvent) {
 
 function onCreditKeydown(row: VoucherEntry, event: KeyboardEvent) {
   const key = event.key
-  if (key === '=') {
+  if (isEqualKey(event)) {
     event.preventDefault()
-    // = → 自动平衡：计算使借贷平衡所需的差额填入当前行贷方
-    const otherCredit = props.totalCredit - (row.credit_amount || 0)
-    const diff = +(props.totalDebit - otherCredit).toFixed(2)
-    if (diff !== 0) {
-      row.credit_amount = diff
-      props.onAmountChange(row, 'credit')
-    }
+    // = → 自动平衡：把差额输入到光标所在的贷方格
+    autoBalanceAtFocus(row, 'credit')
   } else if (key === ' ') {
     event.preventDefault()
     // 空格 → 互换方向：当前贷方金额移到借方，清空贷方
@@ -2647,6 +2744,86 @@ function onCreditKeydown(row: VoucherEntry, event: KeyboardEvent) {
       props.onAmountChange(row, 'debit')
     }
   }
+}
+
+/**
+ * 计算 `=` 自动平衡时当前分录按侧需要的金额（本行借、贷两格都按空处理）：
+ * - 聚焦借方：贷方合计 − 本行以外借方合计
+ * - 聚焦贷方：借方合计 − 本行以外贷方合计
+ * 返回 > 0 才表示该方向确实需要补款。
+ */
+function computeBalanceAtFocus(row: VoucherEntry, side: 'debit' | 'credit'): number {
+  const otherDebit = (Number(props.totalDebit) || 0) - (Number(row.debit_amount) || 0)
+  const otherCredit = (Number(props.totalCredit) || 0) - (Number(row.credit_amount) || 0)
+  const needed = side === 'debit' ? otherCredit - otherDebit : otherDebit - otherCredit
+  return +needed.toFixed(2)
+}
+
+/**
+ * = 自动平衡（普通金额格）：把差额输入到光标所在的借方/贷方。
+ */
+function autoBalanceAtFocus(row: VoucherEntry, side: 'debit' | 'credit') {
+  const amount = computeBalanceAtFocus(row, side)
+  if (amount <= 0) return
+  if (side === 'debit') {
+    row.debit_amount = amount
+  } else {
+    row.credit_amount = amount
+  }
+  props.onAmountChange(row, side)
+}
+
+/**
+ * = 自动平衡（外币金额格）：按该外币科目的汇率把差额折成原币，填入光标所在侧。
+ */
+async function autoBalanceForeignAtFocus(row: any, side: 'debit' | 'credit') {
+  const amount = computeBalanceAtFocus(row, side)
+  if (amount <= 0) return
+  const acc = props.accounts.find(a => a.id === row.account_id) as any
+  const currencyCode = String(row.currency_code || acc?.currency_code || '').trim() || null
+  let rate = Number(row.exchange_rate) || 0
+  if (!(rate > 0) && currencyCode && props.resolveExchangeRate) {
+    rate = Number(await props.resolveExchangeRate(currencyCode)) || 0
+  }
+  if (!(rate > 0)) {
+    showWarning('请先设置该外币科目的汇率')
+    return
+  }
+  row.currency_code = currencyCode
+  row.exchange_rate = rate
+  row.foreign_amount = Math.round((amount / rate) * 100) / 100
+  if (side === 'debit') {
+    row.debit_amount = amount
+  } else {
+    row.credit_amount = amount
+  }
+  row.direction = side
+  row.amount = amount
+  props.onAmountChange(row, side)
+}
+
+/**
+ * = 自动平衡（数量金额格）：把差额作为金额，按已填数量反算单价。
+ */
+function autoBalanceQuantityAtFocus(row: any, side: 'debit' | 'credit') {
+  const amount = computeBalanceAtFocus(row, side)
+  if (amount <= 0) return
+  const qty = Number(row.quantity) || 0
+  if (!(qty > 0)) {
+    showWarning('请先填写数量')
+    return
+  }
+  const acc = props.accounts.find(a => a.id === row.account_id) as any
+  row.unit = row.unit || acc?.quantity_unit || null
+  row.unit_price = Math.round((amount / qty) * 10000) / 10000
+  if (side === 'debit') {
+    row.debit_amount = amount
+  } else {
+    row.credit_amount = amount
+  }
+  row.direction = side
+  row.amount = amount
+  props.onAmountChange(row, side)
 }
 
 // 跳到下一行，并把试算平衡差额自动填入下一条空分录
@@ -2761,19 +2938,21 @@ const accountRowKeyMap = new WeakMap<object, string>()
 const accountInputStateMap = ref<Record<string, AccountInputState>>({})
 let accountInputSeed = 0
 
-// 当 accounts 数据变化时，刷新已有但为空的 input state
+// 当 accounts 数据变化时（如快速新增科目后强制刷新），同步已选科目的显示文本
 watch(
   () => props.accounts,
   () => {
     for (const row of props.form.entries) {
       if (!row.account_id) continue
+      const acc = props.accounts.find(a => a.id === row.account_id)
+      if (!acc) continue
+      const text = accountInputText(acc)
       const key = getAccountRowKey(row)
       const state = accountInputStateMap.value[key]
-      if (state && !state.input) {
-        const acc = props.accounts.find(a => a.id === row.account_id)
-        if (acc) {
-          state.input = accountInputText(acc)
-        }
+      if (!state) {
+        accountInputStateMap.value[key] = { input: text }
+      } else if (state.input !== text) {
+        state.input = text
       }
     }
   },
@@ -3120,6 +3299,31 @@ function skipParentInHighlight(instance: any, direction: 'up' | 'down', remainin
 
 function onVoucherDialogKeydown(e: KeyboardEvent) {
   if (!visible.value || props.submitLoading) return
+
+  // `=` 兜底：若焦点不在金额输入框内（金额格未触发自身的 keydown），
+  // 对当前分录取「需要补款」的方向补差额，避免用户对着行按 = 无反应
+  if (isEqualKey(e) && !e.defaultPrevented) {
+    const target = e.target as HTMLElement | null
+    const tag = target?.tagName
+    const isField =
+      tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target?.isContentEditable
+    if (!isField) {
+      const row = props.currentEntry
+      // 外币/数量科目的金额由气泡维护，兜底不处理，避免写出不完整分录
+      if (row && !isForeignRow(row) && !isQuantityRow(row)) {
+        const debitTotal = Number(props.totalDebit) || 0
+        const creditTotal = Number(props.totalCredit) || 0
+        if (debitTotal > creditTotal) {
+          e.preventDefault()
+          autoBalanceAtFocus(row, 'credit')
+        } else if (creditTotal > debitTotal) {
+          e.preventDefault()
+          autoBalanceAtFocus(row, 'debit')
+        }
+      }
+    }
+  }
+
   if (e.key !== 'Enter') return
 
   // 仅 Ctrl+Enter / Cmd+Enter 保存并新增；普通 Enter 不再触发保存，避免录入时误保存
@@ -3807,5 +4011,69 @@ useKeyboardShortcuts([
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+</style>
+
+<!-- 快捷操作说明气泡（teleport 到 body，需全局样式） -->
+<style>
+.voucher-shortcut-tip.el-popper {
+  max-width: 380px;
+}
+
+.voucher-shortcut-tip .shortcut-tip {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--el-text-color-regular);
+}
+
+.voucher-shortcut-tip .shortcut-tip__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+  margin-bottom: 6px;
+}
+
+.voucher-shortcut-tip .shortcut-tip__section {
+  margin: 8px 0 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--el-border-color-lighter);
+  font-weight: 600;
+  color: var(--mint-700, #0f766e);
+}
+
+.voucher-shortcut-tip .shortcut-tip__section:first-of-type {
+  margin-top: 2px;
+  padding-top: 0;
+  border-top: none;
+}
+
+.voucher-shortcut-tip .shortcut-tip__row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 3px 0;
+}
+
+.voucher-shortcut-tip .shortcut-tip__row .keys {
+  flex: 0 0 96px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-wrap: wrap;
+}
+
+.voucher-shortcut-tip kbd {
+  display: inline-block;
+  padding: 0 5px;
+  min-width: 18px;
+  text-align: center;
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--el-text-color-primary);
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color);
+  border-bottom-width: 2px;
+  border-radius: 4px;
 }
 </style>

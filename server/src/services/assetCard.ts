@@ -4,7 +4,7 @@
  * 从 routes/fixedAsset.ts 下沉：路由层只做 HTTP 与参数搬运，
  * 这里承载「字典能不能删」「卡片更新要写哪些列」两处需要单测覆盖的规则。
  */
-import type Database from 'better-sqlite3'
+import type { Database } from 'better-sqlite3'
 
 // ── 字典删除引用检查 ───────────────────────────────────────
 

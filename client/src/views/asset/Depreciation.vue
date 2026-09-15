@@ -1,7 +1,37 @@
 <template>
   <div class="page page-asset-depr">
-    
-    <el-tabs v-model="activeTab" class="depr-tabs">
+    <div class="filter-row" style="padding: 12px 16px 0">
+      <span class="tip-label">计提期间</span>
+      <el-date-picker
+        v-model="period"
+        type="month"
+        value-format="YYYY-MM"
+        placeholder="选择期间"
+        :clearable="false"
+        style="width: 140px"
+      />
+      <el-button type="primary" :loading="previewing" @click="handlePreview">
+        <el-icon><Search /></el-icon>预览折旧
+      </el-button>
+      <el-button
+        type="success"
+        :loading="executing"
+        :disabled="!previewLines.length || !!priorUnvouchered"
+        @click="handleExecute"
+      >
+        <el-icon><Check /></el-icon>计提折旧
+      </el-button>
+      <el-button plain @click="openWorkloadDialog">
+        <el-icon><Edit /></el-icon>工作量录入
+      </el-button>
+      <el-checkbox v-model="generateVoucher">同时生成凭证</el-checkbox>
+      <span class="header-acc-select">
+        <span class="tip-label">累计折旧科目</span>
+        <AccountSelect v-model="accumAccount" placeholder="默认 1602 累计折旧" search-keyword="折旧" />
+      </span>
+    </div>
+
+    <el-tabs v-model="activeTab" class="depr-tabs" @tab-change="switchTab">
       <!-- 预览 Tab -->
       <el-tab-pane label="折旧预览" name="preview">
         <el-alert
@@ -402,8 +432,8 @@ async function loadHistory() {
   if (res.code === 0) historyRows.value = res.data
 }
 
-function switchTab(tab: string) {
-  activeTab.value = tab
+function switchTab(tab: string | number) {
+  activeTab.value = String(tab)
   if (tab === 'history') loadHistory()
 }
 

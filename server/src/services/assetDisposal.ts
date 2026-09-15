@@ -3,7 +3,7 @@
  *
  * 处理资产减少（出售/报废/损毁/盘亏/捐赠等），可选生成清理凭证
  */
-import type Database from 'better-sqlite3'
+import type { Database } from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
 import {
   insertAssetVoucher,

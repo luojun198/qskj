@@ -38,7 +38,7 @@
         node-key="code"
         show-checkbox
         :props="treeProps"
-        :filter-node-method="filterNode"
+        :filter-node-method="(filterNode as any)"
         :default-expanded-keys="defaultExpandedKeys"
         @check="syncCheckedState"
       >

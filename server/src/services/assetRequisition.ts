@@ -6,7 +6,7 @@
  * 若领用同时发生了部门变化，联动写一条 change_kind='dept' 的变动流水，
  * 让「增减变动表」与资产台账能看到这次部门转移。
  */
-import type Database from 'better-sqlite3'
+import type { Database } from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
 
 export type RequisitionAction = 'out' | 'in'

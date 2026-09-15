@@ -229,7 +229,7 @@ function buildCategoryLookupIndexes(
 ): Map<string, AuxItemLookupIndex> {
   const indexes = new Map<string, AuxItemLookupIndex>()
   for (const cat of categories) {
-    indexes.set(cat.id, buildAuxItemLookupIndex(itemsByCategory[cat.id] || []))
+    indexes.set(cat.id, buildAuxItemLookupIndex((itemsByCategory[cat.id] || []) as any))
   }
   return indexes
 }

@@ -22,7 +22,6 @@ import {
   buildVoucherEntryPayloads,
   buildVoucherEntriesMap,
   calculateVoucherTotals,
-  deleteVoucherRecords,
   getNextVoucherNo,
   findVoucherNoConflict,
   getVoucherBalanceError,
@@ -47,6 +46,7 @@ import {
   type VoucherEntryInput,
   type NoNegativeBalanceCheckResult,
 } from '../services/voucherEntry.js'
+import { getVoucherUndeletableReason, deleteVoucherWithRefs } from '../services/voucherDelete.js'
 import fs from 'fs/promises'
 import path from 'path'
 import multer from 'multer'
@@ -1712,33 +1712,12 @@ router.delete(
     if (!voucher) {
       return res.status(404).json({ code: 404, message: '凭证不存在' })
     }
-    if (voucher.status === 'posted') {
-      return res.status(400).json({ code: 400, message: '已记账凭证不能删除' })
+    // FIX-132：来源守卫与关联清理统一走 services/voucherDelete.ts（与批量删除共用）
+    const undeletable = getVoucherUndeletableReason(voucher)
+    if (undeletable) {
+      return res.status(400).json({ code: 400, message: undeletable })
     }
-    if (voucher?.source === 'cashier') {
-      return res.status(400).json({ code: 400, message: '出纳生成的凭证不能直接删除，请取消对账后再试' })
-    }
-    if (typeof voucher?.source === 'string' && voucher.source.startsWith('asset_')) {
-      return res.status(400).json({
-        code: 400,
-        message: '固定资产生成的凭证不能直接删除，请到固定资产模块反折旧/撤销处置/删除资产后再试',
-      })
-    }
-    deleteVoucherRecords(db, id)
-    // 期末调汇凭证被手工删除（先反记账再删）后，释放该期间的调汇记录，允许重新生成
-    if (voucher?.source === 'fx_reval') {
-      db.prepare('DELETE FROM fx_revaluation_runs WHERE account_set_id=? AND voucher_id=?').run(req.accountSetId, id)
-    }
-    // 清理冲红关联的对端引用，避免悬空导致原凭证永远显示「已冲红」而无法再次冲红
-    db.prepare(
-      'UPDATE vouchers SET reversed_by_voucher_id=NULL WHERE account_set_id=? AND reversed_by_voucher_id=?'
-    ).run(req.accountSetId, id)
-    db.prepare(
-      'UPDATE vouchers SET reversal_of_voucher_id=NULL WHERE account_set_id=? AND reversal_of_voucher_id=?'
-    ).run(req.accountSetId, id)
-    // 若该凭证由供应链单据生成（scm_doc.voucher_id 回写），删除后清掉单据上的回写，
-    // 否则单据既不能重新生成凭证、也无法反审核（死锁）。按 voucher_id 匹配即为确定关联，无需判断 source。
-    db.prepare('UPDATE scm_doc SET voucher_id=NULL WHERE account_set_id=? AND voucher_id=?').run(req.accountSetId, id)
+    deleteVoucherWithRefs(db, req.accountSetId || '', voucher)
     res.json({ code: 0, message: '删除成功' })
   }
 )

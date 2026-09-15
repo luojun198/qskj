@@ -516,7 +516,7 @@ async function fetchData() {
     if (filters.value.include_unposted) params.include_unposted = 'true'
 
     const res = await request.get('/ledger/foreign-balance', { params })
-    list.value = res.data || []
+    list.value = (res as any).data || []
     totals.value = ((res as any).summary || null) as Record<string, ForeignBalanceTotals> | null
     rates.value = ((res as any).rates || {}) as Record<string, number>
     initialLoaded.value = true
@@ -684,8 +684,11 @@ function handleRowDblClick(row: any) {
   else if (row.account_code) query.account_code = row.account_code
   if (filters.value.start_date) query.start_date = filters.value.start_date
   if (filters.value.end_date) query.end_date = filters.value.end_date
+  query.book = Number(row.is_quantity) === 1 ? 'quantity-foreign' : 'foreign'
+  const currency = filters.value.currency_code || row.currency_code
+  if (currency) query.currency_code = String(currency).toUpperCase()
 
-  drillDown('/ledger/detail', query, '外币余额表', {
+  drillDown('/ledger/foreign-detail', query, '外币余额表', {
     start_date: filters.value.start_date || '',
     end_date: filters.value.end_date || '',
     account_code: filters.value.account_code || '',

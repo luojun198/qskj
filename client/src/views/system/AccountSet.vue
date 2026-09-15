@@ -378,7 +378,7 @@ async function handleSelect(row: any) {
 
 async function handleDelete(row: any) {
   try {
-    const { value: password } = await ElMessageBox.prompt(
+    const { value: password } = await (ElMessageBox.prompt as any)(
       `确定要删除账套「${row.name}」吗？此操作将删除该账套下的所有数据（科目、凭证、期初余额等），不可恢复。`,
       '删除确认',
       {

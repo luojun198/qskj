@@ -527,14 +527,14 @@ async function loadChanges() {
   if (changesAssetNo.value) params.asset_no = changesAssetNo.value
   const res = await fixedAssetApi.getChanges(params)
   if (res.code === 0) {
-    const maxPage = Math.max(1, Math.ceil(res.data.total / changesPageSize.value))
-    if (res.data.rows.length === 0 && res.data.total > 0 && changesPage.value > maxPage) {
+    const maxPage = Math.max(1, Math.ceil((res.data as any).total / changesPageSize.value))
+    if ((res.data as any).rows.length === 0 && (res.data as any).total > 0 && changesPage.value > maxPage) {
       changesPage.value = maxPage
       await loadChanges()
       return
     }
-    changeRecordRows.value = res.data.rows
-    changesTotal.value = res.data.total
+    changeRecordRows.value = (res.data as any).rows
+    changesTotal.value = (res.data as any).total
     changesLoaded.value = true
   }
 }

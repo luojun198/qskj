@@ -159,8 +159,14 @@ const settingsVisible = ref(false)
 const savingSettings = ref(false)
 const hiprintVisible = ref(false)
 
+// 多栏账按下级科目分栏，只有带子科目的科目才有意义
 const accountGroups = computed(() => {
-  const accounts = baseDataStore.accounts
+  const all = baseDataStore.accounts as any[]
+  const codes = all.map(a => String(a.code))
+  const accounts = all.filter(a => {
+    const code = String(a.code)
+    return a.id && codes.some(c => c.length > code.length && c.startsWith(code))
+  })
   return [{ code: 'all', label: '可选科目', accounts }]
 })
 const debitColumns = computed(() => columns.value.filter(column => column.side === 'debit'))

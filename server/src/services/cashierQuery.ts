@@ -67,6 +67,21 @@ export function getInitBalance(accountSetId: string, accountCode: string, curren
   return row?.balance ?? 0
 }
 
+/** 出纳科目涉及到的币别（含本位币 RMB），供前端币种切换 */
+export function listCashierCurrencies(accountSetId: string): string[] {
+  const db = getDb()
+  const rows = db.prepare(`
+    SELECT DISTINCT currency FROM (
+      SELECT currency FROM cashier_journal WHERE account_set_id=? AND currency IS NOT NULL AND currency<>''
+      UNION
+      SELECT currency FROM cashier_init_balance WHERE account_set_id=? AND currency IS NOT NULL AND currency<>''
+    ) ORDER BY currency
+  `).all(accountSetId, accountSetId) as Array<{ currency: string }>
+  const codes = rows.map(r => r.currency.trim().toUpperCase())
+  if (!codes.includes('RMB')) codes.unshift('RMB')
+  return codes
+}
+
 /**
  * 日记账列表（按科目+币别+日期区间），返回逐行余额。
  * 现金/银行为借方科目：余额 = 期初 + 借 - 贷。
@@ -74,6 +89,7 @@ export function getInitBalance(accountSetId: string, accountCode: string, curren
 export function searchJournals(params: {
   accountSetId: string
   accountCodes?: string[]
+  currency?: string
   startDate?: string
   endDate?: string
   summary?: string
@@ -96,6 +112,10 @@ export function searchJournals(params: {
   if (params.accountCodes && params.accountCodes.length > 0) {
     conds.push(`account_code IN (${params.accountCodes.map(() => '?').join(',')})`)
     vals.push(...params.accountCodes)
+  }
+  if (params.currency) {
+    conds.push('currency = ?')
+    vals.push(params.currency)
   }
   if (params.startDate) {
     conds.push('biz_date >= ?')
@@ -700,9 +720,11 @@ export function getAccountBalanceReport(params: {
   accountSetId: string
   startDate: string
   endDate: string
+  currency?: string
 }): { rows: DailyReportRow[]; total_income: number; total_expense: number } {
   const db = getDb()
   const { accountSetId, startDate, endDate } = params
+  const currency = params.currency || 'RMB'
 
   // 现金+银行科目列表
   const accounts = db.prepare(`
@@ -716,19 +738,19 @@ export function getAccountBalanceReport(params: {
   let totalIncome = 0, totalExpense = 0
 
   for (const acc of accounts) {
-    const opening = getInitBalance(accountSetId, acc.code, 'RMB')
+    const opening = getInitBalance(accountSetId, acc.code, currency)
     // 开始日期之前的累计净额
     const before = db.prepare(`
       SELECT COALESCE(SUM(debit),0) d, COALESCE(SUM(credit),0) c
-      FROM cashier_journal WHERE account_set_id=? AND account_code=? AND currency='RMB' AND biz_date < ?
-    `).get(accountSetId, acc.code, startDate) as { d: number; c: number }
+      FROM cashier_journal WHERE account_set_id=? AND account_code=? AND currency=? AND biz_date < ?
+    `).get(accountSetId, acc.code, currency, startDate) as { d: number; c: number }
     const dayBefore = opening + before.d - before.c
 
     // 期间收支
     const period = db.prepare(`
       SELECT COALESCE(SUM(debit),0) d, COALESCE(SUM(credit),0) c
-      FROM cashier_journal WHERE account_set_id=? AND account_code=? AND currency='RMB' AND biz_date >= ? AND biz_date <= ?
-    `).get(accountSetId, acc.code, startDate, endDate) as { d: number; c: number }
+      FROM cashier_journal WHERE account_set_id=? AND account_code=? AND currency=? AND biz_date >= ? AND biz_date <= ?
+    `).get(accountSetId, acc.code, currency, startDate, endDate) as { d: number; c: number }
 
     const closing = dayBefore + period.d - period.c
     totalIncome += period.d
@@ -750,6 +772,7 @@ export function getCashFlowSummary(params: {
   accountSetId: string
   startDate?: string
   endDate?: string
+  currency?: string
   groupBy: 'counter_account' | 'settle_type' | 'month'
 }): any[] {
   const db = getDb()
@@ -757,6 +780,7 @@ export function getCashFlowSummary(params: {
 
   const conds = ['j.account_set_id=?']
   const vals: any[] = [accountSetId]
+  if (params.currency) { conds.push('j.currency = ?'); vals.push(params.currency) }
   if (startDate) { conds.push('j.biz_date >= ?'); vals.push(startDate) }
   if (endDate) { conds.push('j.biz_date <= ?'); vals.push(endDate) }
 

@@ -62,7 +62,7 @@ export function accountMatchesQuickFilters(row: Parameters<typeof accountMatches
 export function filterAccountsWithAncestors<T extends { id: string; parent_id?: string | null }>(
   accounts: T[],
   filters: string[],
-  matches: (row: T, filters: string[]) => boolean = accountMatchesQuickFilters
+  matches: (row: T, filters: string[]) => boolean = accountMatchesQuickFilters as any
 ): T[] {
   if (filters.length === 0) return accounts
 

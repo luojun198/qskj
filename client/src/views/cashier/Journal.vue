@@ -1,8 +1,37 @@
 <template>
   <div class="page page-cashier-journal">
-    <div class="list-toolbar" style="margin-bottom:8px">
-      <el-button size="small" plain @click="showColSetting = true"><el-icon><Setting /></el-icon>列设置</el-button>
-      <el-button type="primary" size="small" @click="openAddDialog"><el-icon><Plus /></el-icon>录入日记账</el-button>
+    <div class="filter-row" style="margin-bottom:8px">
+      <el-select
+        v-model="filters.account_code"
+        filterable
+        placeholder="选择科目"
+        class="filter-ctl--md"
+        @change="handleQuery"
+      >
+        <el-option-group v-if="cashAccounts.length" label="现金科目">
+          <el-option v-for="a in cashAccounts" :key="a.code" :label="`${a.code} ${a.name}`" :value="a.code" />
+        </el-option-group>
+        <el-option-group v-if="bankAccounts.length" label="银行存款科目">
+          <el-option v-for="a in bankAccounts" :key="a.code" :label="`${a.code} ${a.name}`" :value="a.code" />
+        </el-option-group>
+      </el-select>
+      <el-select v-model="filters.currency" placeholder="币种" class="filter-ctl--xs" @change="handleQuery">
+        <el-option v-for="c in currencies" :key="c" :label="c" :value="c" />
+      </el-select>
+      <el-date-picker v-model="filters.start_date" type="date" value-format="YYYY-MM-DD" placeholder="开始日期" class="filter-ctl--md" @change="handleQuery" />
+      <span>至</span>
+      <el-date-picker v-model="filters.end_date" type="date" value-format="YYYY-MM-DD" placeholder="结束日期" class="filter-ctl--md" @change="handleQuery" />
+      <el-button type="primary" @click="handleQuery"><el-icon><Search /></el-icon>查询</el-button>
+      <el-divider direction="vertical" />
+      <el-button plain @click="openImportDialog"><el-icon><Upload /></el-icon>导入</el-button>
+      <el-button plain :disabled="!rows.length" @click="handleExport"><el-icon><Download /></el-icon>导出</el-button>
+      <el-button plain :loading="swapping" @click="handleBatchSwap"><el-icon><Connection /></el-icon>借贷互换</el-button>
+      <el-divider direction="vertical" />
+      <el-button plain @click="showReconcile = true"><el-icon><Connection /></el-icon>银行对账</el-button>
+      <el-button type="success" :loading="generating" @click="handleGenerateVoucher"><el-icon><DocumentAdd /></el-icon>生成凭证</el-button>
+      <el-button type="danger" plain :loading="deletingVouchers" @click="handleDeleteCashierVouchers"><el-icon><Delete /></el-icon>删除凭证</el-button>
+      <el-button plain @click="showColSetting = true"><el-icon><Setting /></el-icon>列设置</el-button>
+      <el-button type="primary" @click="openAddDialog"><el-icon><Plus /></el-icon>录入日记账</el-button>
     </div>
     <!-- 期初/期末余额摘要 -->
     <div v-if="journalResult" class="balance-summary">
@@ -294,9 +323,9 @@
           <div class="recon-col-header">
             <span class="recon-col-title">出纳日记账</span>
             <el-radio-group v-model="reconJournalTab" size="small">
-              <el-radio-button label="unmatched">未对</el-radio-button>
-              <el-radio-button label="all">全部</el-radio-button>
-              <el-radio-button label="matched">已对</el-radio-button>
+              <el-radio-button value="unmatched">未对</el-radio-button>
+              <el-radio-button value="all">全部</el-radio-button>
+              <el-radio-button value="matched">已对</el-radio-button>
             </el-radio-group>
           </div>
           <el-table
@@ -329,9 +358,9 @@
           <div class="recon-col-header">
             <span class="recon-col-title">银行对账单</span>
             <el-radio-group v-model="reconBankTab" size="small">
-              <el-radio-button label="unmatched">未对</el-radio-button>
-              <el-radio-button label="all">全部</el-radio-button>
-              <el-radio-button label="matched">已对</el-radio-button>
+              <el-radio-button value="unmatched">未对</el-radio-button>
+              <el-radio-button value="all">全部</el-radio-button>
+              <el-radio-button value="matched">已对</el-radio-button>
             </el-radio-group>
           </div>
           <el-table
@@ -554,6 +583,8 @@ function resetColSettings() {
 const showColSetting = ref(false)
 
 const accounts = ref<{ code: string; name: string; is_cash: number; is_bank: number; id: string; parent_id?: string | null }[]>([])
+const cashAccounts = computed(() => accounts.value.filter(a => a.is_cash === 1))
+const bankAccounts = computed(() => accounts.value.filter(a => a.is_bank === 1 && a.is_cash !== 1))
 
 function buildHierarchyList(leafs: typeof accounts.value, all: typeof accounts.value) {
   const resultIds = new Set<string>()
@@ -587,7 +618,7 @@ const cashierAccounts = computed(() => {
   if (!all.length) return []
   const parentIds = new Set(all.filter(a => a.parent_id).map(a => String(a.parent_id)))
   const leafs = all.filter(a => (a.is_cash === 1 || a.is_bank === 1) && !parentIds.has(String(a.id)) && a.is_enabled !== 0)
-  return buildHierarchyList(leafs, all)
+  return buildHierarchyList(leafs as any, all as any)
 })
 
 const cashierAccountFilter = ref('')
@@ -632,13 +663,14 @@ function onCashierAccountFilter(val: string) { cashierAccountFilter.value = val 
 function onCashierAccountVisibleChange(visible: boolean) { if (!visible) cashierAccountFilter.value = '' }
 
 const settleTypes = ref<SettleType[]>([])
+const currencies = ref<string[]>(['RMB'])
 const journalResult = ref<JournalResult | null>(null)
 const rows = computed(() => journalResult.value?.rows ?? [])
 
 const firstDay = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-01`
 const lastDay = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0)
 const lastDayStr = `${lastDay.getFullYear()}-${String(lastDay.getMonth() + 1).padStart(2, '0')}-${String(lastDay.getDate()).padStart(2, '0')}`
-const filters = ref({ account_code: '', start_date: firstDay, end_date: lastDayStr })
+const filters = ref({ account_code: '', currency: 'RMB', start_date: firstDay, end_date: lastDayStr })
 
 const swapping = ref(false)
 const selectedRows = ref<JournalRow[]>([])
@@ -960,6 +992,7 @@ async function loadReconDialog() {
     const [jRes, bRes] = await Promise.all([
       cashierApi.getJournal({
         account_code: filters.value.account_code,
+        currency: filters.value.currency || undefined,
         start_date: reconDate.value[0] || undefined,
         end_date: reconDate.value[1] || undefined,
       }),
@@ -1116,13 +1149,13 @@ function swapFormDebitCredit() {
   form.value.credit = tmp
 }
 
-function onDebitChange(val: number | null) {
+function onDebitChange(val: number | null | undefined) {
   if (val && val > 0) {
     form.value.credit = 0
   }
 }
 
-function onCreditChange(val: number | null) {
+function onCreditChange(val: number | null | undefined) {
   if (val && val > 0) {
     form.value.debit = 0
   }
@@ -1131,16 +1164,21 @@ function onCreditChange(val: number | null) {
 onMounted(async () => {
   // 首屏依赖的字典/参数请求一次性并行，避免串行瀑布阻塞挂载
   // （/system/params 之前在 Promise.all 之后才发，多了一次串行往返）
-  const [acRes, stRes, , , pRes] = await Promise.all([
+  const [acRes, stRes, , , pRes, curRes] = await Promise.all([
     cashierApi.getAccounts(),
     cashierApi.getSettleTypes(),
     baseData.loadAccounts(),
     baseData.loadAuxCategories(),
     // 读取出纳默认挂账科目（缺对方科目时的兜底科目），失败兜底为 null 不影响其余加载
     request.get<any[]>('/system/params').catch(() => null),
+    // 出纳币别（含本位币），失败兜底为 RMB
+    cashierApi.getCurrencies().catch(() => null),
   ])
-  if (acRes.code === 0) accounts.value = acRes.data
+  if (acRes.code === 0) accounts.value = acRes.data as any
   if (stRes.code === 0) settleTypes.value = stRes.data
+  if (curRes && curRes.code === 0 && Array.isArray(curRes.data) && curRes.data.length) {
+    currencies.value = curRes.data
+  }
   if (pRes && pRes.code === 0) {
     const p = (pRes.data || []).find((x: any) => x.param_key === 'cashier:default_counter_account')
     defaultCounterAccount.value = p?.param_value || ''
@@ -1155,6 +1193,7 @@ async function handleQuery() {
   if (!filters.value.account_code) return
   const res = await cashierApi.getJournal({
     account_code: filters.value.account_code,
+    currency: filters.value.currency || undefined,
     start_date: filters.value.start_date || undefined,
     end_date: filters.value.end_date || undefined,
   })
@@ -1223,7 +1262,7 @@ async function quickAddSettleType() {
       const maxCode = codes.length > 0 ? Math.max(...codes) : 0
       const newCode = String(maxCode + 1).padStart(2, '0')
       
-      const res = await cashierApi.createSettleType({ code: newCode, name: value })
+      const res = await cashierApi.createSettleType({ code: newCode, name: value } as any)
       if (res.code === 0) {
         ElMessage.success('结算方式已增加')
         const stRes = await cashierApi.getSettleTypes()
@@ -1362,7 +1401,7 @@ async function handleGenerateVoucher() {
   const lastDay = new Date(y, m, 0).getDate()
   const end = `${y}-${String(m).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`
 
-  let msg = `将当前会计期间（${start} 至 ${end}）已对账的出纳记录生成为会计凭证，确定继续？`
+  let msg = `将当前会计期间（${start} 至 ${end}）未生成凭证的出纳记录生成为会计凭证，确定继续？`
   if (selectedRows.value.length > 0) {
     msg = `将选中的 ${selectedRows.value.length} 条记录生成为会计凭证，确定继续？`
   }

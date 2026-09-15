@@ -15,7 +15,7 @@ import { v4 as uuidv4 } from 'uuid'
 
 const PLACEHOLDER_UNIT_NAMES = new Set(['xx公司', 'xx行政事业单位', 'XX公司', 'XX行政事业单位'])
 
-export const up: Migration = (db: Database) => {
+export const up: Migration['up'] = (db: Database) => {
   const tableExists = db
     .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`)
     .get('system_params')
@@ -52,7 +52,7 @@ export const up: Migration = (db: Database) => {
   }
 }
 
-export const down: Migration = (db: Database) => {
+export const down: Migration['down'] = (db: Database) => {
   const tableExists = db
     .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`)
     .get('system_params')

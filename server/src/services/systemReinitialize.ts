@@ -297,6 +297,26 @@ function clearMasterDataForReinit(
     deleteIfExists(db, 'DELETE FROM transfer_types WHERE account_set_id = ?', accountSetId)
   }
 
+  // 出纳与固定资产业务数据（依赖表先删）
+  deleteIfExists(db, 'DELETE FROM cashier_attachments WHERE account_set_id = ?', accountSetId)
+  deleteIfExists(db, 'DELETE FROM cashier_journal WHERE account_set_id = ?', accountSetId)
+  deleteIfExists(db, 'DELETE FROM cashier_init_balance WHERE account_set_id = ?', accountSetId)
+  deleteIfExists(db, 'DELETE FROM bank_statement WHERE account_set_id = ?', accountSetId)
+  deleteIfExists(db, 'DELETE FROM settle_type WHERE account_set_id = ?', accountSetId)
+  deleteIfExists(db, 'DELETE FROM fixed_asset_attachments WHERE account_set_id = ?', accountSetId)
+  deleteIfExists(db, 'DELETE FROM fixed_asset_inventory_item WHERE account_set_id = ?', accountSetId)
+  deleteIfExists(db, 'DELETE FROM fixed_asset_inventory WHERE account_set_id = ?', accountSetId)
+  deleteIfExists(db, 'DELETE FROM fixed_asset_requisition WHERE account_set_id = ?', accountSetId)
+  deleteIfExists(db, 'DELETE FROM fixed_asset_workload WHERE account_set_id = ?', accountSetId)
+  deleteIfExists(db, 'DELETE FROM fixed_asset_change WHERE account_set_id = ?', accountSetId)
+  deleteIfExists(db, 'DELETE FROM fixed_asset_depr WHERE account_set_id = ?', accountSetId)
+  deleteIfExists(db, 'DELETE FROM fixed_asset WHERE account_set_id = ?', accountSetId)
+  deleteIfExists(db, 'DELETE FROM fixed_asset_change_type WHERE account_set_id = ?', accountSetId)
+  deleteIfExists(db, 'DELETE FROM fixed_asset_category WHERE account_set_id = ?', accountSetId)
+  deleteIfExists(db, 'DELETE FROM fixed_asset_status WHERE account_set_id = ?', accountSetId)
+  deleteIfExists(db, 'DELETE FROM fixed_asset_purpose WHERE account_set_id = ?', accountSetId)
+  deleteIfExists(db, 'DELETE FROM fixed_asset_dept WHERE account_set_id = ?', accountSetId)
+
   deleteIfExists(db, 'DELETE FROM accounts WHERE account_set_id = ?', accountSetId)
 }
 

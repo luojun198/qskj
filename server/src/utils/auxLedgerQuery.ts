@@ -162,7 +162,7 @@ export function buildAuxMatchOptions(
 
 /** 查询辅助项目编码（现金流量等按 code 存于分录固定列） */
 export function lookupAuxItemCode(
-  db: { prepare: (sql: string) => { get: (...args: unknown[]) => unknown } },
+  db: { prepare: (sql: string) => any },
   accountSetId: string,
   itemId: string
 ): string | null {

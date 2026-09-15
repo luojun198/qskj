@@ -5,6 +5,8 @@ import {
   formatInitBalanceDirection,
   formatPositiveAmount,
   formatSignedBalanceAmount,
+  splitBalanceToDebitCredit,
+  sumBalanceSides,
 } from './exportLedgerHelpers'
 
 type ColWidthFn = (key: string, fallback: number) => number
@@ -223,16 +225,15 @@ export function buildBalanceSheetExportColumns(
           width: colWidth('init_debit', 100),
           align: 'right',
           type: 'amount',
-          value: row =>
-            row.direction === 'debit' && (row.init_balance ?? 0) > 0 ? row.init_balance : '',
+          // FIX-133：反方向（负）余额落到对侧列，与页面 splitBalanceToDebitCredit 口径一致
+          value: row => splitBalanceToDebitCredit(row.init_balance ?? 0, row.direction || 'debit').debit || '',
         },
         {
           label: '贷方',
           width: colWidth('init_credit', 100),
           align: 'right',
           type: 'amount',
-          value: row =>
-            row.direction === 'credit' && (row.init_balance ?? 0) > 0 ? row.init_balance : '',
+          value: row => splitBalanceToDebitCredit(row.init_balance ?? 0, row.direction || 'debit').credit || '',
         },
       ],
     },
@@ -288,16 +289,14 @@ export function buildBalanceSheetExportColumns(
           width: colWidth('end_debit', 100),
           align: 'right',
           type: 'amount',
-          value: row =>
-            row.direction === 'debit' && (row.end_balance ?? 0) > 0 ? row.end_balance : '',
+          value: row => splitBalanceToDebitCredit(row.end_balance ?? 0, row.direction || 'debit').debit || '',
         },
         {
           label: '贷方',
           width: colWidth('end_credit', 100),
           align: 'right',
           type: 'amount',
-          value: row =>
-            row.direction === 'credit' && (row.end_balance ?? 0) > 0 ? row.end_balance : '',
+          value: row => splitBalanceToDebitCredit(row.end_balance ?? 0, row.direction || 'debit').credit || '',
         },
       ],
     }
@@ -311,22 +310,14 @@ export function buildBalanceSheetSummaryValues(data: Array<Record<string, any>>,
   const leaf = data.filter(
     r => !data.some(o => o.account_code !== r.account_code && o.account_code.startsWith(r.account_code))
   )
-  const calcInitDebit = leaf.reduce(
-    (s, r) => s + (r.direction === 'debit' && r.init_balance > 0 ? r.init_balance : 0),
-    0
-  )
-  const calcInitCredit = leaf.reduce(
-    (s, r) => s + (r.direction === 'credit' && r.init_balance > 0 ? r.init_balance : 0),
-    0
-  )
-  const calcEndDebit = leaf.reduce(
-    (s, r) => s + (r.direction === 'debit' && r.end_balance > 0 ? r.end_balance : 0),
-    0
-  )
-  const calcEndCredit = leaf.reduce(
-    (s, r) => s + (r.direction === 'credit' && r.end_balance > 0 ? r.end_balance : 0),
-    0
-  )
+  // FIX-133：合计分侧累加，反方向余额计入对侧，与页面合计一致
+  const sideRows = leaf as Array<{ init_balance?: number; end_balance?: number; direction: string }>
+  const initSides = sumBalanceSides(sideRows, 'init_balance')
+  const endSides = sumBalanceSides(sideRows, 'end_balance')
+  const calcInitDebit = initSides.debit
+  const calcInitCredit = initSides.credit
+  const calcEndDebit = endSides.debit
+  const calcEndCredit = endSides.credit
   const calcYearDebit = leaf.reduce((s, r) => s + (r.year_debit || 0), 0)
   const calcYearCredit = leaf.reduce((s, r) => s + (r.year_credit || 0), 0)
 

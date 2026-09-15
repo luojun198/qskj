@@ -560,7 +560,7 @@ async function handleBackup() {
 async function handleDatabaseCleanup() {
   try {
     cleaning.value = true
-    const res = await request.post('/security/database/cleanup')
+    const res: any = await request.post('/security/database/cleanup')
     if (res.code === 0) {
       const d = res.data
       const saved =
@@ -728,7 +728,7 @@ async function handleFileSelected(event: Event) {
   formData.append('file', file)
 
   try {
-    const res = await request.post('/security/backups/restore-upload', formData, {
+    const res: any = await request.post('/security/backups/restore-upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
     const requireRelogin = res.data?.restoreType !== 'single_account_set'

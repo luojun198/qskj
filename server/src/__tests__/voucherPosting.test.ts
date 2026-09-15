@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildAuxItemId, type VoucherEntryLike } from '../services/voucherPosting.js'
+import { buildAuxItemId, getPostingBalanceError, type VoucherEntryLike } from '../services/voucherPosting.js'
 
 describe('voucherPosting', () => {
   describe('buildAuxItemId', () => {
@@ -101,6 +101,23 @@ describe('voucherPosting', () => {
       const entry2: Partial<VoucherEntryLike> = { dept_id: 123, project_id: 456, person_id: 789 }
 
       expect(buildAuxItemId(entry1 as VoucherEntryLike)).toBe(buildAuxItemId(entry2 as VoucherEntryLike))
+    })
+  })
+
+  describe('FIX-131 过账前借贷平衡闸', () => {
+    const e = (direction: 'debit' | 'credit', amount: number, amount_cents?: number) =>
+      ({ account_id: 'a', account_code: '1001', account_name: 'x', direction, amount, amount_cents }) as VoucherEntryLike
+
+    it('借贷相等放行', () => {
+      expect(getPostingBalanceError([e('debit', 100), e('credit', 100)])).toBeNull()
+    })
+
+    it('按 amount 重算，amount_cents 相等也拦不平凭证', () => {
+      expect(getPostingBalanceError([e('debit', 100, 10000), e('credit', 99, 10000)])).toContain('借贷不平衡')
+    })
+
+    it('无分录拒绝记账', () => {
+      expect(getPostingBalanceError([])).toContain('没有分录')
     })
   })
 })

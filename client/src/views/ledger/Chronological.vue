@@ -32,6 +32,9 @@
         <el-divider direction="vertical" />
         <el-button plain @click="exportData"><el-icon><Download /></el-icon>导出 Excel</el-button>
         <el-button plain @click="printPage"><el-icon><Printer /></el-icon>打印</el-button>
+        <el-button plain @click="showAdvancedFilter = !showAdvancedFilter">
+          {{ showAdvancedFilter ? '收起筛选' : '高级筛选' }}
+        </el-button>
       </div>
       <div v-if="showAdvancedFilter" class="filter-row filter-row--advanced">
         <el-input v-model="filters.summary_keyword" placeholder="摘要关键词" clearable class="filter-ctl--md" />

@@ -1080,7 +1080,7 @@ async function fetchDataChunked() {
   summaryLoading.value = false
 
   try {
-    const metaRes = await request.post<any>(
+    const metaRes: any = await request.post<any>(
       '/ledger/aux-balance',
       buildQueryParams({ item_limit: 0 })
     )
@@ -1098,7 +1098,7 @@ async function fetchDataChunked() {
     summaryLoading.value = true
     const summaryPromise = request
       .post<any>('/ledger/aux-balance', buildQueryParams({ summary_only: true }))
-      .then(res => {
+      .then((res: any) => {
         grandTotals.value = res.totals || null
         foreignTotals.value = res.foreign_totals || null
         foreignRates.value = res.rates || {}
@@ -1112,7 +1112,7 @@ async function fetchDataChunked() {
       })
 
     for (let offset = 0; offset < itemsTotal; offset += AUX_BALANCE_ITEM_BATCH) {
-      const res = await request.post<any>(
+      const res: any = await request.post<any>(
         '/ledger/aux-balance',
         buildQueryParams({
           item_offset: offset,
@@ -1155,7 +1155,7 @@ async function fetchDataServerPage() {
       page: currentPage.value,
       pageSize: pageSize.value,
     })
-    const res = await request.post<any>('/ledger/aux-balance', params)
+    const res: any = await request.post<any>('/ledger/aux-balance', params)
     list.value = res.data || []
     total.value = res.total ?? 0
     grandTotals.value = res.totals || null
@@ -1203,7 +1203,7 @@ async function fetchSelectedItemsChunked() {
   try {
     for (let start = 0; start < filters.value.aux_ids.length; start += AUX_BALANCE_ITEM_BATCH) {
       const batchIds = filters.value.aux_ids.slice(start, start + AUX_BALANCE_ITEM_BATCH)
-      const res = await request.post<any>(
+      const res: any = await request.post<any>(
         '/ledger/aux-balance',
         buildQueryParams({
           aux_ids: batchIds.join(','),
@@ -1227,7 +1227,7 @@ async function fetchSelectedItemsChunked() {
       await yieldToMain()
     }
 
-    const summaryRes = await request.post<any>(
+    const summaryRes: any = await request.post<any>(
       '/ledger/aux-balance',
       buildQueryParams({ summary_only: true })
     )
@@ -1285,7 +1285,7 @@ async function exportData() {
       let serverTotal = 0
       // eslint-disable-next-line no-constant-condition
       while (true) {
-        const res = await request.post<any>(
+        const res: any = await request.post<any>(
           '/ledger/aux-balance',
           buildQueryParams({ page, pageSize: LOAD_ALL_PAGE_SIZE, skip_summary: page > 1 })
         )

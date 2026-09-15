@@ -203,7 +203,7 @@ async function loadVoucherDialog(voucherId: string, row?: any) {
   try {
     await ensureBaseData()
     const res = await request.get(`/voucher/vouchers/${voucherId}`)
-    const voucher = res.data
+    const voucher: any = res.data
     const status = voucher.status || row?.status
     const canEdit = status === 'draft' && hasPermission('voucher:entry')
     dialogMode.value = canEdit ? 'edit' : 'view'
@@ -278,13 +278,13 @@ async function handleSubmit() {
 
     await request.put(`/voucher/vouchers/${form.value.id}`, payload)
     showSuccess('保存成功')
-    addRecord('编辑凭证', `凭证 ${form.value.voucher_no}`)
+    addRecord('update', '凭证管理', `凭证 ${form.value.voucher_no}`)
     dialogVisible.value = false
     emit('saved')
   } catch (error: any) {
     const msg = extractErrorMessage(error)
     if (isNoNegativeBalanceMessage(msg)) {
-      showNoNegativeBalanceAlert(msg)
+      showNoNegativeBalanceAlert(undefined, msg)
     } else {
       showOperationError('保存凭证', error)
     }
@@ -298,13 +298,13 @@ function buildAuxData(entry: VoucherEntry) {
   for (const cat of auxCategories.value) {
     const itemId = entry[`_${cat.code}_id`]
     if (!itemId) continue
-    const item = voucherAux.getAuxItemFromCache(cat.id, itemId)
+    const item = voucherAux.getAuxItemFromCache(String(cat.id), String(itemId))
     auxData[cat.code] = {
       id: itemId,
       name: item?.name || entry[`_${cat.code}_name`] || '',
       field_values: {},
     }
-    for (const field of cat.fields || []) {
+    for (const field of ((cat as any).fields || []) as any[]) {
       if (field.is_enabled === 0 || !field.show_in_voucher) continue
       const fvKey = `_${cat.code}_fv_${field.field_key}`
       if (entry[fvKey] != null && entry[fvKey] !== '') {

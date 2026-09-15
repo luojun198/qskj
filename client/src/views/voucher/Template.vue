@@ -250,7 +250,7 @@ async function handleEdit(row: any) {
     }
 
     // 加载到表单
-    loadVoucher(voucherData)
+    loadVoucher(voucherData as any)
 
     // 设置模版编号和说明（使用 voucher_no 字段存储模版编号）
     editForm.value.voucher_no = template.template_no

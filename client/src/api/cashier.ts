@@ -62,6 +62,9 @@ export const cashierApi = {
   getAccounts: () =>
     request.get<CashierAccount[]>('/cashier/accounts'),
 
+  getCurrencies: () =>
+    request.get<string[]>('/cashier/currencies'),
+
   getInitBalances: () =>
     request.get<any[]>('/cashier/init-balance'),
 
@@ -106,6 +109,9 @@ export const cashierApi = {
 
   createBankStatement: (data: Partial<BankStatement>) =>
     request.post<{ id: string }>('/cashier/bank-statement', data),
+
+  deleteBankStatement: (id: string) =>
+    request.delete(`/cashier/bank-statement/${id}`),
 
   autoReconcile: (data: { account_code: string; start_date?: string; end_date?: string; use_bill_no?: boolean }) =>
     request.post<{ matched: number; batch: number }>('/cashier/reconcile/auto', data),
@@ -159,11 +165,11 @@ export const cashierApi = {
     request.get<{ list: JournalRow[]; total: number }>('/cashier/journal/search', { params }),
 
   // 出纳日报 / 账户余额表
-  getDailyReport: (start_date: string, end_date: string) =>
-    request.get<{ rows: DailyReportRow[]; total_income: number; total_expense: number }>('/cashier/daily-report', { params: { start_date, end_date } }),
+  getDailyReport: (start_date: string, end_date: string, currency?: string) =>
+    request.get<{ rows: DailyReportRow[]; total_income: number; total_expense: number }>('/cashier/daily-report', { params: { start_date, end_date, currency } }),
 
   // 资金收支汇总表
-  getCashFlowSummary: (params: { start_date?: string; end_date?: string; group_by: 'counter_account' | 'settle_type' | 'month' }) =>
+  getCashFlowSummary: (params: { start_date?: string; end_date?: string; currency?: string; group_by: 'counter_account' | 'settle_type' | 'month' }) =>
     request.get<any[]>('/cashier/summary-report', { params }),
 
   // 出纳初始化
