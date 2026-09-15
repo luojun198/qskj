@@ -919,12 +919,17 @@ export function getVoucherDetail(params: {
     prepare: (sql: string) => { get: (...args: any[]) => any; all: (...args: any[]) => any[] }
   }
   voucherId: string
+  /** FIX-136：传入时校验凭证归属账套，跨账套凭证视为不存在 */
+  accountSetId?: string
 }) {
   const voucher = getVoucherWithTypeById({
     db: params.db,
     voucherId: params.voucherId,
   })
   if (!voucher) {
+    return null
+  }
+  if (params.accountSetId !== undefined && voucher.account_set_id !== params.accountSetId) {
     return null
   }
 

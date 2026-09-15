@@ -256,11 +256,42 @@ router.post(
     }
 
     const startNumber = Number(start_no) || 1
+    const endNumber = startNumber + vouchers.length - 1
+
+    // FIX-137：目标号段内若有非草稿凭证占号，UNIQUE 冲突会以 500 抛出；与插入路径（FIX-009）一样先预检
+    const blocking = db
+      .prepare(
+        `SELECT voucher_no, status FROM vouchers
+         WHERE account_set_id=? AND year=? AND period=?
+           AND (voucher_type_id=? OR (voucher_type_id IS NULL AND ? IS NULL))
+           AND status <> 'draft'
+           AND ${VOUCHER_NO_SEQ_SQL} BETWEEN ? AND ?
+         ORDER BY ${VOUCHER_NO_SEQ_SQL} LIMIT 1`
+      )
+      .get(
+        req.accountSetId,
+        Number(year),
+        Number(period),
+        voucher_type_id || null,
+        voucher_type_id || null,
+        startNumber,
+        endNumber
+      ) as { voucher_no: string; status: string } | undefined
+    if (blocking) {
+      const statusText = blocking.status === 'posted' ? '已记账' : '已审核'
+      return res.status(400).json({
+        code: 400,
+        message: `无法重新排号：凭证号 ${blocking.voucher_no} 已${statusText}，占用了目标号段 ${startNumber}~${endNumber}。请先反审核 / 反记账或调整起始号。`,
+      })
+    }
+
     const updateStmt = db.prepare(
       "UPDATE vouchers SET voucher_no=?, updated_at=datetime('now') WHERE id=?"
     )
 
+    // 两段式改号：先全部改成临时号，避免草稿之间互换编号时触发 UNIQUE 冲突；immediate 事务防并发录入抢号
     const updateAll = db.transaction(() => {
+      vouchers.forEach(v => updateStmt.run(`__renumber__${v.id}`, v.id))
       vouchers.forEach((v, i) => {
         const newNo = buildVoucherNo({
           maxNo: startNumber + i - 1,
@@ -269,7 +300,7 @@ router.post(
         updateStmt.run(newNo, v.id)
       })
     })
-    updateAll()
+    updateAll.immediate()
 
     res.json({
       code: 0,
@@ -1187,7 +1218,8 @@ router.get('/vouchers', (req: AuthRequest, res) => {
 router.get('/vouchers/:id', (req: AuthRequest, res) => {
   const { id } = req.params
   const db = getDb()
-  const voucher = getVoucherDetail({ db, voucherId: id })
+  // FIX-136：按 account_set_id 过滤，普通/管理员用户也不能凭 id 读他账套凭证
+  const voucher = getVoucherDetail({ db, voucherId: id, accountSetId: req.accountSetId || '' })
   if (!voucher) {
     return res.status(404).json({ code: 404, message: '凭证不存在' })
   }
@@ -2150,7 +2182,7 @@ router.post('/print-data/batch', (req: AuthRequest, res) => {
     // 批量获取每张凭证的详细数据
     const printDataList = voucherList
       .map((voucher: any) => {
-        const detail = getVoucherDetail({ db, voucherId: voucher.id })
+        const detail = getVoucherDetail({ db, voucherId: voucher.id, accountSetId: req.accountSetId || '' })
         if (!detail) return null
 
         const entries = detail.entries.map(buildEntryPrintData)

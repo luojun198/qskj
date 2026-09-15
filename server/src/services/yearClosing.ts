@@ -26,6 +26,31 @@ export interface YearEndBalanceRow {
   initBalance: number
   initDebit: number
   initCredit: number
+  /** FIX-140：原币年末余额（按科目方向签名），老库无外币列时恒为 0 */
+  foreignInitBalance: number
+  foreignInitDebit: number
+  foreignInitCredit: number
+  /** FIX-140：数量年末结存（按科目方向签名），老库无数量列时恒为 0 */
+  qtyInitBalance: number
+  qtyInitDebit: number
+  qtyInitCredit: number
+}
+
+/** FIX-140：init_balances / voucher_entries 是否具备外币、数量列（老库可能未迁移） */
+export function detectYearCloseColumnSupport(db: Database) {
+  const cols = (table: string) =>
+    new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(c => c.name))
+  const ib = cols('init_balances')
+  const ve = cols('voucher_entries')
+  return {
+    foreign: ib.has('foreign_init_balance') && ib.has('foreign_opening_debit') && ve.has('foreign_amount'),
+    qty: ib.has('qty_init_balance') && ib.has('qty_opening_debit') && ve.has('quantity'),
+  }
+}
+
+const QTY_EPSILON = 1e-6
+function roundQty(value: number) {
+  return Math.round(value * 1e6) / 1e6
 }
 
 export interface ClosePeriodResult {
@@ -211,7 +236,12 @@ export function deleteNextYearAutoOpeningBalances(params: {
   return { deleted: Number(result.changes ?? 0) }
 }
 
-function getInitBalanceRows(db: Database, accountSetId: string, year: number) {
+function getInitBalanceRows(
+  db: Database,
+  accountSetId: string,
+  year: number,
+  support: { foreign: boolean; qty: boolean }
+) {
   return db
     .prepare(
       `
@@ -221,7 +251,9 @@ function getInitBalanceRows(db: Database, accountSetId: string, year: number) {
         a.name as account_name,
         a.direction,
         COALESCE(ib.aux_item_id, '') as aux_item_id,
-        SUM(COALESCE(ib.init_balance, 0)) as init_balance
+        SUM(COALESCE(ib.init_balance, 0)) as init_balance,
+        ${support.foreign ? 'SUM(COALESCE(ib.foreign_init_balance, 0))' : '0'} as foreign_init_balance,
+        ${support.qty ? 'SUM(COALESCE(ib.qty_init_balance, 0))' : '0'} as qty_init_balance
       FROM init_balances ib
       JOIN accounts a ON a.id = ib.account_id
       WHERE ib.account_set_id = ?
@@ -237,6 +269,8 @@ function getInitBalanceRows(db: Database, accountSetId: string, year: number) {
     direction: Direction
     aux_item_id: string | null
     init_balance: number | null
+    foreign_init_balance: number | null
+    qty_init_balance: number | null
   }>
 }
 
@@ -287,14 +321,39 @@ export function splitSignedBalance(direction: Direction, signedBalance: number) 
     : { initBalance: value, initDebit: Math.abs(value), initCredit: 0 }
 }
 
+function splitSignedQuantity(direction: Direction, signedQty: number) {
+  const value = roundQty(signedQty)
+  if (Math.abs(value) < QTY_EPSILON) {
+    return { initBalance: 0, initDebit: 0, initCredit: 0 }
+  }
+  const positive = value > 0
+  if (direction === 'debit') {
+    return positive
+      ? { initBalance: value, initDebit: value, initCredit: 0 }
+      : { initBalance: value, initDebit: 0, initCredit: Math.abs(value) }
+  }
+  return positive
+    ? { initBalance: value, initDebit: 0, initCredit: value }
+    : { initBalance: value, initDebit: Math.abs(value), initCredit: 0 }
+}
+
 export function buildYearEndBalances(
   db: Database,
   accountSetId: string,
   year: number
 ): YearEndBalanceRow[] {
   const balances = new Map<string, YearEndBalanceRow>()
+  const support = detectYearCloseColumnSupport(db)
+  const emptyExtra = {
+    foreignInitBalance: 0,
+    foreignInitDebit: 0,
+    foreignInitCredit: 0,
+    qtyInitBalance: 0,
+    qtyInitDebit: 0,
+    qtyInitCredit: 0,
+  }
 
-  for (const row of getInitBalanceRows(db, accountSetId, year)) {
+  for (const row of getInitBalanceRows(db, accountSetId, year, support)) {
     const auxItemId = normalizeAuxItemId(row.aux_item_id)
     const key = makeBalanceKey(row.account_id, auxItemId)
     balances.set(key, {
@@ -306,6 +365,9 @@ export function buildYearEndBalances(
       initBalance: roundMoney(Number(row.init_balance || 0)),
       initDebit: 0,
       initCredit: 0,
+      ...emptyExtra,
+      foreignInitBalance: roundMoney(Number(row.foreign_init_balance || 0)),
+      qtyInitBalance: roundQty(Number(row.qty_init_balance || 0)),
     })
   }
 
@@ -321,19 +383,45 @@ export function buildYearEndBalances(
       initBalance: 0,
       initDebit: 0,
       initCredit: 0,
+      ...emptyExtra,
     }
     const amount = Number(entry.amount || 0)
     const sameDirection = entry.direction === current.direction
-    current.initBalance = roundMoney(current.initBalance + (sameDirection ? amount : -amount))
+    const sign = sameDirection ? 1 : -1
+    current.initBalance = roundMoney(current.initBalance + sign * amount)
+    // FIX-140：外币 / 数量随本位币同步累计，年结后下年期初不再丢原币与数量
+    if (support.foreign) {
+      const foreignAmount = Number((entry as any).foreign_amount || 0)
+      current.foreignInitBalance = roundMoney(current.foreignInitBalance + sign * foreignAmount)
+    }
+    if (support.qty) {
+      const quantity = Number((entry as any).quantity || 0)
+      current.qtyInitBalance = roundQty(current.qtyInitBalance + sign * quantity)
+    }
     balances.set(key, current)
   }
 
   return [...balances.values()]
-    .map(row => ({
-      ...row,
-      ...splitSignedBalance(row.direction, row.initBalance),
-    }))
-    .filter(row => Math.abs(row.initBalance) >= MONEY_EPSILON)
+    .map(row => {
+      const foreign = splitSignedBalance(row.direction, row.foreignInitBalance)
+      const qty = splitSignedQuantity(row.direction, row.qtyInitBalance)
+      return {
+        ...row,
+        ...splitSignedBalance(row.direction, row.initBalance),
+        foreignInitBalance: foreign.initBalance,
+        foreignInitDebit: foreign.initDebit,
+        foreignInitCredit: foreign.initCredit,
+        qtyInitBalance: qty.initBalance,
+        qtyInitDebit: qty.initDebit,
+        qtyInitCredit: qty.initCredit,
+      }
+    })
+    .filter(
+      row =>
+        Math.abs(row.initBalance) >= MONEY_EPSILON ||
+        Math.abs(row.foreignInitBalance) >= MONEY_EPSILON ||
+        Math.abs(row.qtyInitBalance) >= QTY_EPSILON
+    )
     .sort(
       (a, b) => a.accountCode.localeCompare(b.accountCode) || a.auxItemId.localeCompare(b.auxItemId)
     )
@@ -414,15 +502,25 @@ export function writeNextYearInitBalances(params: {
        AND aux_item_id=? AND source='manual' LIMIT 1`
   )
 
+  // FIX-140：外币 / 数量期初随年结写入下年（老库缺列时跳过对应列）
+  const support = detectYearCloseColumnSupport(params.db)
+  const foreignCols = support.foreign
+    ? ', foreign_init_balance, foreign_opening_debit, foreign_opening_credit, foreign_pre_book_debit, foreign_pre_book_credit'
+    : ''
+  const foreignVals = support.foreign ? ', ?, ?, ?, 0, 0' : ''
+  const qtyCols = support.qty
+    ? ', qty_init_balance, qty_opening_debit, qty_opening_credit, qty_pre_book_debit, qty_pre_book_credit'
+    : ''
+  const qtyVals = support.qty ? ', ?, ?, ?, 0, 0' : ''
   const insert = params.db.prepare(
     `
     INSERT INTO init_balances (
       id, account_set_id, account_id, direction, year, period,
       init_balance, init_debit, init_credit, aux_item_id,
       opening_debit, opening_credit, pre_book_debit, pre_book_credit,
-      source, created_at
+      source, created_at${foreignCols}${qtyCols}
     )
-    VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 0, 0, 'year_close_auto', datetime('now'))
+    VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 0, 0, 'year_close_auto', datetime('now')${foreignVals}${qtyVals})
   `
   )
 
@@ -444,7 +542,9 @@ export function writeNextYearInitBalances(params: {
       row.initCredit,
       row.auxItemId,
       row.initDebit,
-      row.initCredit
+      row.initCredit,
+      ...(support.foreign ? [row.foreignInitBalance, row.foreignInitDebit, row.foreignInitCredit] : []),
+      ...(support.qty ? [row.qtyInitBalance, row.qtyInitDebit, row.qtyInitCredit] : [])
     )
     inserted += 1
   }

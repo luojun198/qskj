@@ -133,7 +133,7 @@ router.post('/', operationLog('创建凭证模版', '凭证管理'), (req: AuthR
 
   if (voucher_id) {
     // 方式1：从现有凭证创建模版
-    const voucher = getVoucherDetail({ db, voucherId: voucher_id })
+    const voucher = getVoucherDetail({ db, voucherId: voucher_id, accountSetId: req.accountSetId || '' })
     if (!voucher) {
       return res.status(404).json({ code: 404, message: '源凭证不存在' })
     }

@@ -8,10 +8,19 @@ import {
   loadBatchDraftVouchers,
   loadBatchFilteredVouchers,
   validateBatchVoucherFilters,
+  applyVoucherUnAudit,
+  getPeriodClosingRecord,
+  isPeriodClosed,
 } from '../services/voucherEntry.js'
+import { buildVoucherAllEntriesInScopeSql } from '../services/accountAuthorization.js'
 import { deleteVouchersWithRefs } from '../services/voucherDelete.js'
 import { validateInitBalanceBalancedForYears } from '../services/initBalanceTrial.js'
-import { applyVoucherPosting, applyVoucherUnpost } from '../services/voucherPosting.js'
+import {
+  applyVoucherPosting,
+  applyVoucherUnpost,
+  getAllowDirectPost,
+  getRequireAuditEnabled,
+} from '../services/voucherPosting.js'
 
 const router = Router()
 router.use(authMiddleware)
@@ -20,6 +29,7 @@ router.use(authMiddleware)
 
 router.post(
   '/vouchers/batch-audit/preview',
+  requirePermission('voucher:audit'),
   operationLog('预览批量审核凭证', '凭证管理'),
   (req: AuthRequest, res) => {
     const filters = getBatchVoucherFilters(req.body)
@@ -50,6 +60,7 @@ router.post(
 
 router.post(
   '/vouchers/batch-delete/preview',
+  requirePermission('voucher:entry'),
   operationLog('预览批量删除凭证', '凭证管理'),
   (req: AuthRequest, res) => {
     const filters = getBatchVoucherFilters(req.body)
@@ -109,46 +120,94 @@ router.post(
   }
 )
 
+// ===================== 筛选模式共用：按状态取凭证（含科目授权范围 + 已结账期间拆分） =====================
+
+// FIX-134：筛选模式此前只按 status + 日期/类型/号段 SQL 取凭证，
+// 既不过滤科目授权范围（受限用户可操作看不见的凭证），也不排除已结账期间；
+// 与按 ID 模式（voucherPosting.ts / voucherAudit.ts）的双重校验不一致。
+function loadStatusFilteredVouchers(params: {
+  db: ReturnType<typeof getDb>
+  req: AuthRequest
+  filters: ReturnType<typeof getBatchVoucherFilters>
+  status: 'audited' | 'posted'
+  order: 'ASC' | 'DESC'
+}) {
+  const { db, req, filters, status, order } = params
+  const accountSetId = req.accountSetId || ''
+  const scope = req.accountScope
+    ? buildVoucherAllEntriesInScopeSql(req.accountScope, 'vouchers.id', accountSetId)
+    : { sql: '1=1', params: [] as string[] }
+  const rows = db
+    .prepare(
+      `SELECT * FROM vouchers
+       WHERE account_set_id=? AND status=?
+       AND voucher_date BETWEEN ? AND ?
+       ${filters.voucherTypeIds.length > 0 ? `AND voucher_type_id IN (${filters.voucherTypeIds.map(() => '?').join(',')})` : ''}
+       ${filters.startNo ? 'AND voucher_no >= ?' : ''}
+       ${filters.endNo ? 'AND voucher_no <= ?' : ''}
+       AND (${scope.sql})
+       ORDER BY voucher_date ${order}, voucher_no ${order}`
+    )
+    .all(
+      accountSetId,
+      status,
+      filters.startDate,
+      filters.endDate,
+      ...filters.voucherTypeIds,
+      ...(filters.startNo ? [filters.startNo] : []),
+      ...(filters.endNo ? [filters.endNo] : []),
+      ...scope.params
+    ) as any[]
+
+  // 已结账期间的凭证一律跳过（P1-13 原仅反记账有此逻辑，现统一）
+  const operable: any[] = []
+  let skippedClosed = 0
+  for (const v of rows) {
+    const record = getPeriodClosingRecord({ db, accountSetId, year: v.year, period: v.period })
+    if (isPeriodClosed(record)) skippedClosed++
+    else operable.push(v)
+  }
+  return { rows, operable, skippedClosed }
+}
+
+function buildStatusPreviewData(result: ReturnType<typeof loadStatusFilteredVouchers>) {
+  const { operable, skippedClosed } = result
+  return {
+    count: operable.length,
+    firstVoucherNo: operable[0]?.voucher_no || null,
+    lastVoucherNo: operable[operable.length - 1]?.voucher_no || null,
+    blockedVoucherNo: null,
+    skippedClosed,
+  }
+}
+
+function loadPostingParams(db: ReturnType<typeof getDb>, accountSetId: string) {
+  // FIX-135：与单张/按 ID 模式同源读取，不再硬编码 requireAudit=false
+  const requireAudit = db
+    .prepare(`SELECT param_value FROM system_params WHERE account_set_id=? AND param_key='require_audit'`)
+    .get(accountSetId) as any
+  const allowDirectPost = db
+    .prepare(`SELECT param_value FROM system_params WHERE account_set_id=? AND param_key='allow_direct_post'`)
+    .get(accountSetId) as any
+  return {
+    requireAudit: getRequireAuditEnabled(requireAudit),
+    allowDirectPost: getAllowDirectPost(allowDirectPost),
+  }
+}
+
 // ===================== 批量反审核 =====================
 
 router.post(
   '/vouchers/batch-unaudit/preview',
+  requirePermission('voucher:audit'),
   operationLog('预览批量反审核凭证', '凭证管理'),
   (req: AuthRequest, res) => {
     const filters = getBatchVoucherFilters(req.body)
     if (!validateBatchVoucherFilters(filters)) {
       return res.status(400).json({ code: 400, message: '日期区间、凭证类型不能为空' })
     }
-
-    const db = getDb()
-    const vouchers = db
-      .prepare(
-        `SELECT * FROM vouchers
-         WHERE account_set_id=? AND status='audited'
-         AND voucher_date BETWEEN ? AND ?
-         ${filters.voucherTypeIds.length > 0 ? `AND voucher_type_id IN (${filters.voucherTypeIds.map(() => '?').join(',')})` : ''}
-         ${filters.startNo ? 'AND voucher_no >= ?' : ''}
-         ${filters.endNo ? 'AND voucher_no <= ?' : ''}
-         ORDER BY voucher_date, voucher_no`
-      )
-      .all(
-        req.accountSetId,
-        filters.startDate,
-        filters.endDate,
-        ...filters.voucherTypeIds,
-        ...(filters.startNo ? [filters.startNo] : []),
-        ...(filters.endNo ? [filters.endNo] : [])
-      ) as any[]
-
-    res.json({
-      code: 0,
-      data: {
-        count: vouchers.length,
-        firstVoucherNo: vouchers[0]?.voucher_no || null,
-        lastVoucherNo: vouchers[vouchers.length - 1]?.voucher_no || null,
-        blockedVoucherNo: null,
-      },
-    })
+    const result = loadStatusFilteredVouchers({ db: getDb(), req, filters, status: 'audited', order: 'ASC' })
+    res.json({ code: 0, data: buildStatusPreviewData(result) })
   }
 )
 
@@ -163,43 +222,27 @@ router.post(
     }
 
     const db = getDb()
-    const vouchers = db
-      .prepare(
-        `SELECT * FROM vouchers
-         WHERE account_set_id=? AND status='audited'
-         AND voucher_date BETWEEN ? AND ?
-         ${filters.voucherTypeIds.length > 0 ? `AND voucher_type_id IN (${filters.voucherTypeIds.map(() => '?').join(',')})` : ''}
-         ${filters.startNo ? 'AND voucher_no >= ?' : ''}
-         ${filters.endNo ? 'AND voucher_no <= ?' : ''}
-         ORDER BY voucher_date, voucher_no`
-      )
-      .all(
-        req.accountSetId,
-        filters.startDate,
-        filters.endDate,
-        ...filters.voucherTypeIds,
-        ...(filters.startNo ? [filters.startNo] : []),
-        ...(filters.endNo ? [filters.endNo] : [])
-      ) as any[]
-
-    if (vouchers.length === 0) {
+    const { rows, operable, skippedClosed } = loadStatusFilteredVouchers({ db, req, filters, status: 'audited', order: 'ASC' })
+    if (rows.length === 0) {
       return res.status(400).json({ code: 400, message: '未找到符合条件的已审核凭证' })
     }
+    if (operable.length === 0) {
+      return res.status(400).json({ code: 400, message: '所选凭证均属于已结账期间，不能反审核' })
+    }
 
-    const updateStmt = db.prepare(
-      "UPDATE vouchers SET status='draft', auditor_id=NULL, auditor_name=NULL, updated_at=datetime('now') WHERE id=?"
-    )
     const transaction = db.transaction(() => {
-      for (const v of vouchers) {
-        updateStmt.run(v.id)
+      for (const v of operable) {
+        applyVoucherUnAudit({ db, voucherId: v.id })
       }
     })
     transaction()
 
     res.json({
       code: 0,
-      message: `批量反审核成功，共反审核 ${vouchers.length} 张凭证`,
-      data: { count: vouchers.length },
+      message:
+        `批量反审核成功，共反审核 ${operable.length} 张凭证` +
+        (skippedClosed > 0 ? `，${skippedClosed} 张因所属期间已结账被跳过` : ''),
+      data: { count: operable.length, skippedClosed },
     })
   }
 )
@@ -208,42 +251,15 @@ router.post(
 
 router.post(
   '/vouchers/batch-post/preview',
+  requirePermission('voucher:post'),
   operationLog('预览批量记账凭证', '凭证管理'),
   (req: AuthRequest, res) => {
     const filters = getBatchVoucherFilters(req.body)
     if (!validateBatchVoucherFilters(filters)) {
       return res.status(400).json({ code: 400, message: '日期区间、凭证类型不能为空' })
     }
-
-    const db = getDb()
-    const vouchers = db
-      .prepare(
-        `SELECT * FROM vouchers
-         WHERE account_set_id=? AND status='audited'
-         AND voucher_date BETWEEN ? AND ?
-         ${filters.voucherTypeIds.length > 0 ? `AND voucher_type_id IN (${filters.voucherTypeIds.map(() => '?').join(',')})` : ''}
-         ${filters.startNo ? 'AND voucher_no >= ?' : ''}
-         ${filters.endNo ? 'AND voucher_no <= ?' : ''}
-         ORDER BY voucher_date, voucher_no`
-      )
-      .all(
-        req.accountSetId,
-        filters.startDate,
-        filters.endDate,
-        ...filters.voucherTypeIds,
-        ...(filters.startNo ? [filters.startNo] : []),
-        ...(filters.endNo ? [filters.endNo] : [])
-      ) as any[]
-
-    res.json({
-      code: 0,
-      data: {
-        count: vouchers.length,
-        firstVoucherNo: vouchers[0]?.voucher_no || null,
-        lastVoucherNo: vouchers[vouchers.length - 1]?.voucher_no || null,
-        blockedVoucherNo: null,
-      },
-    })
+    const result = loadStatusFilteredVouchers({ db: getDb(), req, filters, status: 'audited', order: 'ASC' })
+    res.json({ code: 0, data: buildStatusPreviewData(result) })
   }
 )
 
@@ -258,60 +274,41 @@ router.post(
     }
 
     const db = getDb()
-    const vouchers = db
-      .prepare(
-        `SELECT * FROM vouchers
-         WHERE account_set_id=? AND status='audited'
-         AND voucher_date BETWEEN ? AND ?
-         ${filters.voucherTypeIds.length > 0 ? `AND voucher_type_id IN (${filters.voucherTypeIds.map(() => '?').join(',')})` : ''}
-         ${filters.startNo ? 'AND voucher_no >= ?' : ''}
-         ${filters.endNo ? 'AND voucher_no <= ?' : ''}
-         ORDER BY voucher_date, voucher_no`
-      )
-      .all(
-        req.accountSetId,
-        filters.startDate,
-        filters.endDate,
-        ...filters.voucherTypeIds,
-        ...(filters.startNo ? [filters.startNo] : []),
-        ...(filters.endNo ? [filters.endNo] : [])
-      ) as any[]
-
-    if (vouchers.length === 0) {
+    const accountSetId = req.accountSetId || ''
+    const { rows, operable, skippedClosed } = loadStatusFilteredVouchers({ db, req, filters, status: 'audited', order: 'ASC' })
+    if (rows.length === 0) {
       return res.status(400).json({ code: 400, message: '未找到符合条件的已审核凭证' })
+    }
+    if (operable.length === 0) {
+      return res.status(400).json({ code: 400, message: '所选凭证均属于已结账期间，不能记账' })
     }
 
     const initBalanceError = validateInitBalanceBalancedForYears(
       db,
-      req.accountSetId || '',
-      [...new Set(vouchers.map(v => v.year as number))]
+      accountSetId,
+      [...new Set(operable.map(v => v.year as number))]
     )
     if (initBalanceError) {
       return res.status(400).json({ code: 400, message: initBalanceError })
     }
 
-    // 批量记账逻辑（applyVoucherPosting 已在顶部静态 import）
+    const ctx = { accountSetId, userId: req.userId, userName: req.userName, ...loadPostingParams(db, accountSetId) }
     const transaction = db.transaction(() => {
-      for (const voucher of vouchers) {
+      for (const voucher of operable) {
         const entries = db
           .prepare('SELECT * FROM voucher_entries WHERE voucher_id=? ORDER BY seq')
           .all(voucher.id) as any[]
-
-        applyVoucherPosting(db, voucher, entries, {
-          accountSetId: req.accountSetId || '',
-          userId: req.userId,
-          userName: req.userName,
-          requireAudit: false,
-          allowDirectPost: true,
-        })
+        applyVoucherPosting(db, voucher, entries, ctx)
       }
     })
     transaction()
 
     res.json({
       code: 0,
-      message: `批量记账成功，共记账 ${vouchers.length} 张凭证`,
-      data: { count: vouchers.length },
+      message:
+        `批量记账成功，共记账 ${operable.length} 张凭证` +
+        (skippedClosed > 0 ? `，${skippedClosed} 张因所属期间已结账被跳过` : ''),
+      data: { count: operable.length, skippedClosed },
     })
   }
 )
@@ -320,42 +317,15 @@ router.post(
 
 router.post(
   '/vouchers/batch-unpost/preview',
+  requirePermission('voucher:unpost'),
   operationLog('预览批量反记账凭证', '凭证管理'),
   (req: AuthRequest, res) => {
     const filters = getBatchVoucherFilters(req.body)
     if (!validateBatchVoucherFilters(filters)) {
       return res.status(400).json({ code: 400, message: '日期区间、凭证类型不能为空' })
     }
-
-    const db = getDb()
-    const vouchers = db
-      .prepare(
-        `SELECT * FROM vouchers
-         WHERE account_set_id=? AND status='posted'
-         AND voucher_date BETWEEN ? AND ?
-         ${filters.voucherTypeIds.length > 0 ? `AND voucher_type_id IN (${filters.voucherTypeIds.map(() => '?').join(',')})` : ''}
-         ${filters.startNo ? 'AND voucher_no >= ?' : ''}
-         ${filters.endNo ? 'AND voucher_no <= ?' : ''}
-         ORDER BY voucher_date DESC, voucher_no DESC`
-      )
-      .all(
-        req.accountSetId,
-        filters.startDate,
-        filters.endDate,
-        ...filters.voucherTypeIds,
-        ...(filters.startNo ? [filters.startNo] : []),
-        ...(filters.endNo ? [filters.endNo] : [])
-      ) as any[]
-
-    res.json({
-      code: 0,
-      data: {
-        count: vouchers.length,
-        firstVoucherNo: vouchers[0]?.voucher_no || null,
-        lastVoucherNo: vouchers[vouchers.length - 1]?.voucher_no || null,
-        blockedVoucherNo: null,
-      },
-    })
+    const result = loadStatusFilteredVouchers({ db: getDb(), req, filters, status: 'posted', order: 'DESC' })
+    res.json({ code: 0, data: buildStatusPreviewData(result) })
   }
 )
 
@@ -370,55 +340,23 @@ router.post(
     }
 
     const db = getDb()
-    const vouchers = db
-      .prepare(
-        `SELECT * FROM vouchers
-         WHERE account_set_id=? AND status='posted'
-         AND voucher_date BETWEEN ? AND ?
-         ${filters.voucherTypeIds.length > 0 ? `AND voucher_type_id IN (${filters.voucherTypeIds.map(() => '?').join(',')})` : ''}
-         ${filters.startNo ? 'AND voucher_no >= ?' : ''}
-         ${filters.endNo ? 'AND voucher_no <= ?' : ''}
-         ORDER BY voucher_date DESC, voucher_no DESC`
-      )
-      .all(
-        req.accountSetId,
-        filters.startDate,
-        filters.endDate,
-        ...filters.voucherTypeIds,
-        ...(filters.startNo ? [filters.startNo] : []),
-        ...(filters.endNo ? [filters.endNo] : [])
-      ) as any[]
-
-    if (vouchers.length === 0) {
+    const accountSetId = req.accountSetId || ''
+    const { rows, operable, skippedClosed } = loadStatusFilteredVouchers({ db, req, filters, status: 'posted', order: 'DESC' })
+    if (rows.length === 0) {
       return res.status(400).json({ code: 400, message: '未找到符合条件的已记账凭证' })
     }
-
-    // P1-13：排除已结账期间的凭证，避免筛选模式反记账破坏「已结账期间不可变」
-    const closedStmt = db.prepare(
-      `SELECT 1 FROM period_closing WHERE account_set_id=? AND year=? AND period=? AND status='closed'`
-    )
-    const unpostable = vouchers.filter(
-      v => !closedStmt.get(req.accountSetId, v.year, v.period)
-    )
-    const skippedClosed = vouchers.length - unpostable.length
-    if (unpostable.length === 0) {
+    if (operable.length === 0) {
       return res.status(400).json({ code: 400, message: '所选凭证均属于已结账期间，不能反记账' })
     }
 
-    // 批量反记账逻辑（applyVoucherUnpost 已在顶部静态 import）
+    // FIX-135：requireAudit / allowDirectPost 读真实系统参数，反记账后已审核凭证保持 audited 而不是降级为草稿
+    const ctx = { accountSetId, userId: req.userId, userName: req.userName, ...loadPostingParams(db, accountSetId) }
     const transaction = db.transaction(() => {
-      for (const voucher of unpostable) {
+      for (const voucher of operable) {
         const entries = db
           .prepare('SELECT * FROM voucher_entries WHERE voucher_id=? ORDER BY seq')
           .all(voucher.id) as any[]
-
-        applyVoucherUnpost(db, voucher, entries, {
-          accountSetId: req.accountSetId || '',
-          userId: req.userId,
-          userName: req.userName,
-          requireAudit: false,
-          allowDirectPost: true,
-        })
+        applyVoucherUnpost(db, voucher, entries, ctx)
       }
     })
     transaction()
@@ -426,9 +364,9 @@ router.post(
     res.json({
       code: 0,
       message:
-        `批量反记账成功，共反记账 ${unpostable.length} 张凭证` +
+        `批量反记账成功，共反记账 ${operable.length} 张凭证` +
         (skippedClosed > 0 ? `，${skippedClosed} 张因所属期间已结账被跳过` : ''),
-      data: { count: unpostable.length, skippedClosed },
+      data: { count: operable.length, skippedClosed },
     })
   }
 )
