@@ -341,17 +341,34 @@ export function queryAssetLedger(params: {
 
   const entries: AssetLedgerEntry[] = []
 
+  // 3. 变动记录（提前取出，购入行需要据此倒推取得时原值）
+  // 处置记录在下方「4. 处置事件」单独渲染，此处排除，避免时间线出现两条处置
+  const changes = db.prepare(`
+    SELECT * FROM fixed_asset_change
+    WHERE account_set_id = ? AND asset_no = ?
+      AND (change_kind IS NULL OR change_kind <> 'dispose')
+    ORDER BY change_date
+  `).all(accountSetId, asset.asset_no) as any[]
+  const valueKinds = new Set(['original_value', 'improvement', 'split', 'inventory_deficit'])
+  const valueChangeSum = changes
+    .filter(c => valueKinds.has(String(c.change_kind || '')) && c.amount != null)
+    .reduce((sum, c) => sum + Number(c.amount || 0), 0)
+
   // 1. 购入事件
-  if (asset.acquire_date) {
+  // P2-18：取得日期缺省时用起折日期 / 建卡时间兜底（批量导入允许为空），否则原值余额恒为 0；
+  // 购入原值 = 当前原值 − 其后全部原值类变动，而不是"今天的原值"
+  const acquireDate = asset.acquire_date || asset.start_depr_date || (asset.created_at ? String(asset.created_at).slice(0, 10) : null)
+  const acquireOriginal = Math.round((Number(asset.original_value || 0) - valueChangeSum) * 100) / 100
+  if (acquireDate) {
     entries.push({
-      date: asset.acquire_date,
+      date: acquireDate,
       type: 'acquire',
-      summary: '资产购入' + (asset.source ? `（${asset.source}）` : ''),
-      original_change: asset.original_value,
-      original_after: asset.original_value,
+      summary: '资产购入' + (asset.source ? `（${asset.source}）` : '') + (asset.acquire_date ? '' : '（取得日期缺省，按起折日期）'),
+      original_change: acquireOriginal,
+      original_after: acquireOriginal,
       depr_amount: 0,
       accum_depr_after: 0,
-      net_value_after: asset.original_value - (asset.salvage_value ?? 0),
+      net_value_after: acquireOriginal,
     })
   }
 
@@ -377,14 +394,6 @@ export function queryAssetLedger(params: {
   }
 
   // 3. 变动记录
-  // 处置记录在下方「4. 处置事件」单独渲染，此处排除，避免时间线出现两条处置
-  const changes = db.prepare(`
-    SELECT * FROM fixed_asset_change
-    WHERE account_set_id = ? AND asset_no = ?
-      AND (change_kind IS NULL OR change_kind <> 'dispose')
-    ORDER BY change_date
-  `).all(accountSetId, asset.asset_no) as any[]
-
   for (const c of changes) {
     entries.push({
       date: c.change_date || '',
@@ -431,8 +440,9 @@ export function queryAssetLedger(params: {
     } else if (e.type === 'depr') {
       runningAccumDepr = e.accum_depr_after
     } else if (e.type === 'change') {
-      if (e.change_kind === 'original_value' || e.change_kind === 'improvement') {
-        runningOriginal = e.original_after
+      if (valueKinds.has(String(e.change_kind || ''))) {
+        // 原值类变动按带符号金额推进（拆分 / 盘亏核减也会改原值）
+        runningOriginal = Math.round((runningOriginal + Number(e.original_change || 0)) * 100) / 100
       } else if (e.change_kind === 'impairment') {
         runningImpairment = e.original_after // impairment 行的 new_value 是减值准备累计额
       }
@@ -444,7 +454,8 @@ export function queryAssetLedger(params: {
     }
     e.original_after = runningOriginal
     e.accum_depr_after = runningAccumDepr
-    e.net_value_after = Math.max(0, Math.round((runningOriginal - runningAccumDepr - runningImpairment) * 100) / 100)
+    // P2-18：负净值不再被 Math.max(0, …) 掩盖，前端按负数标红
+    e.net_value_after = Math.round((runningOriginal - runningAccumDepr - runningImpairment) * 100) / 100
   }
 
   return {

@@ -132,6 +132,7 @@
 </template>
 
 <script setup lang="ts">
+import { confirmRenumberAfterDelete } from '@/composables/useRenumberPrompt'
 import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -259,6 +260,8 @@ async function revoke(row: AssetChangeRow) {
     res.data.deletedVoucherNo ? `已撤销，凭证 ${res.data.deletedVoucherNo} 已删除` : '已撤销'
   )
   load()
+  // P2-19：删除变动凭证可能断号，提示重新排号
+  await confirmRenumberAfterDelete(res.data.affectedGroups, res.data.deletedVoucherNo ? 1 : 0)
 }
 
 onMounted(async () => {

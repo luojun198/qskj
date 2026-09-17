@@ -632,11 +632,13 @@ export function generateCashierVoucher(params: {
   // 1. 查询未生成凭证的出纳日记账
   const conds = ['j.account_set_id=?', 'j.account_code=?', 'j.voucher_no IS NULL']
   const vals: any[] = [accountSetId, accountCode]
-  if (startDate) { conds.push('j.biz_date >= ?'); vals.push(startDate) }
-  if (endDate)   { conds.push('j.biz_date <= ?'); vals.push(endDate) }
-  if (ids && ids.length > 0) {
-    conds.push(`j.id IN (${ids.map(() => '?').join(',')})`)
-    vals.push(...ids)
+  const byIds = !!(ids && ids.length > 0)
+  // P2-11：指定了选中行时以选中行为准，不再与日期区间取交集（此前查 8 月勾 3 行、页面默认带 9 月区间 → 0 行命中）
+  if (!byIds && startDate) { conds.push('j.biz_date >= ?'); vals.push(startDate) }
+  if (!byIds && endDate)   { conds.push('j.biz_date <= ?'); vals.push(endDate) }
+  if (byIds) {
+    conds.push(`j.id IN (${ids!.map(() => '?').join(',')})`)
+    vals.push(...ids!)
   }
   const rows = db.prepare(`
     SELECT j.* FROM cashier_journal j
@@ -735,7 +737,8 @@ export function generateCashierVoucher(params: {
 
       const counterCode = r.counter_account || hangupCode!
       const cAcc = lookup.get(accountSetId, counterCode) as any
-      const amt = r.debit > 0 ? r.debit : r.credit
+      // P2-1：金额统一保留两位，total_amount 与 amount_cents 口径一致
+      const amt = Math.round((r.debit > 0 ? r.debit : r.credit) * 100) / 100
       const voucherId = uuidv4()
 
       insVoucher.run(voucherId, accountSetId, voucherNo, voucherTypeId, r.biz_date, year, month, amt, makerName, r.summary || '出纳生成')
@@ -857,20 +860,25 @@ export function getAccountBalanceReport(params: {
       FROM cashier_journal WHERE account_set_id=? AND account_code=? AND currency=? AND biz_date >= ? AND biz_date <= ?
     `).get(accountSetId, acc.code, currency, startDate, endDate) as { d: number; c: number }
 
-    const closing = dayBefore + period.d - period.c
-    totalIncome += period.d
-    totalExpense += period.c
+    // P2-1：先各列取整到分，再用分整数相加，保证 期初 + 收入 − 支出 = 期末 逐行成立（此前四列独立取整可能差 1 分）
+    const cents = (n: number) => Math.round(n * 100)
+    const openingC = cents(dayBefore)
+    const incomeC = cents(period.d)
+    const expenseC = cents(period.c)
+    const closingC = openingC + incomeC - expenseC
+    totalIncome += incomeC
+    totalExpense += expenseC
     rows.push({
       account_code: acc.code,
       account_name: acc.name,
-      opening: Math.round(dayBefore * 100) / 100,
-      income: Math.round(period.d * 100) / 100,
-      expense: Math.round(period.c * 100) / 100,
-      closing: Math.round(closing * 100) / 100,
+      opening: openingC / 100,
+      income: incomeC / 100,
+      expense: expenseC / 100,
+      closing: closingC / 100,
     })
   }
 
-  return { rows, total_income: Math.round(totalIncome * 100) / 100, total_expense: Math.round(totalExpense * 100) / 100 }
+  return { rows, total_income: totalIncome / 100, total_expense: totalExpense / 100 }
 }
 
 export function getCashFlowSummary(params: {

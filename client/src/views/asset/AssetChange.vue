@@ -453,6 +453,7 @@
 </template>
 
 <script setup lang="ts">
+import { confirmRenumberAfterDelete } from '@/composables/useRenumberPrompt'
 
 /** P1-20：变动 / 处置 / 盘点日期不得晚于当前月份（与后端同口径） */
 function disableFutureMonth(date: Date): boolean {
@@ -758,6 +759,8 @@ async function revoke(h: AssetChangeRow) {
     res.data.deletedVoucherNo ? `已撤销，凭证 ${res.data.deletedVoucherNo} 已删除` : '已撤销'
   )
   await loadAsset()
+  // P2-19：删除变动凭证可能断号，提示重新排号
+  await confirmRenumberAfterDelete(res.data.affectedGroups, res.data.deletedVoucherNo ? 1 : 0)
 }
 
 function goBack() {

@@ -16,7 +16,7 @@ import {
   assertNotAfterCurrentPeriod,
 } from './assetVoucherBuilder.js'
 import { assertVoucherEntriesInScopeById } from './accountAuthorization.js'
-import type { VoucherEntryInput } from './voucherEntry.js'
+import { deleteVoucherRecords, type VoucherEntryInput } from './voucherEntry.js'
 
 export interface DisposalParams {
   db: Database
@@ -326,6 +326,8 @@ export interface CancelDisposalResult {
   assetNo: string
   restoredStatus: string
   deletedVoucherNo: string | null
+  /** P2-19：被删凭证所在的 (年, 期, 类型) 分组，供前端提示重新排号 */
+  affectedGroups: Array<{ year: number; period: number; voucher_type_id: string | null }>
 }
 
 export function cancelDisposal(params: {
@@ -353,24 +355,24 @@ export function cancelDisposal(params: {
 
   const restoredStatus = asset.pre_scrap_status || '01'
   let deletedVoucherNo: string | null = null
+  const affectedGroups: CancelDisposalResult['affectedGroups'] = []
 
   // 处置凭证：若已记账则阻止
   if (asset.scrap_voucher_id) {
-    const v = db.prepare('SELECT id, voucher_no, status FROM vouchers WHERE id=?').get(asset.scrap_voucher_id) as any
+    const v = db.prepare('SELECT id, voucher_no, status, year, period, voucher_type_id FROM vouchers WHERE id=?').get(asset.scrap_voucher_id) as any
     if (v) {
       if (v.status === 'posted') throw new Error('处置凭证已记账，请先取消记账后再撤销处置')
       deletedVoucherNo = v.voucher_no
+      affectedGroups.push({ year: v.year, period: v.period, voucher_type_id: v.voucher_type_id ?? null })
     }
   }
 
   db.transaction(() => {
     // 1. 删除处置凭证（模块内部操作，绕过 API 删除拦截）
+    // P2-17：走 deleteVoucherRecords，一并清理凭证附件 / 自动结转运行记录，不再留孤儿
     if (asset.scrap_voucher_id) {
       const vc = db.prepare('SELECT id FROM vouchers WHERE id=?').get(asset.scrap_voucher_id) as any
-      if (vc) {
-        db.prepare('DELETE FROM voucher_entries WHERE voucher_id=?').run(asset.scrap_voucher_id)
-        db.prepare('DELETE FROM vouchers WHERE id=?').run(asset.scrap_voucher_id)
-      }
+      if (vc) deleteVoucherRecords(db, asset.scrap_voucher_id)
     }
     // 2. 删除处置流水
     // 按 change_kind 精确删除；原先用 change_item LIKE '资产减少%'，
@@ -384,5 +386,5 @@ export function cancelDisposal(params: {
       .run(restoredStatus, assetId)
   })()
 
-  return { assetNo: asset.asset_no, restoredStatus, deletedVoucherNo }
+  return { assetNo: asset.asset_no, restoredStatus, deletedVoucherNo, affectedGroups }
 }

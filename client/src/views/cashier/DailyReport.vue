@@ -60,6 +60,8 @@
 </template>
 
 <script setup lang="ts">
+// P2-7：默认日期用本地时间（此前 toISOString 取 UTC，东八区 0~8 点会落到前一天）
+import { formatDate } from '@/utils/format'
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Search, Printer, Download } from '@element-plus/icons-vue'
@@ -74,7 +76,7 @@ const { tableRef, colWidth, onDragEnd, widths } = useListColumnWidth('cashier_da
 function cw(key: string, fallback: number) { return colWidth(key, fallback) }
 
 const router = useRouter()
-const today = new Date().toISOString().slice(0, 10)
+const today = formatDate(new Date())
 const dateRange = ref<[string, string]>([`${today.slice(0, 8)}01`, today])
 const rows = ref<any[]>([])
 const data = ref<{ total_income: number; total_expense: number } | null>(null)

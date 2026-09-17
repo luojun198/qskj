@@ -89,6 +89,8 @@
 </template>
 
 <script setup lang="ts">
+// P2-7：默认日期用本地时间（此前 toISOString 取 UTC，东八区 0~8 点会落到前一天）
+import { formatDate } from '@/utils/format'
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Search, Printer, Download, ArrowUp, ArrowDown, CircleCheck } from '@element-plus/icons-vue'
@@ -251,7 +253,7 @@ async function handleExport() {
   const summaryValues = ['合计', '', '', '', '', '', totalDebit, totalCredit, '', '']
 
   await exportStyledTable({
-    fileName: `单据综合查询_${new Date().toISOString().slice(0,10)}.xlsx`,
+    fileName: `单据综合查询_${formatDate(new Date())}.xlsx`,
     sheetName: '单据查询',
     title: `出纳单据综合查询`,
     columns,

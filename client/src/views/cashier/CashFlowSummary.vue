@@ -69,6 +69,8 @@
 </template>
 
 <script setup lang="ts">
+// P2-7：默认日期用本地时间（此前 toISOString 取 UTC，东八区 0~8 点会落到前一天）
+import { formatDate } from '@/utils/format'
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Search, Printer, Download } from '@element-plus/icons-vue'
@@ -81,7 +83,7 @@ import { useFilterClear } from '@/composables/useFilterClear'
 const { tableRef, colWidth, onDragEnd, widths } = useListColumnWidth('cashier_cashflow_summary')
 function cw(key: string, fallback: number) { return colWidth(key, fallback) }
 
-const today = new Date().toISOString().slice(0, 10)
+const today = formatDate(new Date())
 const dateRange = ref<[string, string]>([`${today.slice(0, 8)}01`, today])
 const groupBy = ref<'counter_account' | 'settle_type' | 'month'>('month')
 const currency = ref('RMB')

@@ -58,7 +58,7 @@
               <template #default="{ row }">{{ fmtAmt(row.accum_depr_after) }}</template>
             </el-table-column>
             <el-table-column label="净值余额" prop="net_value_after" width="120" align="right">
-              <template #default="{ row }">{{ fmtAmt(row.net_value_after) }}</template>
+              <template #default="{ row }"><span :style="row.net_value_after < 0 ? 'color: var(--el-color-danger); font-weight: 600' : ''">{{ fmtAmt(row.net_value_after) }}</span></template>
             </el-table-column>
           </el-table>
           <el-empty v-if="!ledger.entries.length" description="暂无明细记录" />

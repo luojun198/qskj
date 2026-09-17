@@ -935,7 +935,7 @@ export function revokeAssetChange(params: {
   db: Database
   accountSetId: string
   changeId: string
-}): { assetNo: string; deletedVoucherNo: string | null } {
+}): { assetNo: string; deletedVoucherNo: string | null; affectedGroups: Array<{ year: number; period: number; voucher_type_id: string | null }> } {
   const { db, accountSetId, changeId } = params
 
   const change = db
@@ -992,14 +992,17 @@ export function revokeAssetChange(params: {
   }
 
   let deletedVoucherNo: string | null = null
+  // P2-19：删除凭证后返回受影响的 (年, 期, 类型) 分组，前端据此提示重新排号（与反折旧一致）
+  const affectedGroups: Array<{ year: number; period: number; voucher_type_id: string | null }> = []
   if (change.voucher_id) {
     const voucher = db
-      .prepare('SELECT voucher_no, status FROM vouchers WHERE id=?')
+      .prepare('SELECT voucher_no, status, year, period, voucher_type_id FROM vouchers WHERE id=?')
       .get(change.voucher_id) as any
     if (voucher?.status === 'posted') {
       throw new Error('该变动生成的凭证已记账，请先取消记账后再撤销')
     }
     deletedVoucherNo = voucher?.voucher_no ?? null
+    if (voucher) affectedGroups.push({ year: voucher.year, period: voucher.period, voucher_type_id: voucher.voucher_type_id ?? null })
   }
 
   db.transaction(() => {
@@ -1111,7 +1114,7 @@ export function revokeAssetChange(params: {
     db.prepare('DELETE FROM fixed_asset_change WHERE id=?').run(changeId)
   })()
 
-  return { assetNo: change.asset_no, deletedVoucherNo }
+  return { assetNo: change.asset_no, deletedVoucherNo, affectedGroups }
 }
 
 // ── 批量变动（P4-2）────────────────────────────────────────

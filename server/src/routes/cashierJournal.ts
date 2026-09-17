@@ -202,6 +202,23 @@ router.put('/cashier/settle-type/:id', operationLog('修改结算方式', '出�
 // DELETE /cashier/settle-type/:id
 router.delete('/cashier/settle-type/:id', operationLog('删除结算方式', '出纳管理'), (req: AuthRequest, res) => {
   const db = getDb()
+  const row = db.prepare('SELECT code, name FROM settle_type WHERE id = ? AND account_set_id = ?').get(req.params.id, req.accountSetId) as any
+  if (!row) return res.status(404).json({ code: 404, message: '结算方式不存在' })
+  // P2-9：已被日记账 / 对账单 / 供应链单据引用的结算方式不允许删除，否则历史行退化为裸编码，
+  // 之后新增同编码不同名称的结算方式会把历史口径改写
+  const refs: string[] = []
+  const countIn = (table: string, col = 'settle_type') => {
+    const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)
+    if (!exists) return 0
+    return (db.prepare(`SELECT COUNT(*) c FROM ${table} WHERE account_set_id=? AND ${col}=?`).get(req.accountSetId, row.code) as any).c
+  }
+  const j = countIn('cashier_journal')
+  const b = countIn('bank_statement')
+  if (j) refs.push(`出纳日记账 ${j} 条`)
+  if (b) refs.push(`银行对账单 ${b} 条`)
+  if (refs.length) {
+    return res.status(400).json({ code: 400, message: `结算方式「${row.name}」已被引用（${refs.join('、')}），不能删除` })
+  }
   db.prepare('DELETE FROM settle_type WHERE id = ? AND account_set_id = ?').run(req.params.id, req.accountSetId)
   res.json({ code: 0, data: { ok: true } })
 })
@@ -653,8 +670,11 @@ router.post(
     const db = getDb()
     const asId = req.accountSetId || ''
     if (!scopeGuard(req, res, [account_code])) return
-    try { assertCashierRangeOpen(db, asId, start_date, end_date) } catch (e: any) {
-      return res.status(400).json({ code: 400, message: e.message })
+    // P2-11：给了日期区间按区间过闸；缺省日期时不再"任一已结账月即拒绝"，改为逐张按凭证日期过闸（见下）
+    if (start_date || end_date) {
+      try { assertCashierRangeOpen(db, asId, start_date, end_date) } catch (e: any) {
+        return res.status(400).json({ code: 400, message: e.message })
+      }
     }
 
     // 直接从 vouchers 表查 source='cashier' 的凭证，按日期范围过滤。
@@ -673,8 +693,15 @@ router.post(
     if (start_date) { conds.push('v.voucher_date >= ?'); vals.push(start_date) }
     if (end_date)   { conds.push('v.voucher_date <= ?'); vals.push(end_date) }
     const vouchers = db.prepare(
-      `SELECT v.id, v.voucher_no, v.status, v.source, v.year, v.period, v.voucher_type_id FROM vouchers v WHERE ${conds.join(' AND ')}`
+      `SELECT v.id, v.voucher_no, v.status, v.source, v.year, v.period, v.voucher_type_id, v.voucher_date FROM vouchers v WHERE ${conds.join(' AND ')}`
     ).all(...vals) as any[]
+    if (!start_date && !end_date) {
+      for (const v of vouchers) {
+        try { assertCashierPeriodOpen(db, asId, v.voucher_date) } catch (e: any) {
+          return res.status(400).json({ code: 400, message: `${e.message}（凭证 ${v.voucher_no}）` })
+        }
+      }
+    }
 
     let deleted = 0, skipped = 0
     const deletedNos: string[] = []

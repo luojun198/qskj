@@ -1,4 +1,5 @@
 import request from './request'
+import type { RenumberGroup } from '@/composables/useRenumberPrompt'
 
 export interface AssetCard {
   id: string
@@ -318,7 +319,7 @@ export const fixedAssetApi = {
 
   // 处置
   cancelDispose: (id: string) =>
-    request.post<{ assetNo: string; restoredStatus: string; deletedVoucherNo: string | null }>(
+    request.post<{ assetNo: string; restoredStatus: string; deletedVoucherNo: string | null; affectedGroups?: RenumberGroup[] }>(
       `/asset/cards/${id}/dispose/cancel`,
       {}
     ),
@@ -365,7 +366,7 @@ export const fixedAssetApi = {
     data: { change_date: string; children: SplitChildInput[]; remark?: string | null }
   ) => request.post<ApplyChangeResult>(`/asset/cards/${assetId}/split`, data),
   revokeChange: (changeId: string) =>
-    request.post<{ assetNo: string; deletedVoucherNo: string | null }>(
+    request.post<{ assetNo: string; deletedVoucherNo: string | null; affectedGroups?: RenumberGroup[] }>(
       `/asset/changes/${changeId}/revoke`,
       {}
     ),

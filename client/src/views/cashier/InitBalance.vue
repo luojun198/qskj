@@ -183,21 +183,35 @@ async function handleImport(file: any) {
   if (headerIdx < 0) return ElMessage.error('未找到表头行（需包含"科目编码"列）')
   const dataRows = data.slice(headerIdx + 1).filter(r => r[0])
 
-  // 按科目编码更新余额
-  const codeMap = new Map(rows.value.map(r => [r.account_code, r]))
+  // P2-8：按「科目编码 + 币别」定位（此前只按编码，同科目多币别时后一行覆盖前一行，外币期初写到错误币别）；
+  // 币别列缺失或为空按本位币 RMB；文件里出现表上没有的币别行则新增一行
+  const header = data[headerIdx].map((h: any) => String(h ?? ''))
+  const curIdx = header.findIndex(h => h.includes('币别') || h.includes('币种'))
+  const balIdx = header.findIndex(h => h.includes('余额'))
+  const codeMap = new Map(rows.value.map(r => [`${r.account_code}::${r.currency}`, r]))
+  const nameMap = new Map(rows.value.map(r => [r.account_code, r.account_name]))
   let updated = 0
+  let added = 0
   for (const r of dataRows) {
     const code = String(r[0]).trim()
-    const balance = Number(r[3]) || 0
-    const row = codeMap.get(code)
+    const currency = (curIdx >= 0 ? String(r[curIdx] ?? '').trim().toUpperCase() : '') || 'RMB'
+    const balance = Number(r[balIdx >= 0 ? balIdx : 3]) || 0
+    const key = `${code}::${currency === 'CNY' ? 'RMB' : currency}`
+    const row = codeMap.get(key)
     if (row) {
       row.balance = balance
       row._dirty = true
       updated++
+    } else if (nameMap.has(code)) {
+      const newRow: Row = { account_code: code, account_name: nameMap.get(code), currency: key.split('::')[1], balance, _dirty: true }
+      rows.value.push(newRow)
+      codeMap.set(key, newRow)
+      added++
     }
   }
-  if (!updated) return ElMessage.warning('未匹配到任何科目编码，请检查文件格式')
-  ElMessage.success(`已导入 ${updated} 条，请点击保存`)
+  if (!updated && !added) return ElMessage.warning('未匹配到任何科目编码，请检查文件格式')
+  if (added) rows.value.sort((x, y) => x.account_code.localeCompare(y.account_code) || x.currency.localeCompare(y.currency))
+  ElMessage.success(`已导入 ${updated + added} 条${added ? `（新增 ${added} 个币别行）` : ''}，请点击保存`)
 }
 </script>
 

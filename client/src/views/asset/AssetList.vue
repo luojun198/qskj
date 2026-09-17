@@ -370,6 +370,7 @@
 </template>
 
 <script setup lang="ts">
+import { confirmRenumberAfterDelete } from '@/composables/useRenumberPrompt'
 
 /** P1-20：变动 / 处置 / 盘点日期不得晚于当前月份（与后端同口径） */
 function disableFutureMonth(date: Date): boolean {
@@ -676,6 +677,8 @@ async function handleCancelDispose(row: AssetCard) {
       const d = res.data
       ElMessage.success(`已撤销处置：${d.assetNo} 还原为在用${d.deletedVoucherNo ? `，已删除凭证 ${d.deletedVoucherNo}` : ''}`)
       handleQuery()
+      // P2-19：删除处置凭证可能断号，提示重新排号
+      await confirmRenumberAfterDelete(d.affectedGroups, d.deletedVoucherNo ? 1 : 0)
     }
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.message || '撤销失败')

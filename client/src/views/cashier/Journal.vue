@@ -523,6 +523,8 @@
 </template>
 
 <script setup lang="ts">
+// P2-7：默认日期用本地时间（此前 toISOString 取 UTC，东八区 0~8 点会落到前一天）
+import { formatDate } from '@/utils/format'
 import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import type ExcelJS from 'exceljs'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -1237,7 +1239,7 @@ async function handleQuery() {
 
 function openAddDialog() {
   editRow.value = null
-  form.value = { biz_date: new Date().toISOString().slice(0, 10), debit: 0, credit: 0 }
+  form.value = { biz_date: formatDate(new Date()), debit: 0, credit: 0 }
   counterAuxSelections.value = {}
   attachments.value = []
   queuedFiles.value = []

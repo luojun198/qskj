@@ -89,3 +89,22 @@ describe('固定资产业务规则（批次 E）', () => {
     expect(queryCategorySummary({ db, accountSetId: SET_ID, includeDisposed: true })[0].asset_count).toBe(2)
   })
 })
+
+describe('批次 F：剩余 P2', () => {
+  it('P2-18：无取得日期的卡片明细账按起折日期出购入行，购入原值为变动前原值，负净值不截断', async () => {
+    const { queryAssetLedger } = await import('../services/assetReportQuery.js')
+    const db = createAssetTestDb()
+    insertAssetDicts(db)
+    insertAccounts(db, [['1601', '固定资产'], ['1602', '累计折旧'], ['1604', '在建工程']])
+    insertAsset(db, { asset_no: 'L1', original_value: 1500, salvage_value: 0, use_months: 12, net_value: 1500, acquire_date: null, start_depr_date: '2026-03-15', accum_depr: 0 })
+    applyAssetChange({ db, accountSetId: SET_ID, assetId: 'fa-L1', kind: 'original_value', changeDate: '2026-06-10', payload: { amount: 500 }, operatorName: 't' })
+    const ledger = queryAssetLedger({ db, accountSetId: SET_ID, assetId: 'fa-L1' })!
+    expect(ledger.entries[0]).toMatchObject({ type: 'acquire', date: '2026-03-15', original_change: 1500, original_after: 1500 })
+    expect(ledger.entries[1]).toMatchObject({ type: 'change', original_after: 2000, net_value_after: 2000 })
+    // 人为把累折写超过原值：净值应为负而不是 0
+    db.prepare("INSERT INTO fixed_asset_depr (id, account_set_id, asset_no, year, month, month_depr, accum_depr) VALUES ('d1', ?, 'L1', 2026, 7, 2500, 2500)").run(SET_ID)
+    const ledger2 = queryAssetLedger({ db, accountSetId: SET_ID, assetId: 'fa-L1' })!
+    expect(ledger2.entries.at(-1)!.net_value_after).toBe(-500)
+    db.close()
+  })
+})
