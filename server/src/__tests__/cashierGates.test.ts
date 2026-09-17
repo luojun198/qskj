@@ -64,7 +64,7 @@ function makeDb() {
 
 const addJ = (db: Database.Database, id: string, date: string, debit: number, credit = 0, bill?: string) =>
   db.prepare(
-    "INSERT INTO cashier_journal (id, account_set_id, account_code, biz_date, debit, credit, bill_no) VALUES (?,?,'1001',?,?,?,?)"
+    "INSERT INTO cashier_journal (id, account_set_id, account_code, biz_date, debit, credit, bill_no, voucher_no) VALUES (?,?,'1001',?,?,?,?,'1')"
   ).run(id, AS, date, debit, credit, bill ?? null)
 const addS = (db: Database.Database, id: string, date: string, debit: number, credit = 0, bill?: string) =>
   db.prepare(
@@ -179,7 +179,8 @@ describe('出纳完整性（批次 C）', () => {
     expect(() => applyPayment(db, AS, julDoc, [{ amount: 100 }], '张三')).toThrow(/7月出纳已结账/)
     expect(db.prepare('SELECT COUNT(*) c FROM cashier_journal').get()).toEqual({ c: 1 })
 
-    // 8 月结账后，8 月的收款单不能反审核；反结账后可以
+    // 8 月结账后，8 月的收款单不能反审核；反结账后可以（先补凭证号，未生成凭证的流水不允许结账）
+    db.prepare("UPDATE cashier_journal SET voucher_no='1'").run()
     closeCashierPeriod({ db, accountSetId: AS, year: 2026, month: 8 })
     expect(() => reversePayment(db, AS, doc)).toThrow(/8月出纳已结账/)
     expect(db.prepare('SELECT COUNT(*) c FROM cashier_journal').get()).toEqual({ c: 1 })

@@ -142,7 +142,7 @@
           <el-input v-model="createForm.name" placeholder="如 2026年半年度盘点" />
         </el-form-item>
         <el-form-item label="盘点日期" required>
-          <el-date-picker v-model="createForm.inventory_date" type="date" value-format="YYYY-MM-DD" style="width:100%" />
+          <el-date-picker v-model="createForm.inventory_date" type="date" value-format="YYYY-MM-DD" style="width:100%" :disabled-date="disableFutureMonth" />
         </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="createForm.remark" type="textarea" :rows="2" />
@@ -161,6 +161,12 @@
 </template>
 
 <script setup lang="ts">
+
+/** P1-20：变动 / 处置 / 盘点日期不得晚于当前月份（与后端同口径） */
+function disableFutureMonth(date: Date): boolean {
+  const now = new Date()
+  return date.getFullYear() * 100 + date.getMonth() > now.getFullYear() * 100 + now.getMonth()
+}
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, ArrowLeft, Select, Check } from '@element-plus/icons-vue'

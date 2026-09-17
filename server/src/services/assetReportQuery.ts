@@ -243,6 +243,8 @@ export function queryCategorySummary(params: {
   db: Database
   accountSetId: string
   statusCode?: string
+  /** P1-19：是否包含已处置资产（默认不含，与总账 1601 余额口径一致） */
+  includeDisposed?: boolean
 }): CategorySummaryRow[] {
   const { db, accountSetId, statusCode } = params
 
@@ -251,6 +253,8 @@ export function queryCategorySummary(params: {
   if (statusCode) {
     conds.push('fa.status_code = ?')
     args.push(statusCode)
+  } else if (!params.includeDisposed) {
+    conds.push('fa.scrap_date IS NULL')
   }
 
   return db.prepare(`
@@ -284,6 +288,8 @@ export function queryDeptSummary(params: {
   db: Database
   accountSetId: string
   statusCode?: string
+  /** P1-19：是否包含已处置资产（默认不含） */
+  includeDisposed?: boolean
 }): DeptSummaryRow[] {
   const { db, accountSetId, statusCode } = params
 
@@ -292,6 +298,8 @@ export function queryDeptSummary(params: {
   if (statusCode) {
     conds.push('fa.status_code = ?')
     args.push(statusCode)
+  } else if (!params.includeDisposed) {
+    conds.push('fa.scrap_date IS NULL')
   }
 
   return db.prepare(`
@@ -530,6 +538,82 @@ export interface ChangeSummaryRow {
   closing_original: number
 }
 
+/** P1-19：会改变卡片原值的变动类型（amount 为带符号的原值增减额） */
+const ORIGINAL_VALUE_CHANGE_KINDS = ['original_value', 'improvement', 'split', 'inventory_deficit']
+
+interface ValueChangeRow {
+  asset_no: string
+  change_date: string
+  change_item: string | null
+  change_kind: string
+  amount: number
+}
+
+interface ChangeAssetRow {
+  asset_no: string
+  asset_name: string
+  category_code: string | null
+  category_name: string | null
+  dept_name: string | null
+  original_value: number
+  acquire_date: string | null
+  scrap_date: string | null
+  created_at: string | null
+}
+
+/**
+ * 增减变动表取数基础（P1-19）：
+ * 此前期初 / 增加 / 减少都用卡片**当前**原值，任何原值变动 / 减值 / 拆分都会追溯改写历史期间；
+ * 现改为「卡片当前原值 − 期末之后的原值变动」倒推期末原值，再倒推期初，期内增减来自
+ * fixed_asset_change 的原值类变动流水 + 取得 / 处置。
+ */
+function loadChangeBase(db: Database, accountSetId: string) {
+  const hasCreatedAt = (db.prepare('PRAGMA table_info(fixed_asset)').all() as Array<{ name: string }>).some(c => c.name === 'created_at')
+  const assets = db.prepare(`
+    SELECT fa.asset_no, fa.asset_name, fa.category_code, fc.name AS category_name, fd2.name AS dept_name,
+           fa.original_value, fa.acquire_date, fa.scrap_date, ${hasCreatedAt ? "fa.created_at" : "NULL AS created_at"}
+    FROM fixed_asset fa
+    LEFT JOIN fixed_asset_category fc ON fc.account_set_id = fa.account_set_id AND fc.code = fa.category_code
+    LEFT JOIN fixed_asset_dept fd2 ON fd2.account_set_id = fa.account_set_id AND fd2.code = fa.dept_code
+    WHERE fa.account_set_id = ?
+    ORDER BY fa.asset_no
+  `).all(accountSetId) as ChangeAssetRow[]
+  const changes = db.prepare(`
+    SELECT asset_no, change_date, change_item, change_kind, COALESCE(amount, 0) AS amount
+    FROM fixed_asset_change
+    WHERE account_set_id = ? AND change_kind IN (${ORIGINAL_VALUE_CHANGE_KINDS.map(() => '?').join(',')})
+      AND change_date IS NOT NULL AND amount IS NOT NULL AND amount <> 0
+    ORDER BY change_date, rowid
+  `).all(accountSetId, ...ORIGINAL_VALUE_CHANGE_KINDS) as ValueChangeRow[]
+  const changesByAsset = new Map<string, ValueChangeRow[]>()
+  for (const c of changes) {
+    if (!changesByAsset.has(c.asset_no)) changesByAsset.set(c.asset_no, [])
+    changesByAsset.get(c.asset_no)!.push(c)
+  }
+  return { assets, changesByAsset }
+}
+
+const round2 = (n: number) => Math.round(n * 100) / 100
+
+/** 某日（含）日终的原值 = 当前原值 − 该日之后发生的原值变动 */
+function originalAsOf(asset: ChangeAssetRow, changes: ValueChangeRow[], date: string): number {
+  let v = Number(asset.original_value || 0)
+  for (const c of changes) if (c.change_date > date) v -= Number(c.amount || 0)
+  return round2(v)
+}
+
+function periodRange(year: number, month: number) {
+  const periodStart = `${year}-${String(month).padStart(2, '0')}-01`
+  const lastDay = new Date(year, month, 0).getDate()
+  const periodEnd = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+  return { periodStart, periodEnd }
+}
+
+/** 取得日期缺省时用建卡时间兜底（批量导入允许 acquire_date 为空） */
+function acquireDateOf(a: ChangeAssetRow): string {
+  return String(a.acquire_date || a.created_at || '').slice(0, 10)
+}
+
 export function queryChangeSummary(params: {
   db: Database
   accountSetId: string
@@ -537,94 +621,72 @@ export function queryChangeSummary(params: {
   month: number
 }): ChangeSummaryRow[] {
   const { db, accountSetId, year, month } = params
+  const { periodStart, periodEnd } = periodRange(year, month)
+  const { assets, changesByAsset } = loadChangeBase(db, accountSetId)
 
-  // 期间范围：当月1日 到 当月最后一天
-  const periodStart = `${year}-${String(month).padStart(2, '0')}-01`
-  const lastDay = new Date(year, month, 0).getDate()
-  const periodEnd = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
-
-  // 期初：本期开始前已取得的资产（AS-P1-8：原条件 `acquire_date <= periodEnd`
-  // 会把本月新增资产同时计入期初和本期增加，closing 翻倍）
-  const openingRows = db.prepare(`
-    SELECT
-      fa.category_code,
-      fc.name AS category_name,
-      COUNT(*) AS count,
-      SUM(fa.original_value) AS total_original
-    FROM fixed_asset fa
-    LEFT JOIN fixed_asset_category fc ON fc.account_set_id = fa.account_set_id AND fc.code = fa.category_code
-    WHERE fa.account_set_id = ?
-      AND (fa.acquire_date IS NULL OR fa.acquire_date < ?)
-      AND (fa.scrap_date IS NULL OR fa.scrap_date > ?)
-    GROUP BY fa.category_code
-  `).all(accountSetId, periodStart, periodStart) as any[]
-
-  // 本期增加：acquire_date 在期内的资产
-  const increaseRows = db.prepare(`
-    SELECT
-      fa.category_code,
-      fc.name AS category_name,
-      COUNT(*) AS count,
-      SUM(fa.original_value) AS total_amount
-    FROM fixed_asset fa
-    LEFT JOIN fixed_asset_category fc ON fc.account_set_id = fa.account_set_id AND fc.code = fa.category_code
-    WHERE fa.account_set_id = ?
-      AND fa.acquire_date >= ? AND fa.acquire_date <= ?
-    GROUP BY fa.category_code
-  `).all(accountSetId, periodStart, periodEnd) as any[]
-
-  // 本期减少：scrap_date 在期内的资产
-  const decreaseRows = db.prepare(`
-    SELECT
-      fa.category_code,
-      fc.name AS category_name,
-      COUNT(*) AS count,
-      SUM(fa.original_value) AS total_amount
-    FROM fixed_asset fa
-    LEFT JOIN fixed_asset_category fc ON fc.account_set_id = fa.account_set_id AND fc.code = fa.category_code
-    WHERE fa.account_set_id = ?
-      AND fa.scrap_date >= ? AND fa.scrap_date <= ?
-    GROUP BY fa.category_code
-  `).all(accountSetId, periodStart, periodEnd) as any[]
-
-  // 合并所有类别
-  const allCodes = new Set<string>()
-  const catNames = new Map<string, string>()
-  for (const r of [...openingRows, ...increaseRows, ...decreaseRows]) {
-    const code = r.category_code || '__null__'
-    allCodes.add(code)
-    if (r.category_name) catNames.set(code, r.category_name)
+  const acc = new Map<string, ChangeSummaryRow>()
+  const rowOf = (a: ChangeAssetRow) => {
+    const key = a.category_code || '__null__'
+    if (!acc.has(key)) {
+      acc.set(key, {
+        category_code: a.category_code || null,
+        category_name: a.category_name || null,
+        opening_count: 0, opening_original: 0,
+        increase_count: 0, increase_amount: 0,
+        decrease_count: 0, decrease_amount: 0,
+        closing_count: 0, closing_original: 0,
+      })
+    }
+    return acc.get(key)!
   }
 
-  const rows: ChangeSummaryRow[] = []
-  for (const code of allCodes) {
-    const realCode = code === '__null__' ? null : code
-    const open = openingRows.find((r: any) => (r.category_code || '__null__') === code)
-    const inc = increaseRows.find((r: any) => (r.category_code || '__null__') === code)
-    const dec = decreaseRows.find((r: any) => (r.category_code || '__null__') === code)
+  for (const a of assets) {
+    const changes = changesByAsset.get(a.asset_no) || []
+    const acquired = acquireDateOf(a)
+    const scrapped = a.scrap_date ? String(a.scrap_date).slice(0, 10) : null
+    // 期初原值 = 当前原值 − 期初及之后发生的全部原值变动
+    let openingOriginal = Number(a.original_value || 0)
+    for (const c of changes) if (c.change_date >= periodStart) openingOriginal -= Number(c.amount || 0)
+    openingOriginal = round2(openingOriginal)
+    const existedAtOpening = acquired < periodStart && (!scrapped || scrapped >= periodStart) && openingOriginal > 0
+    const acquiredInPeriod = acquired >= periodStart && acquired <= periodEnd
+    const scrappedInPeriod = !!scrapped && scrapped >= periodStart && scrapped <= periodEnd
+    const changesInPeriod = changes.filter(c => c.change_date >= periodStart && c.change_date <= periodEnd)
+    // 拆分出的子卡沿用父卡取得日期，靠本期的 split(+) 流水识别为本期新增卡片
+    const splitChildInPeriod = !existedAtOpening && !acquiredInPeriod &&
+      changesInPeriod.some(c => c.change_kind === 'split' && Number(c.amount) > 0)
 
-    const openingCount = open?.count ?? 0
-    const openingOriginal = open?.total_original ?? 0
-    const increaseCount = inc?.count ?? 0
-    const increaseAmount = inc?.total_amount ?? 0
-    const decreaseCount = dec?.count ?? 0
-    const decreaseAmount = dec?.total_amount ?? 0
+    if (!existedAtOpening && !acquiredInPeriod && !scrappedInPeriod && !changesInPeriod.length) continue
+    const row = rowOf(a)
 
-    rows.push({
-      category_code: realCode,
-      category_name: catNames.get(code) || null,
-      opening_count: openingCount,
-      opening_original: openingOriginal,
-      increase_count: increaseCount,
-      increase_amount: increaseAmount,
-      decrease_count: decreaseCount,
-      decrease_amount: decreaseAmount,
-      closing_count: openingCount + increaseCount - decreaseCount,
-      closing_original: openingOriginal + increaseAmount - decreaseAmount,
-    })
+    if (existedAtOpening) {
+      row.opening_count += 1
+      row.opening_original = round2(row.opening_original + openingOriginal)
+    }
+    if (acquiredInPeriod) {
+      // 取得时原值 = 期末原值 − 期内变动
+      const atEnd = originalAsOf(a, changes, periodEnd)
+      const inPeriodSum = changesInPeriod.reduce((s2, c) => s2 + Number(c.amount || 0), 0)
+      row.increase_count += 1
+      row.increase_amount = round2(row.increase_amount + atEnd - inPeriodSum)
+    }
+    if (splitChildInPeriod) row.increase_count += 1
+    for (const c of changesInPeriod) {
+      const amt = Number(c.amount || 0)
+      if (amt > 0) row.increase_amount = round2(row.increase_amount + amt)
+      else row.decrease_amount = round2(row.decrease_amount - amt)
+    }
+    if (scrappedInPeriod) {
+      row.decrease_count += 1
+      row.decrease_amount = round2(row.decrease_amount + originalAsOf(a, changes, periodEnd))
+    }
   }
 
-  // 按类别编码排序
+  const rows = [...acc.values()]
+  for (const r of rows) {
+    r.closing_count = r.opening_count + r.increase_count - r.decrease_count
+    r.closing_original = round2(r.opening_original + r.increase_amount - r.decrease_amount)
+  }
   rows.sort((a, b) => (a.category_code ?? '').localeCompare(b.category_code ?? ''))
   return rows
 }
@@ -638,6 +700,8 @@ export interface ChangeDetailRow {
   dept_name: string | null
   original_value: number
   change_date: string | null
+  /** 变动性质：取得 / 处置 / 原值增减 / 大修改良 / 资产拆分 / 盘亏核减 … */
+  change_item?: string | null
 }
 
 export function queryChangeDetail(params: {
@@ -649,39 +713,37 @@ export function queryChangeDetail(params: {
   categoryCode?: string
 }): ChangeDetailRow[] {
   const { db, accountSetId, year, month, changeType, categoryCode } = params
+  const { periodStart, periodEnd } = periodRange(year, month)
+  const { assets, changesByAsset } = loadChangeBase(db, accountSetId)
+  const out: ChangeDetailRow[] = []
 
-  const periodStart = `${year}-${String(month).padStart(2, '0')}-01`
-  const lastDay = new Date(year, month, 0).getDate()
-  const periodEnd = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+  for (const a of assets) {
+    if (categoryCode && a.category_code !== categoryCode) continue
+    const changes = changesByAsset.get(a.asset_no) || []
+    const acquired = acquireDateOf(a)
+    const scrapped = a.scrap_date ? String(a.scrap_date).slice(0, 10) : null
+    const changesInPeriod = changes.filter(c => c.change_date >= periodStart && c.change_date <= periodEnd)
+    const base = { asset_no: a.asset_no, asset_name: a.asset_name, category_name: a.category_name, dept_name: a.dept_name }
 
-  const conds = ['fa.account_set_id = ?']
-  const args: any[] = [accountSetId]
-
-  if (changeType === 'increase') {
-    conds.push('fa.acquire_date >= ? AND fa.acquire_date <= ?')
-  } else {
-    conds.push('fa.scrap_date >= ? AND fa.scrap_date <= ?')
+    if (changeType === 'increase') {
+      if (acquired >= periodStart && acquired <= periodEnd) {
+        const inPeriodSum = changesInPeriod.reduce((s2, c) => s2 + Number(c.amount || 0), 0)
+        out.push({ ...base, original_value: round2(originalAsOf(a, changes, periodEnd) - inPeriodSum), change_date: acquired, change_item: '取得' })
+      }
+      for (const c of changesInPeriod) {
+        if (Number(c.amount) > 0) out.push({ ...base, original_value: round2(Number(c.amount)), change_date: c.change_date, change_item: c.change_item || c.change_kind })
+      }
+    } else {
+      for (const c of changesInPeriod) {
+        if (Number(c.amount) < 0) out.push({ ...base, original_value: round2(-Number(c.amount)), change_date: c.change_date, change_item: c.change_item || c.change_kind })
+      }
+      if (scrapped && scrapped >= periodStart && scrapped <= periodEnd) {
+        out.push({ ...base, original_value: originalAsOf(a, changes, periodEnd), change_date: scrapped, change_item: '处置' })
+      }
+    }
   }
-  args.push(periodStart, periodEnd)
-
-  if (categoryCode) {
-    conds.push('fa.category_code = ?')
-    args.push(categoryCode)
-  }
-
-  return db.prepare(`
-    SELECT
-      fa.asset_no, fa.asset_name,
-      fc.name AS category_name,
-      fd2.name AS dept_name,
-      fa.original_value,
-      ${changeType === 'increase' ? 'fa.acquire_date' : 'fa.scrap_date'} AS change_date
-    FROM fixed_asset fa
-    LEFT JOIN fixed_asset_category fc ON fc.account_set_id = fa.account_set_id AND fc.code = fa.category_code
-    LEFT JOIN fixed_asset_dept fd2 ON fd2.account_set_id = fa.account_set_id AND fd2.code = fa.dept_code
-    WHERE ${conds.join(' AND ')}
-    ORDER BY fa.asset_no
-  `).all(...args) as ChangeDetailRow[]
+  out.sort((x, y) => x.asset_no.localeCompare(y.asset_no) || String(x.change_date).localeCompare(String(y.change_date)))
+  return out
 }
 
 // ── 资产变动记录查询（全局） ──────────────────────────────────

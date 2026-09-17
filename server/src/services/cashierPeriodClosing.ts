@@ -197,6 +197,18 @@ function closeBlockReason(db: Database, accountSetId: string, year: number, mont
   if (latest && latest.year * 100 + latest.month > key) {
     return `${latest.year}年${latest.month}月已结账，不能回头结更早的月份`
   }
+  // 2026-09-17 综合评审产品决策：与总账「全部记账才可结账」口径一致，
+  // 该月仍有未生成凭证的日记账时不允许结账（结账后这些流水只能反结账才能补生成凭证）
+  const unvouchered = (db
+    .prepare(
+      `SELECT COUNT(*) c FROM cashier_journal
+        WHERE account_set_id=? AND substr(biz_date,1,4)=? AND CAST(substr(biz_date,6,2) AS INTEGER)=?
+          AND (voucher_no IS NULL OR voucher_no='')`
+    )
+    .get(accountSetId, String(year), month) as { c: number }).c
+  if (unvouchered > 0) {
+    return `该月还有 ${unvouchered} 笔日记账未生成凭证，请先生成凭证后再结账`
+  }
   return null
 }
 

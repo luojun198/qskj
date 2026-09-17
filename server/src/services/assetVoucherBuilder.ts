@@ -87,6 +87,20 @@ export function assertPeriodOpen(
   }
 }
 
+/**
+ * P1-20：变动 / 处置 / 盘点日期不得晚于当前自然月。
+ * 此前只挡"已结账"与"早于最后一次折旧"，填成未来日期的变动会立刻改写卡片原值 / 净值，
+ * 当月计提就按"未来才生效"的新基数摊余，处置填未来日期则当月漏提，期间归属与报表口径全错。
+ * 与「不能对晚于当前月份计提折旧」（routes/fixedAsset.ts 计提执行）同口径。
+ */
+export function assertNotAfterCurrentPeriod(year: number, period: number, label = '业务日期'): void {
+  const now = new Date()
+  const nowKey = now.getFullYear() * 100 + (now.getMonth() + 1)
+  if (year * 100 + period > nowKey) {
+    throw new Error(`${label}不能晚于当前月份（${now.getFullYear()}年${now.getMonth() + 1}月）`)
+  }
+}
+
 // ── 辅助核算上下文（P0-1）──────────────────────────────────────────────
 
 export interface AssetAuxContext {

@@ -95,6 +95,8 @@ export interface ApplyChangeResult {
   voucherNo: string | null
   voucherWarning: string | null
   createdAssets?: Array<{ id: string; asset_no: string; asset_name: string }>
+  /** 已提满资产增值后自动顺延的使用月数 */
+  extendedMonths?: number
 }
 
 export interface SplitChildInput {
@@ -634,6 +636,8 @@ export interface ChangeDetailRow {
   dept_name: string | null
   original_value: number
   change_date: string | null
+  /** 变动性质：取得 / 处置 / 原值增减 / 大修改良 / 资产拆分 / 盘亏核减 */
+  change_item?: string | null
 }
 
 export interface ChangeRecordRow {

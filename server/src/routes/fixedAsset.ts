@@ -1518,7 +1518,7 @@ router.get('/asset/report/depr-allocation/detail', (req: AuthRequest, res) => {
 // GET /asset/report/category-summary
 router.get('/asset/report/category-summary', (req: AuthRequest, res) => {
   const statusCode = req.query.status_code as string | undefined
-  const rows = queryCategorySummary({ db: getDb(), accountSetId: req.accountSetId || '', statusCode })
+  const rows = queryCategorySummary({ db: getDb(), accountSetId: req.accountSetId || '', statusCode, includeDisposed: req.query.include_disposed === '1' || req.query.include_disposed === 'true' })
   const totals = { asset_count: 0, total_original: 0, total_accum_depr: 0, total_net_value: 0 }
   for (const r of rows) {
     totals.asset_count += r.asset_count
@@ -1532,7 +1532,7 @@ router.get('/asset/report/category-summary', (req: AuthRequest, res) => {
 // GET /asset/report/dept-summary
 router.get('/asset/report/dept-summary', (req: AuthRequest, res) => {
   const statusCode = req.query.status_code as string | undefined
-  const rows = queryDeptSummary({ db: getDb(), accountSetId: req.accountSetId || '', statusCode })
+  const rows = queryDeptSummary({ db: getDb(), accountSetId: req.accountSetId || '', statusCode, includeDisposed: req.query.include_disposed === '1' || req.query.include_disposed === 'true' })
   const totals = { asset_count: 0, total_original: 0, total_accum_depr: 0, total_net_value: 0 }
   for (const r of rows) {
     totals.asset_count += r.asset_count

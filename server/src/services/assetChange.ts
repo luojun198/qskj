@@ -22,6 +22,7 @@ import {
   auxRefsForAccount,
   resolveAccounts,
   assertPeriodOpen,
+  assertNotAfterCurrentPeriod,
   getAssetParam,
   normalizeSalvageRate,
 } from './assetVoucherBuilder.js'
@@ -87,6 +88,8 @@ export interface ApplyChangeResult {
   voucherWarning: string | null
   /** 资产拆分时新建的子卡片 */
   createdAssets?: Array<{ id: string; asset_no: string; asset_name: string }>
+  /** P1-18：已提满资产增值后自动顺延的使用月数 */
+  extendedMonths?: number
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100
@@ -166,6 +169,7 @@ export function applyAssetChange(params: ApplyChangeParams): ApplyChangeResult {
     throw new Error(`变动日期不能早于资产的开始折旧日期（${asset.start_depr_date}）`)
   }
   assertPeriodOpen(db, accountSetId, year, period)
+  assertNotAfterCurrentPeriod(year, period, '变动日期')
   assertNotBeforeLastDepr(db, accountSetId, asset.asset_no, year, period)
 
   const ctx: ChangeContext = {
@@ -360,6 +364,21 @@ function applyValueChange(
   const impairment = Number(asset.impairment_amount || 0)
   const newNetValue = calcNetValue(newOriginal, Number(asset.accum_depr || 0), impairment)
 
+  // P1-18：已提满（depr_months_done >= use_months）的资产增加原值 / 改良后，若没有一并延长月数，
+  // 折旧函数首行 `done >= use_months` 直接返回 0、预览也把它过滤掉，新增的应折金额永久不折。
+  // 按原月折旧额推算需要补提的月数并自动顺延，调用方据 extendedMonths 提示用户。
+  let extendedMonths = 0
+  const doneMonths = Number(asset.depr_months_done || 0)
+  const isWorkload = String(asset.depr_method || '') === '2'
+  if (!isWorkload && doneMonths >= newUseMonths && newNetValue > newSalvage) {
+    const oldUseMonths = Number(asset.use_months || 0)
+    const oldMonthly =
+      oldUseMonths > 0 ? (oldOriginal - Number(asset.salvage_value || 0)) / oldUseMonths : 0
+    const remaining = round2(newNetValue - newSalvage)
+    extendedMonths = oldMonthly > 0 ? Math.max(1, Math.ceil(remaining / oldMonthly)) : 1
+    newUseMonths = doneMonths + extendedMonths
+  }
+
   db.prepare(
     `UPDATE fixed_asset SET
        original_value = ?, salvage_rate = ?, salvage_value = ?, use_months = ?,
@@ -391,6 +410,7 @@ function applyValueChange(
     voucherId: voucher?.voucherId ?? null,
     voucherNo: voucher?.voucherNo ?? null,
     voucherWarning: voucher?.warning ?? null,
+    extendedMonths: extendedMonths || undefined,
   }
 }
 

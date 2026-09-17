@@ -10,6 +10,7 @@ import {
   auxRefsForAccount,
   resolveAccounts,
   assertPeriodOpen,
+  assertNotAfterCurrentPeriod,
   normalizeSalvageRate,
 } from './assetVoucherBuilder.js'
 import { deleteVoucherRecords, type VoucherEntryInput } from './voucherEntry.js'
@@ -307,6 +308,8 @@ export function completeInventory(params: {
       ? inv.inventory_date.slice(0, 10)
       : new Date().toISOString().slice(0, 10)
   assertPeriodOpen(db, accountSetId, parseInt(invDate.split('-')[0]), parseInt(invDate.split('-')[1]))
+  // P1-20：盘点日期不得晚于当前月份
+  assertNotAfterCurrentPeriod(parseInt(invDate.split('-')[0]), parseInt(invDate.split('-')[1]), '盘点日期')
 
   // P0-4 / P1-21：已处置卡片、快照不一致、状态与数量差不匹配的明细一律拒绝完成
   validateInventoryItemsForComplete(db, accountSetId, inventoryId)

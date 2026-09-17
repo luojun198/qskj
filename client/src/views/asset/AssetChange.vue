@@ -96,6 +96,7 @@
                 value-format="YYYY-MM-DD"
                 placeholder="选择变动日期"
                 style="width: 220px"
+                :disabled-date="disableFutureMonth"
               />
             </el-form-item>
 
@@ -452,6 +453,12 @@
 </template>
 
 <script setup lang="ts">
+
+/** P1-20：变动 / 处置 / 盘点日期不得晚于当前月份（与后端同口径） */
+function disableFutureMonth(date: Date): boolean {
+  const now = new Date()
+  return date.getFullYear() * 100 + date.getMonth() > now.getFullYear() * 100 + now.getMonth()
+}
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -730,6 +737,8 @@ async function submit() {
       ElMessage.success(`${ASSET_CHANGE_KIND_LABELS[activeKind.value]}成功`)
     }
     if (data.voucherWarning) ElMessage.warning(data.voucherWarning)
+    // 已提满资产增值后自动顺延使用月数（后端 P1-18）
+    if (data.extendedMonths) ElMessage.info(`该资产此前已提足折旧，已自动延长使用月数 ${data.extendedMonths} 个月以摊销新增价值`)
 
     resetForm()
     await loadAsset()

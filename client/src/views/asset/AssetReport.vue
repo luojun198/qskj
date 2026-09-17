@@ -239,7 +239,8 @@
             <el-table-column label="资产名称" prop="asset_name" min-width="140" show-overflow-tooltip />
             <el-table-column label="类别" prop="category_name" width="100" />
             <el-table-column label="使用部门" prop="dept_name" width="100" />
-            <el-table-column label="原值" prop="original_value" width="120" align="right">
+            <el-table-column label="变动性质" prop="change_item" width="100" />
+            <el-table-column label="金额" prop="original_value" width="120" align="right">
               <template #default="{ row }">{{ fmtAmt(row.original_value) }}</template>
             </el-table-column>
             <el-table-column label="日期" prop="change_date" width="105" />

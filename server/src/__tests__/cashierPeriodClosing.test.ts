@@ -62,6 +62,9 @@ describe('cashierPeriodClosing', () => {
     expect(() => assertCashierRangeOpen(db, AS, '2026-08-01', '2026-08-31')).not.toThrow()
     expect(() => assertCashierRangeOpen(db, AS, undefined, undefined)).toThrow()
 
+    // 8 月有未生成凭证的流水，先补上凭证号才能结账（产品决策：与总账口径一致）
+    expect(() => closeCashierPeriod({ db, accountSetId: AS, year: 2026, month: 8 })).toThrow(/未生成凭证/)
+    db.prepare("UPDATE cashier_journal SET voucher_no=3 WHERE id='j2'").run()
     closeCashierPeriod({ db, accountSetId: AS, year: 2026, month: 8 })
     // 不能回头结更早月份 / 不能先反结 7 月
     expect(() => closeCashierPeriod({ db, accountSetId: AS, year: 2026, month: 6 })).toThrow(/不能回头/)

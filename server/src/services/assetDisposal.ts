@@ -13,6 +13,7 @@ import {
   resolveAccounts,
   getAssetParam,
   assertPeriodOpen,
+  assertNotAfterCurrentPeriod,
 } from './assetVoucherBuilder.js'
 import { assertVoucherEntriesInScopeById } from './accountAuthorization.js'
 import type { VoucherEntryInput } from './voucherEntry.js'
@@ -78,6 +79,8 @@ export function disposeAsset(params: DisposalParams): DisposalResult {
     parseInt(scrapDate.split('-')[0]),
     parseInt(scrapDate.split('-')[1])
   )
+  // P1-20：处置日期不得晚于当前月份
+  assertNotAfterCurrentPeriod(parseInt(scrapDate.split('-')[0]), parseInt(scrapDate.split('-')[1]), '处置日期')
 
   // AS-P1-17：处置日期不得早于该资产最后一次已计提折旧的期间，
   // 否则已计提的折旧会与处置基数对不上（与变动引擎同口径）

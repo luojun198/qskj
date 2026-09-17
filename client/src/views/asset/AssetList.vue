@@ -266,7 +266,7 @@
           </el-select>
         </el-form-item>
         <el-form-item label="处置日期" required>
-          <el-date-picker v-model="disposeForm.scrap_date" type="date" value-format="YYYY-MM-DD" style="width:100%" />
+          <el-date-picker v-model="disposeForm.scrap_date" type="date" value-format="YYYY-MM-DD" style="width:100%" :disabled-date="disableFutureMonth" />
         </el-form-item>
         <el-form-item label="处置原因">
           <el-input v-model="disposeForm.scrap_reason" type="textarea" :rows="2" />
@@ -370,6 +370,12 @@
 </template>
 
 <script setup lang="ts">
+
+/** P1-20：变动 / 处置 / 盘点日期不得晚于当前月份（与后端同口径） */
+function disableFutureMonth(date: Date): boolean {
+  const now = new Date()
+  return date.getFullYear() * 100 + date.getMonth() > now.getFullYear() * 100 + now.getMonth()
+}
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Plus, Setting } from '@element-plus/icons-vue'
