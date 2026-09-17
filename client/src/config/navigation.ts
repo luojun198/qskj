@@ -198,6 +198,7 @@ const ROUTE_PERMISSION_MAP: Record<string, string | string[]> = {
   '/scm/arap-statement': 'scm:arap',
   '/scm/arap-statement/print': 'scm:arap',
   '/scm/arap-aging': 'scm:arap',
+  '/scm/arap-fx-reval': 'scm:arap',
   '/scm/report/stock-alert': 'scm:report',
   '/scm/report/buysell': 'scm:report',
   '/scm/report/purchase-advice': 'scm:report',
@@ -658,6 +659,7 @@ function getStaticNavApps(enableCashFlow: boolean, enableForeignCurrency = false
           items: [
             { path: '/scm/arap-verify', title: '往来核销', permission: 'scm:arap', icon: 'BadgeCheck' },
             { path: '/scm/arap-statement', title: '对账单', permission: 'scm:arap', icon: 'ScrollText' },
+            { path: '/scm/arap-fx-reval', title: '往来汇率重估', permission: 'scm:arap', icon: 'Coins' },
           ],
         },
         {

@@ -14,6 +14,7 @@ vi.mock('../db/index.js', () => ({ getDb: () => testDb }))
 
 import { auditDocHandler, unauditDocHandler } from '../routes/scmDoc.js'
 import { getPartnerLedger, getPartnerBalanceSummary, getArApAging, getPartnerOpenAr, verifyArAp } from '../services/scmArAp.js'
+import { previewScmFxRevaluation, runScmFxRevaluation, revokeScmFxRevaluation } from '../services/scmFxRevaluation.js'
 
 const AID = 'RET-TEST'
 
@@ -53,6 +54,8 @@ function createDb() {
       line_seq INTEGER, warehouse_code TEXT, item_code TEXT, serial_no TEXT, direction TEXT);
     CREATE TABLE scm_serial (id TEXT, account_set_id TEXT, item_code TEXT, serial_no TEXT, status TEXT,
       warehouse_code TEXT, in_doc_no TEXT, out_doc_no TEXT, updated_at TEXT);
+    CREATE TABLE scm_fx_revaluation (id TEXT PRIMARY KEY, account_set_id TEXT, year INTEGER, period INTEGER, rates_json TEXT, lines_json TEXT,
+      total_adjustment REAL DEFAULT 0, created_by TEXT, created_at TEXT DEFAULT (datetime('now')), revoked_at TEXT);
   `)
   return db
 }
@@ -206,6 +209,32 @@ describe('P2-14 多币种双轨（原币 + 本位币）', () => {
       VALUES ('rcv-rmb',?,'P1','RCV','RCV-RMB','2026-09-05','2026-09-05','out',1000,'RMB',1,1000)`).run(AID)
     expect(() => verifyArAp(testDb, AID, { partner_code: 'P1', matches: [{ in_log_id: logOf('SO-USD').id, out_log_id: 'rcv-rmb', amount: 1000 }] }))
       .toThrow(/币别不一致/)
+  })
+
+  it('往来汇率重估：未核销原币按期末汇率折本位币，其后核销按新汇率，可撤销', () => {
+    const soId = seedDoc('SO', 'SO-USD', [{ qty: 10, price: 1000, amount: 10000, tax_amount: 1300 }], { currency: 'USD', rate: 7 })
+    expect(callHandler(auditDocHandler, soId).body.code).toBe(0)
+    testDb.prepare(`INSERT INTO scm_ar_ap_log (id,account_set_id,partner_code,doc_type,doc_no,doc_date,due_date,direction,amount,currency,exchange_rate,amount_fc)
+      VALUES ('rcv-usd',?,'P1','RCV','RCV-USD','2026-09-05','2026-09-05','out',35000,'USD',7,5000)`).run(AID)
+    verifyArAp(testDb, AID, { partner_code: 'P1', matches: [{ in_log_id: logOf('SO-USD').id, out_log_id: 'rcv-usd', amount: 5000 }] })
+    // 9 月末汇率 7.5：未核销 6300 USD 从 44100 重估为 47250，调整 +3150；已核销收款行已关闭不参与
+    const pv = previewScmFxRevaluation(testDb, AID, 2026, 9, { USD: 7.5 })
+    expect(pv.rows.map(r => [r.doc_no, r.open_fc, r.adjustment])).toEqual([['SO-USD', 6300, 3150]])
+    expect(pv.total_adjustment).toBe(3150)
+    const run = runScmFxRevaluation(testDb, AID, 2026, 9, 'tester', { USD: 7.5 })
+    expect(run.count).toBe(1)
+    expect(logOf('SO-USD')).toMatchObject({ amount: 82250, exchange_rate: 7.5, verified_amount: 35000 })
+    expect(getPartnerOpenAr(testDb, AID, 'P1')).toBe(47250)
+    expect(() => runScmFxRevaluation(testDb, AID, 2026, 9, 'tester', { USD: 7.5 })).toThrow(/已做过/)
+    // 其后按新汇率核销余款：本位币已核销 = 全额 82250，整行关闭
+    testDb.prepare(`INSERT INTO scm_ar_ap_log (id,account_set_id,partner_code,doc_type,doc_no,doc_date,due_date,direction,amount,currency,exchange_rate,amount_fc)
+      VALUES ('rcv-usd2',?,'P1','RCV','RCV-USD2','2026-10-05','2026-10-05','out',47250,'USD',7.5,6300)`).run(AID)
+    verifyArAp(testDb, AID, { partner_code: 'P1', matches: [{ in_log_id: logOf('SO-USD').id, out_log_id: 'rcv-usd2', amount: 6300 }] })
+    expect(logOf('SO-USD')).toMatchObject({ verified_fc: 11300, verified_amount: 82250 })
+    expect(getPartnerOpenAr(testDb, AID, 'P1')).toBe(0)
+    // 撤销：恢复旧金额与旧汇率（已核销额不动）
+    revokeScmFxRevaluation(testDb, AID, run.id)
+    expect(logOf('SO-USD')).toMatchObject({ amount: 79100, exchange_rate: 7 })
   })
 
   it('美元下推发票校正来源台账：原币改写、本位币按来源单汇率折算', () => {

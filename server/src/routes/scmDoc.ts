@@ -47,6 +47,7 @@ import { applyAuditDefaultWarehouses, inspectAuditDefaultWarehouses } from '../s
 import { normalizePaging } from '../utils/paging.js'
 import { docExchangeRate, getScmBaseCurrency, isScmBaseCurrency, normalizeScmCurrency, resolveScmExchangeRate, toBase } from '../services/scmCurrency.js'
 import { bomComponents, pickActiveBom } from '../services/scmBom.js'
+import { previewScmFxRevaluation, runScmFxRevaluation, revokeScmFxRevaluation, listScmFxRevaluations } from '../services/scmFxRevaluation.js'
 import {
   validateFinishKitting,
   PHYSICAL_CHILD_DOC_TYPES,
@@ -3680,6 +3681,26 @@ router.post('/scm/arap/verify/:verifyNo/cancel', operationLog('取消往来核�
     res.status(400).json({ code: 400, message: e?.message || '取消核销失败' })
   }
 })
+// ── 往来汇率重估（多币种双轨收尾，与总账期末调汇配合，不生成凭证） ──
+router.get('/scm/arap/fx-reval/preview', (req: AuthRequest, res) => {
+  const year = Number(req.query.year), period = Number(req.query.period)
+  if (!Number.isInteger(year) || !Number.isInteger(period) || period < 1 || period > 12) return res.status(400).json({ code: 400, message: '期间无效' })
+  let rates: Record<string, number> = {}
+  try { rates = req.query.rates ? JSON.parse(String(req.query.rates)) : {} } catch { rates = {} }
+  try { res.json({ code: 0, data: previewScmFxRevaluation(getDb(), asid(req), year, period, rates) }) } catch (e: any) { res.status(400).json({ code: 400, message: e.message }) }
+})
+router.get('/scm/arap/fx-reval', (req: AuthRequest, res) => {
+  res.json({ code: 0, data: listScmFxRevaluations(getDb(), asid(req)) })
+})
+router.post('/scm/arap/fx-reval', operationLog('往来汇率重估', '供应链'), (req: AuthRequest, res) => {
+  const year = Number(req.body?.year), period = Number(req.body?.period)
+  if (!Number.isInteger(year) || !Number.isInteger(period) || period < 1 || period > 12) return res.status(400).json({ code: 400, message: '期间无效' })
+  try { res.json({ code: 0, data: runScmFxRevaluation(getDb(), asid(req), year, period, userName(req), req.body?.rates || {}) }) } catch (e: any) { res.status(400).json({ code: 400, message: e.message }) }
+})
+router.post('/scm/arap/fx-reval/:id/revoke', operationLog('撤销往来汇率重估', '供应链'), (req: AuthRequest, res) => {
+  try { res.json({ code: 0, data: revokeScmFxRevaluation(getDb(), asid(req), String(req.params.id)) }) } catch (e: any) { res.status(400).json({ code: 400, message: e.message }) }
+})
+
 router.get('/scm/arap/:partnerCode', (req: AuthRequest, res) => {
   const { start_date, end_date, arap_type, with_lines } = req.query as any
   const db = getDb(); const aid = asid(req)

@@ -435,6 +435,10 @@ import {
   up as scmArapCurrencyUp,
   down as scmArapCurrencyDown,
 } from './migrations/20260917_scm_arap_currency.js'
+import {
+  up as scmFxRevaluationUp,
+  down as scmFxRevaluationDown,
+} from './migrations/20260917_scm_fx_revaluation.js'
 
 /**
  * 迁移示例：添加新字段
@@ -2132,5 +2136,11 @@ export const migrations: Migration[] = [
     name: 'scm_arap_currency',
     up: scmArapCurrencyUp,
     down: scmArapCurrencyDown,
+  },
+  {
+    version: 130,
+    name: 'scm_fx_revaluation',
+    up: scmFxRevaluationUp,
+    down: scmFxRevaluationDown,
   },
 ]

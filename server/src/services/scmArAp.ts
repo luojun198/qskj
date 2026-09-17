@@ -24,13 +24,21 @@ function logCurrency(db: Database.Database, accountSetId: string, doc: any): { c
   return { currency, rate }
 }
 
-/** 在台账行上累加已核销原币额，并按比例重算本位币已核销额（两侧同币种，按各自汇率折算，无汇兑残留） */
+/**
+ * 在台账行上累加已核销原币额，本位币已核销额按该行**当前汇率**增量折算（期末重估后汇率即期末汇率）；
+ * 原币核销完时本位币已核销额 = 本位币金额（整行关闭、无汇兑残留），核销归零时本位币也归零。
+ */
 function bumpVerified(db: Database.Database, logId: string, deltaFc: number) {
-  const row = db.prepare('SELECT amount, amount_fc, verified_fc FROM scm_ar_ap_log WHERE id=?').get(logId) as any
+  const row = db.prepare('SELECT amount, amount_fc, verified_fc, verified_amount, exchange_rate FROM scm_ar_ap_log WHERE id=?').get(logId) as any
   if (!row) return
   const amountFc = Number(row.amount_fc ?? row.amount) || 0
+  const rate = Number(row.exchange_rate) || 1
   const verifiedFc = Math.max(0, Math.round(((Number(row.verified_fc) || 0) + deltaFc) * 100) / 100)
-  const verifiedBase = amountFc > 0 ? Math.round((Number(row.amount) || 0) * verifiedFc / amountFc * 100) / 100 : verifiedFc
+  let verifiedBase: number
+  if (verifiedFc >= amountFc - 0.005) verifiedBase = Number(row.amount) || 0
+  else if (verifiedFc <= 0.005) verifiedBase = 0
+  else verifiedBase = Math.round(((Number(row.verified_amount) || 0) + deltaFc * rate) * 100) / 100
+  verifiedBase = Math.min(Math.max(0, verifiedBase), Number(row.amount) || 0)
   db.prepare('UPDATE scm_ar_ap_log SET verified_fc=?, verified_amount=? WHERE id=?').run(verifiedFc, verifiedBase, logId)
 }
 

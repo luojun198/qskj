@@ -450,6 +450,12 @@ export const scmApi = {
   getParams: () => request.get<{ param_key: string; param_value: string }[]>('/scm/params'),
   // 多币种双轨（P2-14）
   getCurrencies: () => request.get<{ base: string; list: Array<{ code: string; name: string; is_base: number; default_rate?: number }> }>('/scm/currencies'),
+  // 往来汇率重估（与总账期末调汇配合）
+  previewFxRevaluation: (p: { year: number; period: number; rates?: Record<string, number> }) =>
+    request.get<any>('/scm/arap/fx-reval/preview', { params: { year: p.year, period: p.period, rates: p.rates && Object.keys(p.rates).length ? JSON.stringify(p.rates) : undefined } }),
+  runFxRevaluation: (data: { year: number; period: number; rates?: Record<string, number> }) => request.post<{ id: string; count: number; total_adjustment: number }>('/scm/arap/fx-reval', data),
+  listFxRevaluations: () => request.get<any[]>('/scm/arap/fx-reval'),
+  revokeFxRevaluation: (id: string) => request.post(`/scm/arap/fx-reval/${id}/revoke`),
   getCurrencyRate: (currency: string, date?: string) => request.get<{ base: string; currency: string; rate: number; is_base: boolean }>('/scm/currency-rate', { params: { currency, date } }),
   saveParams: (params: { param_key: string; param_value: string }[]) => request.put('/scm/params', { params }),
   // 供应链初始化（清空业务数据 business / 连同档案 all）

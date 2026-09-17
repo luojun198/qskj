@@ -488,6 +488,26 @@ async function main() {
     assert('⑳ 结转单可生成凭证（借存货 90 / 贷生产成本 90）', gv.code === 0, gv.message)
   }
 
+  // ── 往来汇率重估（与总账期末调汇配合）──────────────────
+  {
+    // ⑱ 已有 USD 采购入库 1130 USD @6.8 = 7684 未核销；期末汇率手填 7.0 → 7910，调整 +226
+    const pv = (await get('/api/scm/arap/fx-reval/preview?year=2026&period=9&rates=' + encodeURIComponent(JSON.stringify({ USD: 7 })))).data
+    const usdRow = pv.rows.find(r => r.currency === 'USD' && r.partner_code === 'SUP1')
+    assert('㉑ 重估预览列出 USD 未清应付 1130 @6.8 → 7.0，调整 226', usdRow && r2(usdRow.open_fc) === 1130 && r2(usdRow.adjustment) === 226, JSON.stringify(usdRow))
+    const run = await post('/api/scm/arap/fx-reval', { year: 2026, period: 9, rates: { USD: 7 } }, { allowError: true })
+    assert('㉑ 执行重估', run.code === 0 && run.data.count >= 1, run.message)
+    const lg = await ledger('SUP1')
+    const pi = lg.detail.find(d => d.currency === 'USD' && d.direction === 'in')
+    assert('㉑ 台账本位币改为 7910、汇率 7.0', pi && r2(pi.amount) === 7910 && Number(pi.exchange_rate) === 7, JSON.stringify(pi && { amount: pi.amount, rate: pi.exchange_rate }))
+    const again = await post('/api/scm/arap/fx-reval', { year: 2026, period: 9, rates: { USD: 7 } }, { allowError: true })
+    assert('㉑ 同期重复重估被拒', again.status === 400 && /已做过/.test(again.message || ''), again.message)
+    const list = (await get('/api/scm/arap/fx-reval')).data
+    const rv = await post(`/api/scm/arap/fx-reval/${list[0].id}/revoke`, {}, { allowError: true })
+    const lg2 = await ledger('SUP1')
+    const pi2 = lg2.detail.find(d => d.currency === 'USD' && d.direction === 'in')
+    assert('㉑ 撤销后恢复 7684 @6.8', rv.code === 0 && pi2 && r2(pi2.amount) === 7684 && Number(pi2.exchange_rate) === 6.8, rv.message || JSON.stringify(pi2 && { amount: pi2.amount, rate: pi2.exchange_rate }))
+  }
+
   // 汇总
   const fails = results.filter(r => !r.pass)
   console.log(`\n==== ${results.length} 项断言，${fails.length} 项失败 ====`)

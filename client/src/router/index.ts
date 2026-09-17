@@ -860,6 +860,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '对账单打印', parent: '往来管理' },
       },
       {
+        path: 'scm/arap-fx-reval',
+        name: 'ScmArApFxRevaluation',
+        component: () => import('@/views/scm/ArApFxRevaluation.vue'),
+        meta: { title: '往来汇率重估', parent: '往来管理' },
+      },
+      {
         path: 'scm/arap-aging',
         name: 'ScmArApAging',
         component: () => import('@/views/scm/ArApAging.vue'),
