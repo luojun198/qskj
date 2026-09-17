@@ -45,6 +45,7 @@ import { getPurchaseReceiptOrderNosByLine, getSalesDispatchOrderNosByLine } from
 import { executeBatchAtomically, normalizeBatchIds, validateBatchPushDocuments, validateProductionPlanBatchAction } from '../services/scmBatchDocuments.js'
 import { applyAuditDefaultWarehouses, inspectAuditDefaultWarehouses } from '../services/scmAuditDefaultWarehouse.js'
 import { normalizePaging } from '../utils/paging.js'
+import { docExchangeRate, getScmBaseCurrency, isScmBaseCurrency, normalizeScmCurrency, resolveScmExchangeRate, toBase } from '../services/scmCurrency.js'
 import {
   validateFinishKitting,
   PHYSICAL_CHILD_DOC_TYPES,
@@ -298,6 +299,7 @@ function discountFactor(dr: number): number {
   return n > 0 ? n / 10 : 1
 }
 function round2(n: number): number { return Math.round(n * 100) / 100 }
+function round4(n: number): number { return Math.round(n * 10000) / 10000 }
 /** 本地日期 YYYY-MM-DD（toISOString 取 UTC，东八区 0~8 点会落到前一天） */
 function localToday(): string {
   const d = new Date()
@@ -463,11 +465,13 @@ const DOC_HEADER_EXTRA_COLUMNS = [
   'contract_no', 'currency', 'exchange_rate', 'expect_date', 'credit_days', 'dest_warehouse_code', 'total_tax',
   'io_category', 'transport_method', 'tax_rate', 'field_values',
 ]
-function docHeaderExtraValues(b: any) {
+function docHeaderExtraValues(db: ReturnType<typeof getDb>, aid: string, b: any) {
+  // 多币种：本位币汇率恒 1；外币未填汇率时按单据期间解析（审核时再次锁定）
+  const rate = docExchangeRate(db, aid, { currency: b.currency, exchange_rate: b.exchange_rate, doc_date: b.doc_date })
   return [
     b.biz_person ?? null, b.payment_type ?? null, b.settle_account ?? null,
     b.invoice_type ?? null, b.invoice_no ?? null, b.invoice_date ?? null,
-    b.contract_no ?? null, b.currency || 'CNY', Number(b.exchange_rate) || 1,
+    b.contract_no ?? null, b.currency || 'CNY', rate,
     b.expect_date ?? null, Number(b.credit_days) || 0, b.dest_warehouse_code ?? null, Number(b.total_tax) || 0,
     b.io_category ?? null, b.transport_method ?? null, Number(b.tax_rate) || 0,
     // 表头/表尾自定义字段：对象 → JSON 字符串落库（顺序须与 DOC_HEADER_EXTRA_COLUMNS 末项对齐）
@@ -511,8 +515,8 @@ function validatePaymentData(
   }
   const allowedTypes = doc.doc_type === 'RCV' ? ['SO'] : ['PI', 'WI']
   const seen = new Set<string>()
-  const getSource = db.prepare(`SELECT l.id, l.partner_code, l.doc_type, l.doc_no, l.direction,
-      l.amount, l.verified_amount, d.status AS doc_status
+  const getSource = db.prepare(`SELECT l.id, l.partner_code, l.doc_type, l.doc_no, l.direction, l.currency,
+      COALESCE(l.amount_fc, l.amount) AS amount, COALESCE(l.verified_fc, l.verified_amount) AS verified_amount, d.status AS doc_status
     FROM scm_ar_ap_log l
     LEFT JOIN scm_doc d ON d.account_set_id=l.account_set_id AND d.doc_type=l.doc_type AND d.doc_no=l.doc_no
     WHERE l.account_set_id=? AND l.id=?`)
@@ -526,6 +530,11 @@ function validatePaymentData(
     if (source.partner_code !== doc.partner_code) return { status: 400, message: `源单 ${source.doc_no} 不属于当前往来单位` }
     if (source.direction !== 'in' || !allowedTypes.includes(source.doc_type) || source.doc_status !== 'audited') {
       return { status: 400, message: `源单 ${source.doc_no} 类型或状态不允许用于当前收付款单` }
+    }
+    // 多币种：收付款单与源单必须同币别（核销按原币）
+    if (source.currency) {
+      const payCur = isScmBaseCurrency(db, aid, doc.currency) ? getScmBaseCurrency(db, aid) : normalizeScmCurrency(doc.currency)
+      if (payCur !== source.currency) return { status: 400, message: `源单 ${source.doc_no} 币别为 ${source.currency}，与本单币别 ${payCur} 不一致` }
     }
     if (doc.status !== 'audited') {
       const open = round2(Number(source.amount) - Number(source.verified_amount))
@@ -1050,7 +1059,7 @@ router.post('/scm/docs', operationLog('供应链单据新增', '供应链'), (re
       b.partner_code ?? null, b.dept_code ?? null, b.warehouse_code ?? null,
       b.operator || userName(req), userName(req), 'draft', b.source_doc_id ?? null, b.bom_id ?? null,
       Number(b.total_qty) || 0, Number(b.total_amount) || 0, b.remark ?? null, Number(b.discount_rate) || 0, b.plan_id ?? null,
-      ...docHeaderExtraValues(b)
+      ...docHeaderExtraValues(db, asid(req), b)
     )
     if (Array.isArray(b.lines)) {
       fillMrLineDefaults(db, asid(req), b.doc_type, b.lines)
@@ -1125,7 +1134,7 @@ router.put('/scm/docs/:id', operationLog('供应链单据修改', '供应链'), 
     db.prepare(`UPDATE scm_doc SET doc_date=COALESCE(?,doc_date),partner_code=COALESCE(?,partner_code),dept_code=?,warehouse_code=COALESCE(?,warehouse_code),operator=?,source_doc_id=?,bom_id=?,remark=?,discount_rate=?,plan_id=?,maker=COALESCE(maker,?),${DOC_HEADER_EXTRA_COLUMNS.map(c => `${c}=?`).join(',')},updated_at=datetime('now') WHERE id=?`).run(
       b.doc_date ?? null, b.partner_code ?? null, b.dept_code ?? null, b.warehouse_code ?? null, b.operator || userName(req),
       preservedSourceDocId, b.bom_id ?? null, b.remark ?? null, Number(b.discount_rate) || 0, preservedPlanId, userName(req),
-      ...docHeaderExtraValues(b), req.params.id
+      ...docHeaderExtraValues(db, asid(req), b), req.params.id
     )
     if (Array.isArray(b.lines)) {
       fillMrLineDefaults(db, asid(req), b.doc_type, b.lines)
@@ -1227,12 +1236,14 @@ function checkAggregatedOutStock(
  */
 function resolveInboundUnitCost(db: ReturnType<typeof getDb>, aid: string, doc: any, l: any): number {
   const given = Number(l.unit_cost) || 0
-  if (given > 0) return given
+  if (given > 0) return given                      // 行已带的是本位币成本（来源出库成本 / 回写值）
   const qty = Number(l.qty) || 0
   if (doc.doc_type === 'SR') return currentUnitCost(db, aid, l.warehouse_code || doc.warehouse_code, l.item_code)
+  // 多币种：行金额/单价是原币，库存成本按记账汇率折本位币
+  const rate = docExchangeRate(db, aid, doc)
   const amount = Number(l.amount) || 0
-  if (qty > 0 && amount > 0) return Math.round(amount / qty * 10000) / 10000
-  return Number(l.price) || 0
+  if (qty > 0 && amount > 0) return Math.round(amount * rate / qty * 10000) / 10000
+  return Math.round((Number(l.price) || 0) * rate * 10000) / 10000
 }
 
 // ── 审核/反审核（触发库存移动） ─────────────────────────
@@ -1270,6 +1281,12 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
 
   const lines = db.prepare('SELECT * FROM scm_doc_line WHERE doc_id=? ORDER BY seq').all(doc.id) as any[]
   const negWh = docType.affects_stock ? getNegativeStockWarehouses(db, aid) : new Set<string>()   // P2-7：允许负库存的仓库
+  // 多币种：审核时锁定记账汇率（外币未填则按单据期间解析并回写），往来/凭证/成本均以此折本位币
+  const fxRate = docExchangeRate(db, aid, doc)
+  if (!isScmBaseCurrency(db, aid, doc.currency) && Number(doc.exchange_rate) !== fxRate) {
+    db.prepare('UPDATE scm_doc SET exchange_rate=? WHERE id=?').run(fxRate, doc.id)
+    doc.exchange_rate = fxRate
+  }
   const originalWarehouseCode = doc.warehouse_code
   const defaultWarehouseInspection = docType.affects_stock && !['AS', 'TR'].includes(doc.doc_type)
     ? inspectAuditDefaultWarehouses(db, aid, doc, lines)
@@ -1333,7 +1350,7 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
       const limit = Number(partner?.credit_limit) || 0
       if (limit > 0) {
         const usedAr = getPartnerOpenAr(db, aid, doc.partner_code)
-        const thisAmt = sumGrossAmount(lines)   // 含税口径，与未核销应收（价税合计挂账）一致（P2-9）
+        const thisAmt = toBase(sumGrossAmount(lines), fxRate)   // 含税口径、折本位币，与未核销应收（价税合计挂账）一致（P2-9）
         const used = Math.round((usedAr + thisAmt) * 100) / 100
         if (used > limit + 0.005) {
           const msg = `客户「${partner?.name || doc.partner_code}」信用额度超限：额度 ${limit}，未核销应收 ${usedAr}，本单 ${thisAmt}，合计占用 ${used}`
@@ -1619,8 +1636,9 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
         if (!l.qty || l.qty <= 0) { i++; continue }
         const q = Number(l.qty) || 0
         const matCost = round2(lineRollup[i] * f)
-        const feeUnit = doc.doc_type === 'WI' ? (Number(l.process_fee) || 0) : 0
-        const feeTax = doc.doc_type === 'WI' ? round2(Number(l.tax_amount) || 0) : 0
+        // 多币种：加工费单价/税额是原币，进库存成本按记账汇率折本位币；应付台账用原币（applyOutsourceFeePayable 自行折算）
+        const feeUnit = doc.doc_type === 'WI' ? round4((Number(l.process_fee) || 0) * fxRate) : 0
+        const feeTax = doc.doc_type === 'WI' ? round2((Number(l.tax_amount) || 0) * fxRate) : 0
         const prod = prodByItem.get(l.item_code)
         const bq = prod ? (batchQtyByProduct.get(prod.id) || 0) : 0
         const lohB = prod ? lohBatchByProduct.get(prod.id) : undefined
@@ -1648,7 +1666,11 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
       }
       db.prepare('UPDATE scm_doc SET total_amount=? WHERE id=?').run(inTotal, doc.id)
       // 委外加工费 → 委外厂应付（doc.partner_code 已为委外厂）
-      if (doc.doc_type === 'WI' && feeTotal > 0) applyOutsourceFeePayable(db, aid, doc, round2(feeTotal + feeTaxTotal), feeTaxTotal)
+      if (doc.doc_type === 'WI' && feeTotal > 0) {
+        const feeFc = round2(lines.reduce((s: number, l: any) => s + (Number(l.qty) > 0 ? (Number(l.process_fee) || 0) * Number(l.qty) : 0), 0))
+        const feeTaxFc = round2(lines.reduce((s: number, l: any) => s + (Number(l.qty) > 0 ? (Number(l.tax_amount) || 0) : 0), 0))
+        applyOutsourceFeePayable(db, aid, doc, round2(feeFc + feeTaxFc), feeTaxFc)
+      }
       // 完工数回写对应成品行（逐成品累加），并同步头 legacy finished_qty 汇总
       const getF = db.prepare('SELECT COALESCE(finished_qty,0) f FROM scm_production_plan_product WHERE id=?')
       const setF = db.prepare('UPDATE scm_production_plan_product SET finished_qty=? WHERE id=?')
@@ -3488,7 +3510,7 @@ router.get('/scm/arap/payment-sources', (req: AuthRequest, res) => {
   if (!['RCV', 'PAY'].includes(String(payment_doc_type || ''))) {
     return res.status(400).json({ code: 400, message: '收付款单类型无效' })
   }
-  res.json({ code: 0, data: getPaymentSources(getDb(), asid(req), partner_code, payment_doc_type) })
+  res.json({ code: 0, data: getPaymentSources(getDb(), asid(req), partner_code, payment_doc_type, (req.query as any).currency || null) })
 })
 router.get('/scm/arap/verify-list', (req: AuthRequest, res) => {
   const { partner_code } = req.query as any
@@ -3677,15 +3699,19 @@ export const genVoucherHandler = (req: AuthRequest, res: Response) => {
 
   // 按科目汇总分录（借方/贷方）
   const lookupAcc = db.prepare('SELECT id, code, name FROM accounts WHERE account_set_id=? AND code=? LIMIT 1')
-  const entries: Array<{ code: string; name: string; id: string; debit: number; credit: number; summary: string }> = []
+  // 多币种双轨：分录金额一律本位币（原币 × 记账汇率）；外币单据的往来/收入/税额分录另带原币金额与汇率
+  const fxRate = docExchangeRate(db, aid, doc)
+  const fxCode = isScmBaseCurrency(db, aid, doc.currency) ? '' : normalizeScmCurrency(doc.currency)
+  const entries: Array<{ code: string; name: string; id: string; debit: number; credit: number; summary: string; fc_debit: number; fc_credit: number }> = []
   const missing = new Set<string>()
-  const addEntry = (code: string, side: 'debit' | 'credit', amt: number, summary: string) => {
+  const addEntry = (code: string, side: 'debit' | 'credit', amt: number, summary: string, fc = 0) => {
     if (!code || !(amt > 0)) return
     const acc = lookupAcc.get(aid, code) as any
     if (!acc) { missing.add(code); return }
     let e = entries.find(x => x.code === code && x.id === acc.id)
-    if (!e) { e = { code, name: acc.name, id: acc.id, debit: 0, credit: 0, summary }; entries.push(e) }
+    if (!e) { e = { code, name: acc.name, id: acc.id, debit: 0, credit: 0, summary, fc_debit: 0, fc_credit: 0 }; entries.push(e) }
     e[side] = Math.round((e[side] + amt) * 100) / 100
+    if (fxCode && fc > 0) e[side === 'debit' ? 'fc_debit' : 'fc_credit'] = Math.round((e[side === 'debit' ? 'fc_debit' : 'fc_credit'] + fc) * 100) / 100
   }
 
   const cat = docType.category
@@ -3712,9 +3738,11 @@ export const genVoucherHandler = (req: AuthRequest, res: Response) => {
     if (Math.abs(totalDiff) < 0.005) {
       return res.status(400).json({ code: 400, message: `发票金额与来源单据「${invoiceSource.doc_no}」一致，无差额，无需制证` })
     }
+    // 多币种：差额是原币，按来源单记账汇率折本位币（往来台账校正时也用的是来源单汇率）
+    const srcRate = Number((db.prepare('SELECT exchange_rate, currency FROM scm_doc WHERE id=?').get(invoiceSource.id) as any)?.exchange_rate) || fxRate
     const signed = (code: string, v: number, positiveSide: 'debit' | 'credit', sumr: string) => {
       if (Math.abs(v) < 0.005) return
-      addEntry(code, v > 0 ? positiveSide : (positiveSide === 'debit' ? 'credit' : 'debit'), Math.abs(v), sumr)
+      addEntry(code, v > 0 ? positiveSide : (positiveSide === 'debit' ? 'credit' : 'debit'), toBase(Math.abs(v), srcRate), sumr, Math.abs(v))
     }
     for (const d of diffs) {
       const item = getItem(db, aid, d.item_code)
@@ -3728,15 +3756,16 @@ export const genVoucherHandler = (req: AuthRequest, res: Response) => {
   }
   for (const l of (invoiceSource ? [] : lines)) {
     if (cat === 'finance') {
-      const amt = Math.round(Number(l.amount || 0) * 100) / 100
-      if (amt <= 0) continue
+      const amtFc = Math.round(Number(l.amount || 0) * 100) / 100
+      if (amtFc <= 0) continue
+      const amt = toBase(amtFc, fxRate)
       const sumr = `${doc.doc_no} ${l.remark || doc.remark || (doc.doc_type === 'RCV' ? '收款' : '付款')}`
       if (doc.doc_type === 'RCV') {
-        addEntry(doc.settle_account, 'debit', amt, sumr)
-        addEntry(AR, 'credit', amt, sumr)
+        addEntry(doc.settle_account, 'debit', amt, sumr, amtFc)
+        addEntry(AR, 'credit', amt, sumr, amtFc)
       } else {
-        addEntry(AP, 'debit', amt, sumr)
-        addEntry(doc.settle_account, 'credit', amt, sumr)
+        addEntry(AP, 'debit', amt, sumr, amtFc)
+        addEntry(doc.settle_account, 'credit', amt, sumr, amtFc)
       }
       continue
     }
@@ -3747,8 +3776,10 @@ export const genVoucherHandler = (req: AuthRequest, res: Response) => {
     const item = getItem(db, aid, l.item_code)
     const invCode = item?.inv_account || '1405'                          // 存货科目（默认 库存商品）
     const sumr = `${doc.doc_no} ${item?.name || l.item_code}`
-    const amt = Math.round(Number(l.amount || l.qty * (l.price || l.unit_cost || 0)) * 100) / 100   // 业务金额(进价/售价，不含税)
-    const tax = Math.round(Number(l.tax_amount || 0) * 100) / 100        // 税额
+    const amtFc = Math.round(Number(l.amount || l.qty * (l.price || l.unit_cost || 0)) * 100) / 100   // 业务金额(进价/售价，不含税，原币)
+    const taxFc = Math.round(Number(l.tax_amount || 0) * 100) / 100        // 税额（原币）
+    const amt = toBase(amtFc, fxRate)                                    // 本位币
+    const tax = toBase(taxFc, fxRate)
     const cost = Math.round(Number((l.unit_cost || 0) * l.qty) * 100) / 100  // 库存成本额(审核回写)
     if (amt <= 0 && cost <= 0) continue
 
@@ -3758,22 +3789,22 @@ export const genVoucherHandler = (req: AuthRequest, res: Response) => {
       // 再记一次会重复入账。该情形在循环外拦截，这里只处理独立录入的发票。
       if (doc.doc_type === 'RP') {
         // 独立采购发票：借 存货 + 进项税 / 贷 应付
-        addEntry(invCode, 'debit', amt, sumr); addEntry(TAX_IN, 'debit', tax, sumr); addEntry(AP, 'credit', amt + tax, sumr)
+        addEntry(invCode, 'debit', amt, sumr, amtFc); addEntry(TAX_IN, 'debit', tax, sumr, taxFc); addEntry(AP, 'credit', amt + tax, sumr, amtFc + taxFc)
       } else {
         // 独立销售发票：借 应收 / 贷 收入 + 销项。无库存移动，故不结转成本。
-        addEntry(AR, 'debit', amt + tax, sumr); addEntry(REV, 'credit', amt, sumr); addEntry(TAX_OUT, 'credit', tax, sumr)
+        addEntry(AR, 'debit', amt + tax, sumr, amtFc + taxFc); addEntry(REV, 'credit', amt, sumr, amtFc); addEntry(TAX_OUT, 'credit', tax, sumr, taxFc)
       }
     } else if (cat === 'purchase') {
       // 采购入库：借 存货 + 进项税 / 贷 应付；采购退货反向
-      if (dir === 'in') { addEntry(invCode, 'debit', amt, sumr); addEntry(TAX_IN, 'debit', tax, sumr); addEntry(AP, 'credit', amt + tax, sumr) }
-      else if (dir === 'out') { addEntry(invCode, 'credit', amt, sumr); addEntry(TAX_IN, 'credit', tax, sumr); addEntry(AP, 'debit', amt + tax, sumr) }
+      if (dir === 'in') { addEntry(invCode, 'debit', amt, sumr, amtFc); addEntry(TAX_IN, 'debit', tax, sumr, taxFc); addEntry(AP, 'credit', amt + tax, sumr, amtFc + taxFc) }
+      else if (dir === 'out') { addEntry(invCode, 'credit', amt, sumr, amtFc); addEntry(TAX_IN, 'credit', tax, sumr, taxFc); addEntry(AP, 'debit', amt + tax, sumr, amtFc + taxFc) }
     } else if (cat === 'sale') {
       // 销售出库：确认收入(借应收/贷收入+销项) + 结转成本(借成本/贷存货)；销售退货反向
       if (dir === 'out') {
-        addEntry(AR, 'debit', amt + tax, sumr); addEntry(REV, 'credit', amt, sumr); addEntry(TAX_OUT, 'credit', tax, sumr)
+        addEntry(AR, 'debit', amt + tax, sumr, amtFc + taxFc); addEntry(REV, 'credit', amt, sumr, amtFc); addEntry(TAX_OUT, 'credit', tax, sumr, taxFc)
         addEntry(COST, 'debit', cost, sumr); addEntry(invCode, 'credit', cost, sumr)
       } else if (dir === 'in') {
-        addEntry(AR, 'credit', amt + tax, sumr); addEntry(REV, 'debit', amt, sumr); addEntry(TAX_OUT, 'debit', tax, sumr)
+        addEntry(AR, 'credit', amt + tax, sumr, amtFc + taxFc); addEntry(REV, 'debit', amt, sumr, amtFc); addEntry(TAX_OUT, 'debit', tax, sumr, taxFc)
         addEntry(COST, 'credit', cost, sumr); addEntry(invCode, 'debit', cost, sumr)
       }
     } else if (cat === 'production') {
@@ -3886,11 +3917,12 @@ export const genVoucherHandler = (req: AuthRequest, res: Response) => {
       voucherId, aid, voucherNo, null, doc.doc_date, year, month, totalDebit, userName(req),
       `供应链单据${doc.doc_no}`, `scm_${doc.doc_type.toLowerCase()}`
     )
-    const insE = db.prepare('INSERT INTO voucher_entries (id,account_set_id,voucher_id,seq,account_id,account_code,account_name,direction,amount,amount_cents,summary) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+    const insE = db.prepare('INSERT INTO voucher_entries (id,account_set_id,voucher_id,seq,account_id,account_code,account_name,direction,amount,amount_cents,summary,currency_code,exchange_rate,foreign_amount) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
     let seq = 1
+    const fxOf = (fc: number): [string | null, number | null, number | null] => (fxCode && fc > 0) ? [fxCode, fxRate, fc] : [null, null, null]
     for (const e of entries) {
-      if (e.debit > 0) insE.run(uuidv4(), aid, voucherId, seq++, e.id, e.code, e.name, 'debit', e.debit, Math.round(e.debit * 100), e.summary)
-      if (e.credit > 0) insE.run(uuidv4(), aid, voucherId, seq++, e.id, e.code, e.name, 'credit', e.credit, Math.round(e.credit * 100), e.summary)
+      if (e.debit > 0) insE.run(uuidv4(), aid, voucherId, seq++, e.id, e.code, e.name, 'debit', e.debit, Math.round(e.debit * 100), e.summary, ...fxOf(e.fc_debit))
+      if (e.credit > 0) insE.run(uuidv4(), aid, voucherId, seq++, e.id, e.code, e.name, 'credit', e.credit, Math.round(e.credit * 100), e.summary, ...fxOf(e.fc_credit))
     }
     db.prepare('UPDATE scm_doc SET voucher_id=? WHERE id=?').run(voucherId, doc.id)
     return voucherNo

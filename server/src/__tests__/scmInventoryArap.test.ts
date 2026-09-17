@@ -36,7 +36,7 @@ function createDb() {
     CREATE TABLE scm_doc (id TEXT, account_set_id TEXT, doc_type TEXT, doc_no TEXT, status TEXT, doc_date TEXT, partner_code TEXT, source_doc_id TEXT);
     CREATE TABLE scm_doc_line (id TEXT, account_set_id TEXT, doc_id TEXT, seq INTEGER, item_code TEXT, qty REAL, price REAL, amount REAL, tax_amount REAL);
     CREATE TABLE scm_partner (id TEXT, account_set_id TEXT, code TEXT, name TEXT, ar_account TEXT, ap_account TEXT);
-    CREATE TABLE scm_ar_ap_log (id TEXT, account_set_id TEXT, partner_code TEXT, doc_type TEXT, doc_no TEXT,
+    CREATE TABLE scm_ar_ap_log (currency TEXT, exchange_rate REAL NOT NULL DEFAULT 1, amount_fc REAL, verified_fc REAL NOT NULL DEFAULT 0, id TEXT, account_set_id TEXT, partner_code TEXT, doc_type TEXT, doc_no TEXT,
       doc_date TEXT, due_date TEXT, direction TEXT, amount REAL, ar_account TEXT, ap_account TEXT, cashier_journal_id TEXT,
       remark TEXT, verified_amount REAL NOT NULL DEFAULT 0, created_at TEXT DEFAULT (datetime('now')));
     CREATE TABLE scm_ar_ap_verify (id TEXT PRIMARY KEY, account_set_id TEXT, partner_code TEXT, verify_no TEXT,
@@ -241,7 +241,7 @@ describe('scmArAp 货物驱动往来', () => {
     const srcLines = [{ amount: 1000, tax_amount: 130 }]
     const srcId = mkSourceDoc('PI', 'PI-2', srcLines)
     applyPayableFromReceipt(db, AID, { doc_type: 'PI', doc_no: 'PI-2', doc_date: '2026-06-01', partner_code: 'P1' }, srcLines)
-    db.prepare("UPDATE scm_ar_ap_log SET verified_amount=800 WHERE doc_no='PI-2'").run()
+    db.prepare("UPDATE scm_ar_ap_log SET verified_amount=800, verified_fc=800 WHERE doc_no='PI-2'").run()
     expect(() => applyInvoice(db, AID,
       { doc_type: 'RP', doc_no: 'RP-2', doc_date: '2026-06-05', partner_code: 'P1', source_doc_id: srcId },
       [{ amount: 500, tax_amount: 65 }])).toThrow(/已核销金额/)
@@ -368,7 +368,7 @@ describe('scmArAp 货物驱动往来', () => {
       .run(uuidv4(), AID, 'SO', 'SO-2', 'audited', '2026-07-01', 'P1')
     applyReceivableFromShipment(db, AID, { doc_type: 'SO', doc_no: 'SO-2', doc_date: '2026-07-01', partner_code: 'P1' }, [{ amount: 100 }])
     const source = getPaymentSources(db, AID, 'P1', 'RCV')[0]
-    db.prepare('UPDATE scm_ar_ap_log SET verified_amount=80 WHERE id=?').run(source.arap_source_log_id)
+    db.prepare('UPDATE scm_ar_ap_log SET verified_amount=80, verified_fc=80 WHERE id=?').run(source.arap_source_log_id)
     const receipt = { doc_type: 'RCV', doc_no: 'RCV-3', doc_date: '2026-07-13', partner_code: 'P1', settle_account: '100201' }
     const audit = db.transaction(() => applyPayment(db, AID, receipt, [{ amount: 30, arap_source_log_id: source.arap_source_log_id }], '测试员'))
     expect(() => audit()).toThrow(/超出未核销余额/)
@@ -415,7 +415,7 @@ describe('往来余额表 · getPartnerBalanceSummary（按往来单位汇总）
   beforeEach(() => {
     db = new Database(':memory:')
     db.exec(`
-      CREATE TABLE scm_ar_ap_log (id TEXT, account_set_id TEXT, partner_code TEXT, doc_type TEXT, doc_no TEXT,
+      CREATE TABLE scm_ar_ap_log (currency TEXT, exchange_rate REAL NOT NULL DEFAULT 1, amount_fc REAL, verified_fc REAL NOT NULL DEFAULT 0, id TEXT, account_set_id TEXT, partner_code TEXT, doc_type TEXT, doc_no TEXT,
         doc_date TEXT, due_date TEXT, direction TEXT, amount REAL, ar_account TEXT, ap_account TEXT,
         cashier_journal_id TEXT, remark TEXT, verified_amount REAL NOT NULL DEFAULT 0, created_at TEXT DEFAULT (datetime('now')));
       CREATE TABLE scm_partner (id TEXT, account_set_id TEXT, code TEXT, name TEXT, partner_type TEXT);

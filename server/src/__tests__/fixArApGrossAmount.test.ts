@@ -14,7 +14,7 @@ function createDb() {
   db.exec(`
     CREATE TABLE scm_doc (id TEXT, account_set_id TEXT, doc_type TEXT, doc_no TEXT);
     CREATE TABLE scm_doc_line (id TEXT, account_set_id TEXT, doc_id TEXT, amount REAL, tax_amount REAL);
-    CREATE TABLE scm_ar_ap_log (id TEXT, account_set_id TEXT, doc_type TEXT, doc_no TEXT,
+    CREATE TABLE scm_ar_ap_log (currency TEXT, exchange_rate REAL NOT NULL DEFAULT 1, amount_fc REAL, verified_fc REAL NOT NULL DEFAULT 0, id TEXT, account_set_id TEXT, doc_type TEXT, doc_no TEXT,
       direction TEXT, amount REAL, verified_amount REAL DEFAULT 0);
   `)
   return db

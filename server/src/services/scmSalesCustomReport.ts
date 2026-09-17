@@ -43,6 +43,8 @@ export interface SalesReportQuery {
   sort?: Array<{ key: string; direction?: 'asc' | 'desc' }>
   page?: number
   page_size?: number
+  /** 多币种：true 时金额按单据记账汇率折成本位币（币种列显示为「本位币」），可跨币种汇总 */
+  to_base?: boolean
 }
 
 export interface SalesReportColumn {
@@ -249,8 +251,11 @@ function parseOptions(raw: unknown): Array<{ label: string; value: string }> | u
   } catch { return undefined }
 }
 
-function buildContext(db: Database.Database, accountSetId: string, profile: TradeReportProfile) {
+function buildContext(db: Database.Database, accountSetId: string, profile: TradeReportProfile, toBase = false) {
   const { customSelects, customFields } = loadCustomFields(db, accountSetId, profile.docTypes)
+  // 多币种：折本位币时行金额 × 单据记账汇率（成本本来就是本位币，不再折算）
+  const fx = toBase ? '*COALESCE(NULLIF(d.exchange_rate,0),1)' : ''
+  const currencySql = toBase ? "'本位币'" : "COALESCE(d.currency,'CNY')"
   const fields = [...standardFields(profile.key), ...customFields]
   const metrics = metricsFor(profile.key)
   const fieldMap = new Map(fields.map(field => [field.key, field]))
@@ -264,16 +269,16 @@ function buildContext(db: Database.Database, accountSetId: string, profile: Trad
         COALESCE(l.warehouse_code,d.warehouse_code) AS warehouse_code, w.name AS warehouse_name,
         l.item_code, i.name AS item_name, COALESCE(l.spec,i.spec) AS spec, COALESCE(l.unit,i.unit) AS unit,
         i.category_code, c1.name AS category_name, i.subcategory_code, c2.name AS subcategory_name,
-        i.item_type, l.batch_no, COALESCE(d.currency,'CNY') AS currency, d.contract_no, d.invoice_no,
-        l.remark, COALESCE(l.price,0) AS price,
+        i.item_type, l.batch_no, ${currencySql} AS currency, d.contract_no, d.invoice_no,
+        l.remark, ROUND(COALESCE(l.price,0)${fx},4) AS price,
         (CASE WHEN d.doc_type=${sqlLiteral(profile.negativeDocType)} THEN -1 ELSE 1 END)*COALESCE(l.qty,0) AS qty,
-        (CASE WHEN d.doc_type=${sqlLiteral(profile.negativeDocType)} THEN -1 ELSE 1 END)*COALESCE(l.amount,0) AS sales_amount,
-        (CASE WHEN d.doc_type=${sqlLiteral(profile.negativeDocType)} THEN -1 ELSE 1 END)*COALESCE(l.amount,0) AS purchase_amount,
-        (CASE WHEN d.doc_type=${sqlLiteral(profile.negativeDocType)} THEN -1 ELSE 1 END)*COALESCE(l.tax_amount,0) AS tax_amount,
-        (CASE WHEN d.doc_type=${sqlLiteral(profile.negativeDocType)} THEN -1 ELSE 1 END)*COALESCE(l.discount_amount,0) AS discount_amount,
+        (CASE WHEN d.doc_type=${sqlLiteral(profile.negativeDocType)} THEN -1 ELSE 1 END)*ROUND(COALESCE(l.amount,0)${fx},2) AS sales_amount,
+        (CASE WHEN d.doc_type=${sqlLiteral(profile.negativeDocType)} THEN -1 ELSE 1 END)*ROUND(COALESCE(l.amount,0)${fx},2) AS purchase_amount,
+        (CASE WHEN d.doc_type=${sqlLiteral(profile.negativeDocType)} THEN -1 ELSE 1 END)*ROUND(COALESCE(l.tax_amount,0)${fx},2) AS tax_amount,
+        (CASE WHEN d.doc_type=${sqlLiteral(profile.negativeDocType)} THEN -1 ELSE 1 END)*ROUND(COALESCE(l.discount_amount,0)${fx},2) AS discount_amount,
         (CASE WHEN d.doc_type=${sqlLiteral(profile.negativeDocType)} THEN -1 ELSE 1 END)*ROUND(COALESCE(l.unit_cost,0)*COALESCE(l.qty,0),2) AS cost_amount,
-        (CASE WHEN d.doc_type=${sqlLiteral(profile.negativeDocType)} THEN -1 ELSE 1 END)*ROUND(COALESCE(NULLIF(l.unit_cost,0)*COALESCE(l.qty,0),l.amount,0),2) AS purchase_cost,
-        (CASE WHEN d.doc_type=${sqlLiteral(profile.negativeDocType)} THEN -1 ELSE 1 END)*ROUND(COALESCE(l.amount,0)-COALESCE(l.unit_cost,0)*COALESCE(l.qty,0),2) AS profit
+        (CASE WHEN d.doc_type=${sqlLiteral(profile.negativeDocType)} THEN -1 ELSE 1 END)*ROUND(COALESCE(NULLIF(l.unit_cost,0)*COALESCE(l.qty,0),ROUND(COALESCE(l.amount,0)${fx},2),0),2) AS purchase_cost,
+        (CASE WHEN d.doc_type=${sqlLiteral(profile.negativeDocType)} THEN -1 ELSE 1 END)*ROUND(ROUND(COALESCE(l.amount,0)${fx},2)-COALESCE(l.unit_cost,0)*COALESCE(l.qty,0),2) AS profit
         ${customSql}
       FROM scm_doc_line l
       JOIN scm_doc d ON d.id=l.doc_id AND d.account_set_id=l.account_set_id
@@ -437,7 +442,7 @@ function runTradeReportQuery(
   query: SalesReportQuery = {},
   options: { exportAll?: boolean } = {},
 ): SalesReportResult {
-  const ctx = buildContext(db, accountSetId, profile)
+  const ctx = buildContext(db, accountSetId, profile, query.to_base === true)
   const metrics = metricsFor(profile.key)
   const mode: SalesReportMode = query.mode === 'summary' ? 'summary' : 'detail'
   const page = Math.max(1, Math.floor(Number(query.page) || 1))

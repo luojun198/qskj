@@ -243,11 +243,17 @@
           <el-col v-if="hcol('currency')" :span="6">
             <el-form-item label="币别">
               <div style="display:flex;gap:4px;width:100%">
-                <el-select v-model="form.currency" filterable allow-create clearable default-first-option placeholder="CNY" style="flex:1">
-                  <el-option v-for="c in currencyOptions" :key="c" :value="c" :label="c" />
+                <el-select v-model="form.currency" filterable allow-create clearable default-first-option placeholder="CNY" style="flex:1" @change="onCurrencyChange">
+                  <el-option v-for="c in currencyOptions" :key="c" :value="c" :label="currencyLabel(c)" />
                 </el-select>
                 <el-button v-if="!isView" size="small" title="新增币别到字典" @click="quickDict('currency')"><el-icon><Plus /></el-icon></el-button>
               </div>
+            </el-form-item>
+          </el-col>
+          <!-- 多币种双轨：外币单据显示记账汇率（缺省按单据期间从汇率表带出，可改；审核时锁定） -->
+          <el-col v-if="hcol('currency') && isForeignCurrency" :span="6">
+            <el-form-item label="记账汇率">
+              <el-input-number v-model="form.exchange_rate" :min="0.000001" :precision="6" :controls="false" :disabled="isView" style="width:100%" placeholder="1 外币 = ? 本位币" />
             </el-form-item>
           </el-col>
           <el-col v-if="hcol('discount')" :span="6">
@@ -377,8 +383,9 @@
             <template v-if="isAdvancePaymentMode">{{ isReceivePayment ? '预收款' : '预付款' }}金额：¥{{ fmt(advanceAmount) }}</template>
             <template v-else>已选 {{ paymentSelectedCount }} 张源单<span v-if="advanceAmount > 0">　{{ isReceivePayment ? '预收' : '预付' }}：¥{{ fmt(advanceAmount) }}</span>　合计金额：¥{{ fmt(totalAmount) }}</template>
           </template>
-          <template v-else>合计数量：{{ fmt(totalQty) }}　合计金额：¥{{ fmt(displayTotalAmount) }}</template>
-          <span v-if="isInvoice">　价税合计：¥{{ fmt(totalTaxAmount) }}</span>
+          <template v-else>合计数量：{{ fmt(totalQty) }}　合计金额：{{ currencySymbol }}{{ fmt(displayTotalAmount) }}</template>
+          <span v-if="isInvoice">　价税合计：{{ currencySymbol }}{{ fmt(totalTaxAmount) }}</span>
+          <span v-if="isForeignCurrency" class="doc-cost-hint">　折本位币（汇率 {{ form.exchange_rate || '-' }}）：¥{{ fmt(round2((isPaymentDoc ? totalAmount : (isInvoice ? totalTaxAmount : displayTotalAmount)) * (Number(form.exchange_rate) || 0))) }}</span>
           <span v-if="isCostInbound && form.status === 'draft'" class="doc-cost-hint">
             本单成本将在审核时按工单归集自动生成（{{ form.doc_type === 'WI' ? '料 + 加工费' : '料 + 人工/制费' }}），当前草稿暂无成本
           </span>
@@ -1103,6 +1110,31 @@ const deptCatId   = ref('')         // 部门核算 类别id
 const settleTypes = ref<any[]>([])  // 结算方式（出纳结算字典）
 const cashierAccounts = ref<CashierAccount[]>([]) // 收付款实际使用的现金/银行末级科目
 const currencyOptions = ref<string[]>(['CNY', 'USD', 'EUR', 'HKD', 'JPY', 'GBP'])  // 币别字典（scm:currencies 可覆盖）
+// 多币种双轨：账套币种表（名称 / 本位币）；本位币单据汇率恒 1，外币单据带出记账汇率
+const currencyMeta = ref<{ base: string; list: Array<{ code: string; name: string; is_base: number }> }>({ base: 'RMB', list: [] })
+const normCurrency = (c: unknown) => { const code = String(c || '').trim().toUpperCase(); return code === 'CNY' ? 'RMB' : code }
+const isForeignCurrency = computed(() => { const c = normCurrency(form.value.currency); return !!c && c !== normCurrency(currencyMeta.value.base) })
+const currencySymbol = computed(() => isForeignCurrency.value ? `${normCurrency(form.value.currency)} ` : '¥')
+function currencyLabel(code: string) { const m = currencyMeta.value.list.find(c => normCurrency(c.code) === normCurrency(code)); return m?.name ? `${code} ${m.name}` : code }
+async function loadCurrencyMeta() {
+  try {
+    const r = await scmApi.getCurrencies()
+    if (r.code === 0) {
+      currencyMeta.value = r.data
+      const codes = r.data.list.map(c => c.code)
+      if (codes.length) currencyOptions.value = Array.from(new Set(['CNY', ...codes.filter(c => normCurrency(c) !== 'RMB'), ...currencyOptions.value.filter(c => codes.includes(c))]))
+    }
+  } catch { /* 无币种表时沿用字典 */ }
+}
+async function onCurrencyChange() {
+  if (isView.value) return
+  if (isPaymentDoc.value && form.value.partner_code) void loadPaymentSources(false)   // 币别变了，源单要按新币别重列
+  if (!isForeignCurrency.value) { form.value.exchange_rate = 1; return }
+  try {
+    const r = await scmApi.getCurrencyRate(form.value.currency, form.value.doc_date)
+    if (r.code === 0 && Number(r.data.rate) > 0) form.value.exchange_rate = Number(r.data.rate)
+  } catch { /* 取不到汇率则保留手填 */ }
+}
 const ioCategoryOptions = ref<string[]>([])   // 收发类别字典（scm:io_categories）
 const transportOptions  = ref<string[]>([])   // 运输方式字典（scm:transport_methods）
 const bins        = ref<any[]>([])  // 库位档案（参考用）
@@ -2115,6 +2147,7 @@ async function loadMeta() {
   if (ws.code === 0) warehouses.value = ws.data
   if (ps.code === 0) allPartners.value = ps.data
   scmApi.getProductionPlans().then(r => { if (r.code === 0) productionPlans.value = r.data || [] }).catch(() => {})
+  void loadCurrencyMeta()
   // 复用财务辅助核算：业务员=人员、部门（aux_items.type 存类别id，需先解析类别）；失败不阻塞开单
   scmApi.getAuxCategories().then(async r => {
     if (r.code !== 0) return
@@ -2825,6 +2858,7 @@ async function loadPaymentSources(preserveSelected = false) {
     const r = await scmApi.getPaymentSources({
       partner_code: form.value.partner_code,
       payment_doc_type: form.value.doc_type as 'RCV' | 'PAY',
+      currency: form.value.currency || undefined,   // 多币种：只列同币别源单
     })
     if (r.code !== 0) return
     const merged = (r.data || []).map(src => {

@@ -190,7 +190,7 @@ function buildFilters(code: PurchaseFixedReportCode, raw?: PurchaseFixedFilters)
   filters.currency = currency
   const children: SalesFilterCondition[] = []
   if (startDate && endDate) children.push({ field: 'doc_date', operator: 'between', value: startDate, value2: endDate })
-  children.push({ field: 'currency', operator: 'eq', value: currency })
+  if (currency !== 'ALL') children.push({ field: 'currency', operator: 'eq', value: currency })   // 多币种：ALL = 折本位币汇总
   addIn(children, 'partner_code', filters.partner_codes, '供应商')
   addIn(children, 'item_code', filters.item_codes, '产品')
   addIn(children, 'category_code', filters.category_codes, '产品分类')
@@ -311,8 +311,9 @@ function runPurchaseOrderTracking(
   const currency = String(filters.currency ?? '').trim()
   if (!currency) throw new Error('请选择币种')
 
-  const where: string[] = ['currency=?']
-  const whereParams: unknown[] = [currency]
+  // 多币种：ALL = 不按币种过滤（订单跟踪金额仍为原币，按币种分列显示）
+  const where: string[] = currency === 'ALL' ? ['1=1'] : ['currency=?']
+  const whereParams: unknown[] = currency === 'ALL' ? [] : [currency]
   const addRange = (field: string, range: { start: string; end: string }) => {
     if (!range.start) return
     where.push(`${field} BETWEEN ? AND ?`)
@@ -502,7 +503,7 @@ export function runPurchaseFixedReport(db: Database.Database, accountSetId: stri
   const built = buildFilters(code, request.filters)
   const page = Math.max(1, Math.floor(Number(request.page) || 1)), pageSize = Math.min(500, Math.max(1, Math.floor(Number(request.page_size) || 100)))
   if (code === 'detail') {
-    const query: SalesReportQuery = { mode: 'detail', filters: built.group, fields: DETAIL_FIELDS, sort: normalizeSort(request.sort, DETAIL_SORT_FIELDS, [{ key: 'doc_date', direction: 'desc' }, { key: 'doc_no', direction: 'desc' }]), page, page_size: pageSize }
+    const query: SalesReportQuery = { mode: 'detail', filters: built.group, fields: DETAIL_FIELDS, to_base: built.filters.currency === 'ALL', sort: normalizeSort(request.sort, DETAIL_SORT_FIELDS, [{ key: 'doc_date', direction: 'desc' }, { key: 'doc_no', direction: 'desc' }]), page, page_size: pageSize }
     const result = runPurchaseReportQuery(db, accountSetId, query, options)
     addDetailVarianceRate(result)
     return baseResult(code, result)
@@ -513,7 +514,7 @@ export function runPurchaseFixedReport(db: Database.Database, accountSetId: stri
     if (!dimensions) throw new Error('统计方式无效')
     const metrics = code === 'summary' ? SUMMARY_METRICS : COST_METRICS
     const query: SalesReportQuery = {
-      mode: 'summary', filters: built.group, dimensions, metrics,
+      mode: 'summary', filters: built.group, dimensions, metrics, to_base: built.filters.currency === 'ALL',
       result_filters: code === 'cost' ? resultFilters(built.filters) : undefined,
       sort: normalizeSort(request.sort, new Set([...dimensions, ...metrics]), [{ key: code === 'cost' ? 'cost_variance' : 'purchase_amount', direction: 'desc' }]), page, page_size: pageSize,
     }
@@ -526,7 +527,7 @@ export function runPurchaseFixedReport(db: Database.Database, accountSetId: stri
     if (!RANK_METRICS.includes(rankMetric)) throw new Error('排名指标无效')
     const topN = Number(request.top_n || 20)
     if (!TOP_N_VALUES.has(topN)) throw new Error('排行榜条数无效')
-    const result = runPurchaseReportQuery(db, accountSetId, { mode: 'summary', filters: built.group, dimensions, metrics: RANKING_METRICS, sort: [{ key: rankMetric, direction: 'desc' }, { key: dimensions[0], direction: 'asc' }], page: 1, page_size: topN })
+    const result = runPurchaseReportQuery(db, accountSetId, { mode: 'summary', filters: built.group, dimensions, metrics: RANKING_METRICS, to_base: built.filters.currency === 'ALL', sort: [{ key: rankMetric, direction: 'desc' }, { key: dimensions[0], direction: 'asc' }], page: 1, page_size: topN })
     const totalMetric = Number(result.summary[rankMetric]) || 0
     result.columns.unshift({ key: 'rank', label: '排名', type: 'integer', role: 'dimension' })
     if (rankMetric !== 'variance_rate') result.columns.push({ key: 'share_rate', label: '指标占比', type: 'percent', role: 'metric' })
@@ -539,7 +540,7 @@ export function runPurchaseFixedReport(db: Database.Database, accountSetId: stri
   if (!TREND_METRICS.includes(chartMetric)) throw new Error('趋势指标无效')
   const startDate = String(built.filters.start_date || ''), endDate = String(built.filters.end_date || '')
   if (!startDate || !endDate) throw new Error('趋势分析必须选择日期范围')
-  const result = runPurchaseReportQuery(db, accountSetId, { mode: 'summary', filters: built.group, dimensions: [period], metrics: TREND_METRICS, sort: [{ key: period, direction: 'asc' }], page: 1, page_size: 500 }, { exportAll: true })
+  const result = runPurchaseReportQuery(db, accountSetId, { mode: 'summary', filters: built.group, dimensions: [period], metrics: TREND_METRICS, to_base: built.filters.currency === 'ALL', sort: [{ key: period, direction: 'asc' }], page: 1, page_size: 500 }, { exportAll: true })
   fillTrendRows(result, startDate, endDate, period)
   return baseResult(code, result, { chart_metric: chartMetric })
 }

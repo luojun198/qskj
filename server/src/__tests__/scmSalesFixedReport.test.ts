@@ -12,7 +12,7 @@ describe('固定销售报表服务', () => {
         id TEXT, account_set_id TEXT, doc_type TEXT, doc_date TEXT, doc_no TEXT,
         partner_code TEXT, biz_person TEXT, dept_code TEXT, warehouse_code TEXT,
         currency TEXT, contract_no TEXT, invoice_no TEXT, status TEXT, cancel_flag INTEGER,
-        field_values TEXT
+        field_values TEXT, exchange_rate REAL DEFAULT 1
       );
       CREATE TABLE scm_doc_line (
         id TEXT, doc_id TEXT, account_set_id TEXT, warehouse_code TEXT, item_code TEXT,
@@ -52,7 +52,7 @@ describe('固定销售报表服务', () => {
     warehouse.run('a1', 'W1', '一号仓', 1)
     warehouse.run('a1', 'W2', '二号仓', 1)
 
-    const insertDoc = db.prepare('INSERT INTO scm_doc VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+    const insertDoc = db.prepare('INSERT INTO scm_doc (id,account_set_id,doc_type,doc_date,doc_no,partner_code,biz_person,dept_code,warehouse_code,currency,contract_no,invoice_no,status,cancel_flag,field_values) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
     const insertLine = db.prepare('INSERT INTO scm_doc_line VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
     insertDoc.run('so1', 'a1', 'SO', '2026-07-01', 'SO-001', 'C01', '张三', 'D1', 'W1', 'CNY', '', '', 'audited', 0, '{}')
     insertLine.run('l1', 'so1', 'a1', 'W1', 'I01', 'A型', '件', 'B01', '首单', 100, 10, 1000, 130, 20, 60, '{}')
@@ -87,6 +87,23 @@ describe('固定销售报表服务', () => {
     expect(result.rows.find(row => row.partner_code === 'C01')).toMatchObject({ item_code: 'I01', qty: 8, sales_amount: 800, cost_amount: 480, profit: 320 })
     expect(result.summary).toMatchObject({ qty: 14, sales_amount: 1900, cost_amount: 1030, profit: 870 })
     expect(result.columns.find(column => column.key === 'item_name')?.label).toBe('产品名称')
+  })
+
+  it('P2-14 全部币种（ALL）按记账汇率折本位币汇总；单币种仍按原币', () => {
+    db.prepare('INSERT INTO scm_doc (id,account_set_id,doc_type,doc_date,doc_no,partner_code,warehouse_code,currency,status,cancel_flag,field_values,exchange_rate) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
+      .run('so-usd', 'a1', 'SO', '2026-07-02', 'SO-USD', 'C03', 'W1', 'USD', 'audited', 0, '{}', 7)
+    db.prepare('INSERT INTO scm_doc_line VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+      .run('l-usd', 'so-usd', 'a1', 'W1', 'I01', 'A型', '件', '', '', 100, 1, 100, 13, 0, 350, '{}')
+    // 单币种：USD 只看到 100（原币）
+    const usd = runSalesFixedReport(db, 'a1', { report_code: 'summary', grouping: 'customer', filters: { ...filters, currency: 'USD' } })
+    expect(usd.summary).toMatchObject({ sales_amount: 100 })
+    // 全部币种：CNY 1900 + USD 100×7 = 2600（本位币），成本不再折算，毛利 = 700 − 350
+    const all = runSalesFixedReport(db, 'a1', { report_code: 'summary', grouping: 'customer', filters: { ...filters, currency: 'ALL' } })
+    expect(all.summary).toMatchObject({ sales_amount: 2600, cost_amount: 1380 })
+    const c03 = all.rows.find(row => row.partner_code === 'C03')
+    expect(c03).toMatchObject({ sales_amount: 800, profit: 800 - 150 - 350 })
+    const detail = runSalesFixedReport(db, 'a1', { report_code: 'detail', filters: { ...filters, currency: 'ALL' } })
+    expect(detail.rows.find(row => row.doc_no === 'SO-USD')).toMatchObject({ sales_amount: 700, currency: '本位币' })
   })
 
   it('销售明细表固定字段包含毛利率、原单标识和负数退货', () => {

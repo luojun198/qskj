@@ -395,6 +395,47 @@ async function main() {
     assert('⑰ [P2-11] 收发存汇总带仓库参数返回该仓数据', Array.isArray(sum) && sum.length > 0 && sum.every(r => r.warehouse_code === 'W1'), `rows=${sum?.length}`)
   }
 
+  // ── 多币种双轨（P2-14）──────────────────────────────────
+  {
+    const cur = (await get('/api/scm/currencies')).data
+    assert('⑱ 币种列表含本位币 RMB 与 USD', cur.base === 'RMB' && cur.list.some(c => c.code === 'USD'), JSON.stringify(cur.list.map(c => c.code)))
+    const rate = (await get('/api/scm/currency-rate?currency=USD&date=' + D)).data
+    assert('⑱ USD 记账汇率按币种表带出 6.8', Number(rate.rate) === 6.8 && rate.is_base === false, JSON.stringify(rate))
+    await ensure('/api/scm/items', { code: 'M9', name: '进口物料', unit: '个', purchase_price: 100, default_warehouse_code: 'W1' })
+    // 美元采购入库：未填汇率 → 保存时按币种表解析 6.8
+    const pi = await createDoc({ doc_type: 'PI', doc_date: D, partner_code: 'SUP1', warehouse_code: 'W1', currency: 'USD',
+      lines: [{ item_code: 'M9', qty: 10, price: 100, tax_rate: 13, tax_amount: 130 }] })
+    const ra = await audit(pi.id)
+    assert('⑱ 美元采购入库审核通过', ra.code === 0, ra.message)
+    const d = dbq('SELECT currency, exchange_rate FROM scm_doc WHERE id=?', pi.id)[0]
+    assert('⑱ 单据汇率已锁定 6.8', d.currency === 'USD' && Number(d.exchange_rate) === 6.8, JSON.stringify(d))
+    const st = await stock('W1', 'M9')
+    assert('⑱ 库存成本折本位币：均价 680、金额 6800', r2(st.avg_cost) === 680 && r2(st.amount) === 6800, `avg=${st.avg_cost} amount=${st.amount}`)
+    const log = dbq("SELECT currency, exchange_rate, amount_fc, amount FROM scm_ar_ap_log WHERE doc_no=(SELECT doc_no FROM scm_doc WHERE id=?)", pi.id)[0]
+    assert('⑱ 应付台账：原币 1130 / 本位币 7684', log && log.currency === 'USD' && r2(log.amount_fc) === 1130 && r2(log.amount) === 7684, JSON.stringify(log))
+    // 付款源单：USD 付款单只列美元源单；人民币付款单看不到它
+    const srcUsd = (await get(`/api/scm/arap/payment-sources?partner_code=SUP1&payment_doc_type=PAY&currency=USD`)).data
+    const srcCny = (await get(`/api/scm/arap/payment-sources?partner_code=SUP1&payment_doc_type=PAY&currency=CNY`)).data
+    assert('⑱ 付款源单按币别过滤', srcUsd.some(s => s.source_doc_id === pi.id && r2(s.open_amount) === 1130) && !srcCny.some(s => s.source_doc_id === pi.id),
+      `usd=${srcUsd.length} cny=${srcCny.length}`)
+    // 生成凭证：借存货 6800 / 借进项 884 / 贷应付 7684，应付分录带原币 1130 与汇率 6.8
+    const gv = await post(`/api/scm/docs/${pi.id}/gen-voucher`, {}, { allowError: true })
+    assert('⑱ 美元入库生成凭证', gv.code === 0, gv.message)
+    if (gv.code === 0) {
+      const es = dbq('SELECT account_code, direction, amount, currency_code, exchange_rate, foreign_amount FROM voucher_entries WHERE voucher_id=?', gv.data.voucher_id)
+      const ap = es.find(e => e.account_code === '2202')
+      assert('⑱ 应付分录本位币 7684 / 原币 USD 1130 / 汇率 6.8', ap && r2(ap.amount) === 7684 && ap.currency_code === 'USD' && r2(ap.foreign_amount) === 1130 && Number(ap.exchange_rate) === 6.8, JSON.stringify(es))
+    }
+    // 全部币种报表折本位币
+    const rep = await post('/api/scm/report/purchase/fixed-query', { report_code: 'summary', grouping: 'supplier', filters: { start_date: D, end_date: D, currency: 'ALL' } }, { allowError: true })
+    if (rep.code === 0) {
+      const sup = (rep.data.rows || []).find(r => r.partner_code === 'SUP1')
+      assert('⑱ 采购汇总「全部币种」折本位币（含 USD 6800）', sup && Number(sup.purchase_amount) >= 6800, JSON.stringify(sup))
+    } else {
+      bad('⑱ 采购固定报表 ALL', rep.message)
+    }
+  }
+
   // 汇总
   const fails = results.filter(r => !r.pass)
   console.log(`\n==== ${results.length} 项断言，${fails.length} 项失败 ====`)

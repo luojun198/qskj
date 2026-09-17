@@ -447,6 +447,9 @@ export const scmApi = {
 
   // 参数
   getParams: () => request.get<{ param_key: string; param_value: string }[]>('/scm/params'),
+  // 多币种双轨（P2-14）
+  getCurrencies: () => request.get<{ base: string; list: Array<{ code: string; name: string; is_base: number; default_rate?: number }> }>('/scm/currencies'),
+  getCurrencyRate: (currency: string, date?: string) => request.get<{ base: string; currency: string; rate: number; is_base: boolean }>('/scm/currency-rate', { params: { currency, date } }),
   saveParams: (params: { param_key: string; param_value: string }[]) => request.put('/scm/params', { params }),
   // 供应链初始化（清空业务数据 business / 连同档案 all）
   resetData: (mode: 'business' | 'all') => request.post<{ ok: boolean; cleared: string[] }>('/scm/reset', { mode }),
@@ -639,7 +642,7 @@ export const scmApi = {
   // 往来核销 + 预收预付
   getArapOpenItems: (params: { partner_code: string; side?: 'ar' | 'ap' }) =>
     request.get<{ in_items: any[]; out_items: any[]; open_in: number; advance: number }>('/scm/arap/open-items', { params }),
-  getPaymentSources: (params: { partner_code: string; payment_doc_type: 'RCV' | 'PAY' }) =>
+  getPaymentSources: (params: { partner_code: string; payment_doc_type: 'RCV' | 'PAY'; currency?: string }) =>
     request.get<ScmPaymentSource[]>('/scm/arap/payment-sources', { params }),
   verifyArap: (data: { partner_code: string; verify_date?: string; matches: Array<{ in_log_id: string; out_log_id: string; amount: number }> }) =>
     request.post<{ verify_no: string; count: number }>('/scm/arap/verify', data),

@@ -12,6 +12,27 @@ import type Database from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
 import { assertCashierPeriodOpen, normalizeBizDate } from './cashierPeriodClosing.js'
 import { getCashierBaseCurrency, normalizeCashierCurrency } from './cashierQuery.js'
+import { docExchangeRate, getScmBaseCurrency, isScmBaseCurrency, normalizeScmCurrency, toBase } from './scmCurrency.js'
+
+/**
+ * 多币种双轨（P2-14）：台账行的币别 / 汇率 / 原币金额。
+ * 本位币单据：currency=本位币、rate=1、amount_fc=amount；外币单据：amount = amount_fc × rate。
+ */
+function logCurrency(db: Database.Database, accountSetId: string, doc: any): { currency: string; rate: number } {
+  const rate = docExchangeRate(db, accountSetId, doc)
+  const currency = isScmBaseCurrency(db, accountSetId, doc?.currency) ? getScmBaseCurrency(db, accountSetId) : normalizeScmCurrency(doc.currency)
+  return { currency, rate }
+}
+
+/** 在台账行上累加已核销原币额，并按比例重算本位币已核销额（两侧同币种，按各自汇率折算，无汇兑残留） */
+function bumpVerified(db: Database.Database, logId: string, deltaFc: number) {
+  const row = db.prepare('SELECT amount, amount_fc, verified_fc FROM scm_ar_ap_log WHERE id=?').get(logId) as any
+  if (!row) return
+  const amountFc = Number(row.amount_fc ?? row.amount) || 0
+  const verifiedFc = Math.max(0, Math.round(((Number(row.verified_fc) || 0) + deltaFc) * 100) / 100)
+  const verifiedBase = amountFc > 0 ? Math.round((Number(row.amount) || 0) * verifiedFc / amountFc * 100) / 100 : verifiedFc
+  db.prepare('UPDATE scm_ar_ap_log SET verified_fc=?, verified_amount=? WHERE id=?').run(verifiedFc, verifiedBase, logId)
+}
 
 /**
  * P1-1：收付款单写 / 删出纳日记账前必须过出纳结账闸。
@@ -57,10 +78,11 @@ export function applyPayment(db: Database.Database, accountSetId: string, doc: a
   const paramAccount = db.prepare('SELECT param_value FROM system_params WHERE account_set_id=? AND param_key=?').get(accountSetId, paramKey) as any
   const arApCode = isReceive ? (partner?.ar_account || paramAccount?.param_value || defaultArAp) : (partner?.ap_account || paramAccount?.param_value || defaultArAp)
 
-  // 往来台账 wldj 表（挂 scm_ar_ap_log）
+  // 往来台账 wldj 表（挂 scm_ar_ap_log）：amount 本位币、amount_fc 原币
+  const fx = logCurrency(db, accountSetId, doc)
   const insWl = db.prepare(`INSERT INTO scm_ar_ap_log
-    (id, account_set_id, partner_code, doc_type, doc_no, doc_date, due_date, direction, amount, ar_account, ap_account, cashier_journal_id, remark)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    (id, account_set_id, partner_code, doc_type, doc_no, doc_date, due_date, direction, amount, ar_account, ap_account, cashier_journal_id, remark, currency, exchange_rate, amount_fc)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 
   // 出纳日记账
   const insCj = db.prepare(`INSERT INTO cashier_journal
@@ -83,8 +105,8 @@ export function applyPayment(db: Database.Database, accountSetId: string, doc: a
     // 往来台账：收付款均为核销，往来余额减少 → direction='out'（out 行不参与账龄，到期日=单据日）
     const outLogId = uuidv4()
     insWl.run(outLogId, accountSetId, doc.partner_code, doc.doc_type, doc.doc_no, doc.doc_date, doc.doc_date,
-      'out', amount, partner?.ar_account || null, partner?.ap_account || null, journalId,
-      l.remark || doc.remark)
+      'out', toBase(amount, fx.rate), partner?.ar_account || null, partner?.ap_account || null, journalId,
+      l.remark || doc.remark, fx.currency, fx.rate, amount)
     if (l.arap_source_log_id) {
       matches.push({ in_log_id: String(l.arap_source_log_id), out_log_id: outLogId, amount })
     }
@@ -127,14 +149,21 @@ export function applyInvoice(
   // ① 有来源单据：校正来源单据的暂估台账，不新增
   const srcLog = doc.source_doc_id ? findSourceArApLog(db, accountSetId, doc.source_doc_id) : null
   if (srcLog) {
-    if (total < Math.round(Number(srcLog.verified_amount || 0) * 100) / 100 - 0.005) {
+    const invCur = logCurrency(db, accountSetId, doc).currency
+    if (srcLog.currency && srcLog.currency !== invCur) {
+      throw new Error(`发票币别 ${invCur} 与来源单据「${srcLog.doc_no}」币别 ${srcLog.currency} 不一致，不能校正其往来挂账`)
+    }
+    const verifiedFc = Number(srcLog.verified_fc ?? srcLog.verified_amount) || 0
+    if (total < Math.round(verifiedFc * 100) / 100 - 0.005) {
       throw new Error(
-        `发票金额 ${total} 小于来源单据「${srcLog.doc_no}」已核销金额 ${srcLog.verified_amount}，请先反核销`
+        `发票金额 ${total} 小于来源单据「${srcLog.doc_no}」已核销金额 ${verifiedFc}，请先反核销`
       )
     }
+    // 校正的是金额不是汇率：本位币按来源单记账汇率折算
+    const rate = Number(srcLog.exchange_rate) || 1
     db.prepare(
-      `UPDATE scm_ar_ap_log SET amount=?, remark=? WHERE id=?`
-    ).run(total, `${srcLog.remark ? srcLog.remark + ' ' : ''}[发票 ${doc.doc_no}]`, srcLog.id)
+      `UPDATE scm_ar_ap_log SET amount=?, amount_fc=?, remark=? WHERE id=?`
+    ).run(toBase(total, rate), total, `${srcLog.remark ? srcLog.remark + ' ' : ''}[发票 ${doc.doc_no}]`, srcLog.id)
     return { mode: 'adjust', amount: total, sourceDocNo: srcLog.doc_no }
   }
 
@@ -166,13 +195,15 @@ export function reverseInvoice(db: Database.Database, accountSetId: string, doc:
     const srcLines = db.prepare('SELECT amount, tax_amount FROM scm_doc_line WHERE doc_id=?')
       .all(doc.source_doc_id) as any[]
     const restored = sumGrossAmount(srcLines)
-    if (restored < Math.round(Number(srcLog.verified_amount || 0) * 100) / 100 - 0.005) {
+    const verifiedFc = Number(srcLog.verified_fc ?? srcLog.verified_amount) || 0
+    if (restored < Math.round(verifiedFc * 100) / 100 - 0.005) {
       throw new Error(
-        `还原后的来源单据金额 ${restored} 小于已核销金额 ${srcLog.verified_amount}，请先反核销`
+        `还原后的来源单据金额 ${restored} 小于已核销金额 ${verifiedFc}，请先反核销`
       )
     }
-    db.prepare('UPDATE scm_ar_ap_log SET amount=?, remark=? WHERE id=?')
-      .run(restored, srcLog.remark ? String(srcLog.remark).replace(/\s*\[发票 [^\]]*\]$/, '') || null : null, srcLog.id)
+    const rate = Number(srcLog.exchange_rate) || 1
+    db.prepare('UPDATE scm_ar_ap_log SET amount=?, amount_fc=?, remark=? WHERE id=?')
+      .run(toBase(restored, rate), restored, srcLog.remark ? String(srcLog.remark).replace(/\s*\[发票 [^\]]*\]$/, '') || null : null, srcLog.id)
     return
   }
   reversePayment(db, accountSetId, doc)
@@ -181,14 +212,15 @@ export function reverseInvoice(db: Database.Database, accountSetId: string, doc:
 /** 新挂一条发票往来台账 */
 function applyInvoiceLog(db: Database.Database, accountSetId: string, doc: any, total: number) {
   const partner = db.prepare('SELECT * FROM scm_partner WHERE account_set_id=? AND code=?').get(accountSetId, doc.partner_code) as any
+  const fx = logCurrency(db, accountSetId, doc)
   db.prepare(`INSERT INTO scm_ar_ap_log
-    (id, account_set_id, partner_code, doc_type, doc_no, doc_date, due_date, direction, amount, ar_account, ap_account, cashier_journal_id, remark)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    (id, account_set_id, partner_code, doc_type, doc_no, doc_date, due_date, direction, amount, ar_account, ap_account, cashier_journal_id, remark, currency, exchange_rate, amount_fc)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     uuidv4(), accountSetId, doc.partner_code, doc.doc_type, doc.doc_no, doc.doc_date, computeDueDate(doc, partner),
-    'in', total,
+    'in', toBase(total, fx.rate),
     doc.doc_type === 'RS' ? (partner?.ar_account || '1131') : null,
     doc.doc_type === 'RP' ? (partner?.ap_account || '2121') : null,
-    null, doc.remark
+    null, doc.remark, fx.currency, fx.rate, total
   )
 }
 
@@ -204,12 +236,12 @@ export function applyReceivableFromShipment(db: Database.Database, accountSetId:
   const partner = db.prepare('SELECT * FROM scm_partner WHERE account_set_id=? AND code=?').get(accountSetId, doc.partner_code) as any
   const total = sumGrossAmount(lines)
   if (total <= 0) return
-
+  const fx = logCurrency(db, accountSetId, doc)
   db.prepare(`INSERT INTO scm_ar_ap_log
-    (id, account_set_id, partner_code, doc_type, doc_no, doc_date, due_date, direction, amount, ar_account, ap_account, cashier_journal_id, remark)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    (id, account_set_id, partner_code, doc_type, doc_no, doc_date, due_date, direction, amount, ar_account, ap_account, cashier_journal_id, remark, currency, exchange_rate, amount_fc)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     uuidv4(), accountSetId, doc.partner_code, doc.doc_type, doc.doc_no, doc.doc_date, computeDueDate(doc, partner),
-    'in', total, partner?.ar_account || '1131', null, null, doc.remark
+    'in', toBase(total, fx.rate), partner?.ar_account || '1131', null, null, doc.remark, fx.currency, fx.rate, total
   )
 }
 
@@ -219,12 +251,12 @@ export function applyPayableFromReceipt(db: Database.Database, accountSetId: str
   const partner = db.prepare('SELECT * FROM scm_partner WHERE account_set_id=? AND code=?').get(accountSetId, doc.partner_code) as any
   const total = sumGrossAmount(lines)
   if (total <= 0) return
-
+  const fx = logCurrency(db, accountSetId, doc)
   db.prepare(`INSERT INTO scm_ar_ap_log
-    (id, account_set_id, partner_code, doc_type, doc_no, doc_date, due_date, direction, amount, ar_account, ap_account, cashier_journal_id, remark)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    (id, account_set_id, partner_code, doc_type, doc_no, doc_date, due_date, direction, amount, ar_account, ap_account, cashier_journal_id, remark, currency, exchange_rate, amount_fc)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     uuidv4(), accountSetId, doc.partner_code, doc.doc_type, doc.doc_no, doc.doc_date, computeDueDate(doc, partner),
-    'in', total, null, partner?.ap_account || '2121', null, doc.remark
+    'in', toBase(total, fx.rate), null, partner?.ap_account || '2121', null, doc.remark, fx.currency, fx.rate, total
   )
 }
 
@@ -242,14 +274,15 @@ export function applyReturnAdjustment(db: Database.Database, accountSetId: strin
   const total = sumGrossAmount(lines)
   if (total <= 0) return
   const isSale = doc.doc_type === 'SR'
+  const fx = logCurrency(db, accountSetId, doc)
   db.prepare(`INSERT INTO scm_ar_ap_log
-    (id, account_set_id, partner_code, doc_type, doc_no, doc_date, due_date, direction, amount, ar_account, ap_account, cashier_journal_id, remark)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    (id, account_set_id, partner_code, doc_type, doc_no, doc_date, due_date, direction, amount, ar_account, ap_account, cashier_journal_id, remark, currency, exchange_rate, amount_fc)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     uuidv4(), accountSetId, doc.partner_code, doc.doc_type, doc.doc_no, doc.doc_date, doc.doc_date,
-    'out', total,
+    'out', toBase(total, fx.rate),
     isSale ? (partner?.ar_account || '1131') : null,
     isSale ? null : (partner?.ap_account || '2121'),
-    null, doc.remark
+    null, doc.remark, fx.currency, fx.rate, total
   )
 }
 
@@ -257,12 +290,14 @@ export function applyReturnAdjustment(db: Database.Database, accountSetId: strin
 export function applyOutsourceFeePayable(db: Database.Database, accountSetId: string, doc: any, grossAmount: number, taxAmount = 0) {
   if (!doc.partner_code || !(grossAmount > 0)) return  // 无委外厂或无加工费则不挂应付
   const partner = db.prepare('SELECT * FROM scm_partner WHERE account_set_id=? AND code=?').get(accountSetId, doc.partner_code) as any
+  const fx = logCurrency(db, accountSetId, doc)
+  const grossFc = Math.round(grossAmount * 100) / 100
   db.prepare(`INSERT INTO scm_ar_ap_log
-    (id, account_set_id, partner_code, doc_type, doc_no, doc_date, due_date, direction, amount, ar_account, ap_account, cashier_journal_id, remark)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    (id, account_set_id, partner_code, doc_type, doc_no, doc_date, due_date, direction, amount, ar_account, ap_account, cashier_journal_id, remark, currency, exchange_rate, amount_fc)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     uuidv4(), accountSetId, doc.partner_code, doc.doc_type, doc.doc_no, doc.doc_date, computeDueDate(doc, partner),
-    'in', Math.round(grossAmount * 100) / 100, null, partner?.ap_account || '2121', null,
-    `${doc.doc_no} 委外加工费（其中税额 ${Math.round(taxAmount * 100) / 100}）`
+    'in', toBase(grossFc, fx.rate), null, partner?.ap_account || '2121', null,
+    `${doc.doc_no} 委外加工费（其中税额 ${Math.round(taxAmount * 100) / 100}）`, fx.currency, fx.rate, grossFc
   )
 }
 
@@ -275,11 +310,10 @@ export function reversePayment(db: Database.Database, accountSetId: string, doc:
     const ph = outIds.map(() => '?').join(',')
     const verifies = db.prepare(`SELECT id, in_log_id, out_log_id, amount FROM scm_ar_ap_verify
       WHERE account_set_id=? AND out_log_id IN (${ph})`).all(accountSetId, ...outIds) as any[]
-    const unbump = db.prepare('UPDATE scm_ar_ap_log SET verified_amount=MAX(0,ROUND(verified_amount-?,2)) WHERE id=?')
     const delVerify = db.prepare('DELETE FROM scm_ar_ap_verify WHERE id=?')
     for (const v of verifies) {
-      unbump.run(v.amount, v.in_log_id)
-      unbump.run(v.amount, v.out_log_id)
+      bumpVerified(db, v.in_log_id, -Number(v.amount))
+      bumpVerified(db, v.out_log_id, -Number(v.amount))
       delVerify.run(v.id)
     }
   }
@@ -504,21 +538,23 @@ function nextVerifyNo(db: Database.Database, accountSetId: string): string {
 export function getOpenItems(db: Database.Database, accountSetId: string, partnerCode: string, side?: 'ar' | 'ap') {
   const arap = arapDocTypeCond(side === 'ar' ? 'ar' : side === 'ap' ? 'ap' : undefined, 'l')
   const extra = arap.sql ? ' AND ' + arap.sql : ''
+  // 多币种：open_amount 为**原币**未清（核销按原币），open_amount_base 为本位币未清（汇总口径）
   const q = (dir: 'in' | 'out') => db.prepare(
-    `SELECT l.*, (l.amount - l.verified_amount) AS open_amount,
+    `SELECT l.*, (COALESCE(l.amount_fc, l.amount) - COALESCE(l.verified_fc, l.verified_amount)) AS open_amount,
+       (l.amount - l.verified_amount) AS open_amount_base,
        CAST((julianday('now') - julianday(COALESCE(l.due_date, l.doc_date))) AS INTEGER) AS overdue_days
      FROM scm_ar_ap_log l
      WHERE l.account_set_id=? AND l.partner_code=? AND l.direction=?
-       AND (l.amount - l.verified_amount) > 0.005${extra}
+       AND (COALESCE(l.amount_fc, l.amount) - COALESCE(l.verified_fc, l.verified_amount)) > 0.005${extra}
      ORDER BY COALESCE(l.due_date, l.doc_date), l.created_at`
   ).all(accountSetId, partnerCode, dir, ...arap.params) as any[]
   const inItems = q('in')     // 应收/应付（待核销）
   const outItems = q('out')   // 收付款 / 未核销即预收预付
-  const sum = (rows: any[]) => r2(rows.reduce((s, r) => s + (Number(r.open_amount) || 0), 0))
+  const sum = (rows: any[]) => r2(rows.reduce((s, r) => s + (Number(r.open_amount_base) || 0), 0))
   return {
     in_items: inItems, out_items: outItems,
-    open_in: sum(inItems),            // 未收/未付合计
-    advance: sum(outItems),           // 预收/预付余额（未核销收付款）
+    open_in: sum(inItems),            // 未收/未付合计（本位币）
+    advance: sum(outItems),           // 预收/预付余额（本位币）
   }
 }
 
@@ -528,9 +564,14 @@ export function getPaymentSources(
   accountSetId: string,
   partnerCode: string,
   paymentDocType: 'RCV' | 'PAY',
+  currency?: string | null,
 ) {
   const sourceTypes = paymentDocType === 'RCV' ? ['SO'] : ['PI', 'WI']
   const ph = sourceTypes.map(() => '?').join(',')
+  // 多币种：只列同币别的源单（核销须同币别），金额为原币
+  const cur = currency ? (isScmBaseCurrency(db, accountSetId, currency) ? getScmBaseCurrency(db, accountSetId) : normalizeScmCurrency(currency)) : ''
+  const curSql = cur ? " AND COALESCE(l.currency, '') IN (?, '')" : ''
+  const curParams = cur ? [cur] : []
   return db.prepare(`SELECT
       l.id AS arap_source_log_id,
       d.id AS source_doc_id,
@@ -538,16 +579,17 @@ export function getPaymentSources(
       l.doc_no AS source_doc_no,
       l.doc_date AS source_doc_date,
       l.due_date,
-      ROUND(l.amount,2) AS source_amount,
-      ROUND(COALESCE(l.verified_amount,0),2) AS settled_amount,
-      ROUND(l.amount-COALESCE(l.verified_amount,0),2) AS open_amount,
+      l.currency,
+      ROUND(COALESCE(l.amount_fc, l.amount),2) AS source_amount,
+      ROUND(COALESCE(l.verified_fc, l.verified_amount),2) AS settled_amount,
+      ROUND(COALESCE(l.amount_fc, l.amount)-COALESCE(l.verified_fc, l.verified_amount),2) AS open_amount,
       l.remark
     FROM scm_ar_ap_log l
     JOIN scm_doc d ON d.account_set_id=l.account_set_id AND d.doc_type=l.doc_type AND d.doc_no=l.doc_no
     WHERE l.account_set_id=? AND l.partner_code=? AND l.direction='in'
-      AND l.doc_type IN (${ph}) AND d.status='audited'
-      AND (l.amount-COALESCE(l.verified_amount,0))>0.005
-    ORDER BY l.doc_date, l.created_at`).all(accountSetId, partnerCode, ...sourceTypes) as any[]
+      AND l.doc_type IN (${ph}) AND d.status='audited'${curSql}
+      AND (COALESCE(l.amount_fc, l.amount)-COALESCE(l.verified_fc, l.verified_amount))>0.005
+    ORDER BY l.doc_date, l.created_at`).all(accountSetId, partnerCode, ...sourceTypes, ...curParams) as any[]
 }
 
 /**
@@ -564,11 +606,10 @@ export function verifyArAp(db: Database.Database, accountSetId: string, params: 
   if (!partner_code) throw new Error('缺少往来单位')
   const valid = (matches || []).filter(m => m && m.in_log_id && m.out_log_id && Number(m.amount) > 0)
   if (!valid.length) throw new Error('没有可核销的匹配项')
-  const getLog = db.prepare('SELECT id, partner_code, direction, doc_type, amount, verified_amount FROM scm_ar_ap_log WHERE id=? AND account_set_id=?')
+  const getLog = db.prepare('SELECT id, partner_code, direction, doc_type, amount, verified_amount, currency, COALESCE(amount_fc, amount) AS amount_fc, COALESCE(verified_fc, verified_amount) AS verified_fc FROM scm_ar_ap_log WHERE id=? AND account_set_id=?')
   const insV = db.prepare(`INSERT INTO scm_ar_ap_verify
     (id, account_set_id, partner_code, verify_no, verify_date, in_log_id, out_log_id, amount, created_by, created_at)
     VALUES (?,?,?,?,?,?,?,?,?, datetime('now'))`)
-  const bump = db.prepare('UPDATE scm_ar_ap_log SET verified_amount = ROUND(verified_amount + ?, 2) WHERE id=?')
   const verifyNo = nextVerifyNo(db, accountSetId)
   const verifyDate = params.verify_date || new Date().toISOString().slice(0, 10)
   const run = db.transaction(() => {
@@ -586,11 +627,15 @@ export function verifyArAp(db: Database.Database, accountSetId: string, params: 
       if ((inIsAr && !outIsAr) || (inIsAp && !outIsAp)) {
         throw new Error(`核销业务方向不一致：${inIsAr ? '应收' : '应付'}「${inRow.doc_type}」不能用「${outRow.doc_type}」核销`)
       }
-      if (r2(inRow.verified_amount + amt) > r2(inRow.amount) + 0.005) throw new Error(`应收应付「${m.in_log_id}」核销额超出未核销余额`)
-      if (r2(outRow.verified_amount + amt) > r2(outRow.amount) + 0.005) throw new Error(`收付款「${m.out_log_id}」核销额超出可用余额`)
+      // 多币种：只能同币别核销；核销额是原币，本位币已核销额按比例折算（scm_ar_ap_verify.amount 记原币）
+      if (inRow.currency && outRow.currency && inRow.currency !== outRow.currency) {
+        throw new Error(`核销双方币别不一致（${inRow.currency} / ${outRow.currency}），不能直接核销`)
+      }
+      if (r2(inRow.verified_fc + amt) > r2(inRow.amount_fc) + 0.005) throw new Error(`应收应付「${m.in_log_id}」核销额超出未核销余额`)
+      if (r2(outRow.verified_fc + amt) > r2(outRow.amount_fc) + 0.005) throw new Error(`收付款「${m.out_log_id}」核销额超出可用余额`)
       insV.run(uuidv4(), accountSetId, partner_code, verifyNo, verifyDate, m.in_log_id, m.out_log_id, amt, params.operator || null)
-      bump.run(amt, m.in_log_id)
-      bump.run(amt, m.out_log_id)
+      bumpVerified(db, m.in_log_id, amt)
+      bumpVerified(db, m.out_log_id, amt)
     }
   })
   run()
@@ -601,12 +646,11 @@ export function verifyArAp(db: Database.Database, accountSetId: string, params: 
 export function cancelVerify(db: Database.Database, accountSetId: string, verifyNo: string): { count: number } {
   const rows = db.prepare('SELECT id, in_log_id, out_log_id, amount FROM scm_ar_ap_verify WHERE account_set_id=? AND verify_no=?').all(accountSetId, verifyNo) as any[]
   if (!rows.length) throw new Error('核销单不存在')
-  const unbump = db.prepare('UPDATE scm_ar_ap_log SET verified_amount = MAX(0, ROUND(verified_amount - ?, 2)) WHERE id=?')
   const del = db.prepare('DELETE FROM scm_ar_ap_verify WHERE id=?')
   const run = db.transaction(() => {
     for (const r of rows) {
-      unbump.run(r.amount, r.in_log_id)
-      unbump.run(r.amount, r.out_log_id)
+      bumpVerified(db, r.in_log_id, -Number(r.amount))
+      bumpVerified(db, r.out_log_id, -Number(r.amount))
       del.run(r.id)
     }
   })
@@ -690,7 +734,7 @@ export function getPartnerCredit(db: Database.Database, accountSetId: string, pa
 
 /** 反审核安全网：该单据(doc_no)对应的往来台账行是否已参与核销（verified_amount>0）。 */
 export function getDocVerifiedInfo(db: Database.Database, accountSetId: string, docNo: string): { verified: boolean; verify_nos: string[] } {
-  const logs = db.prepare('SELECT id FROM scm_ar_ap_log WHERE account_set_id=? AND doc_no=? AND verified_amount > 0.005').all(accountSetId, docNo) as any[]
+  const logs = db.prepare('SELECT id FROM scm_ar_ap_log WHERE account_set_id=? AND doc_no=? AND COALESCE(verified_fc, verified_amount) > 0.005').all(accountSetId, docNo) as any[]
   if (!logs.length) return { verified: false, verify_nos: [] }
   const nos = db.prepare(`SELECT DISTINCT verify_no FROM scm_ar_ap_verify
     WHERE account_set_id=? AND (in_log_id IN (SELECT id FROM scm_ar_ap_log WHERE account_set_id=? AND doc_no=?)

@@ -49,7 +49,7 @@ function makeDb() {
     CREATE TABLE vouchers (id TEXT PRIMARY KEY, account_set_id TEXT, voucher_no TEXT, year INTEGER, period INTEGER, source TEXT);
     CREATE TABLE system_params (id TEXT PRIMARY KEY, account_set_id TEXT, param_key TEXT, param_value TEXT);
     CREATE TABLE scm_partner (id TEXT PRIMARY KEY, account_set_id TEXT, code TEXT, name TEXT, ar_account TEXT, ap_account TEXT, credit_days INTEGER);
-    CREATE TABLE scm_ar_ap_log (
+    CREATE TABLE scm_ar_ap_log (currency TEXT, exchange_rate REAL NOT NULL DEFAULT 1, amount_fc REAL, verified_fc REAL NOT NULL DEFAULT 0, 
       id TEXT PRIMARY KEY, account_set_id TEXT, partner_code TEXT, doc_type TEXT, doc_no TEXT, doc_date TEXT, due_date TEXT,
       direction TEXT, amount REAL, ar_account TEXT, ap_account TEXT, cashier_journal_id TEXT, remark TEXT, verified_amount REAL DEFAULT 0
     );

@@ -12,6 +12,7 @@ import { resolveScmAccount, SCM_ACCOUNT_SPECS, suggestScmAccounts } from '../ser
 import { queryStockLedger, type StockLedgerFilters } from '../services/scmStockLedger.js'
 import type { ExportColumnSpec } from '../services/styledExcelExport.js'
 import { normalizePaging } from '../utils/paging.js'
+import { getScmBaseCurrency, isScmBaseCurrency, normalizeScmCurrency, resolveScmExchangeRate } from '../services/scmCurrency.js'
 
 async function buildStyledXlsxBuffer(options: any) {
   const module = await import('../services/styledExcelExport.js')
@@ -62,6 +63,25 @@ const SCM_PARAM_KEYS = [
   'scm:qc_required_for_finish',
   ...SCM_OVERRUN_PARAM_KEYS,
 ]
+// ── 多币种（P2-14）：供单据表单取币种列表与记账汇率，任何已登录用户可读（不要求 base:currency 权限） ──
+router.get('/scm/currencies', (req: AuthRequest, res) => {
+  const db = getDb(); const aid = asid(req)
+  const base = getScmBaseCurrency(db, aid)
+  const hasTable = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='currencies'").get()
+  const rows = hasTable
+    ? db.prepare('SELECT code, name, is_base, default_rate FROM currencies WHERE account_set_id=? AND is_enabled=1 ORDER BY is_base DESC, sort_order, code').all(aid) as any[]
+    : []
+  const list = rows.length ? rows : [{ code: base, name: base === 'RMB' ? '人民币' : base, is_base: 1, default_rate: 1 }]
+  res.json({ code: 0, data: { base, list } })
+})
+router.get('/scm/currency-rate', (req: AuthRequest, res) => {
+  const db = getDb(); const aid = asid(req)
+  const { currency, date } = req.query as any
+  const base = getScmBaseCurrency(db, aid)
+  const rate = resolveScmExchangeRate(db, aid, currency, date)
+  res.json({ code: 0, data: { base, currency: isScmBaseCurrency(db, aid, currency) ? base : normalizeScmCurrency(currency), rate, is_base: isScmBaseCurrency(db, aid, currency) } })
+})
+
 router.get('/scm/params', (req: AuthRequest, res) => {
   const db = getDb()
   const rows = db.prepare(

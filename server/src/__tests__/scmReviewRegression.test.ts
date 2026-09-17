@@ -25,7 +25,7 @@ function createDb() {
       batch_flag INTEGER DEFAULT 0, batch_out_mode TEXT, shelf_life_days INTEGER DEFAULT 0,
       serial_flag INTEGER DEFAULT 0, default_warehouse_code TEXT, inv_account TEXT,
       purchase_price REAL, ref_cost REAL);
-    CREATE TABLE scm_doc (id TEXT, account_set_id TEXT, doc_type TEXT, doc_no TEXT, status TEXT,
+    CREATE TABLE scm_doc (currency TEXT, exchange_rate REAL, id TEXT, account_set_id TEXT, doc_type TEXT, doc_no TEXT, status TEXT,
       doc_date TEXT, warehouse_code TEXT, partner_code TEXT, plan_id TEXT, bom_id TEXT, remark TEXT,
       source_doc_id TEXT, voucher_id TEXT, total_amount REAL, auditor TEXT, audited_at TEXT, updated_at TEXT);
     CREATE TABLE scm_doc_line (id TEXT, account_set_id TEXT, doc_id TEXT, seq INTEGER, item_code TEXT,
@@ -33,7 +33,7 @@ function createDb() {
       batch_no TEXT, serial_nos TEXT, source_line_id TEXT, field_values TEXT, line_role TEXT);
     CREATE TABLE scm_doc_type (account_set_id TEXT, code TEXT, category TEXT, direction TEXT, affects_stock INTEGER, affects_ar_ap INTEGER);
     CREATE TABLE scm_partner (id TEXT, account_set_id TEXT, code TEXT, name TEXT, partner_type TEXT, ar_account TEXT, ap_account TEXT, credit_limit REAL DEFAULT 0, credit_days INTEGER DEFAULT 0);
-    CREATE TABLE scm_ar_ap_log (id TEXT, account_set_id TEXT, partner_code TEXT, doc_type TEXT, doc_no TEXT,
+    CREATE TABLE scm_ar_ap_log (currency TEXT, exchange_rate REAL NOT NULL DEFAULT 1, amount_fc REAL, verified_fc REAL NOT NULL DEFAULT 0, id TEXT, account_set_id TEXT, partner_code TEXT, doc_type TEXT, doc_no TEXT,
       doc_date TEXT, due_date TEXT, direction TEXT, amount REAL, ar_account TEXT, ap_account TEXT,
       cashier_journal_id TEXT, remark TEXT, verified_amount REAL NOT NULL DEFAULT 0, created_at TEXT DEFAULT (datetime('now')));
     CREATE TABLE scm_ar_ap_verify (id TEXT, account_set_id TEXT, partner_code TEXT, verify_no TEXT, verify_date TEXT,
@@ -78,10 +78,10 @@ function seedBase() {
 
 function seedDoc(docType: string, docNo: string,
   lines: Array<{ qty?: number; price?: number; amount?: number; tax_amount?: number }>,
-  opts: { sourceDocId?: string; date?: string } = {}) {
+  opts: { sourceDocId?: string; date?: string; currency?: string; rate?: number } = {}) {
   const docId = uuidv4()
-  testDb.prepare(`INSERT INTO scm_doc (id,account_set_id,doc_type,doc_no,status,doc_date,warehouse_code,partner_code,source_doc_id)
-    VALUES (?,?,?,?,'draft',?,'W1','P1',?)`).run(docId, AID, docType, docNo, opts.date || '2026-09-04', opts.sourceDocId ?? null)
+  testDb.prepare(`INSERT INTO scm_doc (id,account_set_id,doc_type,doc_no,status,doc_date,warehouse_code,partner_code,source_doc_id,currency,exchange_rate)
+    VALUES (?,?,?,?,'draft',?,'W1','P1',?,?,?)`).run(docId, AID, docType, docNo, opts.date || '2026-09-04', opts.sourceDocId ?? null, opts.currency ?? 'CNY', opts.rate ?? 1)
   lines.forEach((l, i) => {
     testDb.prepare(`INSERT INTO scm_doc_line (id,account_set_id,doc_id,seq,item_code,warehouse_code,qty,price,amount,tax_amount,unit_cost)
       VALUES (?,?,?,?,'I1','W1',?,?,?,?,0)`)
@@ -167,6 +167,60 @@ describe('FIX-207 / FIX-208 入库成本口径', () => {
     testDb.prepare('UPDATE scm_doc_line SET unit_cost=55 WHERE doc_id=?').run(srId)
     expect(callHandler(auditDocHandler, srId).body.code).toBe(0)
     expect(stockOf('I1')).toMatchObject({ qty: 110, amount: 6550 })
+  })
+})
+
+describe('P2-14 多币种双轨（原币 + 本位币）', () => {
+  beforeEach(() => { testDb = createDb(); seedBase() })
+  const stockOf = (item: string) => testDb.prepare('SELECT qty, amount, avg_cost FROM scm_stock WHERE account_set_id=? AND warehouse_code=? AND item_code=?').get(AID, 'W1', item) as any
+
+  it('美元发货：台账本位币 = 原币 × 汇率，账龄/余额按本位币', () => {
+    const soId = seedDoc('SO', 'SO-USD', [{ qty: 10, price: 1000, amount: 10000, tax_amount: 1300 }], { currency: 'USD', rate: 7 })
+    expect(callHandler(auditDocHandler, soId).body.code).toBe(0)
+    expect(logOf('SO-USD')).toMatchObject({ currency: 'USD', exchange_rate: 7, amount_fc: 11300, amount: 79100 })
+    expect(closing()).toBe(79100)
+    expect(getArApAging(testDb, AID, '2026-09-30')[0].balance).toBe(79100)
+  })
+
+  it('美元采购入库：库存成本按汇率折本位币', () => {
+    testDb.prepare('INSERT INTO scm_item (id,account_set_id,code,name,inv_account) VALUES (?,?,?,?,?)').run(uuidv4(), AID, 'I2', '物料乙', '1405')
+    const piId = seedDoc('PI', 'PI-USD', [{ qty: 10, price: 100, amount: 1000, tax_amount: 130 }], { currency: 'USD', rate: 7 })
+    testDb.prepare("UPDATE scm_doc_line SET item_code='I2' WHERE doc_id=?").run(piId)
+    expect(callHandler(auditDocHandler, piId).body.code).toBe(0)
+    expect(stockOf('I2')).toMatchObject({ qty: 10, amount: 7000, avg_cost: 700 })
+    expect(logOf('PI-USD')).toMatchObject({ currency: 'USD', amount_fc: 1130, amount: 7910 })
+  })
+
+  it('同币种核销按原币，本位币已核销额各按自身汇率折算；不同币种拒绝核销', () => {
+    const soId = seedDoc('SO', 'SO-USD', [{ qty: 10, price: 1000, amount: 10000, tax_amount: 1300 }], { currency: 'USD', rate: 7 })
+    expect(callHandler(auditDocHandler, soId).body.code).toBe(0)
+    // 收款 5000 USD，汇率 7.1 → 本位币 35500
+    testDb.prepare(`INSERT INTO scm_ar_ap_log (id,account_set_id,partner_code,doc_type,doc_no,doc_date,due_date,direction,amount,currency,exchange_rate,amount_fc)
+      VALUES ('rcv-usd',?,'P1','RCV','RCV-USD','2026-09-05','2026-09-05','out',35500,'USD',7.1,5000)`).run(AID)
+    verifyArAp(testDb, AID, { partner_code: 'P1', matches: [{ in_log_id: logOf('SO-USD').id, out_log_id: 'rcv-usd', amount: 5000 }] })
+    expect(logOf('SO-USD')).toMatchObject({ verified_fc: 5000, verified_amount: 35000 })   // 79100 × 5000 / 11300
+    expect(logOf('RCV-USD')).toMatchObject({ verified_fc: 5000, verified_amount: 35500 })
+    expect(getPartnerOpenAr(testDb, AID, 'P1')).toBe(44100)                                  // 本位币未核销 79100 − 35000
+    // 人民币收款不能核销美元应收
+    testDb.prepare(`INSERT INTO scm_ar_ap_log (id,account_set_id,partner_code,doc_type,doc_no,doc_date,due_date,direction,amount,currency,exchange_rate,amount_fc)
+      VALUES ('rcv-rmb',?,'P1','RCV','RCV-RMB','2026-09-05','2026-09-05','out',1000,'RMB',1,1000)`).run(AID)
+    expect(() => verifyArAp(testDb, AID, { partner_code: 'P1', matches: [{ in_log_id: logOf('SO-USD').id, out_log_id: 'rcv-rmb', amount: 1000 }] }))
+      .toThrow(/币别不一致/)
+  })
+
+  it('美元下推发票校正来源台账：原币改写、本位币按来源单汇率折算', () => {
+    const piId = seedDoc('PI', 'PI-USD', [{ qty: 10, price: 100, amount: 1000, tax_amount: 130 }], { currency: 'USD', rate: 7 })
+    expect(callHandler(auditDocHandler, piId).body.code).toBe(0)
+    const rpId = seedDoc('RP', 'RP-USD', [{ qty: 10, price: 80, amount: 800, tax_amount: 104 }], { sourceDocId: piId, currency: 'USD', rate: 7.2 })
+    expect(callHandler(auditDocHandler, rpId).body.code).toBe(0)
+    expect(logOf('PI-USD')).toMatchObject({ amount_fc: 904, amount: 6328 })
+    expect(callHandler(unauditDocHandler, rpId).body.code).toBe(0)
+    expect(logOf('PI-USD')).toMatchObject({ amount_fc: 1130, amount: 7910 })
+    // 人民币发票不能校正美元来源单
+    const rpCny = seedDoc('RP', 'RP-CNY', [{ qty: 10, price: 80, amount: 800, tax_amount: 104 }], { sourceDocId: piId })
+    const res = callHandler(auditDocHandler, rpCny)
+    expect(res.statusCode).toBe(400)
+    expect(res.body.message).toMatch(/币别/)
   })
 })
 

@@ -48,7 +48,7 @@ function createDb() {
     CREATE TABLE scm_stock_move (id TEXT, account_set_id TEXT, move_date TEXT, doc_type TEXT, doc_no TEXT,
       line_seq INTEGER, warehouse_code TEXT, item_code TEXT, direction TEXT, qty REAL, unit_cost REAL,
       amount REAL, batch_no TEXT, balance_qty REAL, balance_amount REAL, balance_avg_cost REAL);
-    CREATE TABLE scm_ar_ap_log (id TEXT, account_set_id TEXT, doc_no TEXT, verified_amount REAL DEFAULT 0);
+    CREATE TABLE scm_ar_ap_log (currency TEXT, exchange_rate REAL NOT NULL DEFAULT 1, amount_fc REAL, verified_fc REAL NOT NULL DEFAULT 0, id TEXT, account_set_id TEXT, doc_no TEXT, verified_amount REAL DEFAULT 0);
     CREATE TABLE scm_ar_ap_verify (id TEXT, account_set_id TEXT, verify_no TEXT, in_log_id TEXT, out_log_id TEXT);
     CREATE TABLE scm_production_plan (id TEXT, account_set_id TEXT, code TEXT, plan_type TEXT,
       status TEXT, plan_qty REAL DEFAULT 0, finished_qty REAL DEFAULT 0, scrap_qty REAL DEFAULT 0, bom_id TEXT,
@@ -80,7 +80,7 @@ function createDb() {
     CREATE TABLE vouchers (id TEXT, account_set_id TEXT, voucher_no TEXT, voucher_type_id TEXT,
       voucher_date TEXT, year INTEGER, period INTEGER, total_amount REAL, maker_name TEXT,
       remark TEXT, source TEXT);
-    CREATE TABLE voucher_entries (id TEXT, account_set_id TEXT, voucher_id TEXT, seq INTEGER,
+    CREATE TABLE voucher_entries (currency_code TEXT, exchange_rate REAL, foreign_amount REAL, id TEXT, account_set_id TEXT, voucher_id TEXT, seq INTEGER,
       account_id TEXT, account_code TEXT, account_name TEXT, direction TEXT, amount REAL,
       amount_cents INTEGER, summary TEXT);
   `)

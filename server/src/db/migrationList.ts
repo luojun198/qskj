@@ -431,6 +431,10 @@ import {
   up as cashierCurrencyAliasUp,
   down as cashierCurrencyAliasDown,
 } from './migrations/20260917_cashier_currency_alias.js'
+import {
+  up as scmArapCurrencyUp,
+  down as scmArapCurrencyDown,
+} from './migrations/20260917_scm_arap_currency.js'
 
 /**
  * 迁移示例：添加新字段
@@ -2122,5 +2126,11 @@ export const migrations: Migration[] = [
     name: 'cashier_currency_alias',
     up: cashierCurrencyAliasUp,
     down: cashierCurrencyAliasDown,
+  },
+  {
+    version: 129,
+    name: 'scm_arap_currency',
+    up: scmArapCurrencyUp,
+    down: scmArapCurrencyDown,
   },
 ]

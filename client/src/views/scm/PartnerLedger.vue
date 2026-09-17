@@ -80,7 +80,14 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="发生额" width="130" align="right">
+        <!-- 多币种双轨：外币行显示币别与原币发生额；发生额 / 结存均为本位币 -->
+        <el-table-column label="币别/原币" width="140" align="right">
+          <template #default="{ row }">
+            <span v-if="row.currency && Number(row.exchange_rate) !== 1" class="fc-amt">{{ row.currency }} {{ fmt(row.amount_fc) }}</span>
+            <span v-else class="text-muted">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="发生额(本位币)" width="130" align="right">
           <template #default="{ row }">
             <span :class="isArBusiness(row) ? 'amt-ar' : 'amt-ap'">
               {{ row.direction === 'in' ? '+' : '-' }}{{ fmt(row.amount) }}
@@ -283,6 +290,7 @@ onActivated(() => {
 </script>
 
 <style scoped>
+.fc-amt { color: var(--el-color-warning-dark-2); font-variant-numeric: tabular-nums; }
 .scm-arap-page { display: flex; flex-direction: column; height: 100%; padding: 12px 16px; }
 .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
 .total-hint { margin-left: auto; font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }

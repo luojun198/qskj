@@ -155,7 +155,8 @@ function buildBaseFilters(code: SalesFixedReportCode, raw: SalesFixedFilters | u
   filters.currency = currency
   const children: SalesFilterCondition[] = []
   if (startDate && endDate) children.push({ field: 'doc_date', operator: 'between', value: startDate, value2: endDate })
-  children.push({ field: 'currency', operator: 'eq', value: currency })
+  // 多币种：ALL = 全部币种折本位币汇总（不加币种过滤，查询时 to_base）；否则按单一原币过滤
+  if (currency !== 'ALL') children.push({ field: 'currency', operator: 'eq', value: currency })
   addIn(children, 'partner_code', filters.partner_codes, '客户')
   addIn(children, 'item_code', filters.item_codes, '产品')
   addIn(children, 'category_code', filters.category_codes, '产品分类')
@@ -335,7 +336,7 @@ export function runSalesFixedReport(
 
   if (code === 'detail') {
     const query: SalesReportQuery = {
-      mode: 'detail', filters: built.group, fields: DETAIL_FIELDS,
+      mode: 'detail', filters: built.group, fields: DETAIL_FIELDS, to_base: built.filters.currency === 'ALL',
       sort: normalizeSort(request.sort, DETAIL_SORT_FIELDS, [{ key: 'doc_date', direction: 'desc' }, { key: 'doc_no', direction: 'desc' }]),
       page, page_size: pageSize,
     }
@@ -352,7 +353,7 @@ export function runSalesFixedReport(
     const metrics = code === 'summary' ? SUMMARY_METRICS : PROFIT_METRICS
     const allowedSort = new Set([...dimensions, ...metrics])
     const query: SalesReportQuery = {
-      mode: 'summary', filters: built.group, dimensions, metrics,
+      mode: 'summary', filters: built.group, dimensions, metrics, to_base: built.filters.currency === 'ALL',
       result_filters: code === 'profit' ? resultFilters(built.filters) : undefined,
       sort: normalizeSort(request.sort, allowedSort, [{ key: code === 'profit' ? 'profit' : 'sales_amount', direction: 'desc' }]),
       page, page_size: pageSize,
@@ -369,7 +370,7 @@ export function runSalesFixedReport(
     const topN = Number(request.top_n || 20)
     if (!TOP_N_VALUES.has(topN)) throw new Error('排行榜条数无效')
     const query: SalesReportQuery = {
-      mode: 'summary', filters: built.group, dimensions, metrics: RANKING_METRICS,
+      mode: 'summary', filters: built.group, dimensions, metrics: RANKING_METRICS, to_base: built.filters.currency === 'ALL',
       sort: [{ key: rankMetric, direction: 'desc' }, { key: dimensions[0], direction: 'asc' }],
       page: 1, page_size: topN,
     }
@@ -393,7 +394,7 @@ export function runSalesFixedReport(
   const endDate = String(built.filters.end_date || '')
   if (!startDate || !endDate) throw new Error('趋势分析必须选择日期范围')
   const query: SalesReportQuery = {
-    mode: 'summary', filters: built.group, dimensions: [period], metrics: TREND_METRICS,
+    mode: 'summary', filters: built.group, dimensions: [period], metrics: TREND_METRICS, to_base: built.filters.currency === 'ALL',
     sort: [{ key: period, direction: 'asc' }], page: 1, page_size: 500,
   }
   const result = runSalesReportQuery(db, accountSetId, query, { exportAll: true })

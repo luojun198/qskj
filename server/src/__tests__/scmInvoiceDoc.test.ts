@@ -23,7 +23,7 @@ function createDb() {
       batch_flag INTEGER DEFAULT 0, batch_out_mode TEXT, shelf_life_days INTEGER DEFAULT 0,
       serial_flag INTEGER DEFAULT 0, default_warehouse_code TEXT, inv_account TEXT,
       purchase_price REAL, ref_cost REAL);
-    CREATE TABLE scm_doc (id TEXT, account_set_id TEXT, doc_type TEXT, doc_no TEXT, status TEXT,
+    CREATE TABLE scm_doc (currency TEXT, exchange_rate REAL, id TEXT, account_set_id TEXT, doc_type TEXT, doc_no TEXT, status TEXT,
       doc_date TEXT, warehouse_code TEXT, partner_code TEXT, plan_id TEXT, bom_id TEXT,
       source_doc_id TEXT, voucher_id TEXT, total_amount REAL, auditor TEXT, audited_at TEXT, updated_at TEXT);
     CREATE TABLE scm_doc_line (id TEXT, account_set_id TEXT, doc_id TEXT, seq INTEGER, item_code TEXT,
@@ -31,7 +31,7 @@ function createDb() {
       batch_no TEXT, serial_nos TEXT, source_line_id TEXT, field_values TEXT, line_role TEXT);
     CREATE TABLE scm_doc_type (account_set_id TEXT, code TEXT, category TEXT, direction TEXT, affects_stock INTEGER, affects_ar_ap INTEGER);
     CREATE TABLE scm_partner (id TEXT, account_set_id TEXT, code TEXT, name TEXT, ar_account TEXT, ap_account TEXT);
-    CREATE TABLE scm_ar_ap_log (id TEXT, account_set_id TEXT, partner_code TEXT, doc_type TEXT, doc_no TEXT,
+    CREATE TABLE scm_ar_ap_log (currency TEXT, exchange_rate REAL NOT NULL DEFAULT 1, amount_fc REAL, verified_fc REAL NOT NULL DEFAULT 0, id TEXT, account_set_id TEXT, partner_code TEXT, doc_type TEXT, doc_no TEXT,
       doc_date TEXT, due_date TEXT, direction TEXT, amount REAL, ar_account TEXT, ap_account TEXT,
       cashier_journal_id TEXT, remark TEXT, verified_amount REAL NOT NULL DEFAULT 0);
     CREATE TABLE scm_ar_ap_verify (id TEXT, account_set_id TEXT, verify_no TEXT, in_log_id TEXT, out_log_id TEXT, amount REAL);
@@ -52,7 +52,7 @@ function createDb() {
     CREATE TABLE accounts (id TEXT, account_set_id TEXT, code TEXT, name TEXT);
     CREATE TABLE vouchers (id TEXT, account_set_id TEXT, voucher_no TEXT, voucher_date TEXT,
       year INTEGER, period INTEGER, total_amount REAL, maker_name TEXT, remark TEXT, source TEXT, voucher_type_id TEXT);
-    CREATE TABLE voucher_entries (id TEXT, account_set_id TEXT, voucher_id TEXT, seq INTEGER,
+    CREATE TABLE voucher_entries (currency_code TEXT, exchange_rate REAL, foreign_amount REAL, id TEXT, account_set_id TEXT, voucher_id TEXT, seq INTEGER,
       account_id TEXT, account_code TEXT, account_name TEXT, direction TEXT, amount REAL,
       amount_cents INTEGER, summary TEXT);
   `)

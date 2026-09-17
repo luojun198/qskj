@@ -45,7 +45,10 @@
             <el-table-column label="逾期" width="70" align="right">
               <template #default="{ row }"><span v-if="row.overdue_days > 0" class="overdue">{{ row.overdue_days }}天</span><span v-else>—</span></template>
             </el-table-column>
-            <el-table-column label="未核销" width="118" align="right">
+            <el-table-column label="币别" width="64" align="center">
+              <template #default="{ row }">{{ row.currency || '—' }}</template>
+            </el-table-column>
+            <el-table-column label="未核销(原币)" width="118" align="right">
               <template #default="{ row }">{{ fmt(row.open_amount) }}</template>
             </el-table-column>
             <el-table-column label="本次核销" width="130" align="right">
@@ -66,7 +69,10 @@
             <el-table-column label="单据" min-width="150" show-overflow-tooltip>
               <template #default="{ row }">{{ typeName(row.doc_type) }} {{ row.doc_no }}</template>
             </el-table-column>
-            <el-table-column label="可用余额" width="118" align="right">
+            <el-table-column label="币别" width="64" align="center">
+              <template #default="{ row }">{{ row.currency || '—' }}</template>
+            </el-table-column>
+            <el-table-column label="可用余额(原币)" width="118" align="right">
               <template #default="{ row }">{{ fmt(row.open_amount) }}</template>
             </el-table-column>
             <el-table-column label="本次核销" width="130" align="right">
