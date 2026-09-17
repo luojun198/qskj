@@ -419,6 +419,10 @@ import {
   up as detachStandardReportFooterUp,
   down as detachStandardReportFooterDown,
 } from './migrations/20260916_detach_standard_report_footer.js'
+import {
+  up as faSalvageRateGuardUp,
+  down as faSalvageRateGuardDown,
+} from './migrations/20260917_fa_salvage_rate_guard.js'
 
 /**
  * 迁移示例：添加新字段
@@ -2092,5 +2096,11 @@ export const migrations: Migration[] = [
     name: 'detach_standard_report_footer',
     up: detachStandardReportFooterUp,
     down: detachStandardReportFooterDown,
+  },
+  {
+    version: 126,
+    name: 'fa_salvage_rate_guard',
+    up: faSalvageRateGuardUp,
+    down: faSalvageRateGuardDown,
   },
 ]

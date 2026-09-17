@@ -418,6 +418,40 @@ describe('固定资产变动引擎', () => {
 
   // ── 资产拆分 ──────────────────────────────────────────────
 
+  describe('2026-09-17 综合评审 P0-3 / P1-17 / P2-14', () => {
+    it('P0-3：卡片残留百分数残值率（5 = 5%）时拆分按归一后的率算残值，并把归一后的率回写父 / 子卡', () => {
+      db.prepare("UPDATE fixed_asset SET salvage_rate=5 WHERE asset_no='A1'").run()
+      change({ kind: 'split', payload: { children: [{ asset_no: 'A1-1', original_value: 3000 }] } })
+      const rows = db.prepare('SELECT asset_no, salvage_rate, salvage_value, original_value FROM fixed_asset ORDER BY asset_no').all() as any[]
+      expect(rows).toEqual([
+        { asset_no: 'A1', salvage_rate: 0.05, salvage_value: 450, original_value: 9000 },
+        { asset_no: 'A1-1', salvage_rate: 0.05, salvage_value: 150, original_value: 3000 },
+      ])
+      // 残值没有被放大 100 倍，下一期折旧预览仍能出现
+      const lines = previewDepreciation({ db, accountSetId: SET_ID, year: 2026, month: 6 } as any)
+      expect(lines.map((l: any) => l.asset_no).sort()).toEqual(['A1', 'A1-1'])
+    })
+
+    it('P1-17：原值减少不能低于累计折旧 + 减值准备', () => {
+      // 累折 1800，原值减少到 1500 → 净值 -300
+      expect(() => change({ kind: 'original_value', payload: { amount: -10500 } })).toThrow(/不能低于累计折旧与减值准备之和 1800\.00/)
+      expect(asset().original_value).toBe(12000)
+      // 减少到刚好 1800 允许（残值率 10% → 残值 180 ≤ 剩余净值 0？不允许：残值高于剩余净值）
+      expect(() => change({ kind: 'original_value', payload: { amount: -10200 } })).toThrow(/残值.*不能高于剩余净值/)
+      // 减少 5000（原值 7000 ≥ 1800，残值 700 ≤ 5200）允许
+      change({ kind: 'original_value', payload: { amount: -5000 } })
+      expect(asset().original_value).toBe(7000)
+      expect(asset().net_value).toBe(5200)
+    })
+
+    it('P2-14：残值率 = 1（100%）一律拒绝，输入 100 也被拒绝', () => {
+      expect(() => change({ kind: 'original_value', payload: { amount: 1000, salvage_rate: 1 } })).toThrow(/残值率/)
+      expect(() => change({ kind: 'original_value', payload: { amount: 1000, salvage_rate: 100 } })).toThrow(/残值率/)
+      change({ kind: 'original_value', payload: { amount: 1000, salvage_rate: 5 } })
+      expect(asset().salvage_rate).toBe(0.05)
+    })
+  })
+
   describe('资产拆分', () => {
     it('原卡片减值、子卡片建立，原值与累计折旧总额守恒', () => {
       const result = change({

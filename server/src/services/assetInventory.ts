@@ -10,6 +10,7 @@ import {
   auxRefsForAccount,
   resolveAccounts,
   assertPeriodOpen,
+  normalizeSalvageRate,
 } from './assetVoucherBuilder.js'
 import { deleteVoucherRecords, type VoucherEntryInput } from './voucherEntry.js'
 import { assertVoucherEntriesInScopeById } from './accountAuthorization.js'
@@ -149,6 +150,9 @@ export function updateInventoryItem(params: {
   if (!item) throw new Error('盘点明细不存在')
 
   const diffQty = actualQty - item.book_qty
+  // P1-21：数量差与实盘状态必须匹配，否则"实盘 2 件 + 盘亏"会被整卡核销
+  const mismatch = statusQtyMismatch(actualStatus, Number(item.book_qty || 0), actualQty)
+  if (mismatch) throw new Error(`${item.asset_name}（${item.asset_no}）：${mismatch}`)
 
   db.prepare(`
     UPDATE fixed_asset_inventory_item SET
@@ -183,6 +187,16 @@ export function batchMarkItems(params: {
         updated_at = datetime('now')
       WHERE inventory_id = ? AND account_set_id = ? AND id IN (${placeholders})
     `).run(inventoryId, accountSetId, ...itemIds)
+  } else if (actualStatus === 'deficit' || actualStatus === 'damaged') {
+    // 批量标记盘亏 / 损毁：视为整卡缺失（实盘 0），需要部分数量盘亏请逐行填实盘数量
+    db.prepare(`
+      UPDATE fixed_asset_inventory_item SET
+        actual_qty = 0,
+        actual_status = ?,
+        difference_qty = -book_qty,
+        updated_at = datetime('now')
+      WHERE inventory_id = ? AND account_set_id = ? AND id IN (${placeholders})
+    `).run(actualStatus, inventoryId, accountSetId, ...itemIds)
   } else {
     db.prepare(`
       UPDATE fixed_asset_inventory_item SET
@@ -190,6 +204,77 @@ export function batchMarkItems(params: {
         updated_at = datetime('now')
       WHERE inventory_id = ? AND account_set_id = ? AND id IN (${placeholders})
     `).run(actualStatus, inventoryId, accountSetId, ...itemIds)
+  }
+}
+
+// ── 明细一致性（P0-4 / P1-21） ──────────────────────────────
+
+/** 实盘状态与数量差不匹配时返回原因；匹配返回 null */
+export function statusQtyMismatch(status: string, bookQty: number, actualQty: number): string | null {
+  const diff = actualQty - bookQty
+  if (status === 'surplus' && diff <= 0) return '标记为盘盈时实盘数量必须大于账面数量'
+  if (status === 'deficit' && diff >= 0) return '标记为盘亏时实盘数量必须小于账面数量'
+  if (status === 'normal' && diff !== 0) return '实盘数量与账面不一致时不能标记为正常'
+  if (status === 'damaged' && diff > 0) return '标记为损毁时实盘数量不能大于账面数量'
+  return null
+}
+
+/**
+ * 盘亏 / 损毁的核销比例：按缺失数量占账面数量的比例（与盘盈按数量差比例对称）。
+ * 损毁且实盘数量未减少视为整卡损毁；账面数量非正数按整卡处理。
+ */
+export function deficitRatio(item: { book_qty?: any; actual_qty?: any; actual_status?: string }): number {
+  const bookQty = Number(item.book_qty || 0)
+  const actualQty = Number(item.actual_qty ?? 0)
+  if (!(bookQty > 0)) return 1
+  if (item.actual_status === 'damaged' && actualQty >= bookQty) return 1
+  const r = (bookQty - actualQty) / bookQty
+  if (!(r > 0)) return 1
+  return Math.min(1, r)
+}
+
+/**
+ * 完成盘点前的明细校验：
+ *  - 盘盈 / 盘亏 / 损毁行对应的卡片必须仍在账（已处置的卡片再核销会把 1601 贷方冲超）；
+ *  - 卡片当前原值 / 累计折旧 / 数量必须与盘点清单快照一致（盘点期间发生过变动则要求重新盘点）；
+ *  - 实盘状态与数量差必须匹配。
+ */
+function validateInventoryItemsForComplete(db: Database, accountSetId: string, inventoryId: string): void {
+  const rows = db.prepare(`
+    SELECT i.asset_no, i.asset_name, i.actual_status, i.book_qty, i.actual_qty,
+           i.book_original_value, i.book_accum_depr,
+           fa.id AS asset_id, fa.scrap_date, fa.status_code, fa.qty, fa.original_value, fa.accum_depr
+    FROM fixed_asset_inventory_item i
+    LEFT JOIN fixed_asset fa ON fa.account_set_id = i.account_set_id AND fa.asset_no = i.asset_no
+    WHERE i.inventory_id = ? AND i.account_set_id = ?
+      AND i.actual_status IN ('surplus', 'deficit', 'damaged')
+  `).all(inventoryId, accountSetId) as any[]
+
+  const problems: string[] = []
+  for (const r of rows) {
+    const label = `${r.asset_name}（${r.asset_no}）`
+    if (!r.asset_id) {
+      problems.push(`${label}：卡片已不存在`)
+      continue
+    }
+    if (r.scrap_date || r.status_code === '04') {
+      problems.push(`${label}：已于 ${r.scrap_date || '此前'} 处置，不能再盘盈 / 盘亏，请改回「正常」`)
+      continue
+    }
+    const near = (a: any, b: any) => Math.abs(Number(a || 0) - Number(b || 0)) < 0.005
+    if (
+      !near(r.original_value, r.book_original_value) ||
+      !near(r.accum_depr, r.book_accum_depr) ||
+      Number(r.qty || 1) !== Number(r.book_qty || 1)
+    ) {
+      problems.push(`${label}：盘点期间发生过变动（原值 / 累计折旧 / 数量与盘点清单不一致），请重新盘点`)
+      continue
+    }
+    const mismatch = statusQtyMismatch(r.actual_status, Number(r.book_qty || 0), Number(r.actual_qty ?? 0))
+    if (mismatch) problems.push(`${label}：${mismatch}`)
+  }
+  if (problems.length) {
+    throw new Error(`盘点明细存在问题，无法完成：\n${problems.slice(0, 10).join('\n')}${problems.length > 10 ? `\n…共 ${problems.length} 项` : ''}`)
   }
 }
 
@@ -223,13 +308,16 @@ export function completeInventory(params: {
       : new Date().toISOString().slice(0, 10)
   assertPeriodOpen(db, accountSetId, parseInt(invDate.split('-')[0]), parseInt(invDate.split('-')[1]))
 
-  // 更新汇总统计
+  // P0-4 / P1-21：已处置卡片、快照不一致、状态与数量差不匹配的明细一律拒绝完成
+  validateInventoryItemsForComplete(db, accountSetId, inventoryId)
+
+  // 更新汇总统计（P2-15：「损毁」并入盘亏处理，不再既不报废也不入凭证）
   const stats = db.prepare(`
     SELECT
       COUNT(*) AS total,
       SUM(CASE WHEN actual_status = 'normal' THEN 1 ELSE 0 END) AS match_cnt,
       SUM(CASE WHEN actual_status = 'surplus' THEN 1 ELSE 0 END) AS surplus_cnt,
-      SUM(CASE WHEN actual_status = 'deficit' THEN 1 ELSE 0 END) AS deficit_cnt
+      SUM(CASE WHEN actual_status IN ('deficit', 'damaged') THEN 1 ELSE 0 END) AS deficit_cnt
     FROM fixed_asset_inventory_item
     WHERE inventory_id = ? AND account_set_id = ?
   `).get(inventoryId, accountSetId) as any
@@ -268,7 +356,7 @@ export function completeInventory(params: {
       // AS-P0-4：凭证回写到明细行（表已设计 voucher_id 列但此前从未写入），
       // 完成后可从盘点记录反查凭证，也便于后续对账与撤销
       db.prepare(
-        "UPDATE fixed_asset_inventory_item SET voucher_id=? WHERE inventory_id=? AND actual_status IN ('surplus','deficit')"
+        "UPDATE fixed_asset_inventory_item SET voucher_id=? WHERE inventory_id=? AND actual_status IN ('surplus','deficit','damaged')"
       ).run(voucherResult.voucherId, inventoryId)
     } catch (e: any) {
       voucherWarning = e.message
@@ -302,17 +390,19 @@ function markDeficitAssetsDisposed(params: {
   const { db, accountSetId, inventoryId, inventoryDate, operatorName } = params
 
   const items = db.prepare(`
-    SELECT i.asset_no, i.asset_name, fa.id AS asset_id, fa.status_code,
-           fa.original_value, fa.net_value, fa.scrap_date
+    SELECT i.asset_no, i.asset_name, i.actual_status, i.book_qty, i.actual_qty,
+           fa.id AS asset_id, fa.status_code, fa.qty,
+           fa.original_value, fa.accum_depr, fa.impairment_amount, fa.salvage_rate, fa.net_value, fa.scrap_date
     FROM fixed_asset_inventory_item i
     JOIN fixed_asset fa ON fa.account_set_id = i.account_set_id AND fa.asset_no = i.asset_no
-    WHERE i.inventory_id = ? AND i.account_set_id = ? AND i.actual_status = 'deficit'
+    WHERE i.inventory_id = ? AND i.account_set_id = ? AND i.actual_status IN ('deficit', 'damaged')
   `).all(inventoryId, accountSetId) as any[]
 
   if (!items.length) return
 
   const year = parseInt(inventoryDate.split('-')[0])
   const period = parseInt(inventoryDate.split('-')[1])
+  const round2 = (n: number) => Math.round(n * 100) / 100
 
   const updCard = db.prepare(`
     UPDATE fixed_asset SET
@@ -326,16 +416,49 @@ function markDeficitAssetsDisposed(params: {
     INSERT INTO fixed_asset_change
       (id, account_set_id, asset_no, change_date, change_item, old_value, new_value, amount,
        remark, operator, change_kind, year, period)
-    VALUES (?, ?, ?, ?, '盘亏处置', ?, 0, ?, ?, ?, 'dispose', ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  // P1-21：部分数量盘亏按比例核减卡片（与盘盈对称），只有整卡缺失才报废
+  const updPartial = db.prepare(`
+    UPDATE fixed_asset SET
+      qty = ?, original_value = ?, accum_depr = ?, impairment_amount = ?,
+      salvage_value = ?, net_value = ?, updated_at = datetime('now')
+    WHERE id = ?
   `)
 
   for (const it of items) {
-    if (it.scrap_date) continue // 已处置的不重复处理
-    updCard.run(it.status_code || '01', inventoryDate, '盘亏', it.asset_id)
+    if (it.scrap_date) continue // 已处置的不重复处理（完成前已校验，这里兜底）
+    const reason = it.actual_status === 'damaged' ? '损毁' : '盘亏'
+    const ratio = deficitRatio(it)
+    if (ratio >= 1) {
+      updCard.run(it.status_code || '01', inventoryDate, reason, it.asset_id)
+      insChange.run(
+        uuidv4(), accountSetId, it.asset_no, inventoryDate, `${reason}处置`,
+        Number(it.original_value || 0), 0, Number(it.net_value || 0),
+        `固定资产${reason}`, operatorName, 'dispose', year, period
+      )
+      continue
+    }
+    const oldOriginal = Number(it.original_value || 0)
+    const oldAccum = Number(it.accum_depr || 0)
+    const oldImpairment = Number(it.impairment_amount || 0)
+    const reduceOriginal = round2(oldOriginal * ratio)
+    const reduceAccum = round2(oldAccum * ratio)
+    const reduceImpairment = round2(oldImpairment * ratio)
+    const newOriginal = round2(oldOriginal - reduceOriginal)
+    const newAccum = round2(oldAccum - reduceAccum)
+    const newImpairment = round2(oldImpairment - reduceImpairment)
+    const salvageRate = normalizeSalvageRate(it.salvage_rate) ?? 0
+    const newQty = Number(it.actual_qty ?? 0)
+    updPartial.run(
+      newQty, newOriginal, newAccum, newImpairment,
+      round2(newOriginal * salvageRate), round2(newOriginal - newAccum - newImpairment),
+      it.asset_id
+    )
     insChange.run(
-      uuidv4(), accountSetId, it.asset_no, inventoryDate,
-      Number(it.original_value || 0), Number(it.net_value || 0),
-      '固定资产盘亏', operatorName, year, period
+      uuidv4(), accountSetId, it.asset_no, inventoryDate, `${reason}核减`,
+      oldOriginal, newOriginal, -reduceOriginal,
+      `固定资产${reason}（数量 ${Number(it.book_qty)} → ${newQty}）`, operatorName, 'inventory_deficit', year, period
     )
   }
 }
@@ -384,17 +507,19 @@ function adjustSurplusAssets(params: {
     const addValue = Math.round((oldOriginal / bookQty) * diffQty * 100) / 100
     const newOriginal = Math.round((oldOriginal + addValue) * 100) / 100
     const newQty = Number(it.qty || bookQty) + diffQty
-    const newSalvage = Math.round(newOriginal * Number(it.salvage_rate || 0) * 100) / 100
+    // P0-3：残值率经归一化再用，并把归一后的率回写（卡片残留百分数口径时残值会被放大 100 倍）
+    const salvageRate = normalizeSalvageRate(it.salvage_rate) ?? 0
+    const newSalvage = Math.round(newOriginal * salvageRate * 100) / 100
     const newNet = Math.round(
       (newOriginal - Number(it.accum_depr || 0) - Number(it.impairment_amount || 0)) * 100
     ) / 100
 
     db.prepare(`
       UPDATE fixed_asset SET
-        qty = ?, original_value = ?, salvage_value = ?, net_value = ?,
+        qty = ?, original_value = ?, salvage_rate = ?, salvage_value = ?, net_value = ?,
         updated_at = datetime('now')
       WHERE id = ?
-    `).run(newQty, newOriginal, newSalvage, newNet, it.asset_id)
+    `).run(newQty, newOriginal, salvageRate, newSalvage, newNet, it.asset_id)
 
     insChange.run(
       uuidv4(), accountSetId, it.asset_no, inventoryDate,
@@ -429,13 +554,17 @@ function generateInventoryVoucher(params: {
     WHERE i.inventory_id = ? AND i.actual_status = 'surplus'
   `).all(inventoryId) as any[]
 
+  // P0-4：盘亏明细只取仍在账的卡片——已处置的卡片再入一次「贷 1601 原值」会把固定资产科目冲成负数。
+  // 注意本函数在 markDeficitAssetsDisposed 之后调用，本次盘亏刚被置位的 scrap_date 恰好等于盘点日期，
+  // 因此用 scrap_date IS NULL OR scrap_date = 盘点日期 区分"本次核销"与"此前已处置"。
   const deficitItems = db.prepare(`
     SELECT i.*, fa.category_code, fa.dept_code, fa.user_name, fc.account_code as asset_account, fc.depr_account_code
     FROM fixed_asset_inventory_item i
     LEFT JOIN fixed_asset fa ON fa.account_set_id = i.account_set_id AND fa.asset_no = i.asset_no
     LEFT JOIN fixed_asset_category fc ON fc.account_set_id = fa.account_set_id AND fc.code = fa.category_code
-    WHERE i.inventory_id = ? AND i.actual_status = 'deficit'
-  `).all(inventoryId) as any[]
+    WHERE i.inventory_id = ? AND i.actual_status IN ('deficit', 'damaged')
+      AND (fa.scrap_date IS NULL OR fa.scrap_date = ?)
+  `).all(inventoryId, String(inventory.inventory_date || '').slice(0, 10)) as any[]
 
   if (!surplusItems.length && !deficitItems.length) {
     throw new Error('无盘盈盘亏项，无需生成凭证')
@@ -508,16 +637,24 @@ function generateInventoryVoucher(params: {
   }
 
   // 盘亏：借 盘亏对应科目（净值） + 借 累计折旧 / 贷 固定资产（原值）
+  // P1-21：按缺失数量比例核销（与盘盈对称）；净值取 原值份额 − 累折份额，保证分录借贷必平
   for (const item of deficitItems) {
-    const label = `盘亏：${item.asset_name}（${item.asset_no}）`
+    const reason = item.actual_status === 'damaged' ? '损毁' : '盘亏'
+    const label = `${reason}：${item.asset_name}（${item.asset_no}）`
     const deprAccCode = item.depr_account_code || accumAccount || '1602'
-    push(item, deficitAccCode, 'debit', item.book_net_value, label)
-    push(item, deprAccCode, 'debit', item.book_accum_depr, `盘亏冲销折旧：${item.asset_name}（${item.asset_no}）`)
-    push(item, item.asset_account || '1601', 'credit', item.book_original_value, label)
+    const ratio = deficitRatio(item)
+    const originalPart = Math.round(Number(item.book_original_value || 0) * ratio * 100) / 100
+    const accumPart = Math.round(Number(item.book_accum_depr || 0) * ratio * 100) / 100
+    const netPart = Math.round((originalPart - accumPart) * 100) / 100
+    push(item, deficitAccCode, 'debit', netPart, label)
+    push(item, deprAccCode, 'debit', accumPart, `${reason}冲销折旧：${item.asset_name}（${item.asset_no}）`)
+    push(item, item.asset_account || '1601', 'credit', originalPart, label)
   }
 
   const totalSurplusValue = surplusItems.reduce((s: number, i: any) => s + i.book_net_value, 0)
-  const totalDeficitValue = deficitItems.reduce((s: number, i: any) => s + i.book_net_value, 0)
+  const totalDeficitValue = Math.round(
+    deficitItems.reduce((s: number, i: any) => s + Number(i.book_net_value || 0) * deficitRatio(i), 0) * 100
+  ) / 100
 
   const result = insertAssetVoucher({
     db,

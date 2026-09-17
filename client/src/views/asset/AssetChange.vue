@@ -138,7 +138,7 @@
                   :precision="4"
                   :step="0.01"
                   :min="0"
-                  :max="1"
+                  :max="0.9999"
                   :controls="false"
                   style="width: 220px"
                 />
@@ -271,7 +271,7 @@
                   :precision="4"
                   :step="0.01"
                   :min="0"
-                  :max="1"
+                  :max="0.9999"
                   :controls="false"
                   style="width: 220px"
                 />

@@ -222,4 +222,68 @@ describe('固定资产盘点', () => {
     expect(inv.deficit_count).toBe(1)
     expect(inv.match_count).toBe(0)
   })
+
+  // ── 2026-09-17 综合评审 P0-4 / P1-21 / P2-15 ─────────────────────
+
+  it('P0-4：盘点创建后已处置的卡片再标记盘亏，完成盘点被拒绝，不生成第二张核销凭证', () => {
+    markAs('deficit', 0)
+    // 模拟盘点期间已在别处处置（scrap_date 置位）
+    db.prepare("UPDATE fixed_asset SET scrap_date='2026-06-20', status_code='04' WHERE asset_no='A1'").run()
+    expect(() => complete()).toThrow(/已于 2026-06-20 处置/)
+    expect(db.prepare('SELECT COUNT(*) c FROM vouchers').get()).toEqual({ c: 0 })
+    expect((db.prepare('SELECT status FROM fixed_asset_inventory WHERE id=?').get(inventoryId) as any).status).toBe('in_progress')
+  })
+
+  it('P0-4：盘点期间卡片原值发生变动（快照不一致）时要求重新盘点', () => {
+    markAs('deficit', 0)
+    db.prepare("UPDATE fixed_asset SET original_value=12000, net_value=8000 WHERE asset_no='A1'").run()
+    expect(() => complete()).toThrow(/盘点期间发生过变动/)
+  })
+
+  it('P1-21：实盘状态与数量差不匹配时不允许保存明细', () => {
+    expect(() => markAs('deficit', 1)).toThrow(/盘亏时实盘数量必须小于/)
+    expect(() => markAs('surplus', 1)).toThrow(/盘盈时实盘数量必须大于/)
+    expect(() => markAs('normal', 3)).toThrow(/不能标记为正常/)
+  })
+
+  it('P1-21：部分数量盘亏按比例核销：凭证取 1/3、卡片按比例核减而不是整卡报废', () => {
+    db.close()
+    db = createAssetTestDb()
+    insertAssetDicts(db)
+    insertAccounts(db, [['1601', '固定资产'], ['1602', '累计折旧'], ['6901', '待处理财产损溢']])
+    // 原值 3000 / qty 3 / 累折 600 / 净值 2400；残值率 0.05
+    insertAsset(db, { asset_no: 'A1', qty: 3, original_value: 3000, accum_depr: 600, net_value: 2400, salvage_rate: 0.05, salvage_value: 150 })
+    inventoryId = createInventory({ db, accountSetId: SET_ID, name: '部分盘亏', inventoryDate: '2026-06-30' })
+    markAs('deficit', 2)
+    const result = complete()
+    expect(result.voucherWarning).toBeNull()
+    const entries = db
+      .prepare('SELECT account_code, direction, amount FROM voucher_entries WHERE voucher_id=? ORDER BY seq')
+      .all(latestVoucher().id) as any[]
+    expect(entries).toEqual([
+      { account_code: '6901', direction: 'debit', amount: 800 },
+      { account_code: '1602', direction: 'debit', amount: 200 },
+      { account_code: '1601', direction: 'credit', amount: 1000 },
+    ])
+    const card = db.prepare("SELECT * FROM fixed_asset WHERE asset_no='A1'").get() as any
+    expect(card.scrap_date).toBeNull()
+    expect(card.status_code).toBe('01')
+    expect(card.qty).toBe(2)
+    expect(card.original_value).toBe(2000)
+    expect(card.accum_depr).toBe(400)
+    expect(card.net_value).toBe(1600)
+    expect(card.salvage_value).toBe(100)
+    const change = db.prepare("SELECT * FROM fixed_asset_change WHERE asset_no='A1'").get() as any
+    expect(change.change_kind).toBe('inventory_deficit')
+    expect(change.amount).toBe(-1000)
+  })
+
+  it('P2-15：「损毁」按盘亏口径整卡核销并入凭证', () => {
+    markAs('damaged', 0)
+    const result = complete()
+    expect(result.deficitCount).toBe(1)
+    expect(totalsOf(latestVoucher().id)).toEqual({ debit: 10000, credit: 10000 })
+    const card = db.prepare("SELECT scrap_reason, status_code FROM fixed_asset WHERE asset_no='A1'").get() as any
+    expect(card).toEqual({ scrap_reason: '损毁', status_code: '04' })
+  })
 })

@@ -477,7 +477,7 @@ router.post('/asset/cards', operationLog('固定资产新增', '固定资产'), 
   // AS-P0-1：残值率统一为小数口径（>1 视为百分数 ÷100）
   const normalizedSalvageRate = normalizeSalvageRate(salvage_rate)
   if (salvage_rate !== undefined && salvage_rate !== null && salvage_rate !== '' && normalizedSalvageRate === null) {
-    return res.status(400).json({ code: 400, message: '残值率必须是 0~1 的小数（如 0.05 表示 5%）' })
+    return res.status(400).json({ code: 400, message: '残值率必须是大于等于 0 且小于 1 的小数（如 0.05 表示 5%）' })
   }
 
   // 数值与方法要素校验（AS-P1-11/P2：原先 NaN 会直接落库成 NULL、方法与要素不匹配会静默漏提）

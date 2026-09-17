@@ -231,7 +231,18 @@ const completing = ref(false)
 
 const matchCount = computed(() => inventoryItems.value.filter(i => i.actual_status === 'normal').length)
 const surplusCount = computed(() => inventoryItems.value.filter(i => i.actual_status === 'surplus').length)
-const deficitCount = computed(() => inventoryItems.value.filter(i => i.actual_status === 'deficit').length)
+// 「损毁」按盘亏口径处理（后端同样并入盘亏统计与核销）
+const deficitCount = computed(() => inventoryItems.value.filter(i => i.actual_status === 'deficit' || i.actual_status === 'damaged').length)
+
+/** 实盘状态与数量差必须匹配（与后端 statusQtyMismatch 同规则），否则部分盘亏会被整卡核销 */
+function statusQtyMismatch(status: string, bookQty: number, actualQty: number): string | null {
+  const diff = actualQty - bookQty
+  if (status === 'surplus' && diff <= 0) return '标记为盘盈时实盘数量必须大于账面数量'
+  if (status === 'deficit' && diff >= 0) return '标记为盘亏时实盘数量必须小于账面数量'
+  if (status === 'normal' && diff !== 0) return '实盘数量与账面不一致时不能标记为正常'
+  if (status === 'damaged' && diff > 0) return '标记为损毁时实盘数量不能大于账面数量'
+  return null
+}
 
 async function openInventory(row: InventorySummary) {
   const res = await fixedAssetApi.getInventoryDetail(row.id)
@@ -242,6 +253,11 @@ async function openInventory(row: InventorySummary) {
 }
 
 async function handleItemChange(item: InventoryItem) {
+  const mismatch = statusQtyMismatch(item.actual_status, Number(item.book_qty || 0), Number(item.actual_qty ?? 0))
+  if (mismatch) {
+    ElMessage.warning(`${item.asset_name}：${mismatch}`)
+    return
+  }
   await fixedAssetApi.updateInventoryItem(item.id, {
     actual_qty: item.actual_qty,
     actual_status: item.actual_status,

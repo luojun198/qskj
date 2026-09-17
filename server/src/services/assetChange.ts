@@ -332,8 +332,21 @@ function applyValueChange(
       ? ctx.payload.salvage_rate
       : asset.salvage_rate || 0
   const salvageRate = normalizeSalvageRate(salvageRateRaw)
-  if (salvageRate === null) throw new Error('残值率必须是 0~1 的小数（如 0.05 表示 5%）')
+  if (salvageRate === null) throw new Error('残值率必须是大于等于 0 且小于 1 的小数（如 0.05 表示 5%）')
   const newSalvage = round2(newOriginal * salvageRate)
+
+  // P1-17：原值减少不得低于「累计折旧 + 减值准备」，否则净值为负——折旧静默停提、处置凭证必然借贷不平
+  const valueFloor = round2(Number(asset.accum_depr || 0) + Number(asset.impairment_amount || 0))
+  if (newOriginal < valueFloor) {
+    throw new Error(
+      `变动后原值 ${newOriginal.toFixed(2)} 不能低于累计折旧与减值准备之和 ${valueFloor.toFixed(2)}，请先办理处置或减少变动金额`
+    )
+  }
+  if (newSalvage > round2(newOriginal - valueFloor)) {
+    throw new Error(
+      `变动后残值 ${newSalvage.toFixed(2)} 不能高于剩余净值 ${round2(newOriginal - valueFloor).toFixed(2)}，请调低残值率`
+    )
+  }
 
   // 改良可延长使用月数
   let newUseMonths = Number(asset.use_months || 0)
@@ -676,7 +689,7 @@ function applyDeprFactorChange(ctx: ChangeContext): ApplyChangeResult {
   const salvageChange = changes.find(c => c.field === 'salvage_rate')
   if (salvageChange) {
     const normalizedRate = normalizeSalvageRate(salvageChange.newVal)
-    if (normalizedRate === null) throw new Error('残值率必须是 0~1 的小数（如 0.05 表示 5%）')
+    if (normalizedRate === null) throw new Error('残值率必须是大于等于 0 且小于 1 的小数（如 0.05 表示 5%）')
     const newSalvage = round2(Number(asset.original_value || 0) * normalizedRate)
     db.prepare('UPDATE fixed_asset SET salvage_value=?, salvage_rate=? WHERE id=?').run(newSalvage, normalizedRate, asset.id)
   }
@@ -746,17 +759,19 @@ function applySplit(ctx: ChangeContext): ApplyChangeResult {
   const remainOriginal = round2(oldOriginal - splitTotal)
   const remainAccumDepr = round2(oldAccumDepr - splitAccumDepr)
   const remainImpairment = round2(oldImpairment - splitImpairment)
-  const salvageRate = Number(asset.salvage_rate || 0)
+  // P0-3：残值率经归一化再用（卡片上若残留百分数口径，父 / 子卡残值会被放大 100 倍并静默停提），归一后的率一并回写
+  const salvageRate = normalizeSalvageRate(asset.salvage_rate) ?? 0
 
   db.prepare(
     `UPDATE fixed_asset SET
        original_value = ?, accum_depr = ?, impairment_amount = ?,
-       salvage_value = ?, net_value = ?, updated_at = datetime('now')
+       salvage_rate = ?, salvage_value = ?, net_value = ?, updated_at = datetime('now')
      WHERE id = ?`
   ).run(
     remainOriginal,
     remainAccumDepr,
     remainImpairment,
+    salvageRate,
     round2(remainOriginal * salvageRate),
     calcNetValue(remainOriginal, remainAccumDepr, remainImpairment),
     asset.id
@@ -918,6 +933,12 @@ export function revokeAssetChange(params: {
   if (kind === 'legacy' || !kind) {
     throw new Error('历史导入的变动记录不支持撤销')
   }
+  if (kind === 'inventory_deficit') {
+    throw new Error('盘亏核减记录由盘点生成，不支持在此撤销')
+  }
+  // P2-16：减值准备一经计提不得转回；撤销只允许作为"录入更正"——
+  // 凭证已记账（下方统一拦）或该期间之后已计提折旧（下方统一拦）都不能撤，
+  // 此外还要求该变动仍是资产最近一次变动（下方逆序校验）。这里不再额外放开。
 
   const asset = db
     .prepare('SELECT * FROM fixed_asset WHERE account_set_id=? AND asset_no=?')

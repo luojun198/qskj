@@ -171,7 +171,7 @@
             </el-col>
             <el-col :span="8">
               <el-form-item label="残值率">
-                <el-input-number v-model="form.salvage_rate" :precision="4" :step="0.01" :min="0" :max="1" style="width:100%" @change="calcSalvage" />
+                <el-input-number v-model="form.salvage_rate" :precision="4" :step="0.01" :min="0" :max="0.9999" style="width:100%" @change="calcSalvage" />
                 <span class="tip-text">小数口径，0.05 表示 5%</span>
               </el-form-item>
             </el-col>

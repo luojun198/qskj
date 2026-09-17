@@ -143,7 +143,7 @@ export function buildAssetCardUpdate(
       : normalizeSalvageRate(current.salvage_rate ?? 0)
   const salvageRate = rawRate ?? 0
   if (body.salvage_rate !== undefined && body.salvage_rate !== '' && rawRate === null) {
-    throw new Error('残值率必须是 0~1 的小数（如 0.05 表示 5%）')
+    throw new Error('残值率必须是大于等于 0 且小于 1 的小数（如 0.05 表示 5%）')
   }
 
   // AS-P1-7：未显式给残值且本次未改原值/残值率时，保留现有残值，

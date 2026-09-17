@@ -51,13 +51,16 @@ export const ASSET_PARAM_DEFAULTS: Record<string, string> = {
  * 历史上卡片页/类别字典按百分数（5 表示 5%）录入并原样写库，
  * 而消费端（原值变动重算残值等）按小数乘——直接产生残值=原值×5 的坏数据。
  * 所有写入入口统一经此归一：>1 视为百分数 ÷100；非法输入返回 null。
+ * P2-14：归一后 >= 1（100%）同样返回 null——残值等于原值时可折旧额为 0，
+ * 资产会从折旧预览里整行消失且无任何提示；用户输入 100（本意 100%）÷100 后也落同一陷阱。
  */
 export function normalizeSalvageRate(raw: unknown): number | null {
   if (raw === undefined || raw === null || raw === '') return null
   const n = Number(raw)
   if (!Number.isFinite(n)) return null
   if (n < 0) return null
-  return n > 1 ? Math.round((n / 100) * 1e6) / 1e6 : n
+  const normalized = n > 1 ? Math.round((n / 100) * 1e6) / 1e6 : n
+  return normalized >= 1 ? null : normalized
 }
 
 /** 读取单个资产参数；未配置时返回 ASSET_PARAM_DEFAULTS 中的默认值 */

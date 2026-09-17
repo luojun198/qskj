@@ -69,7 +69,7 @@
                   </div>
                 </div>
               </template>
-              <el-input-number v-model="form.salvage_rate" :precision="4" :step="0.01" :min="0" :max="1" style="width:100%" />
+              <el-input-number v-model="form.salvage_rate" :precision="4" :step="0.01" :min="0" :max="0.9999" style="width:100%" />
             </el-tooltip>
           </el-form-item>
           <el-form-item label="资产科目">

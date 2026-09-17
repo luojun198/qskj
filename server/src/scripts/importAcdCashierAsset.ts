@@ -7,6 +7,7 @@
  */
 import { getDb } from '../db/index.js'
 import { v4 as uuidv4 } from 'uuid'
+import { normalizeSalvageRate } from '../services/assetVoucherBuilder.js'
 import type { ImportStats, ParsedTables, AcdRow } from './importAcdToCurrentAccountSet.js'
 
 // ---- 取值辅助 ----
@@ -219,7 +220,7 @@ export function importFixedAssetTables(
     for (const row of tables.fixedAssetCategories) {
       const code = s(row[0])
       if (!code) continue
-      if (!dryRun) ins.run(uuidv4(), accountSetId, code, s(row[1]), num(row[2]), s(row[3]))
+      if (!dryRun) ins.run(uuidv4(), accountSetId, code, s(row[1]), normalizeSalvageRate(num(row[2])) ?? 0, s(row[3]))
       stats.fixedAsset.categories++
     }
     stats.importedTables.push('zc_sblb.txt')
@@ -304,7 +305,8 @@ export function importFixedAssetTables(
           sydw: s(row[4]),
           gzrq: normDate(row[5]),
           yz: num(row[6]),
-          czl: num(row[7]),
+          // P0-3：ACD 残值率可能为百分数口径，统一归一为 0~1 小数
+          czl: normalizeSalvageRate(num(row[7])) ?? 0,
           yzcz: num(row[8]),
           syrq: normDate(row[9]),
           zjff: s(row[10]),

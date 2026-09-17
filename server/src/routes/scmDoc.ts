@@ -1833,7 +1833,8 @@ router.post('/scm/docs/:id/gen-assets', operationLog('采购资产生成', '供�
     db.prepare(`INSERT INTO fixed_asset (id,account_set_id,asset_no,asset_name,category_code,status_code,original_value,salvage_rate,salvage_value,depr_method,use_months,accum_depr,depr_months_done,net_value,qty,unit,acquire_date,start_depr_date,remark)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,0,0,?,?,?,?,?,?)`).run(
       assetId, aid, assetNo, item?.name || l.item_code, item?.category_code || null, '01',
-      originalValue, 5, Math.round(originalValue * 0.05 * 100) / 100,
+      // P0-3：残值率统一小数口径（此前写 5 = 500%，与残值金额 5% 自相矛盾）
+      originalValue, 0.05, Math.round(originalValue * 0.05 * 100) / 100,
       item?.use_months ? '1' : null, item?.use_months || 60,
       originalValue, 1, item?.unit || '个', doc.doc_date, doc.doc_date,
       `供应链采购入库${doc.doc_no}`

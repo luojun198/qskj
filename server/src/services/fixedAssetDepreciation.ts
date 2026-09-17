@@ -159,7 +159,7 @@ export function previewDepreciation(params: {
         SELECT 1 FROM fixed_asset_change ch
          WHERE ch.account_set_id = fa.account_set_id
            AND ch.asset_no = fa.asset_no
-           AND ch.change_kind IN ('original_value', 'depr_factor', 'impairment', 'improvement', 'split')
+           AND ch.change_kind IN ('original_value', 'depr_factor', 'impairment', 'improvement', 'split', 'inventory_deficit')
       ) AS rebased
     FROM fixed_asset fa
     LEFT JOIN fixed_asset_purpose  fp ON fp.account_set_id = fa.account_set_id AND fp.code = fa.purpose_code
