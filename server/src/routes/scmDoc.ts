@@ -8,7 +8,7 @@ import { Router, type Response } from 'express'
 import { v4 as uuidv4 } from 'uuid'
 import { getDb } from '../db/index.js'
 import { authMiddleware, AuthRequest, operationLog } from '../middleware/index.js'
-import { applyMovingAvgIn, applyMovingAvgOut, reverseDocMoves, getCostingMethod, currentUnitCost, getNegativeStockWarehouses } from '../services/scmCosting.js'
+import { applyMovingAvgIn, applyMovingAvgOut, reverseDocMoves, getCostingMethod, currentUnitCost, getNegativeStockWarehouses, applyCostAdjustment } from '../services/scmCosting.js'
 import { applyPayment, applyInvoice, reverseInvoice, reversePayment, sumGrossAmount, getPartnerLedger, getAllPartnerLedger, applyReceivableFromShipment, applyPayableFromReceipt, applyReturnAdjustment, applyOutsourceFeePayable, getOpenItems, getPaymentSources, verifyArAp, cancelVerify, listVerifies, getDocVerifiedInfo, getArApAging, getDueReminder, getPartnerCredit, getPartnerOpenAr, getPartnerBalanceSummary } from '../services/scmArAp.js'
 import { assertAccountIdsInScope, type AccountScopeContext } from '../services/accountAuthorization.js'
 import { assertGlPeriodOpen } from '../services/voucherMutationGuard.js'
@@ -46,6 +46,7 @@ import { executeBatchAtomically, normalizeBatchIds, validateBatchPushDocuments, 
 import { applyAuditDefaultWarehouses, inspectAuditDefaultWarehouses } from '../services/scmAuditDefaultWarehouse.js'
 import { normalizePaging } from '../utils/paging.js'
 import { docExchangeRate, getScmBaseCurrency, isScmBaseCurrency, normalizeScmCurrency, resolveScmExchangeRate, toBase } from '../services/scmCurrency.js'
+import { bomComponents, pickActiveBom } from '../services/scmBom.js'
 import {
   validateFinishKitting,
   PHYSICAL_CHILD_DOC_TYPES,
@@ -192,6 +193,7 @@ function seedDocTypes(db: ReturnType<typeof getDb>, accountSetId: string) {
     { code: 'PS', name: '不良品入库',   dir: 'in',  stock: 1, ar_ap: 0, cat: 'production' },
     { code: 'PB', name: '补料单',       dir: 'out', stock: 1, ar_ap: 0, cat: 'production' },
     { code: 'PJ', name: '退料单',       dir: 'in',  stock: 1, ar_ap: 0, cat: 'production' },
+    { code: 'CA', name: '结案结转',     dir: 'in',  stock: 1, ar_ap: 0, cat: 'production' },   // P2-17：强制关单时把在制余额结转到已完工成品
     { code: 'MRP',name: 'MRP计算单',    dir: 'none', stock: 0, ar_ap: 0, cat: 'production' },
     // outsourcing
     { code: 'WO', name: '委外发货',     dir: 'out', stock: 1, ar_ap: 0, cat: 'outsource' },
@@ -1845,6 +1847,15 @@ export const unauditDocHandler = (req: AuthRequest, res: Response) => {
       }
       syncPlanScrapQty(db, aid, doc.plan_id)
     }
+    // 结案结转(CA) 反审核：回退成品已吸收的人工/制费（库存金额已由 reverseDocMoves 回退）
+    if (doc.doc_type === 'CA' && doc.plan_id) {
+      const caLines = db.prepare('SELECT item_code, COALESCE(SUM(labor_cost),0) lc, COALESCE(SUM(overhead_cost),0) oc FROM scm_doc_line WHERE doc_id=? GROUP BY item_code').all(doc.id) as any[]
+      const findProd = db.prepare('SELECT id FROM scm_production_plan_product WHERE plan_id=? AND item_code=? ORDER BY seq LIMIT 1')
+      for (const cl of caLines) {
+        const prod = findProd.get(doc.plan_id, cl.item_code) as any
+        if (prod) db.prepare('UPDATE scm_production_plan_product SET labor_absorbed=MAX(0,ROUND(labor_absorbed-?,2)), overhead_absorbed=MAX(0,ROUND(overhead_absorbed-?,2)) WHERE id=?').run(Number(cl.lc) || 0, Number(cl.oc) || 0, prod.id)
+      }
+    }
     // 完工入库(PF)/委外入库(WI) 反审核：按成品逐行回退完工数（回退到对应成品行），并同步头汇总
     if ((doc.doc_type === 'PF' || doc.doc_type === 'WI') && doc.plan_id) {
       const pfLines = db.prepare('SELECT item_code, COALESCE(SUM(qty),0) q, COALESCE(SUM(labor_cost),0) lc, COALESCE(SUM(overhead_cost),0) oc FROM scm_doc_line WHERE doc_id=? GROUP BY item_code').all(doc.id) as any[]
@@ -2153,7 +2164,7 @@ router.post('/scm/docs/:id/gen-downstream', operationLog('MRP/缺料单生成下
     const productsMeta = groupLines.map(line => {
       const bom = line.bom_id
         ? { id: line.bom_id }
-        : db.prepare("SELECT id FROM scm_bom WHERE account_set_id=? AND item_code=? AND status='active' ORDER BY is_default DESC,code LIMIT 1").get(aid, line.item_code) as any
+        : pickActiveBom(db, aid, line.item_code)   // C-1：按生效期选版
       return { line, item_code: line.item_code, plan_qty: Number(line.remain) || 0, bom_id: bom?.id || null }
     })
     const totalQty = r6(productsMeta.reduce((s, p) => s + p.plan_qty, 0))
@@ -2252,7 +2263,7 @@ router.post('/scm/docs/:id/gen-downstream', operationLog('MRP/缺料单生成下
         const fpWh = line.warehouse_code || null               // 成品入库仓（缺料行仓库兜底）
         const bomRow = line.bom_id
           ? { id: line.bom_id }
-          : db.prepare("SELECT id FROM scm_bom WHERE account_set_id=? AND item_code=? AND status='active' ORDER BY is_default DESC,code LIMIT 1").get(aid, line.item_code) as any
+          : pickActiveBom(db, aid, line.item_code)   // C-1：按生效期选版
         const bomId = bomRow?.id || null
         const bomLines = bomId
           ? db.prepare("SELECT item_code, qty, unit, scrap_rate, remark FROM scm_bom_line WHERE bom_id=? AND line_type='component' ORDER BY seq").all(bomId) as any[]
@@ -3068,8 +3079,12 @@ export function getPlanCostSummary(db: ReturnType<typeof getDb>, aid: string, pl
   const returned = sumMove("AND d.doc_type='PJ' AND m.direction='in'")
   // 不良品(PS) 与完工(PF/WI) 同样是把料从在制转出，一并计入「已结转」
   const finished = sumMove("AND d.doc_type IN ('PF','WI','PS') AND m.direction='in'")
+  // P2-17：结案结转单（CA）把料在制余额记到了成品成本上，视同已结转（人工/制费部分已累加到 labor/overhead_absorbed）
+  const closeout = db.prepare(`SELECT COALESCE(SUM(l.amount - COALESCE(l.labor_cost,0) - COALESCE(l.overhead_cost,0)),0) amt
+    FROM scm_doc_line l JOIN scm_doc d ON d.id=l.doc_id WHERE d.account_set_id=? AND d.plan_id=? AND d.doc_type='CA' AND d.status='audited'`).get(aid, planId) as any
+  const closeoutMat = round2(Number(closeout?.amt) || 0)
   const issuedCost = round2(issued.amt - returned.amt)
-  const finishedCost = round2(finished.amt)
+  const finishedCost = round2(finished.amt + closeoutMat)
   const issueUnitCost = getMaterialIssueUnitCost(db, aid, planId)
   // 各成品：已完工料消耗 = 已完工数 × 每件料成本（BOM 上卷）
   const products = db.prepare('SELECT id, item_code, plan_qty, finished_qty, COALESCE(scrap_qty,0) AS scrap_qty, labor_absorbed, overhead_absorbed FROM scm_production_plan_product WHERE plan_id=? AND account_set_id=? ORDER BY seq').all(planId, aid) as any[]
@@ -3091,7 +3106,7 @@ export function getPlanCostSummary(db: ReturnType<typeof getDb>, aid: string, pl
   })
   if (!totalPlanQty) totalPlanQty = Number(planQtyLegacy) || 0
   const unitCost = totalPlanQty > 0 ? round2(issuedCost / totalPlanQty) : 0
-  const wip = round2(issuedCost - consumedCost)
+  const wip = round2(issuedCost - consumedCost - closeoutMat)
   // 报工人工/制费合计（工单成本统计，独立于成品库存单价）
   const laborOh = getPlanLaborOverhead(db, aid, planId)
   let laborTotal = 0, overheadTotal = 0
@@ -3203,12 +3218,74 @@ router.post('/scm/production-plans/:id/close', operationLog('工单关闭', '供
   if (!p) return res.status(404).json({ code: 404, message: '工单不存在' })
   if (p.status === 'closed') return res.json({ code: 0, data: { ok: true } })
   const cost = getPlanCostSummary(db, aid, req.params.id, Number(p.plan_qty) || 0)
-  if (Math.abs(cost.wip) > 0.01 && req.body?.force !== true) {
-    return res.status(400).json({ code: 409, message: `工单仍有在制余额 ${cost.wip}，请先做末批完工入库结清，或确认强制关闭`, data: { wip: cost.wip } })
+  const residual = round2(cost.wip + cost.laborWip)
+  if (Math.abs(residual) > 0.01 && req.body?.force !== true) {
+    return res.status(400).json({ code: 409, message: `工单仍有在制余额 ${cost.wip}（人工/制费 ${cost.laborWip}），请先做末批完工入库结清，或确认强制关闭（在制余额将结转到已完工成品成本）`, data: { wip: cost.wip, labor_wip: cost.laborWip } })
   }
-  db.prepare("UPDATE scm_production_plan SET status='closed' WHERE id=? AND account_set_id=?").run(req.params.id, aid)
-  res.json({ code: 0, data: { ok: true, wip: cost.wip } })
+  // P2-17：强制关闭时把在制余额（料 + 人工/制费）一次性结转到已完工成品，生成「结案结转」单（CA，已审核），
+  // 库存按金额调整、工单已吸收人工/制费补齐，在制归零；凭证由 CA 单按 借存货/贷生产成本+薪酬+制费 生成
+  let closeoutDoc: { id: string; doc_no: string } | null = null
+  try {
+    db.transaction(() => {
+      if (Math.abs(residual) > 0.01) closeoutDoc = createCloseoutDoc(db, aid, req, p, cost)
+      db.prepare("UPDATE scm_production_plan SET status='closed' WHERE id=? AND account_set_id=?").run(req.params.id, aid)
+    })()
+  } catch (e: any) {
+    return res.status(400).json({ code: 400, message: e?.message || '关闭失败' })
+  }
+  res.json({ code: 0, data: { ok: true, wip: cost.wip, labor_wip: cost.laborWip, closeout_doc: closeoutDoc } })
 })
+
+/**
+ * 结案结转单（CA）：把工单在制余额分摊到已完工（含报废按 0）成品的库存成本上。
+ *  - 分摊权重 = 各成品已完工数；无完工数则按计划数
+ *  - 料余额 → 行 amount 的料部分；人工/制费余额 → 行 labor_cost / overhead_cost，并累加成品 labor_absorbed / overhead_absorbed
+ *  - 库存：applyCostAdjustment（数量 0，只调金额与均价）；成品仓取成品行 fp_warehouse → 工单 fp_warehouse
+ */
+function createCloseoutDoc(db: ReturnType<typeof getDb>, aid: string, req: AuthRequest, plan: any, cost: ReturnType<typeof getPlanCostSummary>) {
+  db.prepare("INSERT OR IGNORE INTO scm_doc_type (id, account_set_id, code, name, direction, affects_stock, affects_ar_ap, category) VALUES (?,?,'CA','结案结转','in',1,0,'production')").run(uuidv4(), aid)
+  const products = db.prepare('SELECT id, item_code, plan_qty, finished_qty, fp_warehouse FROM scm_production_plan_product WHERE plan_id=? AND account_set_id=? ORDER BY seq').all(plan.id, aid) as any[]
+  if (!products.length) throw new Error('工单无成品，无法结转在制余额')
+  const weightOf = (p: any) => Number(p.finished_qty) || 0
+  let totalW = products.reduce((s, p) => s + weightOf(p), 0)
+  const useFinished = totalW > 0
+  if (!useFinished) totalW = products.reduce((s, p) => s + (Number(p.plan_qty) || 0), 0)
+  if (!(totalW > 0)) throw new Error('工单无完工数也无计划数，无法结转在制余额')
+  const matWip = round2(cost.wip)
+  const laborWip = round2(cost.laborTotal - cost.laborAbsorbed)
+  const ohWip = round2(cost.overheadTotal - cost.overheadAbsorbed)
+  const today = localToday()
+  const docId = uuidv4()
+  const docNo = withDocNoRetry(db, () => {
+    const no = nextDocNo(db, aid, 'CA', today)
+    db.prepare(`INSERT INTO scm_doc (id,account_set_id,doc_type,doc_no,doc_date,warehouse_code,operator,maker,status,plan_id,total_qty,total_amount,remark,auditor,audited_at,field_values)
+      VALUES (?,?,'CA',?,?,?,?,?,'audited',?,0,?,?,?,datetime('now'),'{}')`).run(
+      docId, aid, no, today, plan.fp_warehouse ?? null, userName(req), userName(req), plan.id, round2(matWip + laborWip + ohWip),
+      `工单 ${plan.code} 强制关闭：在制余额结转（料 ${matWip} / 人工 ${laborWip} / 制费 ${ohWip}）`, userName(req))
+    return no
+  })
+  const ins = db.prepare(`INSERT INTO scm_doc_line (id,account_set_id,doc_id,seq,item_code,warehouse_code,qty,price,amount,unit_cost,labor_cost,overhead_cost,remark,field_values)
+    VALUES (?,?,?,?,?,?,0,0,?,0,?,?,?,'{}')`)
+  let seq = 0
+  let am = 0, al = 0, ao = 0
+  products.forEach((p, i) => {
+    const isLast = i === products.length - 1
+    const w = (useFinished ? weightOf(p) : Number(p.plan_qty) || 0) / totalW
+    const m = isLast ? round2(matWip - am) : round2(matWip * w)
+    const l = isLast ? round2(laborWip - al) : round2(laborWip * w)
+    const o = isLast ? round2(ohWip - ao) : round2(ohWip * w)
+    am = round2(am + m); al = round2(al + l); ao = round2(ao + o)
+    const total = round2(m + l + o)
+    if (!total) return
+    const wh = p.fp_warehouse || plan.fp_warehouse
+    if (!wh) throw new Error(`成品 ${p.item_code} 未指定成品仓，无法结转在制余额`)
+    seq++
+    ins.run(uuidv4(), aid, docId, seq, p.item_code, wh, total, l, o, `在制结转（料 ${m} / 人工 ${l} / 制费 ${o}）`)
+    applyCostAdjustment(db, aid, wh, p.item_code, total, { type: 'CA', no: docNo, seq, date: today })
+    db.prepare('UPDATE scm_production_plan_product SET labor_absorbed=ROUND(labor_absorbed+?,2), overhead_absorbed=ROUND(overhead_absorbed+?,2) WHERE id=?').run(l, o, p.id)
+  })
+  return { id: docId, doc_no: docNo }
+}
 
 // 重开（反关闭）：closed → 无完工且无关联单据 → 'draft'（可编辑）；否则 → 'released'（可继续领料/完工，成品用料仍锁定）。
 // 面向「误关闭 / 空工单」场景，避免已关闭工单被永久卡死不能编辑/删除。
@@ -3560,13 +3637,17 @@ router.get('/scm/boms/:id/explode', (req: AuthRequest, res) => {
   const db = getDb(); const qty = Number(req.query.qty) || 1
   // P2-15：账套归属校验
   if (!db.prepare('SELECT id FROM scm_bom WHERE id=? AND account_set_id=?').get(req.params.id, asid(req))) return res.status(404).json({ code: 404, message: 'BOM不存在' })
-  // 仅炸主件(component)为物料需求；副产品/联产品(by_product/co_product)是产出，不计入领料需求
-  const lines = db.prepare("SELECT l.*, i.name AS item_name, i.spec, i.unit FROM scm_bom_line l LEFT JOIN scm_item i ON i.account_set_id=l.account_set_id AND i.code=l.item_code WHERE l.bom_id=? AND l.line_type='component' ORDER BY l.seq").all(req.params.id) as any[]
-  const exploded = lines.map(l => ({
-    item_code: l.item_code, item_name: l.item_name, spec: l.spec, unit: l.unit,
-    qty_per_unit: l.qty, total_qty: Math.round(l.qty * qty * (1 + (l.scrap_rate || 0) / 100) * 10000) / 10000,
-    scrap_rate: l.scrap_rate, remark: l.remark
-  }))
+  // 仅炸主件(component)为物料需求；替代料组折叠为主料一行（替代料随行给出，不重复计入需求）
+  const itemInfo = db.prepare('SELECT name, spec, unit FROM scm_item WHERE account_set_id=? AND code=?')
+  const exploded = bomComponents(db, String(req.params.id)).map(l => {
+    const i = itemInfo.get(asid(req), l.item_code) as any
+    return {
+      item_code: l.item_code, item_name: i?.name || '', spec: i?.spec || '', unit: l.unit || i?.unit || '',
+      qty_per_unit: l.qty, total_qty: Math.round(l.qty * qty * (1 + (l.scrap_rate || 0) / 100) * 10000) / 10000,
+      scrap_rate: l.scrap_rate, remark: l.remark, sub_group: l.sub_group || null,
+      substitutes: l.substitutes.map(s => ({ ...s, item_name: (itemInfo.get(asid(req), s.item_code) as any)?.name || '' })),
+    }
+  })
   res.json({ code: 0, data: { bom_id: req.params.id, qty, lines: exploded } })
 })
 
@@ -3594,15 +3675,13 @@ router.get('/scm/boms/:id/tree', (req: AuthRequest, res) => {
   const bomLineCache = new Map<string, any[] | null>()
   const getBomLines = (code: string) => {
     if (bomLineCache.has(code)) return bomLineCache.get(code)!
-    const b = db.prepare(
-      "SELECT id FROM scm_bom WHERE account_set_id=? AND item_code=? AND status='active' ORDER BY code LIMIT 1"
-    ).get(aid, code) as any
+    const b = pickActiveBom(db, aid, code)   // C-1：下级按生效期选版
     if (!b) { bomLineCache.set(code, null); return null }
-    const ls = db.prepare("SELECT item_code, qty, unit, scrap_rate FROM scm_bom_line WHERE bom_id=? AND line_type='component' ORDER BY seq").all(b.id) as any[]
+    const ls = bomComponents(db, b.id) as any[]
     bomLineCache.set(code, ls); return ls
   }
   // 根用本次请求的 BOM 明细（避免同成品存在多份 active BOM 时取错）；仅主件参与用量/成本上卷
-  const rootLines = db.prepare("SELECT item_code, qty, unit, scrap_rate FROM scm_bom_line WHERE bom_id=? AND line_type='component' ORDER BY seq").all(bom.id) as any[]
+  const rootLines = bomComponents(db, bom.id) as any[]
   bomLineCache.set(bom.item_code, rootLines)
 
   const leafKinds = new Set<string>()
@@ -3771,7 +3850,8 @@ export const genVoucherHandler = (req: AuthRequest, res: Response) => {
     }
     // 发票行允许「只有金额、没有数量」（如运费行），不能按数量过滤掉
     const isInvoiceDoc = doc.doc_type === 'RP' || doc.doc_type === 'RS'
-    if (!isInvoiceDoc && (!l.qty || l.qty <= 0)) continue
+    // 结案结转单(CA) 行数量为 0、只有金额（P2-17），同样不能按数量过滤
+    if (!isInvoiceDoc && doc.doc_type !== 'CA' && (!l.qty || l.qty <= 0)) continue
     if (isInvoiceDoc && !(Number(l.amount) || 0) && !(Number(l.tax_amount) || 0)) continue
     const item = getItem(db, aid, l.item_code)
     const invCode = item?.inv_account || '1405'                          // 存货科目（默认 库存商品）

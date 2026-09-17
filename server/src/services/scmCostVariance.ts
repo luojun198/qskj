@@ -10,6 +10,7 @@
  * - 差异 = 实际 − 标准×完工数（正=超支，负=节约），并给差异率。
  */
 import type Database from 'better-sqlite3'
+import { bomComponents, pickActiveBom } from './scmBom.js'
 
 const r2 = (n: number) => Math.round((Number(n) || 0) * 100) / 100
 
@@ -55,13 +56,9 @@ function calcStdCost(db: Database.Database, aid: string, code: string, cache: Ma
   `).get(aid, code) as any
   const labor = r2(Number(lo?.labor) || 0)
   const overhead = r2(Number(lo?.overhead) || 0)
-  // BOM 主件（启用默认版）
-  const comps = db.prepare(`
-    SELECT l.item_code AS comp, l.qty AS qty, COALESCE(l.scrap_rate,0) AS scrap
-    FROM scm_bom b JOIN scm_bom_line l ON l.bom_id=b.id
-    WHERE b.account_set_id=? AND b.item_code=? AND b.status='active' AND l.line_type='component'
-      AND b.id=(SELECT id FROM scm_bom b2 WHERE b2.account_set_id=b.account_set_id AND b2.item_code=b.item_code AND b2.status='active' ORDER BY b2.is_default DESC, b2.code LIMIT 1)
-  `).all(aid, code) as any[]
+  // BOM 主件（C-1：按当日生效版本；替代料组按主料计标准成本）
+  const bomHead = pickActiveBom(db, aid, code)
+  const comps = bomHead ? bomComponents(db, bomHead.id).map(l => ({ comp: l.item_code, qty: l.qty, scrap: l.scrap_rate })) : []
   let material = 0
   let clean = true
   if (comps.length) {

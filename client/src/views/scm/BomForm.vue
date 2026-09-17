@@ -92,17 +92,27 @@
             <div v-else class="editable-cell">{{ row.scrap_rate }}</div>
           </template>
         </el-table-column>
+        <!-- 阶段 C 决策：副产品/联产品的产出与成本冲减尚未实现，UI 收敛为「主件」，历史数据里的其它类型只读显示 -->
         <el-table-column label="行类型" width="110">
           <template #default="{ row }">
             <el-select v-model="row.line_type" size="small" style="width:100%">
               <el-option label="主件" value="component" />
-              <el-option label="副产品" value="by_product" />
-              <el-option label="联产品" value="co_product" />
+              <el-option v-if="row.line_type === 'by_product'" label="副产品（未启用）" value="by_product" disabled />
+              <el-option v-if="row.line_type === 'co_product'" label="联产品（未启用）" value="co_product" disabled />
             </el-select>
           </template>
         </el-table-column>
         <el-table-column label="替代料组" width="100">
+          <template #header>
+            替代料组
+            <el-tooltip content="同组内优先级最小的为主料（承载用量），其余为替代料；MRP/领料建议按主料计算，主料缺料时提示替代料在库量，领料可直接领替代料" placement="top">
+              <el-icon style="vertical-align:middle"><QuestionFilled /></el-icon>
+            </el-tooltip>
+          </template>
           <template #default="{ row }"><el-input v-model="row.sub_group" size="small" placeholder="同组可替代" /></template>
+        </el-table-column>
+        <el-table-column label="替代优先级" width="90">
+          <template #default="{ row }"><el-input-number v-model="row.sub_priority" size="small" :min="0" :precision="0" :controls="false" :disabled="!row.sub_group" style="width:100%" placeholder="1=主料" /></template>
         </el-table-column>
         <el-table-column label="备注" min-width="140" prop="remark">
           <template #default="{ row, $index }">
@@ -127,7 +137,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { ArrowLeft, Grid } from '@element-plus/icons-vue'
+import { ArrowLeft, Grid, QuestionFilled } from '@element-plus/icons-vue'
 import { scmApi } from '@/api/scm'
 import ItemPicker from '@/components/scm/ItemPicker.vue'
 import ItemBatchPicker from '@/components/scm/ItemBatchPicker.vue'
@@ -153,7 +163,7 @@ const effectiveRange = computed({
 })
 
 // 组件明细表末尾自动保留空行（免点「添加组件物料」；空行保存已过滤）
-useAutoBlankRow(() => form.value.lines, () => ({ item_code: '', item_name: '', spec: '', qty: 1, unit: '', scrap_rate: 0, remark: '', line_type: 'component', sub_group: '' }))
+useAutoBlankRow(() => form.value.lines, () => ({ item_code: '', item_name: '', spec: '', qty: 1, unit: '', scrap_rate: 0, remark: '', line_type: 'component', sub_group: '', sub_priority: 0 }))
 
 const editingCell = ref<{rowIndex: number, field: string} | null>(null)
 const vFocus = {
@@ -195,11 +205,11 @@ onMounted(async () => {
         effective_date: d.effective_date || null,
         expire_date: d.expire_date || null,
         is_default: d.is_default === 0 ? 0 : 1,
-        lines: (d.lines || []).map((l: any) => ({ ...l, line_type: l.line_type || 'component', sub_group: l.sub_group || '' })),
+        lines: (d.lines || []).map((l: any) => ({ ...l, line_type: l.line_type || 'component', sub_group: l.sub_group || '', sub_priority: Number(l.sub_priority) || 0 })),
       }
     }
   } else {
-    form.value.lines = [{ item_code: '', item_name: '', spec: '', qty: 1, unit: '', scrap_rate: 0, remark: '', line_type: 'component', sub_group: '' }]
+    form.value.lines = [{ item_code: '', item_name: '', spec: '', qty: 1, unit: '', scrap_rate: 0, remark: '', line_type: 'component', sub_group: '', sub_priority: 0 }]
     try {
       const r = await scmApi.getBomNextNo()
       if (r.code === 0) form.value.code = r.data.next_no

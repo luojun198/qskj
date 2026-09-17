@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
 import { computePushedQty } from './scmProduction.js'
+import { bomComponents, pickActiveBom } from './scmBom.js'
 
 const r6 = (n: number) => Math.round((Number(n) || 0) * 1000000) / 1000000
 
@@ -171,15 +172,12 @@ export function buildMrPushPreview(
   const bomCache = new Map<string, BomInfo | null>()
   const getBom = (code: string): BomInfo | null => {
     if (bomCache.has(code)) return bomCache.get(code)!
-    const bom = db.prepare(`SELECT id,code FROM scm_bom
-      WHERE account_set_id=? AND item_code=? AND status='active'
-      ORDER BY is_default DESC,code LIMIT 1`).get(aid, code) as any
+    const bom = pickActiveBom(db, aid, code)   // C-1：按生效期选版
     if (!bom) {
       bomCache.set(code, null)
       return null
     }
-    const components = (db.prepare(`SELECT item_code,qty,COALESCE(scrap_rate,0) AS scrap_rate
-      FROM scm_bom_line WHERE bom_id=? AND line_type='component' ORDER BY seq`).all(bom.id) as any[])
+    const components = bomComponents(db, bom.id)   // 替代料组折叠为主料
       .map(line => ({
         item_code: String(line.item_code),
         per: r6((Number(line.qty) || 0) * (1 + (Number(line.scrap_rate) || 0) / 100)),

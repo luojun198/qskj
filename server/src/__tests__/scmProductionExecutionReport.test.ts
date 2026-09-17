@@ -23,6 +23,7 @@ function createDb() {
       seq INTEGER, item_code TEXT, qty REAL, scrap_rate REAL DEFAULT 0);
     CREATE TABLE scm_item (id TEXT, account_set_id TEXT, code TEXT, name TEXT, spec TEXT, unit TEXT);
     CREATE TABLE scm_doc (id TEXT, account_set_id TEXT, doc_type TEXT, doc_no TEXT, status TEXT, plan_id TEXT);
+    CREATE TABLE scm_doc_line (id TEXT, doc_id TEXT, amount REAL, labor_cost REAL, overhead_cost REAL);
     CREATE TABLE scm_stock_move (id TEXT, account_set_id TEXT, doc_type TEXT, doc_no TEXT,
       item_code TEXT, direction TEXT, qty REAL, amount REAL);
     CREATE TABLE scm_work_report (id TEXT, account_set_id TEXT, plan_id TEXT, qty REAL DEFAULT 0,

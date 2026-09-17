@@ -1,5 +1,21 @@
 import type Database from 'better-sqlite3'
 import { getScmMaxAllowedQty, getScmOverrunPolicy } from './scmOverrunPolicy.js'
+import { bomComponents, substituteStock } from './scmBom.js'
+
+/**
+ * 工单用料的替代料映射（C-1 替代料）：替代料 → 主料。
+ * 按各成品行 BOM 的替代组折叠：同组内主料承载用量，其余为替代料；领料/补料时领用替代料按主料的需求上限计。
+ */
+export function planSubstituteMap(db: Database.Database, aid: string, planId: string): Map<string, string> {
+  const map = new Map<string, string>()
+  const boms = db.prepare('SELECT DISTINCT bom_id FROM scm_production_plan_product WHERE account_set_id=? AND plan_id=? AND bom_id IS NOT NULL').all(aid, planId) as any[]
+  for (const b of boms) {
+    for (const c of bomComponents(db, String(b.bom_id))) {
+      for (const s of c.substitutes) if (!map.has(s.item_code)) map.set(s.item_code, c.item_code)
+    }
+  }
+  return map
+}
 
 /** 6 位小数四舍五入（与 scmDoc 中同名 helper 一致） */
 export function r6(n: number): number { return Math.round(n * 1000000) / 1000000 }
@@ -79,13 +95,24 @@ export function computeIssueSuggestion(
   for (const r of draftRows) {
     issuedMap.set(r.item_code, (issuedMap.get(r.item_code) || 0) + (Number(r.issued) || 0))
   }
+  // C-1 替代料：领用替代料的数量并入主料「已领」；主料缺料时给出同组替代料在库量
+  const subMap = planSubstituteMap(db, aid, plan.id)
+  for (const [sub, primary] of subMap) {
+    const q = issuedMap.get(sub)
+    if (q) { issuedMap.set(primary, (issuedMap.get(primary) || 0) + q); issuedMap.delete(sub) }
+  }
+  const subsOf = new Map<string, Array<{ item_code: string; sub_priority: number }>>()
+  for (const [sub, primary] of subMap) { if (!subsOf.has(primary)) subsOf.set(primary, []); subsOf.get(primary)!.push({ item_code: sub, sub_priority: 0 }) }
   return needRows.map(r => {
     const need = r6(Number(r.need) || 0)
     const issued = issuedMap.get(r.item_code) || 0
     const suggest = r6(Math.max(0, need - issued))
     // 行仓库优先、计划原料仓兜底
     const warehouse_code = r.line_wh || planYl
-    return { item_code: r.item_code, item_name: r.item_name, unit: r.item_unit, bom_qty: r.bom_qty, scrap_rate: r.scrap_rate, need, issued, suggest, warehouse_code }
+    const substitutes = suggest > 0 && subsOf.has(r.item_code)
+      ? substituteStock(db, aid, { item_code: r.item_code, qty: 0, scrap_rate: 0, substitutes: subsOf.get(r.item_code)!.map(s => ({ ...s, qty: 0 })) }, warehouse_code)
+      : []
+    return { item_code: r.item_code, item_name: r.item_name, unit: r.item_unit, bom_qty: r.bom_qty, scrap_rate: r.scrap_rate, need, issued, suggest, warehouse_code, substitutes }
   })
 }
 

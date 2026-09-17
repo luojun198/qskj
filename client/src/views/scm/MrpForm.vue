@@ -116,6 +116,7 @@
         <el-table-column label="建议量" width="105" align="right"><template #default="{ row }">{{ fmt(row.qty) }}</template></el-table-column>
         <el-table-column label="来源" width="85"><template #default="{ row }">{{ sourceTypeLabel(row.source_type) }}</template></el-table-column>
         <el-table-column label="BOM/提示" min-width="150" show-overflow-tooltip><template #default="{ row }">{{ row.field_values.bom_code || row.remark || '-' }}</template></el-table-column>
+        <el-table-column label="可用替代料" min-width="160" show-overflow-tooltip><template #default="{ row }"><span v-if="row.field_values.substitutes?.length" class="adj-mark">{{ row.field_values.substitutes.map((s: any) => `${s.item_code}(库存 ${fmt(s.on_hand)})`).join('、') }}</span><span v-else>-</span></template></el-table-column>
       </el-table>
     </el-card>
   </div>

@@ -384,6 +384,7 @@ export interface MrpResultLine extends ScmDocLine {
     safety_stock: number; net_req: number; suggest_qty: number; min_order_qty: number; lead_time_days: number
     bom_id?: string | null; bom_code?: string; missing_bom?: boolean; source_refs?: string[]
     demand_multiplier?: number; fixed_extra_qty?: number; item_target_qty?: number | null; target_overridden?: boolean
+    substitutes?: Array<{ item_code: string; sub_priority: number; on_hand: number }>
   }
 }
 

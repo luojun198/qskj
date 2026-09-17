@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
 import { computeIssueSuggestion, computePushedQty } from './scmProduction.js'
+import { bomComponents, pickActiveBom, substituteStock } from './scmBom.js'
 
 export type MrpSourceKind = 'sales_order' | 'production_plan' | 'outsource_plan' | 'assembly'
 export interface MrpSourceRef { kind: MrpSourceKind; id: string }
@@ -457,13 +458,17 @@ export function calculateMrpDocument(db: Database.Database, aid: string, mrpId: 
     }
 
     const bomCache = new Map<string, BomInfo | null>()
+    // C-1：按 MRP 计算日期选生效版本；替代料组折叠为主料承载用量，替代料随行记录（供缺料时抵用提示）
+    const substituteOf = new Map<string, Array<{ item_code: string; sub_priority: number }>>()
     const getBom = (code: string): BomInfo | null => {
       if (bomCache.has(code)) return bomCache.get(code)!
-      const head = db.prepare(`SELECT id,code FROM scm_bom WHERE account_set_id=? AND item_code=? AND status='active'
-        ORDER BY is_default DESC,code LIMIT 1`).get(aid, code) as any
+      const head = pickActiveBom(db, aid, code, doc.doc_date)
       if (!head) { bomCache.set(code, null); return null }
-      const components = (db.prepare("SELECT item_code,qty,COALESCE(scrap_rate,0) scrap_rate FROM scm_bom_line WHERE bom_id=? AND line_type='component' ORDER BY seq").all(head.id) as any[])
-        .map(line => ({ item_code: String(line.item_code || ''), per: r6(Number(line.qty) * (1 + Number(line.scrap_rate)/100)) }))
+      const components = bomComponents(db, head.id)
+        .map(line => {
+          if (line.substitutes.length) substituteOf.set(String(line.item_code), line.substitutes.map(s => ({ item_code: s.item_code, sub_priority: s.sub_priority })))
+          return { item_code: String(line.item_code || ''), per: r6(Number(line.qty) * (1 + Number(line.scrap_rate)/100)) }
+        })
         .filter(line => line.item_code && line.per > 0)
       const value = { id: String(head.id), code: String(head.code || ''), components }
       bomCache.set(code, value); return value
@@ -540,6 +545,10 @@ export function calculateMrpDocument(db: Database.Database, aid: string, mrpId: 
           other_mrp_supply: mrpQty, safety_stock: safetyQty, net_req: netQty, suggest_qty: suggestQty,
           min_order_qty: Number(item.min_order_qty)||0, lead_time_days: leadDays, need_date: needDate, suggested_order_date: suggestedOrderDate,
           bom_id: bom?.id || null, bom_code: bom?.code || '', missing_bom: missingBom, source_refs: refsForItem,
+          // 替代料：主料有净需求时列出同组替代料的在库量，供计划员决定是否改用替代料（不自动抵扣，避免多处重复占用）
+          substitutes: netQty > 0 && substituteOf.has(code)
+            ? substituteStock(db, aid, { item_code: code, qty: 0, scrap_rate: 0, substitutes: (substituteOf.get(code) || []).map(s => ({ ...s, qty: 0 })) })
+            : [],
           source_contributions: [...(contributionQty.get(code) || new Map()).entries()]
             .map(([source_key, gross_qty]) => ({ source_key, gross_qty: r6(gross_qty) })),
         },

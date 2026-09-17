@@ -34,8 +34,8 @@ describe('MRP 计算单生命周期与预计算缺料单', () => {
       );
       CREATE TABLE scm_partner (id TEXT,account_set_id TEXT,code TEXT,name TEXT);
       CREATE TABLE scm_stock (account_set_id TEXT,item_code TEXT,warehouse_code TEXT,qty REAL);
-      CREATE TABLE scm_bom (id TEXT,account_set_id TEXT,item_code TEXT,code TEXT,status TEXT,is_default INTEGER);
-      CREATE TABLE scm_bom_line (id TEXT,bom_id TEXT,seq INTEGER,item_code TEXT,qty REAL,scrap_rate REAL,line_type TEXT);
+      CREATE TABLE scm_bom (version TEXT, effective_date TEXT, expire_date TEXT, id TEXT,account_set_id TEXT,item_code TEXT,code TEXT,status TEXT,is_default INTEGER);
+      CREATE TABLE scm_bom_line (unit TEXT, remark TEXT, sub_group TEXT, sub_priority INTEGER, id TEXT,bom_id TEXT,seq INTEGER,item_code TEXT,qty REAL,scrap_rate REAL,line_type TEXT);
       CREATE TABLE scm_production_plan (
         id TEXT,account_set_id TEXT,code TEXT,status TEXT,source_doc_id TEXT,plan_type TEXT,priority INTEGER,
         start_date TEXT,end_date TEXT,yl_warehouse TEXT,supplier_code TEXT
@@ -62,10 +62,10 @@ describe('MRP 计算单生命周期与预计算缺料单', () => {
     item.run(AID, '9005', '成品', '', '件', 'self', '', 0, 0, 0, 1)
     item.run(AID, '9002', '半成品', '', '件', 'self', '', 0, 0, 0, 1)
     item.run(AID, 'R1', '原料', '', '件', 'purchase', 'S1', 2, 0, 0, 3)
-    const bom = db.prepare('INSERT INTO scm_bom VALUES (?,?,?,?,?,?)')
+    const bom = db.prepare('INSERT INTO scm_bom (id,account_set_id,item_code,code,status,is_default) VALUES (?,?,?,?,?,?)')
     bom.run('B1', AID, '9005', 'BOM-9005', 'active', 1)
     bom.run('B2', AID, '9002', 'BOM-9002', 'active', 1)
-    const line = db.prepare('INSERT INTO scm_bom_line VALUES (?,?,?,?,?,?,?)')
+    const line = db.prepare('INSERT INTO scm_bom_line (id,bom_id,seq,item_code,qty,scrap_rate,line_type) VALUES (?,?,?,?,?,?,?)')
     line.run('B1-L1', 'B1', 1, '9002', 1, 0, 'component')
     line.run('B2-L1', 'B2', 1, 'R1', 3, 0, 'component')
   })

@@ -114,6 +114,15 @@ export function queryProductionExecution(
   // 各工单的已消耗合计（Σ 各成品 (完工+报废)×每件料成本）与已吸收人工制费合计
   const consumedByPlan = new Map<string, number>()
   const absorbedByPlan = new Map<string, number>()
+  // P2-17：结案结转单(CA) 的料部分视同已结转（与 getPlanCostSummary 同口径）
+  if (planIds.length) {
+    const ph = planIds.map(() => '?').join(',')
+    for (const row of db.prepare(`SELECT d.plan_id, COALESCE(SUM(l.amount - COALESCE(l.labor_cost,0) - COALESCE(l.overhead_cost,0)),0) amt
+        FROM scm_doc_line l JOIN scm_doc d ON d.id=l.doc_id
+        WHERE d.account_set_id=? AND d.plan_id IN (${ph}) AND d.doc_type='CA' AND d.status='audited' GROUP BY d.plan_id`).all(accountSetId, ...planIds) as any[]) {
+      consumedByPlan.set(row.plan_id, r2((consumedByPlan.get(row.plan_id) || 0) + (Number(row.amt) || 0)))
+    }
+  }
   for (const row of base) {
     const matUnit = r2(matUnitByProduct.get(row.product_id) || 0)
     const consumed = r2(((Number(row.finished_qty) || 0) + (Number(row.scrap_qty) || 0)) * matUnit)

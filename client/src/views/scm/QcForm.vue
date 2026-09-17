@@ -49,7 +49,8 @@
             </el-select>
           </el-form-item></el-col>
           <el-col v-else :span="12"><el-form-item label="来源单号">
-            <el-input v-model="form.source_doc_no" placeholder="采购入库单号等" />
+            <el-input v-model="form.source_doc_no" placeholder="采购入库单号等（仅作记录）" />
+            <div class="qc-type-hint">{{ form.qc_type === 'IQC' ? '来料检验' : '过程检验' }}目前为<b>质量记录</b>：不校验检验项/抽样方案，不拦截入库或工序；只有 FQC 参与完工入库校验与不良品下推。</div>
           </el-form-item></el-col>
           <el-col :span="12"><el-form-item label="备注"><el-input v-model="form.remark" placeholder="可留空" /></el-form-item></el-col>
         </el-row>
@@ -182,6 +183,7 @@ onMounted(init)
 </script>
 
 <style scoped>
+.qc-type-hint { font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.5; margin-top: 2px; }
 .qc-form-page { display: flex; flex-direction: column; height: 100%; }
 .qc-form-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 16px; border-bottom: 1px solid var(--el-border-color-lighter); }
 .qc-form-header__left { display: flex; align-items: center; gap: 8px; }

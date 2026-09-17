@@ -14,8 +14,8 @@ describe('缺料单多层 BOM 分层下推预览', () => {
       CREATE TABLE scm_item (account_set_id TEXT, code TEXT, name TEXT, spec TEXT, unit TEXT, source_type TEXT, supplier_code TEXT, purchase_price REAL);
       CREATE TABLE scm_doc (id TEXT, account_set_id TEXT, doc_type TEXT, status TEXT, source_doc_id TEXT, field_values TEXT);
       CREATE TABLE scm_doc_line (id TEXT, account_set_id TEXT, doc_id TEXT, seq INTEGER, item_code TEXT, warehouse_code TEXT, qty REAL, source_line_id TEXT, source_type TEXT, supplier_code TEXT, line_role TEXT);
-      CREATE TABLE scm_bom (id TEXT, account_set_id TEXT, item_code TEXT, code TEXT, status TEXT, is_default INTEGER);
-      CREATE TABLE scm_bom_line (id TEXT, bom_id TEXT, seq INTEGER, item_code TEXT, qty REAL, scrap_rate REAL, line_type TEXT);
+      CREATE TABLE scm_bom (version TEXT, effective_date TEXT, expire_date TEXT, id TEXT, account_set_id TEXT, item_code TEXT, code TEXT, status TEXT, is_default INTEGER);
+      CREATE TABLE scm_bom_line (unit TEXT, remark TEXT, sub_group TEXT, sub_priority INTEGER, id TEXT, bom_id TEXT, seq INTEGER, item_code TEXT, qty REAL, scrap_rate REAL, line_type TEXT);
       CREATE TABLE scm_stock (account_set_id TEXT, item_code TEXT, warehouse_code TEXT, qty REAL);
       CREATE TABLE scm_production_plan (id TEXT, account_set_id TEXT, status TEXT, source_doc_id TEXT);
       CREATE TABLE scm_production_plan_product (id TEXT, account_set_id TEXT, plan_id TEXT, item_code TEXT, plan_qty REAL, finished_qty REAL, source_line_id TEXT);
@@ -27,10 +27,10 @@ describe('缺料单多层 BOM 分层下推预览', () => {
     item.run(AID, 'R1', '原料1', '', '件', 'purchase', 'S1', 2)
     item.run(AID, 'R2', '原料2', '', '件', 'purchase', 'S1', 3)
     db.prepare('INSERT INTO scm_doc_line VALUES (?,?,?,?,?,?,?,?,?,?,?)').run('MR-L1', AID, MR, 1, '9005', '', 10, null, 'self', '', null)
-    const bom = db.prepare('INSERT INTO scm_bom VALUES (?,?,?,?,?,?)')
+    const bom = db.prepare('INSERT INTO scm_bom (id,account_set_id,item_code,code,status,is_default) VALUES (?,?,?,?,?,?)')
     bom.run('B1', AID, '9005', 'BOM-9005', 'active', 1)
     bom.run('B2', AID, '9002', 'BOM-9002', 'active', 1)
-    const line = db.prepare('INSERT INTO scm_bom_line VALUES (?,?,?,?,?,?,?)')
+    const line = db.prepare('INSERT INTO scm_bom_line (id,bom_id,seq,item_code,qty,scrap_rate,line_type) VALUES (?,?,?,?,?,?,?)')
     line.run('B1-L1', 'B1', 1, '9002', 1, 0, 'component')
     line.run('B1-L2', 'B1', 2, 'R1', 2, 0, 'component')
     line.run('B2-L1', 'B2', 1, 'R2', 3, 0, 'component')
@@ -68,7 +68,7 @@ describe('缺料单多层 BOM 分层下推预览', () => {
   })
 
   it('公共采购件先汇总后统一扣库存', () => {
-    db.prepare('INSERT INTO scm_bom_line VALUES (?,?,?,?,?,?,?)').run('B2-L2', 'B2', 2, 'R1', 1, 0, 'component')
+    db.prepare('INSERT INTO scm_bom_line (id,bom_id,seq,item_code,qty,scrap_rate,line_type) VALUES (?,?,?,?,?,?,?)').run('B2-L2', 'B2', 2, 'R1', 1, 0, 'component')
     db.prepare('INSERT INTO scm_stock VALUES (?,?,?,?)').run(AID, 'R1', 'W1', 5)
     const result = buildMrPushPreview(db, AID, MR)
     const raw = result.nodes.find(node => node.item_code === 'R1')!
@@ -84,7 +84,7 @@ describe('缺料单多层 BOM 分层下推预览', () => {
   })
 
   it('BOM 循环应显式返回并阻止后续生成', () => {
-    db.prepare('INSERT INTO scm_bom_line VALUES (?,?,?,?,?,?,?)').run('B2-CYCLE', 'B2', 9, '9005', 1, 0, 'component')
+    db.prepare('INSERT INTO scm_bom_line (id,bom_id,seq,item_code,qty,scrap_rate,line_type) VALUES (?,?,?,?,?,?,?)').run('B2-CYCLE', 'B2', 9, '9005', 1, 0, 'component')
     const result = buildMrPushPreview(db, AID, MR)
     expect(result.has_cycle).toBe(true)
     expect(result.cycles[0]).toEqual(['9005', '9002', '9005'])

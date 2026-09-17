@@ -546,6 +546,13 @@
         <el-table-column v-if="stockShown && lineColShown('realtime_stock')" column-key="realtime_stock" label="实时库存" width="150" align="right">
           <template #default="{ row }"><span class="rt-stock">{{ stockText(row) }}</span></template>
         </el-table-column>
+        <!-- C-1 替代料：工单领料时主料缺料，列出同组替代料在库量，改物料编号即可领替代料（按主料需求上限校验） -->
+        <el-table-column v-if="isPlanControlledDoc && lines.some((l: any) => l._substitutes?.length)" label="可用替代料" width="200" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span v-if="row._substitutes?.length" class="sub-hint">{{ row._substitutes.map((s: any) => `${s.item_code}(库存 ${stockNum(s.on_hand)})`).join('、') }}</span>
+            <span v-else class="text-muted">—</span>
+          </template>
+        </el-table-column>
         <el-table-column v-if="isMr" column-key="source_type" label="来源" width="110" prop="source_type">
           <template #default="{ row }">
             <template v-if="isView">{{ SOURCE_TYPES[row.source_type] || '采购' }}</template>
@@ -2679,6 +2686,7 @@ async function onPlanChange(planId: string) {
     const mappedRows = sourceRows.map((row: any) => ({
       ...newLine(), item_code: row.item_code, item_name: row.item_name || '', unit: row.unit || '',
       warehouse_code: row.warehouse_code || plan.yl_warehouse || '', qty: isReturn ? null : (Number(row.suggest) || null),
+      _substitutes: Array.isArray(row.substitutes) ? row.substitutes : [],   // C-1 替代料：主料缺料时的同组替代料在库量（不落库）
       plan_qty: Number(row.need) || 0, executed_qty: Number(row.issued) || 0,
       max_allowed_qty: isReturn ? (Number(row.issued) || 0) : (Number(row.need) || 0) * factor,
       overrun_remaining: isReturn ? (Number(row.issued) || 0) : Math.max(0, (Number(row.need) || 0) * factor - (Number(row.issued) || 0)),
@@ -3263,6 +3271,7 @@ function goCost() {
 </script>
 
 <style scoped>
+.sub-hint { color: var(--el-color-warning-dark-2); font-size: 12px; }
 .doc-form-page { display: flex; flex-direction: column; height: 100%; padding: 0; }
 .doc-form-header {
   display: flex; align-items: center; justify-content: space-between;

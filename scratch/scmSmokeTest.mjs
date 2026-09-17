@@ -436,6 +436,58 @@ async function main() {
     }
   }
 
+  // ── 阶段 C：BOM 版本/生效期、替代料、结案结转 ───────────────
+  {
+    await ensure('/api/scm/items', { code: 'FP2', name: '成品乙', unit: '套', source_type: 'self', default_warehouse_code: 'W1' })
+    await ensure('/api/scm/items', { code: 'M2', name: '替代物料', unit: '个', purchase_price: 90, default_warehouse_code: 'W1' })
+    // 两个版本：V1 已失效、V2 生效中；V2 里 M1 与 M2 为替代组（M1 主料）
+    const v1 = await post('/api/scm/boms', { code: 'BOM-FP2-V1', name: 'V1', item_code: 'FP2', version: '1.0', effective_date: '2026-01-01', expire_date: '2026-06-30', is_default: 0,
+      lines: [{ item_code: 'M1', qty: 5 }] }, { allowError: true })
+    const v2 = await post('/api/scm/boms', { code: 'BOM-FP2-V2', name: 'V2', item_code: 'FP2', version: '2.0', effective_date: '2026-07-01', is_default: 0,
+      lines: [{ item_code: 'M1', qty: 2, sub_group: 'G1', sub_priority: 1 }, { item_code: 'M2', qty: 2, sub_group: 'G1', sub_priority: 2 }] }, { allowError: true })
+    assert('⑲ 两个版本 BOM 建立', v1.code === 0 && v2.code === 0, (v1.message || '') + (v2.message || ''))
+    const ex = (await get(`/api/scm/boms/${v2.data.id}/explode?qty=1`)).data
+    assert('⑲ [C-1] 替代料组折叠为主料一行并带替代料', ex.lines.length === 1 && ex.lines[0].item_code === 'M1' && ex.lines[0].substitutes?.[0]?.item_code === 'M2', JSON.stringify(ex.lines))
+    // 缺料/MRP 用 V2（V1 已失效）：用销售订单驱动 MRP
+    const soa = await createDoc({ doc_type: 'SOa', doc_date: D, partner_code: 'CUS1', lines: [{ item_code: 'FP2', qty: 3, price: 500 }] })
+    await audit(soa.id)
+    const mrp = await post('/api/scm/mrp-docs', { doc_date: D, include_safety_stock: false, sources: [{ kind: 'sales_order', id: soa.id }] }, { allowError: true })
+    if (mrp.code === 0) {
+      const lines = dbq('SELECT item_code, qty, field_values FROM scm_doc_line WHERE doc_id=?', mrp.data.id)
+      const fp = lines.find(l => l.item_code === 'FP2'); const fv = fp ? JSON.parse(fp.field_values) : {}
+      // M1 在库充足时净需求为 0、不落结果行，只校验选版
+      assert('⑲ [C-1] MRP 按生效期取 V2（V1 已失效）', fv.bom_code === 'BOM-FP2-V2', JSON.stringify(lines.map(l => [l.item_code, l.qty])) + ' bom=' + fv.bom_code)
+    } else {
+      bad('⑲ MRP 计算', mrp.message)
+    }
+    // 工单：领替代料 M2 也按主料 M1 的需求上限计
+    const mo = await post('/api/scm/production-plans', { code: 'MO-SUB', plan_type: 'self', yl_warehouse: 'W1', fp_warehouse: 'W1',
+      products: [{ item_code: 'FP2', plan_qty: 2, bom_id: v2.data.id, lines: ex.lines.map(l => ({ item_code: l.item_code, qty: l.qty_per_unit })) }] })
+    await post(`/api/scm/production-plans/${mo.data.id}/release`, {}, { allowError: true })
+    const overSub = await post('/api/scm/docs', { doc_type: 'PL', doc_date: D, warehouse_code: 'W1', plan_id: mo.data.id, lines: [{ item_code: 'M2', qty: 5 }] }, { allowError: true })
+    assert('⑲ [C-1] 领替代料超过主料需求(4)被拦', overSub.status === 400 && /禁止超领/.test(overSub.message || ''), overSub.message)
+    const okSub = await post('/api/scm/docs', { doc_type: 'PL', doc_date: D, warehouse_code: 'W1', plan_id: mo.data.id, lines: [{ item_code: 'M2', qty: 1 }] }, { allowError: true })
+    assert('⑲ [C-1] 领替代料在上限内可保存', okSub.status === 200, okSub.message)
+    // 结案结转：领了 1 个 M2（有成本）后不完工直接强制关闭 → 生成 CA 单、在制归零
+    const piM2 = await createDoc({ doc_type: 'PI', doc_date: D, partner_code: 'SUP1', warehouse_code: 'W1', lines: [{ item_code: 'M2', qty: 10, price: 90 }] })
+    await audit(piM2.id)
+    const ra = await audit(okSub.data.id)
+    assert('⑳ 领料单审核通过', ra.code === 0, ra.message)
+    const closeNoForce = await post(`/api/scm/production-plans/${mo.data.id}/close`, {}, { allowError: true })
+    assert('⑳ 有在制余额时不带 force 拒绝关闭', closeNoForce.status === 400 && /在制余额/.test(closeNoForce.message || ''), closeNoForce.message)
+    const closed = await post(`/api/scm/production-plans/${mo.data.id}/close`, { force: true }, { allowError: true })
+    assert('⑳ [P2-17] 强制关闭生成结案结转单', closed.code === 0 && closed.data.closeout_doc?.doc_no, JSON.stringify(closed.data))
+    const ca = dbq("SELECT d.doc_no, d.status, l.item_code, l.qty, l.amount FROM scm_doc d JOIN scm_doc_line l ON l.doc_id=d.id WHERE d.doc_type='CA' AND d.plan_id=?", mo.data.id)
+    assert('⑳ 结转单已审核、金额 = 领料成本 90、数量 0', ca.length === 1 && ca[0].status === 'audited' && Number(ca[0].qty) === 0 && r2(ca[0].amount) === 90, JSON.stringify(ca))
+    const rep = (await get(`/api/scm/report/production/execution?plan_code=MO-SUB`)).data
+    const row = (rep.rows || []).find(r => r.plan_code === 'MO-SUB')
+    assert('⑳ 生产执行表在制归零', row && Math.abs(Number(row.wip ?? row.wip_amount ?? row.total_wip ?? 0)) < 0.005, JSON.stringify(row))
+    const fpStock = await stock('W1', 'FP2')
+    assert('⑳ 成品库存金额吸收在制 90（数量 0）', r2(fpStock.amount) === 90 && Number(fpStock.qty) === 0, JSON.stringify(fpStock))
+    const gv = await post(`/api/scm/docs/${closed.data.closeout_doc.id}/gen-voucher`, {}, { allowError: true })
+    assert('⑳ 结转单可生成凭证（借存货 90 / 贷生产成本 90）', gv.code === 0, gv.message)
+  }
+
   // 汇总
   const fails = results.filter(r => !r.pass)
   console.log(`\n==== ${results.length} 项断言，${fails.length} 项失败 ====`)

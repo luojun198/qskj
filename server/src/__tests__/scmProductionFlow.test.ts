@@ -63,8 +63,8 @@ function createDb() {
       report_no TEXT, report_date TEXT, item_code TEXT, work_center_code TEXT, qty REAL DEFAULT 0,
       scrap_qty REAL DEFAULT 0, work_hours REAL DEFAULT 0, labor_amount REAL DEFAULT 0,
       overhead_amount REAL DEFAULT 0, status TEXT);
-    CREATE TABLE scm_bom (id TEXT, account_set_id TEXT, code TEXT, item_code TEXT, status TEXT, is_default INTEGER DEFAULT 0);
-    CREATE TABLE scm_bom_line (id TEXT, account_set_id TEXT, bom_id TEXT, seq INTEGER, item_code TEXT,
+    CREATE TABLE scm_bom (version TEXT, effective_date TEXT, expire_date TEXT, id TEXT, account_set_id TEXT, code TEXT, item_code TEXT, status TEXT, is_default INTEGER DEFAULT 0);
+    CREATE TABLE scm_bom_line (unit TEXT, remark TEXT, sub_group TEXT, sub_priority INTEGER, id TEXT, account_set_id TEXT, bom_id TEXT, seq INTEGER, item_code TEXT,
       qty REAL, scrap_rate REAL DEFAULT 0, line_type TEXT);
     CREATE TABLE scm_mrp_source (id TEXT, account_set_id TEXT, mrp_doc_id TEXT, source_kind TEXT, source_id TEXT);
     CREATE TABLE scm_batch_move (id TEXT, account_set_id TEXT, doc_id TEXT, doc_type TEXT, doc_no TEXT,

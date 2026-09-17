@@ -147,6 +147,36 @@ export function applyMovingAvgOut(
   return { move: { id: moveId, account_set_id: accountSetId, move_date: doc.date, doc_type: doc.type, doc_no: doc.no, line_seq: doc.seq, warehouse_code: warehouse, item_code: itemCode, direction: 'out', qty: outQty, unit_cost: unitCost, amount: outAmt, balance_qty: newQty, balance_amount: newAmt, balance_avg_cost: avg }, unitCost }
 }
 
+/**
+ * 成本调整（P2-17 工单结案结转）：不动数量，只把金额差额记入某仓某物料的库存结存并重算均价。
+ * delta>0 记 in 流水、<0 记 out 流水（qty=0）；反审核走 reverseDocMoves 按金额回退。
+ */
+export function applyCostAdjustment(
+  db: Database.Database, accountSetId: string,
+  warehouse: string, itemCode: string, delta: number,
+  doc: { type: string; no: string; seq: number; date: string },
+): void {
+  const amt = Math.round((Number(delta) || 0) * 100) / 100
+  if (!amt) return
+  const stock = db.prepare('SELECT qty, amount FROM scm_stock WHERE account_set_id=? AND warehouse_code=? AND item_code=?')
+    .get(accountSetId, warehouse, itemCode) as StockRow | undefined
+  const qty = stock?.qty || 0
+  const newAmt = Math.round(((stock?.amount || 0) + amt) * 100) / 100
+  const avg = qty > 0 ? Math.round((newAmt / qty) * 10000) / 10000 : 0
+  if (stock) {
+    db.prepare('UPDATE scm_stock SET amount=?,avg_cost=?,updated_at=datetime(\'now\') WHERE account_set_id=? AND warehouse_code=? AND item_code=?')
+      .run(newAmt, avg, accountSetId, warehouse, itemCode)
+  } else {
+    db.prepare('INSERT INTO scm_stock (id,account_set_id,warehouse_code,item_code,qty,amount,avg_cost) VALUES (?,?,?,?,?,?,?)')
+      .run(uuidv4(), accountSetId, warehouse, itemCode, 0, newAmt, 0)
+  }
+  db.prepare(`INSERT INTO scm_stock_move (id,account_set_id,move_date,doc_type,doc_no,line_seq,warehouse_code,item_code,direction,qty,unit_cost,amount,batch_no,balance_qty,balance_amount,balance_avg_cost)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    uuidv4(), accountSetId, doc.date, doc.type, doc.no, doc.seq, warehouse, itemCode,
+    amt > 0 ? 'in' : 'out', 0, 0, Math.abs(amt), null, qty, newAmt, avg,
+  )
+}
+
 /** 撤销某张单据的全部库存移动（反审核/删单时回退库存） */
 export function reverseDocMoves(
   db: Database.Database,

@@ -19,9 +19,10 @@ function createDb() {
     CREATE TABLE scm_doc (id TEXT, account_set_id TEXT, doc_type TEXT, doc_no TEXT, status TEXT, plan_id TEXT);
     CREATE TABLE scm_doc_line (id TEXT, account_set_id TEXT, doc_id TEXT, item_code TEXT, qty REAL, source_line_id TEXT, field_values TEXT DEFAULT '{}');
     CREATE TABLE scm_production_plan (id TEXT, account_set_id TEXT, code TEXT, status TEXT, plan_type TEXT);
-    CREATE TABLE scm_production_plan_product (id TEXT, account_set_id TEXT, plan_id TEXT, item_code TEXT, plan_qty REAL, finished_qty REAL, scrap_qty REAL DEFAULT 0);
+    CREATE TABLE scm_production_plan_product (id TEXT, account_set_id TEXT, plan_id TEXT, item_code TEXT, plan_qty REAL, finished_qty REAL, scrap_qty REAL DEFAULT 0, bom_id TEXT);
     CREATE TABLE scm_production_plan_line (id TEXT, account_set_id TEXT, plan_id TEXT, product_id TEXT, item_code TEXT, qty REAL, scrap_rate REAL);
     CREATE TABLE scm_stock_move (id TEXT, account_set_id TEXT, doc_type TEXT, doc_no TEXT, item_code TEXT, direction TEXT, qty REAL);
+    CREATE TABLE scm_bom_line (id TEXT, account_set_id TEXT, bom_id TEXT, seq INTEGER, item_code TEXT, qty REAL, unit TEXT, scrap_rate REAL DEFAULT 0, remark TEXT, line_type TEXT DEFAULT 'component', sub_group TEXT, sub_priority INTEGER);
   `)
   db.prepare('INSERT INTO scm_doc VALUES (?,?,?,?,?,?)').run('PO1', AID, 'PO', 'PO-001', 'audited', null)
   db.prepare('INSERT INTO scm_doc_line VALUES (?,?,?,?,?,?,?)').run('POL1', AID, 'PO1', 'M1', 100, null, '{}')
@@ -120,6 +121,18 @@ describe('供应链单据数量与工单来源控制', () => {
     expect(validatePlanIssueQuantities(db, AID, 'P1', 'PJ', [{ item_code: 'RM1', qty: 6 }])).toContain('超出')
     expect(validatePlanIssueQuantities(db, AID, 'P1', 'PJ', [{ item_code: 'RM1', qty: 5 }])).toBeNull()
     expect(validatePlanIssueQuantities(db, AID, 'P1', 'PJ', [{ item_code: 'RM1', qty: 10 }], 'RET1')).toBeNull()  // 修改本单时排除自己
+  })
+
+  it('C-1 替代料：领用替代料按主料需求上限计，同组合并占用', () => {
+    db.prepare("UPDATE scm_production_plan_product SET bom_id='B1' WHERE id='PP1'").run()
+    db.prepare("INSERT INTO scm_bom_line (id,account_set_id,bom_id,seq,item_code,qty,sub_group,sub_priority) VALUES ('L1',?,'B1',1,'RM1',2,'G',1)").run(AID)
+    db.prepare("INSERT INTO scm_bom_line (id,account_set_id,bom_id,seq,item_code,qty,sub_group,sub_priority) VALUES ('L2',?,'B1',2,'RM1-ALT',2,'G',2)").run(AID)
+    // 主料需求 20：先领替代料 15，再领主料 6 → 超出
+    expect(validatePlanIssueQuantities(db, AID, 'P1', 'PL', [{ item_code: 'RM1-ALT', qty: 15 }])).toBeNull()
+    addDoc(db, 'ALT1', 'PL', 'audited', 'RM1-ALT', 15, null, 'P1')
+    expect(validatePlanIssueQuantities(db, AID, 'P1', 'PL', [{ item_code: 'RM1', qty: 6 }])).toContain('禁止超领')
+    expect(validatePlanIssueQuantities(db, AID, 'P1', 'PL', [{ item_code: 'RM1', qty: 5 }])).toBeNull()
+    expect(validatePlanIssueQuantities(db, AID, 'P1', 'PL', [{ item_code: 'NOT-IN-BOM', qty: 1 }])).toContain('不能领用')
   })
 
   it('FIX-219 草稿上游：保存阶段放行、审核阶段拦截、作废上游一律拦截', () => {

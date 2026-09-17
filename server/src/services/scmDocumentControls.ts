@@ -5,7 +5,7 @@ import {
   resolvePlanOverrunScope,
   resolveSourceOverrunScope,
 } from './scmOverrunPolicy.js'
-import { isPlanFullyFinished } from './scmProduction.js'
+import { isPlanFullyFinished, planSubstituteMap } from './scmProduction.js'
 
 const EPS = 0.000001
 
@@ -210,6 +210,9 @@ export function validatePlanIssueQuantities(
     return `该工单已全部完工（末批${finishName} ${auditedFinish.doc_no}），领料已锁定；如需继续领料，请先反审核完工单`
   }
   const needMap = new Map(planMaterialNeed(db, accountSetId, planId).map(row => [row.item_code, Number(row.need) || 0]))
+  // C-1 替代料：替代料按其主料的需求上限计（同组合并占用）
+  const subMap = planSubstituteMap(db, accountSetId, planId)
+  const primaryOf = (code: string) => subMap.get(code) || code
   const scope = resolvePlanOverrunScope(docType)
   const policy = scope ? getScmOverrunPolicy(db, accountSetId, scope) : { enabled: false, rate: 0 }
   const params: any[] = [accountSetId, planId]
@@ -221,15 +224,17 @@ export function validatePlanIssueQuantities(
     WHERE d.account_set_id=? AND d.plan_id=? AND d.status<>'voided'
       AND d.doc_type IN ('PL','PB','WO','PJ')${exclude}
     GROUP BY l.item_code`).all(...params) as any[]
-  const usedMap = new Map(occupied.map(row => [row.item_code, Number(row.qty) || 0]))
+  const usedMap = new Map<string, number>()
+  for (const row of occupied) { const k = primaryOf(row.item_code); usedMap.set(k, r6((usedMap.get(k) || 0) + (Number(row.qty) || 0))) }
   const incoming = new Map<string, number>()
   for (const line of lines || []) {
     if (!line?.item_code || !(Number(line.qty) > 0)) continue
-    incoming.set(line.item_code, r6((incoming.get(line.item_code) || 0) + Number(line.qty)))
+    const k = primaryOf(line.item_code)
+    incoming.set(k, r6((incoming.get(k) || 0) + Number(line.qty)))
   }
   for (const [itemCode, qty] of incoming) {
     const need = needMap.get(itemCode)
-    if (need === undefined) return `物料 ${itemCode} 不在关联工单用料清单中，不能领用`
+    if (need === undefined) return `物料 ${itemCode} 不在关联工单用料清单中（也不是用料的替代料），不能领用`
     const used = r6(usedMap.get(itemCode) || 0)
     const maxQty = getScmMaxAllowedQty(need, policy)
     if (used + qty > maxQty + EPS) return `物料 ${itemCode} 工单需求 ${r6(need)}，允许上限 ${maxQty}，已领/占用 ${used}，本次 ${qty}，禁止超领`

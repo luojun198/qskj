@@ -21,11 +21,11 @@ function createDb() {
       labor_absorbed REAL DEFAULT 0, overhead_absorbed REAL DEFAULT 0);
     CREATE TABLE scm_production_plan_line (id TEXT, account_set_id TEXT, plan_id TEXT, product_id TEXT,
       seq INTEGER, item_code TEXT, qty REAL, unit TEXT, scrap_rate REAL, remark TEXT, warehouse_code TEXT);
-    CREATE TABLE scm_bom_line (account_set_id TEXT, bom_id TEXT, item_code TEXT, qty REAL, scrap_rate REAL, seq INTEGER);
+    CREATE TABLE scm_bom_line (unit TEXT, remark TEXT, sub_group TEXT, sub_priority INTEGER, account_set_id TEXT, bom_id TEXT, item_code TEXT, qty REAL, scrap_rate REAL, seq INTEGER);
     CREATE TABLE scm_stock_move (id TEXT, account_set_id TEXT, doc_type TEXT, doc_no TEXT,
       item_code TEXT, direction TEXT, qty REAL, amount REAL);
     CREATE TABLE scm_doc (id TEXT, account_set_id TEXT, doc_type TEXT, doc_no TEXT, plan_id TEXT, status TEXT);
-    CREATE TABLE scm_doc_line (id TEXT, doc_id TEXT, account_set_id TEXT, item_code TEXT, qty REAL);
+    CREATE TABLE scm_doc_line (id TEXT, doc_id TEXT, account_set_id TEXT, item_code TEXT, qty REAL, amount REAL DEFAULT 0, labor_cost REAL DEFAULT 0, overhead_cost REAL DEFAULT 0);
     CREATE TABLE scm_work_report (account_set_id TEXT, plan_id TEXT, product_id TEXT, status TEXT,
       labor_amount REAL DEFAULT 0, overhead_amount REAL DEFAULT 0);
     CREATE TABLE scm_doc_type (account_set_id TEXT, code TEXT, direction TEXT);

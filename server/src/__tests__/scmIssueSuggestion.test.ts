@@ -8,7 +8,7 @@ function createDb() {
   const db = new Database(':memory:')
   db.exec(`
     CREATE TABLE scm_item (account_set_id TEXT, code TEXT, name TEXT, unit TEXT, spec TEXT);
-    CREATE TABLE scm_bom_line (account_set_id TEXT, bom_id TEXT, item_code TEXT, qty REAL,
+    CREATE TABLE scm_bom_line (unit TEXT, remark TEXT, sub_group TEXT, sub_priority INTEGER, account_set_id TEXT, bom_id TEXT, item_code TEXT, qty REAL,
       scrap_rate REAL, seq INTEGER, warehouse_code TEXT, line_type TEXT);
     CREATE TABLE scm_production_plan_line (account_set_id TEXT, plan_id TEXT, product_id TEXT, item_code TEXT, qty REAL,
       scrap_rate REAL, seq INTEGER, warehouse_code TEXT);
