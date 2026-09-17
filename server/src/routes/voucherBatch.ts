@@ -14,6 +14,7 @@ import {
 } from '../services/voucherEntry.js'
 import { buildVoucherAllEntriesInScopeSql } from '../services/accountAuthorization.js'
 import { deleteVouchersWithRefs } from '../services/voucherDelete.js'
+import { getVoucherImmutableReason } from '../services/voucherMutationGuard.js'
 import { validateInitBalanceBalancedForYears } from '../services/initBalanceTrial.js'
 import {
   applyVoucherPosting,
@@ -165,6 +166,11 @@ function loadStatusFilteredVouchers(params: {
   for (const v of rows) {
     const record = getPeriodClosingRecord({ db, accountSetId, year: v.year, period: v.period })
     if (isPeriodClosed(record)) skippedClosed++
+    // 出纳已结账月份的现金 / 银行凭证同样跳过（P0-1）
+    else if (
+      getVoucherImmutableReason({ db, accountSetId, voucher: v, operation: status === 'posted' ? 'unpost' : 'unaudit' })
+    )
+      skippedClosed++
     else operable.push(v)
   }
   return { rows, operable, skippedClosed }

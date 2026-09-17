@@ -128,6 +128,25 @@ describe('出纳生成凭证 generateCashierVoucher', () => {
     expect(j.voucher_month).toBe(9)
   })
 
+  it('P0-2：总账已结账期间不允许生成出纳凭证', () => {
+    db.exec(`CREATE TABLE period_closing (id TEXT PRIMARY KEY, account_set_id TEXT, year INTEGER, period INTEGER, status TEXT)`)
+    db.prepare("INSERT INTO period_closing VALUES ('pc', ?, 2026, 9, 'closed')").run(ASID)
+    addJournal(db, { debit: 100, counter_account: '1122' })
+    const res = generateCashierVoucher({
+      db, accountSetId: ASID, accountCode: '1001', makerName: 'tester',
+      startDate: '2026-09-01', endDate: '2026-09-30',
+    })
+    expect(res).toMatchObject({ error: expect.stringMatching(/2026年9期已结账/) })
+    expect(db.prepare('SELECT COUNT(*) c FROM vouchers').get()).toEqual({ c: 0 })
+    // 反结账后可生成
+    db.exec("UPDATE period_closing SET status='open'")
+    const ok = generateCashierVoucher({
+      db, accountSetId: ASID, accountCode: '1001', makerName: 'tester',
+      startDate: '2026-09-01', endDate: '2026-09-30',
+    })
+    expect('error' in ok).toBe(false)
+  })
+
   it('支出（贷现金）：借 对方科目 / 贷 1001', () => {
     addJournal(db, { credit: 200, counter_account: '2202' })
     generateCashierVoucher({

@@ -11,6 +11,7 @@ import {
   validateVoucherForUnpost,
 } from '../services/voucherPosting.js'
 import { getVoucherById, getPeriodClosingRecord, isPeriodClosed, sendBatchVoucherOperationResponse } from '../services/voucherEntry.js'
+import { getVoucherImmutableReason } from '../services/voucherMutationGuard.js'
 import { isVoucherVisibleInAccountScope } from '../services/accountAuthorization.js'
 import { checkPostingIntegrity } from '../services/postingIntegrityCheck.js'
 import { validateInitBalanceBalancedForYears } from '../services/initBalanceTrial.js'
@@ -293,6 +294,16 @@ router.post(
         message: `${voucher.year}年${voucher.period}期已结账，不能反记账`,
       })
     }
+    // 出纳期间闸（P0-1）：出纳已结账月份的现金 / 银行凭证不能在总账侧反记账
+    const unpostBlocked = getVoucherImmutableReason({
+      db,
+      accountSetId: req.accountSetId || '',
+      voucher,
+      operation: 'unpost',
+    })
+    if (unpostBlocked) {
+      return res.status(400).json({ code: 400, message: unpostBlocked })
+    }
 
     const entries = loadVoucherEntries(db, id)
     const requireAudit = db
@@ -367,6 +378,12 @@ router.post(
             success: false,
             error: `${voucher!.year}年${voucher!.period}期已结账，不能反记账`,
           })
+          continue
+        }
+        // 出纳期间闸（P0-1）
+        const unpostBlocked = getVoucherImmutableReason({ db, accountSetId, voucher: voucher!, operation: 'unpost' })
+        if (unpostBlocked) {
+          results.push({ id, voucher_no: voucherNo, success: false, error: unpostBlocked })
           continue
         }
 

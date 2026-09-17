@@ -11,6 +11,7 @@ import { authMiddleware, AuthRequest, operationLog } from '../middleware/index.j
 import { applyMovingAvgIn, applyMovingAvgOut, reverseDocMoves, getCostingMethod } from '../services/scmCosting.js'
 import { applyPayment, applyInvoice, reverseInvoice, reversePayment, getPartnerLedger, getAllPartnerLedger, applyReceivableFromShipment, applyPayableFromReceipt, applyOutsourceFeePayable, getOpenItems, getPaymentSources, verifyArAp, cancelVerify, listVerifies, getDocVerifiedInfo, getArApAging, getDueReminder, getPartnerCredit, getPartnerOpenAr, getPartnerBalanceSummary } from '../services/scmArAp.js'
 import { assertAccountIdsInScope, type AccountScopeContext } from '../services/accountAuthorization.js'
+import { assertGlPeriodOpen } from '../services/voucherMutationGuard.js'
 import { maintainDocBatches, reverseDocBatches } from '../services/scmBatch.js'
 import { maintainDocSerials, reverseDocSerials } from '../services/scmSerial.js'
 import { computeIssueSuggestion, computeProductionPlanActionState, computePushedQty } from '../services/scmProduction.js'
@@ -3767,6 +3768,10 @@ export const genVoucherHandler = (req: AuthRequest, res: Response) => {
   const voucherId = uuidv4()
   const year = parseInt((doc.doc_date || '').split('-')[0]) || new Date().getFullYear()
   const month = parseInt((doc.doc_date || '').split('-')[1]) || new Date().getMonth() + 1
+  // P1-16：总账已结账期间不得再由单据推出凭证
+  try { assertGlPeriodOpen(db, aid, year, month) } catch (e: any) {
+    return res.status(400).json({ code: 400, message: e.message })
+  }
   const lastNo = (db.prepare('SELECT CAST(CASE WHEN INSTR(voucher_no,\'-\')>0 THEN SUBSTR(voucher_no,INSTR(voucher_no,\'-\')+1) ELSE voucher_no END AS INTEGER) no FROM vouchers WHERE account_set_id=? AND year=? AND period=? ORDER BY no DESC LIMIT 1').get(aid, year, month) as any)?.no ?? 0
   const voucherNo = String(lastNo + 1).padStart(3, '0')
 

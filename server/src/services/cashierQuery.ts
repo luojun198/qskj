@@ -5,6 +5,8 @@ import { getDb } from '../db/index.js'
 import { v4 as uuidv4 } from 'uuid'
 import { buildVoucherNo } from './voucherEntry.js'
 import { appendAccountScopeCondition, type AccountScopeContext } from './accountAuthorization.js'
+import { assertGlPeriodOpen } from './voucherMutationGuard.js'
+import { parseBizDate } from './cashierPeriodClosing.js'
 
 export interface CashierAccount {
   code: string
@@ -558,6 +560,21 @@ export function generateCashierVoucher(params: {
     ORDER BY j.biz_date, j.seq
   `).all(...vals) as any[]
   if (rows.length === 0) return { error: '所选范围内没有未生成凭证的记录' }
+
+  // P0-2：总账已结账（含已年结）期间不得再生成凭证，否则凭证永远无法记账、跨年期初也已固化
+  const closedMonths = new Set<string>()
+  for (const r of rows) {
+    const ym = parseBizDate(r.biz_date)
+    if (!ym) return { error: `日记账 ${r.biz_date} 日期格式不合法（${r.summary || r.id}）` }
+    const key = `${ym.year}-${ym.month}`
+    if (closedMonths.has(key)) continue
+    try {
+      assertGlPeriodOpen(db, accountSetId, ym.year, ym.month)
+    } catch (e: any) {
+      return { error: e?.message || '所属期间已结账' }
+    }
+    closedMonths.add(key)
+  }
 
   // 2. 校验对方科目（缺失时拦截或挂账）
   const lookup = db.prepare('SELECT id, name FROM accounts WHERE account_set_id=? AND code=? LIMIT 1')

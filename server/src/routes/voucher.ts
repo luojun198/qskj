@@ -47,6 +47,7 @@ import {
   type NoNegativeBalanceCheckResult,
 } from '../services/voucherEntry.js'
 import { getVoucherUndeletableReason, deleteVoucherWithRefs } from '../services/voucherDelete.js'
+import { getVoucherImmutableReason } from '../services/voucherMutationGuard.js'
 import fs from 'fs/promises'
 import path from 'path'
 import multer from 'multer'
@@ -900,6 +901,18 @@ router.post(
 
     // 冲红凭证日期：默认取原凭证日期，允许调用方指定（跨期冲红）
     const voucherDate: string = req.body?.voucher_date || origin.voucher_date
+
+    // 来源守卫（出纳 / 固资凭证不可冲红）+ 出纳期间闸（红字凭证落在出纳已结账月份拒绝）
+    const reverseBlocked = getVoucherImmutableReason({
+      db,
+      accountSetId,
+      voucher: origin,
+      operation: 'reverse',
+      targetDate: voucherDate,
+    })
+    if (reverseBlocked) {
+      return res.status(400).json({ code: 400, message: reverseBlocked })
+    }
     const dateError = validateVoucherDate({ voucherDate, accountSetId, db })
     if (dateError) {
       return res.status(400).json({ code: 400, message: dateError })
@@ -1261,6 +1274,18 @@ router.put(
       return res.status(400).json({ code: 400, message: '已审核凭证不能直接修改，请先反审核后再修改' })
     }
 
+    // 统一可变性守卫：固定资产凭证拒改、总账期间闸、出纳期间闸（含目标日期）——见 services/voucherMutationGuard.ts
+    const immutableReason = getVoucherImmutableReason({
+      db,
+      accountSetId,
+      voucher,
+      operation: 'update',
+      targetDate: voucher_date || null,
+    })
+    if (immutableReason) {
+      return res.status(400).json({ code: 400, message: immutableReason })
+    }
+
     // 出纳生成的凭证：只能修改对方（挂账）科目，现金/银行科目分录不得改动
     if (voucher.source === 'cashier') {
       const cashRows = db
@@ -1584,6 +1609,18 @@ router.put(
         .json({ code: 400, message: '制单人和审核人不能为同一人，请由其他人修改已审核凭证' })
     }
 
+    // P1-13：来源守卫（固资 / 出纳凭证不可直改）+ 出纳期间闸，与 PUT /vouchers/:id 同源
+    const editAuditedBlocked = getVoucherImmutableReason({
+      db,
+      accountSetId: req.accountSetId || '',
+      voucher,
+      operation: 'edit_audited',
+      targetDate: voucher_date || null,
+    })
+    if (editAuditedBlocked) {
+      return res.status(400).json({ code: 400, message: editAuditedBlocked })
+    }
+
     // FIX-007：期间已结账不允许修改
     const finalVoucherDate = voucher_date || voucher.voucher_date
     const targetYear = dayjs(finalVoucherDate).year()
@@ -1745,7 +1782,7 @@ router.delete(
       return res.status(404).json({ code: 404, message: '凭证不存在' })
     }
     // FIX-132：来源守卫与关联清理统一走 services/voucherDelete.ts（与批量删除共用）
-    const undeletable = getVoucherUndeletableReason(voucher)
+    const undeletable = getVoucherUndeletableReason(voucher, { db, accountSetId: req.accountSetId || '' })
     if (undeletable) {
       return res.status(400).json({ code: 400, message: undeletable })
     }

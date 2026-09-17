@@ -21,6 +21,41 @@ import {
   searchJournals,
   generateCashierVoucher,
 } from '../services/cashierQuery.js'
+import {
+  assertCashierPeriodOpen,
+  assertCashierRangeOpen,
+  closeCashierPeriod,
+  listCashierPeriodStatus,
+  normalizeBizDate,
+  parseBizDate,
+  reopenCashierPeriod,
+} from '../services/cashierPeriodClosing.js'
+import { assertGlPeriodOpen } from '../services/voucherMutationGuard.js'
+import type { Database } from 'better-sqlite3'
+
+/**
+ * 新写入的业务日期：严格规范化为 YYYY-MM-DD（P1-7），并同时过出纳结账闸与总账期间闸（P0-2）。
+ * 返回规范化后的日期。
+ */
+function assertJournalDateWritable(db: Database, accountSetId: string, raw: unknown): string {
+  const bizDate = normalizeBizDate(raw)
+  assertCashierPeriodOpen(db, accountSetId, bizDate)
+  const ym = parseBizDate(bizDate)!
+  assertGlPeriodOpen(db, accountSetId, ym.year, ym.month)
+  return bizDate
+}
+
+/**
+ * 已入库行的业务日期：历史脏日期（无法规范化）放行，允许用户修正 / 删除；
+ * 能解析的则同样过出纳闸与总账闸。
+ */
+function assertExistingJournalDateWritable(db: Database, accountSetId: string, raw: unknown): void {
+  let bizDate: string
+  try { bizDate = normalizeBizDate(raw) } catch { return }
+  assertCashierPeriodOpen(db, accountSetId, bizDate)
+  const ym = parseBizDate(bizDate)!
+  assertGlPeriodOpen(db, accountSetId, ym.year, ym.month)
+}
 
 // 附件上传配置
 const ALLOWED_ATTACHMENT_MIMES = [
@@ -67,6 +102,11 @@ router.use(authMiddleware)
 // ── 出纳模块权限守卫：按路径映射所需权限（admin '*' 自动放行） ──────────
 const CASHIER_PERMISSION_RULES: Array<{ re: RegExp; perm: string; alsoPerms?: string[] }> = [
   { re: /^\/cashier\/params/,            perm: 'cashier:param' },
+  // 出纳结账 / 反结账：ACD 4AC / 4A3 映射为 cashier:param；状态读取放开给日记账岗位
+  // P1-8：任何形如 periods/x/y/close|reopen 的写请求都必须有 cashier:param（此前 `2026.5` 这类畸形年份
+  // 不匹配 \d+ 规则，落到下一条 alsoPerms 放行，仅日记账权限即可结账）
+  { re: /^\/cashier\/periods\/[^/]+\/[^/]+\/(close|reopen)$/, perm: 'cashier:param' },
+  { re: /^\/cashier\/periods/,           perm: 'cashier:param', alsoPerms: ['cashier:journal'] },
   // 结算方式：菜单权限为 cashier:dict；兼容历史 cashier:param 授权
   { re: /^\/cashier\/settle-type(\/|$)/, perm: 'cashier:dict', alsoPerms: ['cashier:param'] },
   // 结算方式字典读取：出纳各页面与供应链单据都会读取
@@ -284,6 +324,11 @@ router.post(
     // 科目授权：现金科目与对方科目须在授权范围内
     const scopeErr = assertCashierCodesInScope(db, req.accountScope, req.accountSetId || '', [account_code, counter_account])
     if (scopeErr) return res.status(403).json({ code: 403, message: scopeErr })
+    // 日期严格规范化 + 出纳结账闸 + 总账期间闸
+    let bizDate: string
+    try { bizDate = assertJournalDateWritable(db, req.accountSetId || '', biz_date) } catch (e: any) {
+      return res.status(400).json({ code: 400, message: e.message })
+    }
     const id = uuidv4()
     db.prepare(
       `INSERT INTO cashier_journal
@@ -292,7 +337,7 @@ router.post(
          bank_name, bank_account, unit_code, counter_aux_item_id, created_by)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
     ).run(
-      id, req.accountSetId, account_code, currency, biz_date, seq, summary || null,
+      id, req.accountSetId, account_code, currency, bizDate, seq, summary || null,
       Number(debit), Number(credit), settle_type || null, bill_no || null,
       counter_unit || null, counter_account || null, bank_name || null,
       bank_account || null, unit_code || null,
@@ -309,8 +354,8 @@ router.put(
     const { id } = req.params
     const db = getDb()
     const existing = db
-      .prepare('SELECT id FROM cashier_journal WHERE id=? AND account_set_id=?')
-      .get(id, req.accountSetId)
+      .prepare('SELECT id, biz_date FROM cashier_journal WHERE id=? AND account_set_id=?')
+      .get(id, req.accountSetId) as { id: string; biz_date: string } | undefined
     if (!existing) return res.status(404).json({ code: 404, message: '记录不存在' })
 
     const {
@@ -318,6 +363,14 @@ router.put(
       settle_type, bill_no, counter_unit, counter_account,
       bank_name, bank_account,
     } = req.body
+    // 出纳结账闸 + 总账期间闸：原日期与新日期所在月都不能已结账
+    let newBizDate: string | null = null
+    try {
+      assertExistingJournalDateWritable(db, req.accountSetId || '', existing.biz_date)
+      if (biz_date) newBizDate = assertJournalDateWritable(db, req.accountSetId || '', biz_date)
+    } catch (e: any) {
+      return res.status(400).json({ code: 400, message: e.message })
+    }
     const auxProvided = 'counter_aux_item_id' in req.body
     const auxClause = auxProvided ? 'counter_aux_item_id=?,' : ''
     const auxParam: any[] = auxProvided ? [req.body.counter_aux_item_id || null] : []
@@ -332,7 +385,7 @@ router.put(
         updated_at=datetime('now')
        WHERE id=?`
     ).run(
-      biz_date, seq, summary, debit != null ? Number(debit) : null,
+      newBizDate, seq, summary, debit != null ? Number(debit) : null,
       credit != null ? Number(credit) : null,
       settle_type, bill_no, counter_unit, counter_account, bank_name, bank_account,
       ...auxParam, id
@@ -351,6 +404,9 @@ router.delete(
       'SELECT id, voucher_no, voucher_year, voucher_month, biz_date, summary FROM cashier_journal WHERE id=? AND account_set_id=?'
     ).get(id, req.accountSetId) as any
     if (!existing) return res.status(404).json({ code: 404, message: '记录不存在' })
+    try { assertExistingJournalDateWritable(db, req.accountSetId || '', existing.biz_date) } catch (e: any) {
+      return res.status(400).json({ code: 400, message: e.message })
+    }
 
     let deletedVoucher: { voucher_no: string; status: string } | null = null
     if (existing.voucher_no) {
@@ -404,13 +460,17 @@ router.post(
       rows.forEach((r: any, i: number) => {
         const rowNo = i + 1
         if (!r.biz_date) { errors.push({ row: rowNo, message: '日期为空' }); return }
+        let bizDate: string
+        try { bizDate = assertJournalDateWritable(db, req.accountSetId || '', r.biz_date) } catch (e: any) {
+          errors.push({ row: rowNo, message: e.message }); return
+        }
         const debit = Number(r.debit) || 0
         const credit = Number(r.credit) || 0
         if (!debit && !credit) {
           errors.push({ row: rowNo, message: '借方、贷方金额不能同时为空或零' }); return
         }
         stmt.run(
-          uuidv4(), req.accountSetId, account_code, currency, r.biz_date, r.seq ?? rowNo,
+          uuidv4(), req.accountSetId, account_code, currency, bizDate, r.seq ?? rowNo,
           r.summary || null, debit, credit, r.settle_type || null, r.bill_no || null,
           r.counter_unit || null, r.counter_account || null, null, null, null, null, maker
         )
@@ -532,6 +592,9 @@ router.post(
     const { account_code, start_date, end_date } = req.body
     const db = getDb()
     const asId = req.accountSetId || ''
+    try { assertCashierRangeOpen(db, asId, start_date, end_date) } catch (e: any) {
+      return res.status(400).json({ code: 400, message: e.message })
+    }
 
     // 直接从 vouchers 表查 source='cashier' 的凭证，按日期范围过滤。
     // 指定 account_code 时，只删除被该科目出纳日记账关联的凭证，避免误删其他现金/银行账户的出纳凭证。
@@ -608,6 +671,19 @@ router.post(
     const { account_code, start_date, end_date, hangup_account_code, ids } = req.body
     if (!account_code) return res.status(400).json({ code: 400, message: '科目编码不能为空' })
     const db = getDb()
+    // 出纳结账闸：按 ids 时逐条校验业务日期，否则按日期区间校验
+    try {
+      if (Array.isArray(ids) && ids.length) {
+        const placeholders = ids.map(() => '?').join(',')
+        const rows = db.prepare(`SELECT biz_date FROM cashier_journal WHERE account_set_id=? AND id IN (${placeholders})`)
+          .all(req.accountSetId, ...ids) as Array<{ biz_date: string }>
+        for (const r of rows) assertCashierPeriodOpen(db, req.accountSetId || '', r.biz_date)
+      } else {
+        assertCashierRangeOpen(db, req.accountSetId || '', start_date, end_date)
+      }
+    } catch (e: any) {
+      return res.status(400).json({ code: 400, message: e.message })
+    }
     const result = generateCashierVoucher({
       db,
       accountSetId: req.accountSetId || '',
@@ -623,6 +699,50 @@ router.post(
       return res.status(400).json({ code: 400, message: result.error, missingRows: result.missingRows })
     }
     res.json({ code: 0, data: result })
+  }
+)
+
+// ── 出纳结账 / 反结账 ─────────────────────────────────────────
+router.get('/cashier/periods/:year', (req: AuthRequest, res) => {
+  const year = Number(req.params.year) || new Date().getFullYear()
+  res.json({ code: 0, data: { year, months: listCashierPeriodStatus(getDb(), req.accountSetId || '', year) } })
+})
+
+router.post(
+  '/cashier/periods/:year/:month/close',
+  operationLog('出纳结账', '出纳管理'),
+  (req: AuthRequest, res) => {
+    try {
+      const data = closeCashierPeriod({
+        db: getDb(),
+        accountSetId: req.accountSetId || '',
+        year: Number(req.params.year),
+        month: Number(req.params.month),
+        userId: req.userId,
+        userName: req.userName,
+      })
+      res.json({ code: 0, data })
+    } catch (e: any) {
+      res.status(400).json({ code: 400, message: e.message || '结账失败' })
+    }
+  }
+)
+
+router.post(
+  '/cashier/periods/:year/:month/reopen',
+  operationLog('出纳反结账', '出纳管理'),
+  (req: AuthRequest, res) => {
+    try {
+      const data = reopenCashierPeriod({
+        db: getDb(),
+        accountSetId: req.accountSetId || '',
+        year: Number(req.params.year),
+        month: Number(req.params.month),
+      })
+      res.json({ code: 0, data })
+    } catch (e: any) {
+      res.status(400).json({ code: 400, message: e.message || '反结账失败' })
+    }
   }
 )
 
@@ -697,6 +817,7 @@ router.post(
       db.prepare('DELETE FROM cashier_journal WHERE account_set_id=?').run(asid)
       db.prepare('DELETE FROM cashier_init_balance WHERE account_set_id=?').run(asid)
       db.prepare('DELETE FROM bank_statement WHERE account_set_id=?').run(asid)
+      db.prepare('DELETE FROM cashier_period_closing WHERE account_set_id=?').run(asid)
     })()
     res.json({ code: 0, data: { ok: true, backup: backupFile } })
   }

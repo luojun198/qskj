@@ -22,6 +22,7 @@
       <span>至</span>
       <el-date-picker v-model="filters.end_date" type="date" value-format="YYYY-MM-DD" placeholder="结束日期" class="filter-ctl--md" @change="handleQuery" />
       <el-button type="primary" @click="handleQuery"><el-icon><Search /></el-icon>查询</el-button>
+      <FilterClearButton @clear="handleClearFilters" />
       <el-divider direction="vertical" />
       <el-button plain @click="openImportDialog"><el-icon><Upload /></el-icon>导入</el-button>
       <el-button plain :disabled="!rows.length" @click="handleExport"><el-icon><Download /></el-icon>导出</el-button>
@@ -536,7 +537,9 @@ import { exportStyledTable, type ExportColumnDef } from '@/utils/exportStyledExc
 import { confirmRenumberAfterDelete } from '@/composables/useRenumberPrompt'
 import VoucherAttachments from '@/components/voucher/VoucherAttachments.vue'
 import ColumnSettingsDialog from '@/components/common/ColumnSettingsDialog.vue'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
 import { loadColumnSettings, saveColumnSettings, type ColumnSetting } from '@/utils/columnSettings'
+import { useFilterClear } from '@/composables/useFilterClear'
 
 const { tableRef: colWidthTableRef, colWidth, onDragEnd } = useListColumnWidth('cashier_journal')
 const { containerRef: tableContainerRef, tableHeight } = useFillHeightTable()
@@ -671,6 +674,16 @@ const firstDay = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1
 const lastDay = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0)
 const lastDayStr = `${lastDay.getFullYear()}-${String(lastDay.getMonth() + 1).padStart(2, '0')}-${String(lastDay.getDate()).padStart(2, '0')}`
 const filters = ref({ account_code: '', currency: 'RMB', start_date: firstDay, end_date: lastDayStr })
+const { clearFilters } = useFilterClear([filters])
+
+/** 清空筛选条件并查询全部（保留科目，清空起止日期） */
+function handleClearFilters() {
+  const currentAccount = filters.value.account_code || (cashierAccounts.value.find(a => !a.isParent)?.code || '')
+  clearFilters()
+  filters.value.account_code = currentAccount
+  filters.value.currency = 'RMB'
+  handleQuery()
+}
 
 const swapping = ref(false)
 const selectedRows = ref<JournalRow[]>([])
@@ -1540,8 +1553,19 @@ function normExcelDate(v: any): string {
     return `${y}-${m}-${d}`
   }
   const s = String(v).trim()
-  const m = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/)
+  const m = s.match(/^(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})/)
   if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`
+  const compact = s.match(/^(\d{4})(\d{2})(\d{2})$/)
+  if (compact) return `${compact[1]}-${compact[2]}-${compact[3]}`
+  // 未套日期格式的 Excel 数字型日期（序列号，如 45876）：此前原样返回，落库后闸口与区间查询都失效
+  if (/^\d{4,6}(\.\d+)?$/.test(s)) {
+    const serial = Number(s)
+    if (serial >= 61 && serial <= 2958465) {
+      const dt = new Date(Math.round((serial - 25569) * 86400 * 1000))
+      const y = dt.getUTCFullYear(), mm = String(dt.getUTCMonth() + 1).padStart(2, '0'), dd = String(dt.getUTCDate()).padStart(2, '0')
+      return `${y}-${mm}-${dd}`
+    }
+  }
   return s
 }
 

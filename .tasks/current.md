@@ -4,9 +4,60 @@
 
 ## 进行中
 
-（暂无）
+- [ ] 三模块综合评审（2026-09-17）P0/P1 修复（计划：`~/.claude/plans/silly-sparking-petal.md`，批次 A~E）
+  - [x] 批次 A 期间闸收口（FIX-183 ~ FIX-187）：`voucherMutationGuard.ts` 统一守卫接入 12 处入口；`assertGlPeriodOpen` 接入出纳生成凭证 / 日记账写入 / SCM 生成凭证；出纳闸 fail-closed + `normalizeBizDate`；结账年月整数 / 未来月校验 + 权限规则收紧。服务端 171 文件 1644 用例全绿、tsc 0
+  - [ ] 批次 B 固定资产数据完整性（P0-3、P0-4、P1-17、P1-21、P2-14 ~ P2-16；迁移 125 残值率触发器）
+  - [ ] 批次 C 出纳完整性（P1-1、P1-4、P1-5、P1-6、P2-5、P2-6、P2-10；迁移 126 `bank_statement_id` / `voucher_id`）
+  - [ ] 批次 D 口径 / 权限 / 关联（P1-2、P1-3、P1-10、P1-11、P2-12、P2-13）
+  - [ ] 批次 E 业务规则（P1-18 自动顺延、P1-19 变动表取 `fixed_asset_change`、P1-20 禁填未来、出纳有未生成凭证流水禁止结账）
 
 ## 已完成（最新）
+
+- [x] 总账 / 固定资产 / 出纳三模块综合评审（2026-09-17）
+  - 范围：出纳（routes/cashierJournal.ts、services/cashierQuery.ts、cashierPeriodClosing.ts、出纳前端 11 页）、总账（凭证全链路 / 账簿 / 报表）、固定资产（卡片/变动/处置/领用/盘点/折旧/报表）；含三模块联动与期间闸口一致性
+  - 新 P0×4：① 出纳结账闸在总账侧零引用（已结账月份凭证仍可反记账/修改/反审核/冲红，`cashierPeriodClosing` 全仓仅 `cashierJournal.ts:30` 一个引用）；② 出纳侧不认总账 `period_closing`（可向已结账 / 已年结期间生成凭证，`cashierQuery.ts` 全无 period_closing）；③ 残值率归一化漏 `applySplit`(`assetChange.ts:749`) / `adjustSurplusAssets`(`assetInventory.ts:387`)，叠加 `scmDoc.ts:1835` 写百分数 → 残值放大 100 倍、折旧静默停提；④ 盘点盘亏明细无 `scrap_date IS NULL` 过滤(`assetInventory.ts:432-438`) → 已处置卡片重复核销、1601 贷方超冲
+  - 新 P1×21：SCM 收付款单审核/反审核直写删 `cashier_journal` 绕过出纳闸（`scmArAp.ts:43/239`）；SCM 写出纳流水 CNY 与出纳默认 RMB 脱节；`/cashier/reset` 权限错挂 `cashier:journal` + 清结账记录 + 留凭证；已对账日记账可删改致调节表永久不平；自动勾对共用 `match_batch` 撤销连带清整批；出纳结账闸漏挂 8 类入口；日期解析失败 fail-open；结账 year 未校验整数可永久锁死（`2026.5`）；可结未来月份；科目授权仅 2 接口生效；凭证重排号后出纳号脱钩；凭证删除/反审核/冲红/edit-audited 无期间闸或无来源守卫；SCM 生成凭证无期间闸；原值减少无下限致净值负数 + 处置必不平；已提满资产原值增加后永久不提；增减变动表取卡片当前原值致历史期初被追溯改写；变动/处置/盘点可填未来期间；部分数量盘亏按整卡核销
+  - 新 P2×19：出纳金额精度 / NaN / 分页未钳制 / reset 物理附件 / 未走 `deleteVoucherWithRefs` / 凭证同步按 biz_date 查重 / 前端 UTC 默认日期 / 期初导入忽略币别列 / 删结算方式无引用校验 / 单条不校验借贷 / 选中行生成凭证取交集 / 权限码与菜单不一致 ×2；固资残值率允许 =1 / 盘点「损毁」无处理 / 减值可撤销 / 撤销处置绕过 deleteVoucherRecords / 无取得日期卡片明细账原值恒 0 / 撤销不返回 affectedGroups
+  - 历轮 P2 残留逐条复核：`voucherQuery` FTS5 未转义与游标 JSON.parse、`ledger.ts` min/max_amount 的 0 被 falsy 忽略、`parseFloat` NaN、`Detail.vue` 小计行伪造日期、`AuxBalance` chunked 死代码、`hideZero` 恒真、`/ledger/balance` 休眠端点等**均原样存在**
+  - 现场核对：只读查询 `data/finance-0523.db`——262 张卡片 `salvage_rate` 全部 ≤1、`cashier_journal` 仅 RMB/USD（P0-3、P1-2 为"路径确定、尚未显形"的潜伏缺陷）
+  - 产出 `docs/2026-09-17-总账固定资产出纳模块综合评审报告.md`（含 P0/P1/P2 清单、file:line 证据、手工算账过程、收口式解决方案、修复批次建议、16 项待实测清单、3 项待产品决策）
+  - 本轮为**只读评审**，未修改任何业务代码；未执行 HTTP 实操
+
+- [x] 出纳模块结账 / 反结账（2026-09-16）
+  - 迁移 124 `cashier_period_closing`；服务 `cashierPeriodClosing.ts`（顺序结账 / 倒序反结 / 闸口）；日记账增删改导入 + 生成删凭证接闸
+  - 新页面 `/cashier/period-close`（权限 `cashier:param`）；工作台「结账」+「反结账」节点、菜单「出纳设置 → 出纳结账」
+  - 后端 1623 / 前端 572 用例全绿
+
+- [x] 全站页面字号对齐左侧导航（2026-09-16）
+  - `styles.css` 覆盖 Element 写死字号组件（步骤条 / 上传 / 结果页 / 空状态 / 消息框 / 抽屉等）
+  - 19 个页面的 16~24px 大标题统一为 `--cw-text-lg` / `--cw-text-xl`；KPI 数值与打印页有意保留
+
+- [x] 资产档案折旧科目预设纠正 + AccountSelect 完整路径显示（2026-09-16）
+  - 预设：管理用 → 管理费用/折旧、经营用 → 销售费用/折旧、生产用 → 制造费用/折旧（按父科目解析末级）
+  - `AccountSelect` 与资产档案表格科目统一显示「编码 上级/…/末级」
+
+- [x] 固定资产凭证在凭证录入/查询页只读（2026-09-16）
+  - `voucherSourceGuard.ts` 前端识别 `asset_*` 来源；录入页编辑改只读查看、删除拦截；查询页删除拦截
+  - 后端 `PUT /vouchers/:id` 增 `asset_*` 守卫（删除守卫已有）
+  - 待实测：需在浏览器窗格用 localhost:5275 登录后走一遍（192 IP 地址逐次弹授权）
+
+- [x] 固定资产工作台补齐「计提折旧 / 取消折旧」流程（2026-09-16）
+  - 新增独立全页面 `DepreciationReverse.vue`（`/asset/depreciation/reverse`）：按期间反折旧，只放行最新期、已记账/更晚期禁用并提示；共用 `deprHistory.ts` 分组工具
+  - 工作台流程图四节点重新指向（计提折旧自动预览 / 取消折旧 / 凭证生成→历史记录 / 折旧查询→折旧汇总表）；`AssetWorkspace.findMenuItem` 子页面按前缀归属权限
+  - 后端 `/asset/depr/history` 增 `voucher_status`；顺带修 FIX-180 资产报表变动记录 404
+  - 验证：浏览器全链路计提→反折旧通过；前端 569 用例、类型检查 0
+
+- [x] 固定资产模块评审修复 批次 A+B（2026-09-15，FIX-160 ~ FIX-179）
+  - P0×4：残值率双量纲统一（迁移 123 存量自动修正）+ normalizeSalvageRate 四入口；工作量法过滤/计提/反计提闭环（workload_done 闭环）；删卡片清理全部关联凭证与孤儿数据；reset 清凭证 + 删已完成盘点拦截 + 盘点凭证回写
+  - P1×10：处置补减值分录（AS-P1-1）；反折旧×已处置拦截（P1-4）；顺序闸兜底 + 禁止未来计提（P1-3）；平均年限末期尾差补提（P1-6）；增减变动表期初双计（P1-8）；明细账净值口径（P1-9）；折旧汇总历史净值（P1-10）；卡片 PUT 守卫（P1-11）；asset:impair 权限接线 + 处置/折旧/盘点 scope（P1-12）；撤销变动 rowid + dept 整组还原（P1-13）；拆分 rebased（P1-14）；起折日期脏数据（P1-15）；切期清空过期预览（P1-16）；处置/撤销期间校验（P1-17）；前端 8 页 v-permission
+  - 验证：后端 1618 / 前端 559 用例全绿、build 0 错、迁移 123 已执行（存量 254 卡片 0 行 >1）、已重启 3105/5275
+
+- [x] 固定资产模块评审：Bug 报告 + 优化建议（2026-09-15）
+  - 范围：卡片/变动/处置/领用/盘点/折旧/导入/报表 + 路由层 + 前端 10 页（不含出纳）；只读评审
+  - 新 P0×4（均人工复核）：残值率双量纲混存（卡片页百分数 vs 导入小数，变动后折旧静默停止）、工作量法漏提（use_months 过滤）、删卡片/reset/删盘点凭证断链死锁、删已完成盘点无校验+盘点凭证零回写
+  - 新 P1×17：带减值处置凭证必不平（功能阻断）、workload_done 从不累加、跳期闸未配置即失效、反折旧×处置脱钩、增减变动表期初双计、明细账净值口径错、卡片 PUT 绕过变动、asset:impair 权限摆设等
+  - 定向测试 56 用例全绿（现有测试均未覆盖上述问题）；与总账联动核对无新问题（FIX-131 闸不误拦）
+  - 产出 `docs/2026-09-15-固定资产模块评审Bug与优化报告.md`（含优化建议、优先级、待实测清单）
 
 - [x] 总账模块评审第二轮：P0/P1 全部修复（FIX-129 ~ FIX-159，2026-09-15）
   - 批次 A（P0）：年结后总账期初双计 / 空分录清空凭证 / amount_cents 绕过平衡 + 过账平衡闸 / 批量删除共用来源守卫（`voucherDelete.ts`）/ 导出漏负余额
@@ -19,6 +70,15 @@
   - 每批一次提交（共 6 个 commit）
 
 ## 待办
+
+- [ ] 三模块综合评审（2026-09-17）P0/P1 修复
+  - 报告：`docs/2026-09-17-总账固定资产出纳模块综合评审报告.md`（§五 给出收口式解决方案与 4 个批次）
+  - **第 0 步（止血）**：`services/voucherMutationGuard.ts` 统一凭证可变性守卫（消 P0-1、P1-12~15）；`assertGlPeriodOpen` 接入出纳生成凭证与 SCM 生成凭证（消 P0-2、P1-16）；出纳闸 fail-closed + 严格日期规范化（消 P1-7）；结账 `year` 整数校验 + 期间上限（消 P1-8、P1-9）
+  - **第 1 步（数据完整性）**：残值率 DB 触发器兜底 + 补 `applySplit`/`adjustSurplusAssets` + 修 `scmDoc.ts:1835` 与 ACD 导入（消 P0-3、P2-14）；盘亏明细加 `scrap_date IS NULL` + 快照一致性校验 + 按数量差比例核销（消 P0-4、P1-21）；原值变动下限校验（消 P1-17）；出纳闸补齐 8 类入口 + SCM 收付款接闸（消 P1-1、P1-6）；勾对批次唯一化或加 `bank_statement_id` 列（消 P1-4、P1-5）
+  - **第 2 步（口径与权限）**：本位币统一（消 P1-2）；`/cashier/reset` 权限对齐 + `daily-report` alsoPerms + `cashierImport` 独立 middleware（消 P1-3、P2-12、P2-13）；科目授权铺开到出纳全部查询/报表/导入（消 P1-10）；`cashier_journal.voucher_id` 列（消 P1-11、P2-6）
+  - **第 3 步（需产品确认）**：已提满资产原值增加后自动顺延使用月数（P1-18）；增减变动表改用 `fixed_asset_change` 取数（P1-19）；变动/处置/盘点禁填未来期间（P1-20）
+  - **需产品决策（3 项）**：① 出纳"存在未生成凭证流水时能否结账"（当前允许，与总账"全部记账才可结账"口径相反）；② 增减变动表"增加"是否含原值增加/改良；③ 已提满资产原值增加的处置口径
+  - **待实测 16 项**：见报告 §六（含出纳结账×总账反记账、结账期间出纳生成凭证、百分数卡片拆分、已处置卡片盘点、CNY 收款单出纳可见性、`2026.5` 年份锁死等，建议先在库副本上做）
 
 - [ ] 总账评审第二轮 P2 与优化（报告 §二 P2、§三 优化建议）
   - 未做的「优先做」项：`AuxBalance.vue` chunked 三函数（与进度条模板耦合）、`ForeignBalance/QuantityBalance` 恒真 `hideZero`、`/ledger/balance` 休眠端点删除、FTS5 关键字转义、游标 JSON try/catch、min/max_amount 为 0、parseFloat NaN、小计行伪造日期

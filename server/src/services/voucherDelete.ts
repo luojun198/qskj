@@ -1,5 +1,6 @@
 import type { Database } from 'better-sqlite3'
 import { deleteVoucherRecords } from './voucherEntry.js'
+import { getSourceImmutableReason, getVoucherImmutableReason } from './voucherMutationGuard.js'
 
 /**
  * FIX-132：凭证删除守卫与关联清理的单一出口。
@@ -9,23 +10,27 @@ import { deleteVoucherRecords } from './voucherEntry.js'
 
 export interface DeletableVoucherLike {
   id: string
-  voucher_no?: string | null
+  voucher_no?: string | number | null
   status?: string | null
   source?: string | null
+  voucher_date?: string | null
+  year?: number | string | null
+  period?: number | string | null
 }
 
-/** 返回不可删除的原因；可删返回 null */
-export function getVoucherUndeletableReason(voucher: DeletableVoucherLike): string | null {
+/**
+ * 返回不可删除的原因；可删返回 null。
+ * 传入 ctx 时同时校验总账期间闸与出纳期间闸（P1-12）；不传仅做状态 + 来源守卫（删除预览等只读场景）。
+ */
+export function getVoucherUndeletableReason(
+  voucher: DeletableVoucherLike,
+  ctx?: { db: Database; accountSetId: string }
+): string | null {
   if (voucher.status === 'posted') {
     return '已记账凭证不能删除'
   }
-  if (voucher.source === 'cashier') {
-    return '出纳生成的凭证不能直接删除，请取消对账后再试'
-  }
-  if (typeof voucher.source === 'string' && voucher.source.startsWith('asset_')) {
-    return '固定资产生成的凭证不能直接删除，请到固定资产模块反折旧/撤销处置/删除资产后再试'
-  }
-  return null
+  if (!ctx) return getSourceImmutableReason(voucher, 'delete')
+  return getVoucherImmutableReason({ db: ctx.db, accountSetId: ctx.accountSetId, voucher, operation: 'delete' })
 }
 
 /** 删除凭证主/分录/附件，并在同一事务内清理对端引用 */
@@ -54,7 +59,7 @@ export function deleteVoucherWithRefs(db: Database, accountSetId: string, vouche
 /** 批量删除：先逐张守卫，任一不可删整批拒绝；通过后在一个事务内逐张删除并清理引用 */
 export function deleteVouchersWithRefs(db: Database, accountSetId: string, vouchers: DeletableVoucherLike[]) {
   for (const v of vouchers) {
-    const reason = getVoucherUndeletableReason(v)
+    const reason = getVoucherUndeletableReason(v, { db, accountSetId })
     if (reason) {
       throw new Error(`${reason}：${v.voucher_no || v.id}`)
     }

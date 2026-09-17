@@ -15,6 +15,7 @@ import {
   validateVoucherForUnAudit,
 } from '../services/voucherEntry.js'
 import { isVoucherVisibleInAccountScope } from '../services/accountAuthorization.js'
+import { getVoucherImmutableReason } from '../services/voucherMutationGuard.js'
 
 const router = Router()
 router.use(authMiddleware)
@@ -191,6 +192,17 @@ router.post(
           results.push({ id, voucher_no: voucherNo, success: false, error: '凭证不存在' })
           continue
         }
+        // P1-14：总账 / 出纳期间闸
+        const unauditBlocked = getVoucherImmutableReason({
+          db,
+          accountSetId: req.accountSetId || '',
+          voucher,
+          operation: 'unaudit',
+        })
+        if (unauditBlocked) {
+          results.push({ id, voucher_no: voucherNo, success: false, error: unauditBlocked })
+          continue
+        }
 
         applyVoucherUnAudit({ db, voucherId: id })
         results.push({ id, voucher_no: voucherNo, success: true })
@@ -226,6 +238,16 @@ router.post(
       !isVoucherVisibleInAccountScope(db, req.accountScope, id, req.accountSetId || '')
     ) {
       return res.status(404).json({ code: 404, message: '凭证不存在' })
+    }
+    // P1-14：总账 / 出纳期间闸（此前反审核只判状态，已结账期间的凭证可退回草稿）
+    const unauditBlocked = getVoucherImmutableReason({
+      db,
+      accountSetId: req.accountSetId || '',
+      voucher,
+      operation: 'unaudit',
+    })
+    if (unauditBlocked) {
+      return res.status(400).json({ code: 400, message: unauditBlocked })
     }
     applyVoucherUnAudit({ db, voucherId: id })
     res.json({ code: 0, message: '反审核成功' })

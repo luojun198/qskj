@@ -17,6 +17,7 @@ import {
   validateVoucherForUnpost,
 } from './voucherPosting.js'
 import { validateInitBalanceBalancedForYears } from './initBalanceTrial.js'
+import { getVoucherImmutableReason } from './voucherMutationGuard.js'
 import { formatVoucherDisplayLabel } from '../utils/displayLabel.js'
 
 type BatchVoucherError = { id: string; label: string; error: string }
@@ -127,7 +128,10 @@ export async function batchUnAuditAsync(params: BatchOperationParams): Promise<s
       for (let i = 0; i < vouchers.length; i++) {
         const voucher = vouchers[i]
         try {
-          const validationError = validateVoucherForUnAudit(voucher)
+          // P1-14：与同步接口一致，补总账 / 出纳期间闸
+          const validationError =
+            validateVoucherForUnAudit(voucher) ||
+            getVoucherImmutableReason({ db: params.db, accountSetId: params.accountSetId, voucher, operation: 'unaudit' })
           if (validationError) {
             failed++
             pushVoucherBatchError(errors, voucher, validationError)
@@ -311,7 +315,10 @@ export async function batchUnpostAsync(params: BatchOperationParams): Promise<st
       for (let i = 0; i < vouchers.length; i++) {
         const voucher = vouchers[i]
         try {
-          const validationError = validateVoucherForUnpost(voucher)
+          // 总账 / 出纳期间闸（此前异步批量反记账没有任何期间校验）
+          const validationError =
+            validateVoucherForUnpost(voucher) ||
+            getVoucherImmutableReason({ db: params.db, accountSetId: params.accountSetId, voucher, operation: 'unpost' })
           if (validationError) {
             failed++
             pushVoucherBatchError(errors, voucher, validationError)

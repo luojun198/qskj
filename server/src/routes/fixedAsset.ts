@@ -12,7 +12,9 @@ import {
 import { disposeAsset, cancelDisposal } from '../services/assetDisposal.js'
 import { generatePurchaseVoucher } from '../services/assetAcquisition.js'
 import { deleteVoucherRecords } from '../services/voucherEntry.js'
-import { assertPeriodOpen } from '../services/assetVoucherBuilder.js'
+import { assertPeriodOpen, normalizeSalvageRate } from '../services/assetVoucherBuilder.js'
+import { deleteVoucherWithRefs } from '../services/voucherDelete.js'
+import { getVoucherImmutableReason } from '../services/voucherMutationGuard.js'
 import { getDictDeleteBlockReason, buildAssetCardUpdate } from '../services/assetCard.js'
 import {
   applyAssetChange,
@@ -205,7 +207,8 @@ router.post('/asset/reset', operationLog('资产初始化', '固定资产'), asy
   }
   const businessTables = [
     'fixed_asset_inventory_item', 'fixed_asset_inventory', 'fixed_asset_workload',
-    'fixed_asset_change', 'fixed_asset_depr', 'fixed_asset',
+    'fixed_asset_change', 'fixed_asset_depr', 'fixed_asset_requisition',
+    'fixed_asset_attachments', 'fixed_asset',
   ]
   const masterTables = [
     'fixed_asset_category', 'fixed_asset_dept', 'fixed_asset_purpose',
@@ -215,12 +218,30 @@ router.post('/asset/reset', operationLog('资产初始化', '固定资产'), asy
   const existing = new Set(
     (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as any[]).map(r => r.name)
   )
+
+  // AS-P0-4：清空资产业务数据时，资产模块产生的凭证必须一并清理，
+  // 否则卡片清空后这些 asset_* 来源凭证既无对端记录、又被删除守卫拦截，永远无法删除。
+  // 已记账凭证先拦截，保证总账与 account_balances 不被破坏。
+  const assetVouchers = existing.has('vouchers')
+    ? (db.prepare(
+        "SELECT id, voucher_no, status, source FROM vouchers WHERE account_set_id=? AND source LIKE 'asset_%'"
+      ).all(aid) as Array<{ id: string; voucher_no: string; status: string; source: string | null }>)
+    : []
+  const postedVoucher = assetVouchers.find(v => v.status === 'posted')
+  if (postedVoucher) {
+    return res.status(400).json({
+      code: 400,
+      message: `资产凭证存在已记账凭证（${postedVoucher.voucher_no}），请先取消记账后再清空资产数据`,
+    })
+  }
+
   db.transaction(() => {
+    for (const v of assetVouchers) deleteVoucherWithRefs(db, aid, v)
     for (const t of tables) {
       if (existing.has(t)) db.prepare(`DELETE FROM ${t} WHERE account_set_id=?`).run(aid)
     }
   })()
-  res.json({ code: 0, data: { ok: true, mode, cleared: tables.filter(t => existing.has(t)), backup: backupFile } })
+  res.json({ code: 0, data: { ok: true, mode, cleared: tables.filter(t => existing.has(t)), deletedVouchers: assetVouchers.length, backup: backupFile } })
 })
 
 /** 读取单个资产参数值（空则返回 null） */
@@ -452,6 +473,48 @@ router.post('/asset/cards', operationLog('固定资产新增', '固定资产'), 
     user_name, keeper, source, install_place, remark,
     accum_depr = 0, depr_months_done = 0
   } = req.body
+
+  // AS-P0-1：残值率统一为小数口径（>1 视为百分数 ÷100）
+  const normalizedSalvageRate = normalizeSalvageRate(salvage_rate)
+  if (salvage_rate !== undefined && salvage_rate !== null && salvage_rate !== '' && normalizedSalvageRate === null) {
+    return res.status(400).json({ code: 400, message: '残值率必须是 0~1 的小数（如 0.05 表示 5%）' })
+  }
+
+  // 数值与方法要素校验（AS-P1-11/P2：原先 NaN 会直接落库成 NULL、方法与要素不匹配会静默漏提）
+  const originalNum = Number(original_value)
+  const accumNum = Number(accum_depr)
+  if (!Number.isFinite(originalNum) || originalNum < 0) {
+    return res.status(400).json({ code: 400, message: '原值必须是大于等于 0 的数字' })
+  }
+  if (!Number.isFinite(accumNum) || accumNum < 0) {
+    return res.status(400).json({ code: 400, message: '累计折旧必须是大于等于 0 的数字' })
+  }
+  if (accumNum > originalNum) {
+    return res.status(400).json({ code: 400, message: '累计折旧不能大于原值' })
+  }
+  for (const dateField of ['acquire_date', 'start_depr_date'] as const) {
+    const v = (req.body as any)[dateField]
+    if (v && !/^\d{4}-\d{2}-\d{2}$/.test(String(v))) {
+      return res.status(400).json({ code: 400, message: `${dateField === 'acquire_date' ? '取得日期' : '起折日期'}必须为 YYYY-MM-DD 格式` })
+    }
+  }
+  if (qty !== undefined && qty !== null && (!Number.isFinite(Number(qty)) || Number(qty) < 0)) {
+    return res.status(400).json({ code: 400, message: '数量必须是大于等于 0 的数字' })
+  }
+  const monthsNum = use_months === undefined || use_months === null || use_months === '' ? null : Number(use_months)
+  if (monthsNum !== null && (!Number.isInteger(monthsNum) || monthsNum <= 0)) {
+    return res.status(400).json({ code: 400, message: '使用月数必须是正整数' })
+  }
+  if (depr_method === '2') {
+    const workloadNum = Number(total_workload)
+    if (!Number.isFinite(workloadNum) || workloadNum <= 0) {
+      return res.status(400).json({ code: 400, message: '工作量法必须填写大于 0 的总工作量' })
+    }
+  } else if (monthsNum === null) {
+    // 非工作量法必须填使用月数，否则该资产永远进不了折旧预览（静默漏提）
+    return res.status(400).json({ code: 400, message: '请填写大于 0 的使用月数' })
+  }
+
   // 计算净值：原值 - 累计折旧 (不扣除残值，残值是在提完折旧后剩余的金额)
   const net_value = Number(original_value) - Number(accum_depr)
   db.prepare(
@@ -463,7 +526,7 @@ router.post('/asset/cards', operationLog('固定资产新增', '固定资产'), 
   ).run(
     id, req.accountSetId, asset_no, nm ?? asset_name, category_code ?? null, status_code ?? null,
     dept_code ?? null, purpose_code ?? null, acquire_date ?? null, start_depr_date ?? null,
-    Number(original_value), Number(salvage_rate), Number(salvage_value), depr_method ?? null,
+    Number(original_value), normalizedSalvageRate ?? 0, Number(salvage_value), depr_method ?? null,
     use_months ?? null, use_years ?? null, total_workload ?? null,
     Number(accum_depr), Number(depr_months_done), net_value,
     card_no ?? null, qty, unit ?? null, user_name ?? null, keeper ?? null,
@@ -510,10 +573,30 @@ router.put('/asset/cards/:id', operationLog('固定资产修改', '固定资产'
   const existing = db.prepare('SELECT id FROM fixed_asset WHERE id=? AND account_set_id=?').get(req.params.id, req.accountSetId)
   if (!existing) return res.status(404).json({ code: 404, message: '资产不存在' })
   const cur = db.prepare(
-    'SELECT original_value, salvage_rate, salvage_value, accum_depr, impairment_amount FROM fixed_asset WHERE id=?'
+    'SELECT original_value, salvage_rate, salvage_value, accum_depr, impairment_amount, scrap_date, depr_months_done, use_months FROM fixed_asset WHERE id=?'
   ).get(req.params.id) as any
 
-  const fields = buildAssetCardUpdate(req.body ?? {}, cur)
+  // AS-P1-11：卡片直改不得绕过业务流程
+  if (cur?.scrap_date) {
+    return res.status(400).json({ code: 400, message: '该资产已处置，请先撤销处置再编辑' })
+  }
+  if ((req.body ?? {}).status_code === '04') {
+    return res.status(400).json({ code: 400, message: '报废状态请通过处置流程办理，不能直接修改卡片状态' })
+  }
+  if (
+    (req.body ?? {}).use_months !== undefined &&
+    cur?.use_months != null &&
+    Number((req.body as any).use_months) <= Number(cur.depr_months_done || 0)
+  ) {
+    return res.status(400).json({ code: 400, message: '调整后的使用月数不能小于等于已计提月数' })
+  }
+
+  let fields: Record<string, unknown>
+  try {
+    fields = buildAssetCardUpdate(req.body ?? {}, cur)
+  } catch (e: any) {
+    return res.status(400).json({ code: 400, message: e.message })
+  }
   const cols = Object.keys(fields)
   const sets = cols.map(c => `${c}=?`).concat("updated_at=datetime('now')")
 
@@ -527,30 +610,56 @@ router.put('/asset/cards/:id', operationLog('固定资产修改', '固定资产'
 // DELETE /asset/cards/:id
 router.delete('/asset/cards/:id', operationLog('固定资产删除', '固定资产'), (req: AuthRequest, res) => {
   const db = getDb()
-  const row = db.prepare('SELECT id, asset_no, purchase_voucher_id FROM fixed_asset WHERE id=? AND account_set_id=?').get(req.params.id, req.accountSetId) as any
+  const row = db.prepare(
+    'SELECT id, asset_no, purchase_voucher_id, scrap_voucher_id FROM fixed_asset WHERE id=? AND account_set_id=?'
+  ).get(req.params.id, req.accountSetId) as any
   if (!row) return res.status(404).json({ code: 404, message: '资产不存在' })
 
-  // P0-3：该资产的购置凭证按外键精确定位（原按 remark 中「（编号 X）」LIKE 反查，
-  // 备注被改或编号含特殊字符时会漏删/误删）；连带删除，已记账则拦截
-  const purchaseVouchers = (
-    row.purchase_voucher_id
-      ? db
-          .prepare("SELECT id, status FROM vouchers WHERE id=? AND account_set_id=?")
-          .all(row.purchase_voucher_id, req.accountSetId)
-      : []
-  ) as Array<{ id: string; status: string }>
-  if (purchaseVouchers.some(v => v.status === 'posted')) {
-    return res.status(400).json({ code: 400, message: '该资产的购置凭证已记账，请先取消记账后再删除资产' })
+  // AS-P0-3：删除资产时把该资产产生的**全部**凭证一并删除。
+  // 此前只删购置凭证，原值变动/减值/处置生成的凭证成为孤儿——资产与撤销变动入口都没了，
+  // 而凭证删除守卫（voucherDelete.ts）又拦截 asset_* 来源，这些凭证永远无法删除。
+  const voucherIds = new Set<string>()
+  if (row.purchase_voucher_id) voucherIds.add(row.purchase_voucher_id)
+  if (row.scrap_voucher_id) voucherIds.add(row.scrap_voucher_id)
+  const changeVoucherRows = db.prepare(
+    'SELECT DISTINCT voucher_id FROM fixed_asset_change WHERE account_set_id=? AND asset_no=? AND voucher_id IS NOT NULL'
+  ).all(req.accountSetId, row.asset_no) as Array<{ voucher_id: string }>
+  for (const r of changeVoucherRows) voucherIds.add(r.voucher_id)
+
+  const vouchers = [...voucherIds]
+    .map(vid => db.prepare('SELECT id, voucher_no, status, source, voucher_date, year, period FROM vouchers WHERE id=? AND account_set_id=?').get(vid, req.accountSetId))
+    .filter(Boolean) as Array<{ id: string; voucher_no: string; status: string; source: string | null; voucher_date: string; year: number; period: number }>
+  const posted = vouchers.find(v => v.status === 'posted')
+  if (posted) {
+    return res.status(400).json({ code: 400, message: `该资产存在已记账凭证（${posted.voucher_no}），请先取消记账后再删除资产` })
   }
 
   let deletedVouchers = 0
   db.transaction(() => {
-    for (const v of purchaseVouchers) {
-      deleteVoucherRecords(db, v.id)
+    // 引用清理（fx_reval/冲红/供应链）统一走 voucherDelete.ts（FIX-132 同源）。
+    // 来源守卫在这里不适用（本模块就是 asset_* 凭证的回收入口，原先调 getVoucherUndeletableReason 必然抛错），
+    // 只过总账 / 出纳期间闸。
+    for (const v of vouchers) {
+      const reason = getVoucherImmutableReason({
+        db,
+        accountSetId: req.accountSetId || '',
+        voucher: { ...v, source: null },
+        operation: 'delete',
+      })
+      if (reason) throw new Error(`${reason}：${v.voucher_no}`)
+      deleteVoucherWithRefs(db, req.accountSetId || '', v)
       deletedVouchers++
     }
-    db.prepare('DELETE FROM fixed_asset_change WHERE account_set_id=? AND asset_no=?').run(req.accountSetId, row.asset_no)
-    db.prepare('DELETE FROM fixed_asset_depr WHERE account_set_id=? AND asset_no=?').run(req.accountSetId, row.asset_no)
+    // 孤儿业务数据：变动流水、折旧记录、工作量、领用记录、附件记录
+    for (const sql of [
+      'DELETE FROM fixed_asset_change WHERE account_set_id=? AND asset_no=?',
+      'DELETE FROM fixed_asset_depr WHERE account_set_id=? AND asset_no=?',
+      'DELETE FROM fixed_asset_workload WHERE account_set_id=? AND asset_no=?',
+      'DELETE FROM fixed_asset_requisition WHERE account_set_id=? AND asset_no=?',
+    ]) {
+      db.prepare(sql).run(req.accountSetId, row.asset_no)
+    }
+    db.prepare('DELETE FROM fixed_asset_attachments WHERE account_set_id=? AND asset_id=?').run(req.accountSetId, req.params.id)
     db.prepare('DELETE FROM fixed_asset WHERE id=?').run(req.params.id)
   })()
   res.json({ code: 0, data: { ok: true, deletedPurchaseVouchers: deletedVouchers } })
@@ -595,6 +704,7 @@ router.post(
         generateVoucher: req.body.generate_voucher ?? false,
         operatorName: (req as any).userName || '系统',
         voucherTypeId: getAssetParamValue(db, req.accountSetId || '', 'asset:disposal_voucher_type_id'),
+        accountScope: req.accountScope,
       })
       res.json({ code: 0, data: result })
     } catch (e: any) {
@@ -668,6 +778,14 @@ router.post(
       req.body || {}
     if (!kind) return res.status(400).json({ code: 400, message: '变动类型不能为空' })
     if (!change_date) return res.status(400).json({ code: 400, message: '变动日期不能为空' })
+
+    // AS-P1-12：减值单独要求 asset:impair 权限（此前该权限码定义了却无任何路由使用；
+    // 已有 asset:change 的用户天然兼容放行）
+    if (kind === 'impairment' && !req.permissions?.includes('*')) {
+      if (!req.permissions?.includes('asset:change') && !req.permissions?.includes('asset:impair')) {
+        return res.status(403).json({ code: 403, message: '无此操作权限（需要「资产减值」权限）' })
+      }
+    }
 
     try {
       const db = getDb()
@@ -1086,7 +1204,18 @@ router.get('/asset/workload', (req: AuthRequest, res) => {
 // POST /asset/workload  — 保存工作量
 router.post('/asset/workload', (req: AuthRequest, res) => {
   const { year, month, workloads } = req.body  // workloads: { asset_no: number, ... }
-  if (!year || !month) return res.status(400).json({ code: 400, message: '请提供年份和月份' })
+  if (!year || !month || month < 1 || month > 12) {
+    return res.status(400).json({ code: 400, message: '请提供有效的年份和月份' })
+  }
+  if (!workloads || typeof workloads !== 'object' || Array.isArray(workloads)) {
+    return res.status(400).json({ code: 400, message: 'workloads 必须是 { 资产编号: 工作量 } 的对象' })
+  }
+  for (const [assetNo, wl] of Object.entries(workloads)) {
+    const n = Number(wl)
+    if (!Number.isFinite(n) || n < 0) {
+      return res.status(400).json({ code: 400, message: `工作量必须是大于等于 0 的数字（资产 ${assetNo}）` })
+    }
+  }
   const db = getDb()
   const asid = req.accountSetId || ''
   const upsert = db.prepare(`
@@ -1140,6 +1269,13 @@ router.post(
       return res.status(400).json({ code: 400, message: e.message })
     }
 
+    // P2-1：不允许对未来期间计提（此前可对 2030-01 随意计提）
+    const now = new Date()
+    const nowYm = now.getFullYear() * 100 + (now.getMonth() + 1)
+    if (Number(year) * 100 + Number(month) > nowYm) {
+      return res.status(400).json({ code: 400, message: '不能对晚于当前月份的期间计提折旧' })
+    }
+
     // 顺序校验（参数驱动 + 逐月严格）：设置了折旧起始期间后，
     // 从起始期间起到本期之前的每个月都必须已生成折旧凭证，任一月缺凭证即拦截。
     const startParam = db.prepare(
@@ -1169,6 +1305,24 @@ router.post(
           if (pm > 12) { pm = 1; py++ }
         }
       }
+    } else {
+      // AS-P1-3：未配置起始期间时的兜底连续性校验——
+      // 此前 8 月漏提、9 月直接计提完全放行，中间月份永远漏提、累计折旧序列断裂
+      const lastRow = db.prepare(
+        'SELECT year, month FROM fixed_asset_depr WHERE account_set_id=? ORDER BY year DESC, month DESC LIMIT 1'
+      ).get(asid) as { year: number; month: number } | undefined
+      if (lastRow) {
+        const nextMonth = lastRow.month >= 12 ? 1 : lastRow.month + 1
+        const nextYear = lastRow.month === 12 ? lastRow.year + 1 : lastRow.year
+        const targetYm = year * 100 + month
+        const expectedYm = nextYear * 100 + nextMonth
+        if (targetYm > expectedYm) {
+          return res.status(400).json({
+            code: 400,
+            message: `检测到漏提：最近已计提期间为 ${lastRow.year}年${lastRow.month}月，请先完成 ${nextYear}年${nextMonth}月 折旧（或在系统参数中配置「折旧起始期间」）`,
+          })
+        }
+      }
     }
 
     // 读取当月工作量用于计算
@@ -1195,6 +1349,13 @@ router.post(
             makerName: (req as any).userName || '系统',
             voucherTypeId: getAssetParamValue(db, asid, 'asset:depr_voucher_type_id'),
           })
+          // AS-P1-12：科目授权——折旧凭证分录科目不在授权范围内时删除凭证并告警（计提保留）
+          const scopeErr = assertVoucherEntriesInScopeById(db, req.accountScope, voucherResult.voucherId, asid)
+          if (scopeErr) {
+            deleteVoucherRecords(db, voucherResult.voucherId)
+            voucherResult = null
+            throw new Error(scopeErr)
+          }
           // 回写凭证关联：该期各折旧记录写入同一 voucher_id
           db.prepare('UPDATE fixed_asset_depr SET voucher_id=? WHERE account_set_id=? AND year=? AND month=?')
             .run(voucherResult.voucherId, asid, year, month)
@@ -1229,7 +1390,8 @@ router.get('/asset/depr/history', (req: AuthRequest, res) => {
     SELECT fd.*, fa.asset_name, fa.original_value,
       fp.name as purpose_name, fp.expense_account,
       fd2.name as dept_name,
-      v.voucher_no as voucher_no
+      v.voucher_no as voucher_no,
+      v.status as voucher_status
     FROM fixed_asset_depr fd
     LEFT JOIN fixed_asset fa ON fa.account_set_id=fd.account_set_id AND fa.asset_no=fd.asset_no
     LEFT JOIN fixed_asset_purpose fp ON fp.account_set_id=fd.account_set_id AND fp.code=fd.purpose_code
@@ -1508,6 +1670,7 @@ router.post('/asset/inventory/:id/complete', operationLog('固定资产盘点完
       surplusAccount: getAssetParamValue(db, asid, 'asset:inventory_surplus_account') || '6901',
       deficitAccount: getAssetParamValue(db, asid, 'asset:inventory_deficit_account') || '6901',
       operatorName: (req as any).userName || '系统',
+      accountScope: req.accountScope,
     })
     res.json({ code: 0, data: result })
   } catch (e: any) {
