@@ -37,6 +37,25 @@ export function listCashierAccounts(accountSetId: string, ctx?: AccountScopeCont
     .all(...params) as CashierAccount[]
 }
 
+/**
+ * 科目授权（P1-10）：出纳表用 account_code 关联科目，这里把科目 id 白名单换算成对 code 列的条件。
+ * 无授权上下文或不受限时不追加条件。
+ */
+export function appendCashierCodeScopeCondition(
+  ctx: AccountScopeContext | undefined,
+  accountSetId: string,
+  codeColumn: string,
+  conditions: string[],
+  params: any[]
+): void {
+  if (!ctx || ctx.bypass || !ctx.restricted) return
+  const inner: string[] = ['sa.account_set_id = ?', `sa.code = ${codeColumn}`]
+  const innerParams: any[] = [accountSetId]
+  appendAccountScopeCondition(ctx, 'sa.id', inner, innerParams)
+  conditions.push(`EXISTS (SELECT 1 FROM accounts sa WHERE ${inner.join(' AND ')})`)
+  params.push(...innerParams)
+}
+
 export interface JournalRow {
   id: string
   account_code: string
@@ -58,21 +77,52 @@ export interface JournalRow {
   balance?: number
 }
 
+/**
+ * 账套本位币（P1-2）：优先 `currencies.is_base`，其次 `system_params.base_currency`，缺省 RMB。
+ * 出纳全链路此前硬编码 RMB，而供应链收付款单默认 CNY，同一本位币被拆成两个"币种"，
+ * 收付款流水在出纳默认视图里消失。CNY 与 RMB 视为同一本位币（人民币的两种写法）。
+ */
+export function getCashierBaseCurrency(db: any, accountSetId: string): string {
+  const hasTable = (t: string) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(t)
+  let code = ''
+  if (hasTable('currencies')) {
+    const row = db.prepare('SELECT code FROM currencies WHERE account_set_id=? AND is_base=1 LIMIT 1').get(accountSetId) as any
+    code = String(row?.code || '')
+  }
+  if (!code && hasTable('system_params')) {
+    const row = db
+      .prepare("SELECT param_value FROM system_params WHERE account_set_id=? AND param_key='base_currency' LIMIT 1")
+      .get(accountSetId) as any
+    code = String(row?.param_value || '')
+  }
+  return normalizeCashierCurrency(code || 'RMB', 'RMB')
+}
+
+/** 币别归一：大小写、CNY→RMB（人民币两种写法视为同一本位币）；空值回退到本位币 */
+export function normalizeCashierCurrency(raw: unknown, base: string): string {
+  const code = String(raw ?? '').trim().toUpperCase()
+  if (!code) return base
+  if (code === 'CNY') return 'RMB'
+  return code
+}
+
 /** 出纳期初余额（无记录返回 0） */
-export function getInitBalance(accountSetId: string, accountCode: string, currency = 'RMB'): number {
+export function getInitBalance(accountSetId: string, accountCode: string, currency?: string): number {
   const db = getDb()
+  const cur = currency || getCashierBaseCurrency(db, accountSetId)
   const row = db
     .prepare(
       `SELECT balance FROM cashier_init_balance
        WHERE account_set_id = ? AND account_code = ? AND currency = ?`
     )
-    .get(accountSetId, accountCode, currency) as { balance: number } | undefined
+    .get(accountSetId, accountCode, cur) as { balance: number } | undefined
   return row?.balance ?? 0
 }
 
-/** 出纳科目涉及到的币别（含本位币 RMB），供前端币种切换 */
+/** 出纳科目涉及到的币别（本位币排第一），供前端币种切换；CNY 并入 RMB 不重复列出 */
 export function listCashierCurrencies(accountSetId: string): string[] {
   const db = getDb()
+  const base = getCashierBaseCurrency(db, accountSetId)
   const rows = db.prepare(`
     SELECT DISTINCT currency FROM (
       SELECT currency FROM cashier_journal WHERE account_set_id=? AND currency IS NOT NULL AND currency<>''
@@ -80,9 +130,8 @@ export function listCashierCurrencies(accountSetId: string): string[] {
       SELECT currency FROM cashier_init_balance WHERE account_set_id=? AND currency IS NOT NULL AND currency<>''
     ) ORDER BY currency
   `).all(accountSetId, accountSetId) as Array<{ currency: string }>
-  const codes = rows.map(r => r.currency.trim().toUpperCase())
-  if (!codes.includes('RMB')) codes.unshift('RMB')
-  return codes
+  const codes = [...new Set(rows.map(r => normalizeCashierCurrency(r.currency, base)))].filter(c => c !== base)
+  return [base, ...codes]
 }
 
 /**
@@ -107,10 +156,13 @@ export function searchJournals(params: {
   hasVoucher?: 0 | 1
   page?: number
   pageSize?: number
+  /** 科目授权上下文（P1-10） */
+  scope?: AccountScopeContext
 }): { list: JournalRow[]; total: number } {
   const db = getDb()
   const conds = ['account_set_id = ?']
   const vals: any[] = [params.accountSetId]
+  appendCashierCodeScopeCondition(params.scope, params.accountSetId, 'cashier_journal.account_code', conds, vals)
 
   if (params.accountCodes && params.accountCodes.length > 0) {
     conds.push(`account_code IN (${params.accountCodes.map(() => '?').join(',')})`)
@@ -118,7 +170,7 @@ export function searchJournals(params: {
   }
   if (params.currency) {
     conds.push('currency = ?')
-    vals.push(params.currency)
+    vals.push(normalizeCashierCurrency(params.currency, getCashierBaseCurrency(db, params.accountSetId)))
   }
   if (params.startDate) {
     conds.push('biz_date >= ?')
@@ -187,9 +239,9 @@ export function searchJournals(params: {
   const countRow = db.prepare(`SELECT COUNT(*) as total FROM cashier_journal WHERE ${whereClause}`).get(...vals) as { total: number }
   const total = countRow.total
 
-  // Pagination
-  const page = params.page || 1
-  const pageSize = params.pageSize || 100
+  // Pagination（P2-3：钳制，page_size=-1 会返回全表、1e100 直接 500）
+  const page = Math.max(1, Math.trunc(Number(params.page)) || 1)
+  const pageSize = Math.min(2000, Math.max(1, Math.trunc(Number(params.pageSize)) || 100))
   const offset = (page - 1) * pageSize
 
   const sql = `
@@ -214,7 +266,7 @@ export function listJournal(params: {
 }): { opening: number; rows: JournalRow[]; closing: number; totalDebit: number; totalCredit: number } {
   const db = getDb()
   const { accountSetId, accountCode } = params
-  const currency = params.currency || 'RMB'
+  const currency = normalizeCashierCurrency(params.currency, getCashierBaseCurrency(db, accountSetId))
 
   const opening = getInitBalance(accountSetId, accountCode, currency)
 
@@ -483,7 +535,7 @@ export function getBankReconciliation(params: {
 }): ReconciliationData {
   const db = getDb()
   const { accountSetId, accountCode } = params
-  const currency = params.currency || 'RMB'
+  const currency = normalizeCashierCurrency(params.currency, getCashierBaseCurrency(db, accountSetId))
   const endDate = params.endDate
 
   // 1. 企业账面余额 = 期初 + 累计借 − 累计贷（截至 endDate）
@@ -770,18 +822,22 @@ export function getAccountBalanceReport(params: {
   startDate: string
   endDate: string
   currency?: string
+  /** 科目授权上下文（P1-10）：只汇总白名单内的现金 / 银行科目 */
+  scope?: AccountScopeContext
 }): { rows: DailyReportRow[]; total_income: number; total_expense: number } {
   const db = getDb()
   const { accountSetId, startDate, endDate } = params
-  const currency = params.currency || 'RMB'
+  const currency = normalizeCashierCurrency(params.currency, getCashierBaseCurrency(db, accountSetId))
 
-  // 现金+银行科目列表
+  // 现金+银行科目列表（按科目授权过滤）
+  const accConds = ['a.account_set_id=?', '(a.is_cash=1 OR a.is_bank=1)', 'NOT EXISTS (SELECT 1 FROM accounts c WHERE c.parent_id=a.id)']
+  const accParams: any[] = [accountSetId]
+  appendAccountScopeCondition(params.scope, 'a.id', accConds, accParams)
   const accounts = db.prepare(`
     SELECT a.code, a.name FROM accounts a
-    WHERE a.account_set_id=? AND (a.is_cash=1 OR a.is_bank=1)
-      AND NOT EXISTS (SELECT 1 FROM accounts c WHERE c.parent_id=a.id)
+    WHERE ${accConds.join(' AND ')}
     ORDER BY a.code
-  `).all(accountSetId) as Array<{ code: string; name: string }>
+  `).all(...accParams) as Array<{ code: string; name: string }>
 
   const rows: DailyReportRow[] = []
   let totalIncome = 0, totalExpense = 0
@@ -823,13 +879,16 @@ export function getCashFlowSummary(params: {
   endDate?: string
   currency?: string
   groupBy: 'counter_account' | 'settle_type' | 'month'
+  /** 科目授权上下文（P1-10） */
+  scope?: AccountScopeContext
 }): any[] {
   const db = getDb()
   const { accountSetId, startDate, endDate, groupBy } = params
 
   const conds = ['j.account_set_id=?']
   const vals: any[] = [accountSetId]
-  if (params.currency) { conds.push('j.currency = ?'); vals.push(params.currency) }
+  appendCashierCodeScopeCondition(params.scope, accountSetId, 'j.account_code', conds, vals)
+  if (params.currency) { conds.push('j.currency = ?'); vals.push(normalizeCashierCurrency(params.currency, getCashierBaseCurrency(db, accountSetId))) }
   if (startDate) { conds.push('j.biz_date >= ?'); vals.push(startDate) }
   if (endDate) { conds.push('j.biz_date <= ?'); vals.push(endDate) }
 
@@ -872,6 +931,29 @@ export function getCashFlowSummary(params: {
   }))
 }
 
+/**
+ * P1-11：凭证重排号 / 插号 / 手工改号后，按 voucher_id 把新的 年/期/类型/号 刷回出纳日记账。
+ * 日记账以 voucher_id 为真正的关联键，冗余的号只作展示与老库回退匹配。
+ * 老库（无 voucher_id 列）静默跳过。
+ */
+export function syncCashierVoucherNos(db: any, accountSetId: string, voucherIds: string[]): number {
+  if (!voucherIds.length) return 0
+  const cols = db.prepare('PRAGMA table_info(cashier_journal)').all() as Array<{ name: string }>
+  if (!cols.some(c => c.name === 'voucher_id')) return 0
+  const upd = db.prepare(`
+    UPDATE cashier_journal
+       SET voucher_year = (SELECT v.year FROM vouchers v WHERE v.id = cashier_journal.voucher_id),
+           voucher_month = (SELECT v.period FROM vouchers v WHERE v.id = cashier_journal.voucher_id),
+           voucher_type = (SELECT v.voucher_type_id FROM vouchers v WHERE v.id = cashier_journal.voucher_id),
+           voucher_no = (SELECT v.voucher_no FROM vouchers v WHERE v.id = cashier_journal.voucher_id),
+           updated_at = datetime('now')
+     WHERE account_set_id = ? AND voucher_id = ?
+  `)
+  let n = 0
+  for (const id of voucherIds) n += upd.run(accountSetId, id).changes
+  return n
+}
+
 // ── 凭证自动同步到出纳日记账 ───────────────────────────────
 
 /**
@@ -911,6 +993,7 @@ export function syncCashierFromVoucher(params: {
 
   // P1-6：目标月份出纳已结账则拒绝写入（总账侧守卫已先拦，这里兜底）
   assertCashierPeriodOpen(db, accountSetId, voucherDate)
+  const baseCurrency = getCashierBaseCurrency(db, accountSetId)
 
   // 查重用空值安全的 IS 比较：CW 凭证类型为 UUID，vt 恒为 null，
   // 若用 `voucher_type=?`（NULL 比较永不成立）会导致每次编辑凭证都重复插入日记账（FIX：见修复日志）。
@@ -931,7 +1014,7 @@ export function syncCashierFromVoucher(params: {
     INSERT INTO cashier_journal
       (id, account_set_id, account_code, currency, biz_date, seq, summary, debit, credit,
        counter_account, voucher_year, voucher_month, voucher_type, voucher_no, voucher_id, created_by)
-    VALUES (?, ?, ?, 'RMB', ?, 0, ?, ?, ?, NULL, ?, ?, ?, ?, ?, '凭证同步')
+    VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, NULL, ?, ?, ?, ?, ?, '凭证同步')
   `)
   const update = db.prepare(`
     UPDATE cashier_journal
@@ -958,7 +1041,7 @@ export function syncCashierFromVoucher(params: {
       if (existing.biz_date !== voucherDate) assertCashierPeriodOpen(db, accountSetId, existing.biz_date)
       update.run(debit, credit, summary, voucherDate, voucherYear, voucherMonth, voucherId, existing.id)
     } else {
-      insert.run(uuidv4(), accountSetId, entry.account_code, voucherDate, summary, debit, credit,
+      insert.run(uuidv4(), accountSetId, entry.account_code, baseCurrency, voucherDate, summary, debit, credit,
         voucherYear, voucherMonth, vt, voucherNo, voucherId)
     }
     synced++

@@ -10,10 +10,14 @@ import { v4 as uuidv4 } from 'uuid'
 import multer from 'multer'
 import { getDb } from '../db/index.js'
 import { authMiddleware, AuthRequest } from '../middleware/index.js'
+import { cashierPermissionGuard } from '../middleware/cashierPermission.js'
+import { assertAccountIdInScope } from '../services/accountAuthorization.js'
 import { assertCashierPeriodOpen, normalizeBizDate } from '../services/cashierPeriodClosing.js'
 
 const router = Router()
 router.use(authMiddleware)
+// P2-13：显式挂权限守卫，不再依赖 index.ts 里 cashierRoutes 先于本路由挂载
+router.use(cashierPermissionGuard)
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } })
 
 // 预览缓存（内存，仅本进程有效）
@@ -58,6 +62,10 @@ router.post('/cashier/bank-statement/import/confirm', (req: AuthRequest, res) =>
   const { rows } = cached
   const db = getDb()
   const asid = req.accountSetId || ''
+  // P1-10：科目授权
+  const accRow = db.prepare('SELECT id FROM accounts WHERE account_set_id=? AND code=?').get(asid, account_code) as any
+  const scopeErr = accRow ? assertAccountIdInScope(req.accountScope, accRow.id) : null
+  if (scopeErr) return res.status(403).json({ code: 403, message: scopeErr })
 
   // 构建映射：{ excelColIndex: 'biz_date'|'debit'|'credit'|'bill_no'|'settle_type' }
   const colMap: Record<number, string> = {}

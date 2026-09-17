@@ -1191,6 +1191,8 @@ onMounted(async () => {
   if (stRes.code === 0) settleTypes.value = stRes.data
   if (curRes && curRes.code === 0 && Array.isArray(curRes.data) && curRes.data.length) {
     currencies.value = curRes.data
+    // 本位币由后端排在第一位（可能不是 RMB）；当前选中不在列表里时回到本位币
+    if (!currencies.value.includes(filters.value.currency)) filters.value.currency = currencies.value[0]
   }
   if (pRes && pRes.code === 0) {
     const p = (pRes.data || []).find((x: any) => x.param_key === 'cashier:default_counter_account')

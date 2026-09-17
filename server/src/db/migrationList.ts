@@ -427,6 +427,10 @@ import {
   up as cashierJournalLinksUp,
   down as cashierJournalLinksDown,
 } from './migrations/20260917_cashier_journal_links.js'
+import {
+  up as cashierCurrencyAliasUp,
+  down as cashierCurrencyAliasDown,
+} from './migrations/20260917_cashier_currency_alias.js'
 
 /**
  * 迁移示例：添加新字段
@@ -2112,5 +2116,11 @@ export const migrations: Migration[] = [
     name: 'cashier_journal_links',
     up: cashierJournalLinksUp,
     down: cashierJournalLinksDown,
+  },
+  {
+    version: 128,
+    name: 'cashier_currency_alias',
+    up: cashierCurrencyAliasUp,
+    down: cashierCurrencyAliasDown,
   },
 ]

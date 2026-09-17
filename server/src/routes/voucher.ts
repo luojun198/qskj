@@ -48,6 +48,7 @@ import {
 } from '../services/voucherEntry.js'
 import { getVoucherUndeletableReason, deleteVoucherWithRefs } from '../services/voucherDelete.js'
 import { getVoucherImmutableReason } from '../services/voucherMutationGuard.js'
+import { syncCashierVoucherNos } from '../services/cashierQuery.js'
 import fs from 'fs/promises'
 import path from 'path'
 import multer from 'multer'
@@ -207,6 +208,8 @@ router.put(
         id
       )
     }
+    // P1-11：同步出纳日记账上的凭证号
+    syncCashierVoucherNos(db, req.accountSetId || '', [id])
 
     res.json({ code: 0, message: '凭证编号已更新', data: { id, voucher_no } })
   }
@@ -300,6 +303,8 @@ router.post(
         })
         updateStmt.run(newNo, v.id)
       })
+      // P1-11：出纳日记账以 voucher_id 关联，重排号后同步刷新展示用的凭证号，避免关联脱钩
+      syncCashierVoucherNos(db, req.accountSetId || '', vouchers.map(v => v.id))
     })
     updateAll.immediate()
 
@@ -538,6 +543,8 @@ router.post(
             : String(oldSeq + 1).padStart(3, '0')
         updateStmt.run(newNo, v.id)
       }
+      // P1-11：被顺延的凭证同步刷新出纳日记账上的凭证号
+      syncCashierVoucherNos(db, req.accountSetId || '', toUpdate.map(v => v.id))
 
       // 2. 插入新凭证（year/period/finalVoucherDate 在事务外已校验并计算）
       const voucherId = uuidv4()

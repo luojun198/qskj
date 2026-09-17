@@ -11,6 +11,7 @@
 import type Database from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
 import { assertCashierPeriodOpen, normalizeBizDate } from './cashierPeriodClosing.js'
+import { getCashierBaseCurrency, normalizeCashierCurrency } from './cashierQuery.js'
 
 /**
  * P1-1：收付款单写 / 删出纳日记账前必须过出纳结账闸。
@@ -47,7 +48,8 @@ export function applyPayment(db: Database.Database, accountSetId: string, doc: a
   const isReceive = doc.doc_type === 'RCV'
   const partner = db.prepare('SELECT * FROM scm_partner WHERE account_set_id=? AND code=?').get(accountSetId, doc.partner_code) as any
   const cashCode = String(doc.settle_account || '')
-  const currency = String(doc.currency || 'CNY')
+  // P1-2：写出纳流水统一落账套本位币口径（单据默认 CNY、出纳默认 RMB 此前被拆成两个币种，收付款流水在出纳视图里消失）
+  const currency = normalizeCashierCurrency(doc.currency, getCashierBaseCurrency(db, accountSetId))
   const bizDate = assertCashierWritable(db, accountSetId, doc.doc_date)
   const settleType = ({ cash: '现金', transfer: '转账', credit: '挂账' } as Record<string, string>)[doc.payment_type] || doc.payment_type || null
   const paramKey = isReceive ? 'scm:acc_ar' : 'scm:acc_ap'

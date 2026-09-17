@@ -131,6 +131,7 @@ onMounted(async () => {
   const curRes = await cashierApi.getCurrencies().catch(() => null)
   if (curRes && curRes.code === 0 && Array.isArray(curRes.data) && curRes.data.length) {
     currencies.value = curRes.data
+    if (!currencies.value.includes(filters.value.currency)) filters.value.currency = currencies.value[0]
   }
   if (res.code === 0) {
     accounts.value = res.data
