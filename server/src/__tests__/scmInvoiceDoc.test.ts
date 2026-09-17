@@ -196,7 +196,7 @@ describe('S1 发票制证', () => {
     expect(res.body.message).toMatch(/来源单据/)
   })
 
-  it('来源单据已制证时提示不重复制证', () => {
+  it('来源单据已制证、发票金额一致时提示无差额无需制证', () => {
     const piId = seedDoc('PI', 'PI-011', [{ qty: 10, price: 100, amount: 1000, tax_amount: 130 }])
     callHandler(auditDocHandler, piId)
     expect(callHandler(genVoucherHandler, piId).body.code).toBe(0)
@@ -205,7 +205,47 @@ describe('S1 发票制证', () => {
     callHandler(auditDocHandler, rpId)
     const res = callHandler(genVoucherHandler, rpId)
     expect(res.statusCode).toBe(400)
-    expect(res.body.message).toMatch(/无需重复制证/)
+    expect(res.body.message).toMatch(/无差额/)
+  })
+
+  it('FIX-216 发票金额与来源单不一致：按差额补调整凭证，总账与往来同步', () => {
+    // 来源 PI 1130 → 发票 904（少 200 + 税 26）：往来台账被校正为 904，总账需补 借应付 226 / 贷存货 200 / 贷进项 26
+    const piId = seedDoc('PI', 'PI-020', [{ qty: 10, price: 100, amount: 1000, tax_amount: 130 }])
+    callHandler(auditDocHandler, piId)
+    expect(callHandler(genVoucherHandler, piId).body.code).toBe(0)
+    const piLine = testDb.prepare('SELECT id FROM scm_doc_line WHERE doc_id=?').get(piId) as any
+    const rpId = seedDoc('RP', 'RP-021', [{ qty: 10, price: 80, amount: 800, tax_amount: 104 }], { sourceDocId: piId })
+    testDb.prepare('UPDATE scm_doc_line SET source_line_id=? WHERE doc_id=?').run(piLine.id, rpId)
+    callHandler(auditDocHandler, rpId)
+    expect(logOf('PI-020').amount).toBe(904)
+
+    const res = callHandler(genVoucherHandler, rpId)
+    expect(res.body.code).toBe(0)
+    const es = entriesOf(res.body.data.voucher_id)
+    expect(es).toEqual(expect.arrayContaining([
+      expect.objectContaining({ account_code: '2202', direction: 'debit', amount: 226 }),
+      expect.objectContaining({ account_code: '1405', direction: 'credit', amount: 200 }),
+      expect.objectContaining({ account_code: '22210101', direction: 'credit', amount: 26 }),
+    ]))
+    expect(totalsOf(res.body.data.voucher_id)).toEqual({ debit: 226, credit: 226 })
+    expect(callHandler(genVoucherHandler, rpId).statusCode).toBe(400)   // 已生成凭证不可重复
+  })
+
+  it('FIX-216 销售发票多开：差额 借应收 / 贷收入 + 销项', () => {
+    const soId = seedDoc('SO', 'SO-020', [{ qty: 10, price: 100, amount: 1000, tax_amount: 130 }])
+    callHandler(auditDocHandler, soId)
+    expect(callHandler(genVoucherHandler, soId).body.code).toBe(0)
+    const soLine = testDb.prepare('SELECT id FROM scm_doc_line WHERE doc_id=?').get(soId) as any
+    const rsId = seedDoc('RS', 'RS-021', [{ qty: 10, price: 120, amount: 1200, tax_amount: 156 }], { sourceDocId: soId })
+    testDb.prepare('UPDATE scm_doc_line SET source_line_id=? WHERE doc_id=?').run(soLine.id, rsId)
+    callHandler(auditDocHandler, rsId)
+    const res = callHandler(genVoucherHandler, rsId)
+    expect(res.body.code).toBe(0)
+    expect(entriesOf(res.body.data.voucher_id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ account_code: '1122', direction: 'debit', amount: 226 }),
+      expect.objectContaining({ account_code: '6001', direction: 'credit', amount: 200 }),
+      expect.objectContaining({ account_code: '22210105', direction: 'credit', amount: 26 }),
+    ]))
   })
 })
 

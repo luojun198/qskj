@@ -78,6 +78,17 @@ function lastInboundUnitCost(db: Database.Database, accountSetId: string, itemCo
   return price > 0 ? Math.round(price * 10000) / 10000 : 0
 }
 
+/**
+ * 该物料在指定仓库的当前成本单价：有在库均价取均价，否则退回最近入库单价 / 档案进价。
+ * 供「无来源成本的入库」（如手工销售退货）取成本，避免拿售价当库存成本（FIX-208）。
+ */
+export function currentUnitCost(db: Database.Database, accountSetId: string, warehouseCode: string, itemCode: string): number {
+  const s = db.prepare('SELECT qty, avg_cost FROM scm_stock WHERE account_set_id=? AND warehouse_code=? AND item_code=?')
+    .get(accountSetId, warehouseCode, itemCode) as { qty: number; avg_cost: number } | undefined
+  if (s && Number(s.qty) > 0 && Number(s.avg_cost) > 0) return Math.round(Number(s.avg_cost) * 10000) / 10000
+  return lastInboundUnitCost(db, accountSetId, itemCode)
+}
+
 /** 移动加权平均出仓：取当前均价为 unit_cost，减少库存 */
 export function applyMovingAvgOut(
   db: Database.Database, accountSetId: string,

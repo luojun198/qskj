@@ -105,6 +105,33 @@ describe('供应链单据数量与工单来源控制', () => {
     expect(validatePlanLink(db, AID, 'PF', null).message).toContain('必须关联')
   })
 
+  it('FIX-212 退料/不良品入库必须关联已审核工单', () => {
+    expect(validatePlanLink(db, AID, 'PJ', null).message).toContain('退料必须关联')
+    expect(validatePlanLink(db, AID, 'PS', null).message).toContain('不良品入库必须关联')
+    expect(validatePlanLink(db, AID, 'PJ', 'P1').message).toBeUndefined()
+  })
+
+  it('FIX-212 退料不得超过工单净已领（已审核领料 − 其它退料）', () => {
+    addDoc(db, 'ISS1', 'PL', 'audited', 'RM1', 15, null, 'P1')
+    addDoc(db, 'ISS2', 'PL', 'draft', 'RM1', 5, null, 'P1')          // 草稿领料不算已领
+    expect(validatePlanIssueQuantities(db, AID, 'P1', 'PJ', [{ item_code: 'RM1', qty: 16 }])).toContain('超出')
+    expect(validatePlanIssueQuantities(db, AID, 'P1', 'PJ', [{ item_code: 'RM1', qty: 15 }])).toBeNull()
+    addDoc(db, 'RET1', 'PJ', 'draft', 'RM1', 10, null, 'P1')         // 草稿退料也占用
+    expect(validatePlanIssueQuantities(db, AID, 'P1', 'PJ', [{ item_code: 'RM1', qty: 6 }])).toContain('超出')
+    expect(validatePlanIssueQuantities(db, AID, 'P1', 'PJ', [{ item_code: 'RM1', qty: 5 }])).toBeNull()
+    expect(validatePlanIssueQuantities(db, AID, 'P1', 'PJ', [{ item_code: 'RM1', qty: 10 }], 'RET1')).toBeNull()  // 修改本单时排除自己
+  })
+
+  it('FIX-219 草稿上游：保存阶段放行、审核阶段拦截、作废上游一律拦截', () => {
+    db.prepare("UPDATE scm_doc SET status='draft' WHERE id='PO1'").run()
+    const lines = [{ item_code: 'M1', qty: 10, source_line_id: 'POL1' }]
+    expect(validateSourceLineQuantities(db, AID, 'PI', lines, undefined, 'save')).toBeNull()
+    expect(validateSourceLineQuantities(db, AID, 'PI', lines, undefined, 'audit')).toContain('未审核')
+    expect(validateSourceLineQuantities(db, AID, 'PI', lines)).toContain('未审核')
+    db.prepare("UPDATE scm_doc SET status='voided' WHERE id='PO1'").run()
+    expect(validateSourceLineQuantities(db, AID, 'PI', lines, undefined, 'save')).toContain('已作废')
+  })
+
   it('领料、退料与完工数量按工单累计控制', () => {
     addDoc(db, 'ISS1', 'PL', 'draft', 'RM1', 15, null, 'P1')
     expect(validatePlanIssueQuantities(db, AID, 'P1', 'PL', [{ item_code: 'RM1', qty: 6 }])).toContain('禁止超领')

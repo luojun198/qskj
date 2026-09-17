@@ -564,7 +564,7 @@ export function verifyArAp(db: Database.Database, accountSetId: string, params: 
   if (!partner_code) throw new Error('缺少往来单位')
   const valid = (matches || []).filter(m => m && m.in_log_id && m.out_log_id && Number(m.amount) > 0)
   if (!valid.length) throw new Error('没有可核销的匹配项')
-  const getLog = db.prepare('SELECT id, partner_code, direction, amount, verified_amount FROM scm_ar_ap_log WHERE id=? AND account_set_id=?')
+  const getLog = db.prepare('SELECT id, partner_code, direction, doc_type, amount, verified_amount FROM scm_ar_ap_log WHERE id=? AND account_set_id=?')
   const insV = db.prepare(`INSERT INTO scm_ar_ap_verify
     (id, account_set_id, partner_code, verify_no, verify_date, in_log_id, out_log_id, amount, created_by, created_at)
     VALUES (?,?,?,?,?,?,?,?,?, datetime('now'))`)
@@ -579,6 +579,13 @@ export function verifyArAp(db: Database.Database, accountSetId: string, params: 
       if (!inRow || !outRow) throw new Error('核销对象不存在')
       if (inRow.direction !== 'in' || outRow.direction !== 'out') throw new Error('核销方向不正确（须用收付款核销应收应付）')
       if (inRow.partner_code !== partner_code || outRow.partner_code !== partner_code) throw new Error('核销双方往来单位不一致')
+      // FIX-215：业务方向必须一致——应收只能用收款/销售退货核销，应付只能用付款/采购退货核销。
+      // 原来只校验 in/out，客户兼供应商时收款单可把应付核销掉，应收账龄虚增、应付账龄虚减。
+      const inIsAr = AR_DOC_TYPES.includes(inRow.doc_type), inIsAp = AP_DOC_TYPES.includes(inRow.doc_type)
+      const outIsAr = AR_DOC_TYPES.includes(outRow.doc_type), outIsAp = AP_DOC_TYPES.includes(outRow.doc_type)
+      if ((inIsAr && !outIsAr) || (inIsAp && !outIsAp)) {
+        throw new Error(`核销业务方向不一致：${inIsAr ? '应收' : '应付'}「${inRow.doc_type}」不能用「${outRow.doc_type}」核销`)
+      }
       if (r2(inRow.verified_amount + amt) > r2(inRow.amount) + 0.005) throw new Error(`应收应付「${m.in_log_id}」核销额超出未核销余额`)
       if (r2(outRow.verified_amount + amt) > r2(outRow.amount) + 0.005) throw new Error(`收付款「${m.out_log_id}」核销额超出可用余额`)
       insV.run(uuidv4(), accountSetId, partner_code, verifyNo, verifyDate, m.in_log_id, m.out_log_id, amt, params.operator || null)
@@ -619,17 +626,25 @@ export function listVerifies(db: Database.Database, accountSetId: string, partne
 
 // ── 到期账龄 / 到期提醒 / 信用额度（Phase 2 & 3） ─────────────────────────
 /** 应收应付账龄：按到期日 COALESCE(due_date,doc_date) 分桶，金额取未核销额（amount−verified_amount）。 */
+/**
+ * 账龄表（FIX-213）：
+ *  - 只取单据日期 ≤ 截止日的台账（原来不截断，未来单据混入余额与分桶）；
+ *  - 按到期日分桶：未到期 / 逾期 ≤30 / 31-60 / 61-90 / 90 以上（原来「未到期」混在「当前」桶里）；
+ *  - 到期日不可解析时退回单据日期，不再因 NaN 丢行。
+ */
 export function getArApAging(db: Database.Database, accountSetId: string, asOf: string) {
   const rows = db.prepare(`SELECT l.partner_code, p.name AS partner_name, p.partner_type, l.direction,
-      COALESCE(l.due_date, l.doc_date) AS due_date, (l.amount - l.verified_amount) AS open_amt
+      COALESCE(l.due_date, l.doc_date) AS due_date, l.doc_date, (l.amount - l.verified_amount) AS open_amt
     FROM scm_ar_ap_log l LEFT JOIN scm_partner p ON p.account_set_id=l.account_set_id AND p.code=l.partner_code
-    WHERE l.account_set_id=? AND (l.amount - l.verified_amount) > 0.005`).all(accountSetId) as any[]
+    WHERE l.account_set_id=? AND l.doc_date <= ? AND (l.amount - l.verified_amount) > 0.005`).all(accountSetId, asOf) as any[]
   const map = new Map<string, any>()
   const asOfMs = new Date(asOf + 'T00:00:00Z').getTime()
   for (const r of rows) {
-    if (!map.has(r.partner_code)) map.set(r.partner_code, { partner_code: r.partner_code, partner_name: r.partner_name, partner_type: r.partner_type, balance: 0, current: 0, d30: 0, d60: 0, over90: 0 })
-    const days = Math.floor((asOfMs - new Date(r.due_date + 'T00:00:00Z').getTime()) / 86400000)
-    const age = days <= 30 ? 'current' : days <= 60 ? 'd30' : days <= 90 ? 'd60' : 'over90'
+    if (!map.has(r.partner_code)) map.set(r.partner_code, { partner_code: r.partner_code, partner_name: r.partner_name, partner_type: r.partner_type, balance: 0, not_due: 0, current: 0, d30: 0, d60: 0, over90: 0 })
+    let dueMs = new Date(String(r.due_date || '') + 'T00:00:00Z').getTime()
+    if (!Number.isFinite(dueMs)) dueMs = new Date(String(r.doc_date) + 'T00:00:00Z').getTime()
+    const days = Number.isFinite(dueMs) ? Math.floor((asOfMs - dueMs) / 86400000) : 0
+    const age = days < 0 ? 'not_due' : days <= 30 ? 'current' : days <= 60 ? 'd30' : days <= 90 ? 'd60' : 'over90'
     const amt = r.direction === 'in' ? r.open_amt : -r.open_amt
     const e = map.get(r.partner_code)!
     e.balance = Math.round((e.balance + amt) * 100) / 100

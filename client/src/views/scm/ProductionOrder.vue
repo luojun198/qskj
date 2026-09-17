@@ -239,8 +239,9 @@ async function openFinish() {
   finishRows.value = products.value.map((p: any) => ({
     product_id: p.id, item_code: p.item_code, item_name: p.item_name || '',
     plan_qty: Number(p.plan_qty) || 0, finished_qty: Number(p.finished_qty) || 0,
-    base_remaining: Math.max(0, (Number(p.plan_qty) || 0) - (Number(p.finished_qty) || 0)),
-    qty: Math.max(0, (Number(p.plan_qty) || 0) - (Number(p.finished_qty) || 0)),
+    // FIX-211：剩余可完工数须扣除已报废数，与后端 gen-finish 的 remain 口径一致；否则有报废的工单默认值必被 400
+    base_remaining: Math.max(0, (Number(p.plan_qty) || 0) - (Number(p.finished_qty) || 0) - (Number(p.scrap_qty) || 0)),
+    qty: Math.max(0, (Number(p.plan_qty) || 0) - (Number(p.finished_qty) || 0) - (Number(p.scrap_qty) || 0)),
     process_fee: Number(p.process_fee) || 0, process_tax_rate: Number(p.process_tax_rate) || 0,
   }))
   if (!warehouses.value.length) { try { const w = await scmApi.getWarehouses(); if (w.code === 0) warehouses.value = w.data } catch {} }

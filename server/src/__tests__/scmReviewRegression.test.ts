@@ -141,6 +141,35 @@ describe('FIX-203 下推发票走路由反审核', () => {
   })
 })
 
+describe('FIX-207 / FIX-208 入库成本口径', () => {
+  beforeEach(() => { testDb = createDb(); seedBase() })
+  const stockOf = (item: string) => testDb.prepare('SELECT qty, amount, avg_cost FROM scm_stock WHERE account_set_id=? AND warehouse_code=? AND item_code=?').get(AID, 'W1', item) as any
+
+  it('FIX-207 采购入库按折后行金额入成本：库存金额 = Σ行金额，折扣不再挂在存货上', () => {
+    testDb.prepare('INSERT INTO scm_item (id,account_set_id,code,name,inv_account) VALUES (?,?,?,?,?)').run(uuidv4(), AID, 'I2', '物料乙', '1405')
+    const piId = seedDoc('PI', 'PI-D1', [{ qty: 10, price: 100, amount: 950, tax_amount: 123.5 }, { qty: 10, price: 100, amount: 950, tax_amount: 123.5 }])
+    testDb.prepare("UPDATE scm_doc_line SET item_code='I2' WHERE doc_id=?").run(piId)
+    expect(callHandler(auditDocHandler, piId).body.code).toBe(0)
+    expect(stockOf('I2')).toMatchObject({ qty: 20, amount: 1900, avg_cost: 95 })
+    expect(logOf('PI-D1').amount).toBe(2147)
+  })
+
+  it('FIX-208 手工销售退货按当前库存均价入库并回写行成本，凭证按成本冲主营业务成本', () => {
+    // 期初 I1：100 件 / 6000 元 / 均价 60；退货 10 件、售价 100
+    const srId = seedDoc('SR', 'SR-C1', [{ qty: 10, price: 100, amount: 1000, tax_amount: 130 }])
+    expect(callHandler(auditDocHandler, srId).body.code).toBe(0)
+    expect(stockOf('I1')).toMatchObject({ qty: 110, amount: 6600, avg_cost: 60 })
+    expect((testDb.prepare('SELECT unit_cost FROM scm_doc_line WHERE doc_id=?').get(srId) as any).unit_cost).toBe(60)
+  })
+
+  it('FIX-208 下推退货带来源成本时优先用来源成本', () => {
+    const srId = seedDoc('SR', 'SR-C2', [{ qty: 10, price: 100, amount: 1000, tax_amount: 130 }])
+    testDb.prepare('UPDATE scm_doc_line SET unit_cost=55 WHERE doc_id=?').run(srId)
+    expect(callHandler(auditDocHandler, srId).body.code).toBe(0)
+    expect(stockOf('I1')).toMatchObject({ qty: 110, amount: 6550 })
+  })
+})
+
 describe('FIX-204 退货冲减往来', () => {
   beforeEach(() => { testDb = createDb(); seedBase() })
 
@@ -186,6 +215,36 @@ describe('FIX-204 退货冲减往来', () => {
     const res = callHandler(unauditDocHandler, srId)
     expect(res.statusCode).toBe(400)
     expect(res.body.message).toMatch(/核销/)
+  })
+
+  it('FIX-213 账龄表按截止日截断、未到期单列，且 NaN 日期不丢行', () => {
+    const soId = seedDoc('SO', 'SO-001', [{ qty: 10, price: 1000, amount: 10000, tax_amount: 1300 }], { date: '2026-09-04' })
+    expect(callHandler(auditDocHandler, soId).body.code).toBe(0)
+    const so2 = seedDoc('SO', 'SO-002', [{ qty: 1, price: 100, amount: 100, tax_amount: 13 }], { date: '2026-10-05' })
+    expect(callHandler(auditDocHandler, so2).body.code).toBe(0)
+    // 截止 9-30：10 月单据不计入
+    const sep = getArApAging(testDb, AID, '2026-09-30')
+    expect(sep[0].balance).toBe(11300)
+    // 到期日晚于截止日 → 未到期桶
+    testDb.prepare("UPDATE scm_ar_ap_log SET due_date='2026-10-20' WHERE doc_no='SO-001'").run()
+    const notDue = getArApAging(testDb, AID, '2026-09-30')[0]
+    expect(notDue).toMatchObject({ balance: 11300, not_due: 11300, current: 0 })
+    // 到期日非法 → 退回单据日期分桶，不丢行
+    testDb.prepare("UPDATE scm_ar_ap_log SET due_date='not-a-date' WHERE doc_no='SO-001'").run()
+    expect(getArApAging(testDb, AID, '2026-09-30')[0]).toMatchObject({ balance: 11300, current: 11300 })
+  })
+
+  it('FIX-215 核销校验业务方向：收款不能核销应付、付款不能核销应收', () => {
+    const piId = seedDoc('PI', 'PI-001', [{ qty: 10, price: 100, amount: 1000, tax_amount: 130 }])
+    expect(callHandler(auditDocHandler, piId).body.code).toBe(0)
+    // 直接造一条收款 out 行（模拟 RCV 审核后的台账）
+    testDb.prepare(`INSERT INTO scm_ar_ap_log (id,account_set_id,partner_code,doc_type,doc_no,doc_date,due_date,direction,amount)
+      VALUES ('rcv1',?,'P1','RCV','RCV-001','2026-09-05','2026-09-05','out',500)`).run(AID)
+    expect(() => verifyArAp(testDb, AID, { partner_code: 'P1', matches: [{ in_log_id: logOf('PI-001').id, out_log_id: 'rcv1', amount: 500 }] }))
+      .toThrow(/业务方向不一致/)
+    testDb.prepare(`INSERT INTO scm_ar_ap_log (id,account_set_id,partner_code,doc_type,doc_no,doc_date,due_date,direction,amount)
+      VALUES ('pay1',?,'P1','PAY','PAY-001','2026-09-05','2026-09-05','out',500)`).run(AID)
+    expect(verifyArAp(testDb, AID, { partner_code: 'P1', matches: [{ in_log_id: logOf('PI-001').id, out_log_id: 'pay1', amount: 500 }] }).count).toBe(1)
   })
 
   it('无往来单位的退货不写台账', () => {

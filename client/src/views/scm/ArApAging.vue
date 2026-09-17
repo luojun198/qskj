@@ -25,7 +25,10 @@
         <el-table-column label="余额" width="130" align="right">
           <template #default="{ row }"><b>{{ fmt(row.balance) }}</b></template>
         </el-table-column>
-        <el-table-column label="当前(≤30天)" width="130" align="right">
+        <el-table-column label="未到期" width="120" align="right">
+          <template #default="{ row }">{{ fmt(row.not_due) }}</template>
+        </el-table-column>
+        <el-table-column label="逾期≤30天" width="120" align="right">
           <template #default="{ row }">{{ fmt(row.current) }}</template>
         </el-table-column>
         <el-table-column label="31-60天" width="120" align="right">
@@ -84,7 +87,7 @@ function goLedger(row: any) {
 
 function summary({ columns }: { columns: any[] }) {
   const out: string[] = []
-  const keys = [null, null, null, 'balance', 'current', 'd30', 'd60', 'over90', null]
+  const keys = [null, null, null, 'balance', 'not_due', 'current', 'd30', 'd60', 'over90', null]
   columns.forEach((_c, i) => {
     if (i === 0) { out[i] = '合计'; return }
     const key = keys[i]

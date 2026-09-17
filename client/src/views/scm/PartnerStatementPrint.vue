@@ -79,6 +79,7 @@ import { scmApi, type ScmPartner } from '@/api/scm'
 import { useUserStore } from '@/stores/user'
 import { rmbUpper } from '@/utils/rmbUpper'
 import { useStatementColumns } from '@/composables/useStatementColumns'
+import { statementRowSign } from '@/utils/statementRowSign'
 
 // 打印页只读列设置（不在打印页修改，设置在查询页进行；两页共享 localStorage）
 const { visibleColumns, col } = useStatementColumns()
@@ -266,7 +267,8 @@ const flatRows = computed<Row[]>(() => {
         const amt = Number(l.amount) || 0
         const tax = Number(l.tax_amount) || 0
         const lineRate = l.tax_rate != null ? Number(l.tax_rate) : docTaxRate
-        const amountWithTax = amt + tax
+        const sign = statementRowSign(r)
+        const amountWithTax = (amt + tax) * sign
         out.push({
           catLabel: catLabel(r.doc_type),
           invoiceType: docInvoice,
@@ -276,19 +278,18 @@ const flatRows = computed<Row[]>(() => {
           spec: l.spec || '',
           unit: l.unit || '',
           refNo: l.ref_no || '',
-          qtyText: num(qty),
+          qtyText: num(qty * sign),
           priceText: priceText(amt, tax, qty),
           amountText: money(amountWithTax),
           ...base,
-          _qty: qty,
+          _qty: qty * sign,
           _amountWithTax: amountWithTax,
         } as Row)
       }
     } else {
       // 无明细：收付款/退货/调整等单据占一行，金额用 doc 级金额
       const amountWithTax = Number(r.increase_amount) || Number(r.settlement_amount) || Number(r.adjustment_amount) || 0
-      const sign = (r.doc_type === 'SR' || r.doc_type === 'PR') && amountWithTax > 0 ? -1 : 1
-      const signed = amountWithTax * sign
+      const signed = amountWithTax * statementRowSign(r)
       out.push({
         catLabel: catLabel(r.doc_type),
         invoiceType: docInvoice,
@@ -317,7 +318,7 @@ const summaryRows = computed<Row[]>(() => {
     const increase = Number(r.increase_amount) || 0
     const settlement = Number(r.settlement_amount) || 0
     const adjustment = Number(r.adjustment_amount) || 0
-    const net = increase + adjustment - settlement
+    const net = increase - adjustment - settlement  // 调整项（退货）与结算项都是减少（FIX-214）
     out.push({
       catLabel: catLabel(r.doc_type),
       docNo: r.doc_no || '',

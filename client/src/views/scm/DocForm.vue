@@ -1115,7 +1115,8 @@ const saving      = ref(false)
 const auditing    = ref(false)
 
 const isProduction = computed(() => ['PL','PF','PB','PJ','AS','DS'].includes(form.value.doc_type))
-const isPlanControlledDoc = computed(() => ['PL', 'PB', 'PF', 'WO', 'WI'].includes(form.value.doc_type))
+// FIX-212：退料(PJ)/不良品入库(PS) 同样必须关联工单——无工单的退料按 0 成本回冲原料仓、不良品不写报废数不冲在制
+const isPlanControlledDoc = computed(() => ['PL', 'PB', 'PF', 'WO', 'WI', 'PJ', 'PS'].includes(form.value.doc_type))
 const showPlanOverrunInfo = computed(() => isNew.value && isPlanControlledDoc.value && !!form.value.plan_id)
 function isProductionPlanCompleted(plan: any): boolean {
   const planQty = Number(plan.total_plan_qty ?? plan.plan_qty) || 0
@@ -2599,7 +2600,9 @@ async function onPlanChange(planId: string) {
   if (result.code !== 0) return
   const plan = result.data.plan || {}
   const products = result.data.products || []
-  const issue = ['PL', 'PB', 'WO'].includes(form.value.doc_type)
+  const isReturn = form.value.doc_type === 'PJ'      // 退料：候选行 = 已领用料，上限 = 已领量
+  const isDefect = form.value.doc_type === 'PS'      // 不良品入库：候选行 = 成品，数量由用户填
+  const issue = ['PL', 'PB', 'WO'].includes(form.value.doc_type) || isReturn
   const action = issue ? result.data.action_state?.issue : result.data.action_state?.finish
   if (plan.supplier_code) {
     form.value.partner_code = plan.supplier_code
@@ -2613,12 +2616,12 @@ async function onPlanChange(planId: string) {
     const factor = plannedQty > 0 ? (Number(action?.max_allowed_qty) || plannedQty) / plannedQty : 1
     const mappedRows = sourceRows.map((row: any) => ({
       ...newLine(), item_code: row.item_code, item_name: row.item_name || '', unit: row.unit || '',
-      warehouse_code: row.warehouse_code || plan.yl_warehouse || '', qty: Number(row.suggest) || null,
+      warehouse_code: row.warehouse_code || plan.yl_warehouse || '', qty: isReturn ? null : (Number(row.suggest) || null),
       plan_qty: Number(row.need) || 0, executed_qty: Number(row.issued) || 0,
-      max_allowed_qty: (Number(row.need) || 0) * factor,
-      overrun_remaining: Math.max(0, (Number(row.need) || 0) * factor - (Number(row.issued) || 0)),
+      max_allowed_qty: isReturn ? (Number(row.issued) || 0) : (Number(row.need) || 0) * factor,
+      overrun_remaining: isReturn ? (Number(row.issued) || 0) : Math.max(0, (Number(row.need) || 0) * factor - (Number(row.issued) || 0)),
     }))
-    const positiveRows = mappedRows.filter((row: any) => Number(row.qty) > 0)
+    const positiveRows = isReturn ? mappedRows.filter((row: any) => Number(row.executed_qty) > 0) : mappedRows.filter((row: any) => Number(row.qty) > 0)
     const rows = positiveRows.length ? positiveRows : mappedRows
     planExecutionInfo.value = {
       planned_qty: plannedQty,
@@ -2634,14 +2637,15 @@ async function onPlanChange(planId: string) {
     const mappedRows = products.map((product: any) => ({
       ...newLine(), item_code: product.item_code, item_name: product.item_name || '', spec: product.spec || '',
       warehouse_code: product.fp_warehouse || plan.fp_warehouse || '',
-      qty: Math.max(0, (Number(product.plan_qty) || 0) - (Number(product.finished_qty) || 0)) || null,
-      plan_qty: Number(product.plan_qty) || 0, executed_qty: Number(product.finished_qty) || 0,
+      // 剩余可完工 = 计划 − 已完工 − 已报废（与后端口径一致，FIX-211）；不良品入库数量由用户填写
+      qty: isDefect ? null : (Math.max(0, (Number(product.plan_qty) || 0) - (Number(product.finished_qty) || 0) - (Number(product.scrap_qty) || 0)) || null),
+      plan_qty: Number(product.plan_qty) || 0, executed_qty: (Number(product.finished_qty) || 0) + (Number(product.scrap_qty) || 0),
       max_allowed_qty: (Number(product.plan_qty) || 0) * factor,
-      overrun_remaining: Math.max(0, (Number(product.plan_qty) || 0) * factor - (Number(product.finished_qty) || 0)),
+      overrun_remaining: Math.max(0, (Number(product.plan_qty) || 0) * factor - (Number(product.finished_qty) || 0) - (Number(product.scrap_qty) || 0)),
       process_fee: form.value.doc_type === 'WI' ? (Number(product.process_fee) || 0) : null,
       tax_rate: form.value.doc_type === 'WI' ? (Number(product.process_tax_rate) || 0) : null,
     }))
-    const positiveRows = mappedRows.filter((row: any) => Number(row.qty) > 0)
+    const positiveRows = isDefect ? mappedRows : mappedRows.filter((row: any) => Number(row.qty) > 0)
     const rows = positiveRows.length ? positiveRows : mappedRows
     planExecutionInfo.value = {
       planned_qty: plannedQty,

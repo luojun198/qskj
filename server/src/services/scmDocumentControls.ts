@@ -111,6 +111,10 @@ export function validateSourceLineQuantities(
   childDocType: string,
   lines: any[],
   excludeDocId?: string,
+  // FIX-219：'save'（新增/修改）只要求上游未作废——批量下推明确允许草稿 PO/SOa 预下推出下游草稿，
+  // 保存时若强制上游已审核，这些下游草稿改一下明细就被拦死；'audit' 才要求上游已审核，
+  // 保证库存/账务只在上游承诺成立后发生。
+  stage: 'save' | 'audit' = 'audit',
 ): string | null {
   if (!Array.isArray(lines)) return null
   const requested = new Map<string, { qty: number; itemCode: string }>()
@@ -139,7 +143,8 @@ export function validateSourceLineQuantities(
       FROM scm_doc_line pl JOIN scm_doc d ON d.id=pl.doc_id
       WHERE pl.id=? AND d.account_set_id=?`).get(sourceLineId, accountSetId) as any
     if (!parent) return '上游来源明细不存在或不属于当前账套，请刷新后重新下推'
-    if (parent.src_status !== 'audited') return `上游单据 ${parent.src_no} 未审核，不可下推`
+    if (parent.src_status === 'voided') return `上游单据 ${parent.src_no} 已作废，不可下推`
+    if (stage === 'audit' && parent.src_status !== 'audited') return `上游单据 ${parent.src_no} 未审核，请先审核上游单据再审核本单`
     if (current.itemCode !== parent.item_code) {
       return `下游物料 ${current.itemCode || '空'} 与上游物料 ${parent.item_code} 不一致，不可保存下推关系`
     }
@@ -153,7 +158,10 @@ export function validateSourceLineQuantities(
   return null
 }
 
-const PLAN_DOC_TYPES = new Set(['PL', 'PB', 'PF', 'WO', 'WI'])
+// FIX-212：退料(PJ)/不良品入库(PS) 也必须关联已审核工单——无工单的 PJ 落到通用入库按 0 成本回冲原料仓、
+// 且不扣减工单已领量；无工单的 PS 不写报废数、不冲在制。前端 DocForm.isPlanControlledDoc 同口径。
+const PLAN_DOC_TYPES = new Set(['PL', 'PB', 'PF', 'WO', 'WI', 'PJ', 'PS'])
+const PLAN_DOC_LABELS: Record<string, string> = { PL: '生产领料', PB: '补料', PF: '完工入库', WO: '委外发货', WI: '委外入库', PJ: '退料', PS: '不良品入库' }
 
 export function validatePlanLink(
   db: Database.Database,
@@ -162,7 +170,7 @@ export function validatePlanLink(
   planId: string | null | undefined,
 ): { plan?: any; message?: string } {
   if (!PLAN_DOC_TYPES.has(docType)) return {}
-  if (!planId) return { message: `${docType === 'PL' || docType === 'PB' ? '生产领料' : docType === 'PF' ? '完工入库' : docType === 'WO' ? '委外发货' : '委外入库'}必须关联已审核工单` }
+  if (!planId) return { message: `${PLAN_DOC_LABELS[docType] || docType}必须关联已审核工单` }
   const plan = db.prepare('SELECT * FROM scm_production_plan WHERE id=? AND account_set_id=?').get(planId, accountSetId) as any
   if (!plan) return { message: '关联工单不存在或不属于当前账套' }
   if (plan.status !== 'released') return { message: `工单 ${plan.code || ''} 未审核，不能生成生产/委外单据` }
@@ -190,6 +198,7 @@ export function validatePlanIssueQuantities(
   lines: any[],
   excludeDocId?: string,
 ): string | null {
+  if (docType === 'PJ') return validatePlanReturnQuantities(db, accountSetId, planId, lines, excludeDocId)
   if (!['PL', 'PB', 'WO'].includes(docType)) return null
   const auditedFinish = db.prepare(`SELECT doc_no,doc_type FROM scm_doc
     WHERE account_set_id=? AND plan_id=? AND status='audited' AND doc_type IN ('PF','WI')
@@ -222,6 +231,37 @@ export function validatePlanIssueQuantities(
     const used = r6(usedMap.get(itemCode) || 0)
     const maxQty = getScmMaxAllowedQty(need, policy)
     if (used + qty > maxQty + EPS) return `物料 ${itemCode} 工单需求 ${r6(need)}，允许上限 ${maxQty}，已领/占用 ${used}，本次 ${qty}，禁止超领`
+  }
+  return null
+}
+
+/** 退料上限：本单 + 其它退料（草稿/已审核）不得超过工单净已领（已审核领料/补料/委外发料）。 */
+function validatePlanReturnQuantities(
+  db: Database.Database,
+  accountSetId: string,
+  planId: string,
+  lines: any[],
+  excludeDocId?: string,
+): string | null {
+  const params: any[] = [accountSetId, planId]
+  let exclude = ''
+  if (excludeDocId) { exclude = ' AND d.id<>?'; params.push(excludeDocId) }
+  const rows = db.prepare(`SELECT l.item_code,
+      COALESCE(SUM(CASE WHEN d.doc_type IN ('PL','PB','WO') AND d.status='audited' THEN l.qty
+                        WHEN d.doc_type='PJ' THEN -l.qty ELSE 0 END),0) AS qty
+    FROM scm_doc_line l JOIN scm_doc d ON d.id=l.doc_id
+    WHERE d.account_set_id=? AND d.plan_id=? AND d.status<>'voided'
+      AND d.doc_type IN ('PL','PB','WO','PJ')${exclude}
+    GROUP BY l.item_code`).all(...params) as any[]
+  const netIssued = new Map(rows.map(row => [row.item_code, Number(row.qty) || 0]))
+  const incoming = new Map<string, number>()
+  for (const line of lines || []) {
+    if (!line?.item_code || !(Number(line.qty) > 0)) continue
+    incoming.set(line.item_code, r6((incoming.get(line.item_code) || 0) + Number(line.qty)))
+  }
+  for (const [itemCode, qty] of incoming) {
+    const avail = r6(netIssued.get(itemCode) || 0)
+    if (qty > avail + EPS) return `物料 ${itemCode} 工单净已领 ${avail}（已扣其它退料），本次退料 ${qty} 超出`
   }
   return null
 }

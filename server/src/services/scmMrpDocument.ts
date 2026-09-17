@@ -491,6 +491,14 @@ export function calculateMrpDocument(db: Database.Database, aid: string, mrpId: 
     for (const code of gross.keys()) walk(code, 0, [code])
 
     const includeSafetyStock = options.include_safety_stock !== false
+    // FIX-217：「纳入安全库存」时，没有任何需求也未被 BOM 引用、但设了安全库存的物料同样进入候选集（作 0 层）。
+    // 原实现候选集只来自需求与 BOM 展开，开关只对已命中的物料做扣减——纯安全库存补货物料永远不出现在结果里，
+    // 与开关文案「安全库存：纳入」以及采购建议报表的口径不符。
+    if (includeSafetyStock) {
+      for (const [code, item] of items) {
+        if ((Number(item.safety_stock) || 0) > 0 && !depth.has(code)) walk(code, 0, [code])
+      }
+    }
     const resultRows: any[] = []
     const warnings: string[] = []
     for (const code of [...depth.keys()].sort((a,b) => (depth.get(a)!-depth.get(b)!) || a.localeCompare(b))) {

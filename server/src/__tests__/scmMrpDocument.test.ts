@@ -90,6 +90,26 @@ describe('MRP 计算单生命周期与预计算缺料单', () => {
     expect(generateShortageFromMrp(db, AID, created.id, 'tester')).toMatchObject({ id: shortage.id, reused: true })
   })
 
+  it('FIX-217 仅设安全库存、无任何需求的物料也进入 MRP 结果（关闭开关则不出现）', () => {
+    db.prepare('INSERT INTO scm_item VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(AID, 'SS1', '安全库存件', '', '件', 'purchase', 'S1', 5, 20, 0, 2)
+    db.prepare('INSERT INTO scm_stock VALUES (?,?,?,?)').run(AID, 'SS1', 'W1', 8)
+    const created = createMrpDocument(db, AID, 'tester', {
+      sources: [{ kind: 'sales_order', id: 'SO1' }], include_safety_stock: true,
+    })
+    const rows = db.prepare('SELECT item_code,qty,field_values FROM scm_doc_line WHERE doc_id=? ORDER BY seq').all(created.id) as any[]
+    const ss = rows.find(row => row.item_code === 'SS1')
+    expect(ss).toBeTruthy()
+    expect(ss.qty).toBe(12)   // 安全库存 20 − 在库 8
+    expect(JSON.parse(ss.field_values)).toMatchObject({ level: 0, gross_req: 0, safety_stock: 20, net_req: 12 })
+
+    // 关闭「纳入安全库存」重算：纯安全库存物料不再出现
+    const fv = JSON.parse((db.prepare('SELECT field_values FROM scm_doc WHERE id=?').get(created.id) as any).field_values)
+    db.prepare('UPDATE scm_doc SET field_values=? WHERE id=?').run(JSON.stringify({ ...fv, include_safety_stock: false }), created.id)
+    calculateMrpDocument(db, AID, created.id)
+    const offRows = db.prepare('SELECT item_code FROM scm_doc_line WHERE doc_id=?').all(created.id) as any[]
+    expect(offRows.some(row => row.item_code === 'SS1')).toBe(false)
+  })
+
   it('需求放大比例、固定追加和物料目标量按既定优先级计算', () => {
     const created = createMrpDocument(db, AID, 'tester', {
       sources: [{ kind: 'sales_order', id: 'SO1' }],

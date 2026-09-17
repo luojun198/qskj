@@ -69,6 +69,7 @@ import { useStatementColumns } from '@/composables/useStatementColumns'
 import { usePageToolbarTeleport } from '@/composables/usePageToolbarTeleport'
 import { useListColumnWidth } from '@/composables/useColumnWidthMemory'
 import { getStatementRowSpan } from '@/utils/statementRowSpan'
+import { statementRowSign } from '@/utils/statementRowSign'
 import ColumnSettingsDialog from '@/components/common/ColumnSettingsDialog.vue'
 
 const { ptActive } = usePageToolbarTeleport()
@@ -233,7 +234,8 @@ const flatRows = computed<Row[]>(() => {
         const amt = Number(l.amount) || 0
         const tax = Number(l.tax_amount) || 0
         const lineRate = l.tax_rate != null ? Number(l.tax_rate) : docTaxRate
-        const amountWithTax = amt + tax
+        const sign = statementRowSign(r)
+        const amountWithTax = (amt + tax) * sign
         out.push({
           catLabel: catLabel(r.doc_type),
           invoiceType: docInvoice,
@@ -243,18 +245,17 @@ const flatRows = computed<Row[]>(() => {
           spec: l.spec || '',
           unit: l.unit || '',
           refNo: l.ref_no || '',
-          qtyText: num(qty),
+          qtyText: num(qty * sign),
           priceText: priceText(amt, tax, qty),
           amountText: amountWithTax ? fmt(amountWithTax) : '',
           ...base,
-          _qty: qty,
+          _qty: qty * sign,
           _amountWithTax: amountWithTax,
         } as Row)
       }
     } else {
       const amountWithTax = Number(r.increase_amount) || Number(r.settlement_amount) || Number(r.adjustment_amount) || 0
-      const sign = (r.doc_type === 'SR' || r.doc_type === 'PR') && amountWithTax > 0 ? -1 : 1
-      const signed = amountWithTax * sign
+      const signed = amountWithTax * statementRowSign(r)
       out.push({
         catLabel: catLabel(r.doc_type),
         invoiceType: docInvoice,
@@ -272,7 +273,7 @@ const flatRows = computed<Row[]>(() => {
   return out
 })
 
-/** 汇总模式：一单一行（金额 = increase + adjustment - settlement） */
+/** 汇总模式：一单一行（金额 = increase − adjustment − settlement） */
 const summaryRows = computed<Row[]>(() => {
   const out: Row[] = []
   for (const r of detail.value as any[]) {
@@ -283,7 +284,7 @@ const summaryRows = computed<Row[]>(() => {
     const increase = Number(r.increase_amount) || 0
     const settlement = Number(r.settlement_amount) || 0
     const adjustment = Number(r.adjustment_amount) || 0
-    const net = increase + adjustment - settlement
+    const net = increase - adjustment - settlement  // 调整项（退货）与结算项都是减少（FIX-214）
     out.push({
       docKey: doc.id || `${r.doc_type || ''}:${r.doc_no || ''}:${r.doc_date || ''}:${r.partner_code || ''}`,
       catLabel: catLabel(r.doc_type),
