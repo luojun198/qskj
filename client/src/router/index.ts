@@ -648,6 +648,24 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '编辑报工', icon: 'SetUp', parent: '生产管理' },
       },
       {
+        path: 'scm/qc-standards',
+        name: 'ScmQcStandards',
+        component: () => import('@/views/scm/QcStandardList.vue'),
+        meta: { title: '检验标准', icon: 'SetUp', parent: '生产管理' },
+      },
+      {
+        path: 'scm/qc-standards/new',
+        name: 'ScmQcStandardNew',
+        component: () => import('@/views/scm/QcStandardForm.vue'),
+        meta: { title: '新增检验标准', parent: '生产管理' },
+      },
+      {
+        path: 'scm/qc-standards/:id/edit',
+        name: 'ScmQcStandardEdit',
+        component: () => import('@/views/scm/QcStandardForm.vue'),
+        meta: { title: '编辑检验标准', parent: '生产管理' },
+      },
+      {
         path: 'scm/qc-docs/new',
         name: 'ScmQcNew',
         component: () => import('@/views/scm/QcForm.vue'),

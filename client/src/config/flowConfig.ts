@@ -147,6 +147,7 @@ export const groupFlowMap: Record<string, ModuleFlowConfig> = {
     auxNodes: [
       { id: 'kitting', path: '/scm/kitting', color: 'cyan' },
       { id: 'qc', path: '/scm/qc-docs', color: 'green' },
+      { id: 'qcStandard', path: '/scm/qc-standards', color: 'green' },
       { id: 'cost', path: '/scm/cost-variance', color: 'purple' },
       { id: 'execution', path: '/scm/report/production/execution', color: 'cyan' },
       { id: 'workCenter', path: '/scm/work-centers', color: 'blue' },
@@ -179,6 +180,7 @@ export const groupFlowMap: Record<string, ModuleFlowConfig> = {
       { id: 'balance', path: '/scm/arap', color: 'blue' },
       { id: 'detail', path: '/scm/arap-detail', color: 'blue' },
       { id: 'due', path: '/scm/arap-due', color: 'orange' },
+      { id: 'fxReval', path: '/scm/arap-fx-reval', color: 'purple' },
     ],
   },
 }

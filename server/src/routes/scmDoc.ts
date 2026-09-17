@@ -16,7 +16,7 @@ import { maintainDocBatches, reverseDocBatches } from '../services/scmBatch.js'
 import { maintainDocSerials, reverseDocSerials } from '../services/scmSerial.js'
 import { computeIssueSuggestion, computeProductionPlanActionState, computePushedQty } from '../services/scmProduction.js'
 import { getReportedGoodQtyByProduct, validateWorkReportQty } from '../services/scmWorkReport.js'
-import { getQcDefectLines, validateFinishQc, validateQcDefectPush } from '../services/scmQcControl.js'
+import { getQcDefectLines, validateFinishQc, validateQcDefectPush, validateReceiptQc } from '../services/scmQcControl.js'
 import { buildMissingAccountMessage, resolveScmAccount } from '../services/scmAccountResolver.js'
 import {
   calculateMrpDocument,
@@ -48,6 +48,7 @@ import { normalizePaging } from '../utils/paging.js'
 import { docExchangeRate, getScmBaseCurrency, isScmBaseCurrency, normalizeScmCurrency, resolveScmExchangeRate, toBase } from '../services/scmCurrency.js'
 import { bomComponents, pickActiveBom } from '../services/scmBom.js'
 import { previewScmFxRevaluation, runScmFxRevaluation, revokeScmFxRevaluation, listScmFxRevaluations } from '../services/scmFxRevaluation.js'
+import { listQcStandards, getQcStandard, resolveQcStandard, saveQcStandard, deleteQcStandard, sampleSize, judgeLine, judgeDoc, writeQcLineResults, readQcLineResults } from '../services/scmQcStandard.js'
 import {
   validateFinishKitting,
   PHYSICAL_CHILD_DOC_TYPES,
@@ -154,7 +155,7 @@ router.use((req: AuthRequest, res, next) => {
     if (docTypeForPerm(req) === 'IS') needAny = ['scm:inventory', 'scm:opening']
     if (/\/(audit|unaudit)$/.test(p)) needAction = 'scm:audit'
     else if (req.method === 'DELETE') needAction = 'scm:delete'
-  } else if (p.startsWith('/scm/boms') || p.startsWith('/scm/production-plans') || p.startsWith('/scm/work-centers') || p.startsWith('/scm/routings') || p.startsWith('/scm/work-reports') || p.startsWith('/scm/qc-docs') || p.startsWith('/scm/mrp')) {
+  } else if (p.startsWith('/scm/boms') || p.startsWith('/scm/production-plans') || p.startsWith('/scm/work-centers') || p.startsWith('/scm/routings') || p.startsWith('/scm/work-reports') || p.startsWith('/scm/qc-docs') || p.startsWith('/scm/qc-standards') || p.startsWith('/scm/mrp')) {
     needAny = ['scm:production', 'scm:outsource']  // BOM/工单/工作中心/工艺路线/报工/质检/MRP 为生产、委外共用
     if (/\/(audit|unaudit)$/.test(p)) needAction = 'scm:audit'
     else if (req.method === 'DELETE') needAction = 'scm:delete'
@@ -1366,6 +1367,11 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
     }
   }
 
+  // 采购入库：参数开启时须先过到货检验（IQC）
+  if (doc.doc_type === 'PI') {
+    const iqcErr = validateReceiptQc(db, aid, doc, lines)
+    if (iqcErr) return res.status(400).json({ code: 400, message: iqcErr })
+  }
   // 销售发货单（销售出库 SO）：审核要扣库存、挂应收，故客户与仓库必填
   let creditWarning: string | null = null
   let serialWarning: string | null = null
@@ -4386,17 +4392,70 @@ router.get('/scm/qc-docs/:id', (req: AuthRequest, res) => {
   const q = db.prepare('SELECT * FROM scm_qc_doc WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
   if (!q) return res.status(404).json({ code: 404, message: '质检单不存在' })
   q.lines = db.prepare('SELECT l.*, i.name AS item_name, i.spec, i.unit FROM scm_qc_line l LEFT JOIN scm_item i ON i.account_set_id=l.account_set_id AND i.code=l.item_code WHERE l.qc_doc_id=? ORDER BY l.seq').all(req.params.id)
+  for (const l of q.lines as any[]) {
+    l.results = readQcLineResults(db, l.id)
+    const std = resolveQcStandard(db, aid, String(l.item_code), String(q.qc_type || ''))
+    l.accept_defects = Number(std?.accept_defects) || 0
+    l.judged = l.results.length ? judgeLine(l.results, Number(l.defect_qty) || 0, l.accept_defects) : null
+  }
   res.json({ code: 0, data: q })
 })
+
+// ── 检验标准（检验项 + 抽样方案） ──
+router.get('/scm/qc-standards', (req: AuthRequest, res) => {
+  const { item_code, qc_type, keyword } = req.query as any
+  res.json({ code: 0, data: listQcStandards(getDb(), asid(req), { item_code, qc_type, keyword }) })
+})
+router.get('/scm/qc-standards/resolve', (req: AuthRequest, res) => {
+  const { item_code, qc_type, qty } = req.query as any
+  if (!item_code) return res.status(400).json({ code: 400, message: '请指定物料' })
+  const std = resolveQcStandard(getDb(), asid(req), String(item_code), String(qc_type || ''))
+  res.json({ code: 0, data: std ? { ...std, sample_size: sampleSize(std, Number(qty) || 0) } : null })
+})
+router.get('/scm/qc-standards/:id', (req: AuthRequest, res) => {
+  const s = getQcStandard(getDb(), asid(req), String(req.params.id))
+  if (!s) return res.status(404).json({ code: 404, message: '检验标准不存在' })
+  res.json({ code: 0, data: s })
+})
+router.post('/scm/qc-standards', operationLog('检验标准新增', '供应链'), (req: AuthRequest, res) => {
+  try { res.json({ code: 0, data: { id: saveQcStandard(getDb(), asid(req), req.body) } }) } catch (e: any) { res.status(400).json({ code: 400, message: e.message }) }
+})
+router.put('/scm/qc-standards/:id', operationLog('检验标准修改', '供应链'), (req: AuthRequest, res) => {
+  if (!getQcStandard(getDb(), asid(req), String(req.params.id))) return res.status(404).json({ code: 404, message: '检验标准不存在' })
+  try { saveQcStandard(getDb(), asid(req), req.body, String(req.params.id)); res.json({ code: 0, data: { ok: true } }) } catch (e: any) { res.status(400).json({ code: 400, message: e.message }) }
+})
+router.delete('/scm/qc-standards/:id', operationLog('检验标准删除', '供应链'), (req: AuthRequest, res) => {
+  deleteQcStandard(getDb(), asid(req), String(req.params.id)); res.json({ code: 0, data: { ok: true } })
+})
 function writeQcLines(db: ReturnType<typeof getDb>, aid: string, qcId: string, lines: any[]) {
+  const oldLineIds = db.prepare('SELECT id FROM scm_qc_line WHERE qc_doc_id=?').all(qcId) as any[]
+  for (const o of oldLineIds) writeQcLineResults(db, aid, o.id, undefined)
   db.prepare('DELETE FROM scm_qc_line WHERE qc_doc_id=?').run(qcId)
   const ins = db.prepare('INSERT INTO scm_qc_line (id,account_set_id,qc_doc_id,seq,item_code,batch_no,inspect_qty,qualified_qty,defect_qty,defect_reason,remark) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
   let seq = 0
   for (const l of (Array.isArray(lines) ? lines : [])) {
     if (!l || !l.item_code) continue
     seq++
-    ins.run(uuidv4(), aid, qcId, seq, l.item_code, l.batch_no ?? null, Number(l.inspect_qty) || 0, Number(l.qualified_qty) || 0, Number(l.defect_qty) || 0, l.defect_reason ?? null, l.remark ?? null)
+    const lineId = uuidv4()
+    ins.run(lineId, aid, qcId, seq, l.item_code, l.batch_no ?? null, Number(l.inspect_qty) || 0, Number(l.qualified_qty) || 0, Number(l.defect_qty) || 0, l.defect_reason ?? null, l.remark ?? null)
+    // 逐项检验结果（检验项快照 + 实测值），由 scmQcStandard 判定
+    writeQcLineResults(db, aid, lineId, Array.isArray(l.results) ? l.results : undefined)
   }
+}
+
+/**
+ * 质检单自动判定：各行有逐项结果时按标准判定（关键项不合格 / 不良数超允收 → 不合格），
+ * 人工选了「让步接收」则保留；无逐项结果的行沿用人工判定。
+ */
+function autoJudgeQcDoc(db: ReturnType<typeof getDb>, aid: string, qcType: string, lines: any[], manual: string): string {
+  const rows = (Array.isArray(lines) ? lines : []).filter(l => l && l.item_code).map(l => {
+    const std = resolveQcStandard(db, aid, String(l.item_code), qcType)
+    return { item_code: String(l.item_code), defect_qty: Number(l.defect_qty) || 0, results: Array.isArray(l.results) ? l.results : [], accept_defects: Number(std?.accept_defects) || 0 }
+  })
+  const judged = judgeDoc(rows)
+  if (judged === null) return manual || 'pass'
+  if (judged === 'fail' && manual === 'concession') return 'concession'
+  return judged
 }
 router.post('/scm/qc-docs', operationLog('质检单新增', '供应链'), (req: AuthRequest, res) => {
   const db = getDb(); const b = req.body; const aid = asid(req)
@@ -4406,7 +4465,7 @@ router.post('/scm/qc-docs', operationLog('质检单新增', '供应链'), (req: 
     db.prepare(`INSERT INTO scm_qc_doc (id,account_set_id,qc_no,qc_type,qc_date,source_doc_type,source_doc_id,source_doc_no,partner_code,inspector,result,status,remark,created_by)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,'draft',?,?)`).run(
       id, aid, no, b.qc_type || 'IQC', b.qc_date || localToday(), b.source_doc_type ?? null, b.source_doc_id ?? null, b.source_doc_no ?? null,
-      b.partner_code ?? null, b.inspector ?? userName(req), b.result || 'pass', b.remark ?? null, userName(req))
+      b.partner_code ?? null, b.inspector ?? userName(req), autoJudgeQcDoc(db, aid, b.qc_type || 'IQC', b.lines, b.result || 'pass'), b.remark ?? null, userName(req))
     writeQcLines(db, aid, id, b.lines)
   })()
   res.json({ code: 0, data: { id, qc_no: no } })
@@ -4418,7 +4477,8 @@ router.put('/scm/qc-docs/:id', operationLog('质检单修改', '供应链'), (re
   if (ex.status === 'audited') return res.status(400).json({ code: 400, message: '已审核质检单不可修改' })
   db.transaction(() => {
     db.prepare(`UPDATE scm_qc_doc SET qc_type=?,qc_date=?,source_doc_type=?,source_doc_id=?,source_doc_no=?,partner_code=?,inspector=?,result=?,remark=?,updated_at=datetime('now') WHERE id=? AND account_set_id=?`)
-      .run(b.qc_type || 'IQC', b.qc_date, b.source_doc_type ?? null, b.source_doc_id ?? null, b.source_doc_no ?? null, b.partner_code ?? null, b.inspector ?? null, b.result || 'pass', b.remark ?? null, req.params.id, aid)
+      .run(b.qc_type || 'IQC', b.qc_date, b.source_doc_type ?? null, b.source_doc_id ?? null, b.source_doc_no ?? null, b.partner_code ?? null, b.inspector ?? null,
+        Array.isArray(b.lines) ? autoJudgeQcDoc(db, aid, b.qc_type || 'IQC', b.lines, b.result || 'pass') : (b.result || 'pass'), b.remark ?? null, req.params.id, aid)
     if (Array.isArray(b.lines)) writeQcLines(db, aid, req.params.id, b.lines)
   })()
   res.json({ code: 0, data: { ok: true } })

@@ -439,6 +439,10 @@ import {
   up as scmFxRevaluationUp,
   down as scmFxRevaluationDown,
 } from './migrations/20260917_scm_fx_revaluation.js'
+import {
+  up as scmQcStandardUp,
+  down as scmQcStandardDown,
+} from './migrations/20260917_scm_qc_standard.js'
 
 /**
  * 迁移示例：添加新字段
@@ -2142,5 +2146,11 @@ export const migrations: Migration[] = [
     name: 'scm_fx_revaluation',
     up: scmFxRevaluationUp,
     down: scmFxRevaluationDown,
+  },
+  {
+    version: 131,
+    name: 'scm_qc_standard',
+    up: scmQcStandardUp,
+    down: scmQcStandardDown,
   },
 ]

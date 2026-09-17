@@ -508,6 +508,44 @@ async function main() {
     assert('㉑ 撤销后恢复 7684 @6.8', rv.code === 0 && pi2 && r2(pi2.amount) === 7684 && Number(pi2.exchange_rate) === 6.8, rv.message || JSON.stringify(pi2 && { amount: pi2.amount, rate: pi2.exchange_rate }))
   }
 
+  // ── 质检：检验标准 / 抽样 / 自动判定 / IQC 入库闸 ─────────────
+  {
+    const std = await post('/api/scm/qc-standards', { item_code: 'M1', qc_type: 'IQC', name: 'M1 来料标准', sampling_mode: 'percent', sampling_value: 10, min_sample: 3, accept_defects: 1,
+      items: [{ name: '直径', value_type: 'numeric', lower_limit: 9.8, upper_limit: 10.2, unit: 'mm', is_key: 1 }, { name: '外观', value_type: 'bool', is_key: 0 }] }, { allowError: true })
+    assert('㉒ 新建检验标准', std.code === 0, std.message)
+    const rs = (await get('/api/scm/qc-standards/resolve?item_code=M1&qc_type=IQC&qty=50')).data
+    assert('㉒ 解析标准并给出抽样数 5（50×10%）', rs && rs.items.length === 2 && rs.sample_size === 5, JSON.stringify(rs && { n: rs.items.length, sample: rs.sample_size }))
+    // 开参数：采购入库须先到货检验
+    const cur = (await get('/api/scm/params')).data
+    const others = cur.filter(p => p.param_key !== 'scm:qc_required_for_receipt')
+    await api('PUT', '/api/scm/params', { params: [...others, { param_key: 'scm:qc_required_for_receipt', param_value: '1' }] }, { allowError: true })
+    const pi = await createDoc({ doc_type: 'PI', doc_date: D, partner_code: 'SUP1', warehouse_code: 'W1', lines: [{ item_code: 'M1', qty: 20, price: 100 }] })
+    const blocked = await audit(pi.id)
+    assert('㉒ [IQC 闸] 无合格 IQC 时采购入库被拦', blocked.code !== 0 && /到货检验/.test(blocked.message || ''), blocked.message)
+    // 关键项超限 → 自动判不合格
+    const bad = await post('/api/scm/qc-docs', { qc_type: 'IQC', qc_date: D, source_doc_id: pi.id, source_doc_no: pi.doc_no, result: 'pass',
+      lines: [{ item_code: 'M1', inspect_qty: 20, qualified_qty: 20, defect_qty: 0, results: [{ name: '直径', value_type: 'numeric', lower_limit: 9.8, upper_limit: 10.2, is_key: 1, value_num: 10.5 }, { name: '外观', value_type: 'bool', is_key: 0, value_bool: 1 }] }] }, { allowError: true })
+    const badDoc = (await get(`/api/scm/qc-docs/${bad.data.id}`)).data
+    assert('㉒ 关键项超限自动判「不合格」（人工填合格被覆盖）', badDoc.result === 'fail' && badDoc.lines[0].judged === false, `result=${badDoc.result} judged=${badDoc.lines[0].judged}`)
+    await post(`/api/scm/qc-docs/${bad.data.id}/audit`, {}, { allowError: true })
+    const stillBlocked = await audit(pi.id)
+    assert('㉒ [IQC 闸] 不合格 IQC 不放行', stillBlocked.code !== 0, stillBlocked.message)
+    // 合格：直径 10.0、不良 1 ≤ 允收 1
+    const good = await post('/api/scm/qc-docs', { qc_type: 'IQC', qc_date: D, source_doc_id: pi.id, source_doc_no: pi.doc_no, result: 'fail',
+      lines: [{ item_code: 'M1', inspect_qty: 20, qualified_qty: 19, defect_qty: 1, results: [{ name: '直径', value_type: 'numeric', lower_limit: 9.8, upper_limit: 10.2, is_key: 1, value_num: 10.0 }, { name: '外观', value_type: 'bool', is_key: 0, value_bool: 0 }] }] }, { allowError: true })
+    const goodDoc = (await get(`/api/scm/qc-docs/${good.data.id}`)).data
+    assert('㉒ 关键项合格、非关键项不合格、不良 1 ≤ 允收 1 → 自动判「合格」', goodDoc.result === 'pass' && goodDoc.lines[0].results.length === 2, `result=${goodDoc.result}`)
+    await post(`/api/scm/qc-docs/${good.data.id}/audit`, {}, { allowError: true })
+    const short = await audit(pi.id)
+    assert('㉒ [IQC 闸] 合格数 19 < 入库 20 拦截', short.code !== 0 && /少于入库数/.test(short.message || ''), short.message)
+    // 调入库数为 19 后放行
+    const piDoc = (await get(`/api/scm/docs/${pi.id}`)).data
+    await api('PUT', `/api/scm/docs/${pi.id}`, { ...piDoc, lines: piDoc.lines.map(l => ({ ...l, qty: 19 })) }, { allowError: true })
+    const ok19 = await audit(pi.id)
+    assert('㉒ [IQC 闸] 合格数覆盖后入库审核通过', ok19.code === 0, ok19.message)
+    await api('PUT', '/api/scm/params', { params: [...others, { param_key: 'scm:qc_required_for_receipt', param_value: '0' }] }, { allowError: true })
+  }
+
   // 汇总
   const fails = results.filter(r => !r.pass)
   console.log(`\n==== ${results.length} 项断言，${fails.length} 项失败 ====`)

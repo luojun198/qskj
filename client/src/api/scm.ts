@@ -537,6 +537,13 @@ export const scmApi = {
   // 标准成本差异分析
   getCostVariance: (params?: { start_date?: string; end_date?: string }) => request.get<any[]>('/scm/report/cost-variance', { params }),
   // 质检单
+  // 检验标准（检验项 + 抽样方案）
+  getQcStandards: (params?: { item_code?: string; qc_type?: string; keyword?: string }) => request.get<any[]>('/scm/qc-standards', { params }),
+  getQcStandard: (id: string) => request.get<any>(`/scm/qc-standards/${id}`),
+  resolveQcStandard: (params: { item_code: string; qc_type?: string; qty?: number }) => request.get<any>('/scm/qc-standards/resolve', { params }),
+  createQcStandard: (data: any) => request.post<{ id: string }>('/scm/qc-standards', data),
+  updateQcStandard: (id: string, data: any) => request.put(`/scm/qc-standards/${id}`, data),
+  deleteQcStandard: (id: string) => request.delete(`/scm/qc-standards/${id}`),
   getQcDocs: (params?: { qc_type?: string; source_doc_id?: string }) => request.get<any[]>('/scm/qc-docs', { params }),
   getQcNextNo: (qc_type?: string) => request.get<{ next_no: string }>('/scm/qc-docs/next-no', { params: { qc_type } }),
   getQcDoc: (id: string) => request.get<any>(`/scm/qc-docs/${id}`),

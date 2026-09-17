@@ -9,6 +9,46 @@
 import type Database from 'better-sqlite3'
 
 export const QC_REQUIRED_FOR_FINISH_PARAM = 'scm:qc_required_for_finish'
+export const QC_REQUIRED_FOR_RECEIPT_PARAM = 'scm:qc_required_for_receipt'
+
+/** 采购入库是否要求先过 IQC 到货检验（系统参数 → 供应链，默认关） */
+export function isQcRequiredForReceipt(db: Database.Database, accountSetId: string): boolean {
+  const row = db.prepare('SELECT param_value FROM system_params WHERE account_set_id=? AND param_key=?')
+    .get(accountSetId, QC_REQUIRED_FOR_RECEIPT_PARAM) as { param_value?: string } | undefined
+  return row?.param_value === '1'
+}
+
+/**
+ * 采购入库前的到货检验（IQC）校验：须有挂在本入库单（source_doc_id = 本单 或 source_doc_no = 本单号）的
+ * 已审核、判定合格（含让步接收）的 IQC，且合格明细覆盖本单每个物料、合格数 ≥ 入库数。
+ */
+export function validateReceiptQc(
+  db: Database.Database,
+  accountSetId: string,
+  doc: { id: string; doc_no: string; doc_type: string },
+  lines: Array<{ item_code?: string | null; qty?: number | null }>,
+): string | null {
+  if (doc.doc_type !== 'PI') return null
+  if (!isQcRequiredForReceipt(db, accountSetId)) return null
+  const hits = db.prepare(`SELECT id, qc_no FROM scm_qc_doc
+     WHERE account_set_id=? AND qc_type='IQC' AND status='audited' AND result IN ('pass','concession')
+       AND (source_doc_id=? OR source_doc_no=?)`).all(accountSetId, doc.id, doc.doc_no) as Array<{ id: string; qc_no: string }>
+  if (!hits.length) {
+    return `系统参数已开启「采购入库须先到货检验」，入库单 ${doc.doc_no} 没有判定合格的已审核到货检验单(IQC)。`
+      + '请先在「质检管理」新建 IQC 质检单（来源选本入库单）、判定合格并审核。'
+  }
+  const qcPh = hits.map(() => '?').join(',')
+  const qualified = new Map<string, number>()
+  for (const row of db.prepare(`SELECT item_code, COALESCE(SUM(qualified_qty),0) q FROM scm_qc_line WHERE account_set_id=? AND qc_doc_id IN (${qcPh}) GROUP BY item_code`)
+    .all(accountSetId, ...hits.map(h => h.id)) as any[]) qualified.set(String(row.item_code), Number(row.q) || 0)
+  const need = new Map<string, number>()
+  for (const l of lines) { const c = String(l.item_code || ''); const q = Number(l.qty) || 0; if (c && q > 0) need.set(c, (need.get(c) || 0) + q) }
+  for (const [code, qty] of need) {
+    if (!qualified.has(code)) return `到货检验单（${hits.map(h => h.qc_no).join('、')}）未覆盖物料 ${code}`
+    if (qty > (qualified.get(code) || 0) + 1e-6) return `物料 ${code} 到货检验合格数 ${qualified.get(code)} 少于入库数 ${qty}，请调整入库数或补检`
+  }
+  return null
+}
 
 export interface QcDefectLine {
   item_code: string

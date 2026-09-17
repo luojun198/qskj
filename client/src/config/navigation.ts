@@ -191,6 +191,7 @@ const ROUTE_PERMISSION_MAP: Record<string, string | string[]> = {
   '/scm/mrp': ['scm:production', 'scm:outsource'],
   '/scm/cost-variance': ['scm:production', 'scm:outsource'],
   '/scm/qc-docs': ['scm:production', 'scm:outsource'],
+  '/scm/qc-standards': ['scm:production', 'scm:outsource'],
   '/scm/arap': 'scm:arap',
   '/scm/arap-detail': 'scm:arap',
   '/scm/arap-verify': 'scm:arap',
@@ -718,6 +719,7 @@ function getStaticNavApps(enableCashFlow: boolean, enableForeignCurrency = false
           label: '质量·成本·报表',
           items: [
             { path: '/scm/qc-docs', title: '质检管理', permission: 'scm:production', icon: 'FlaskConical' },
+            { path: '/scm/qc-standards', title: '检验标准', permission: 'scm:production', icon: 'ClipboardCheck' },
             { path: '/scm/cost-variance', title: '标准成本差异', permission: 'scm:production', icon: 'Calculator' },
             { path: '/scm/report/production/execution', title: '生产执行及在制结存表', permission: 'scm:report', module: PRODUCTION_OR_OUTSOURCE_MODULES, icon: 'Table2' },
           ],
