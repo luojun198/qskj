@@ -408,7 +408,7 @@
             </el-form-item>
 
             <el-form-item>
-              <el-button type="primary" :loading="submitting" @click="submit">提交变动</el-button>
+              <el-button v-permission="'asset:change'" type="primary" :loading="submitting" @click="submit">提交变动</el-button>
               <el-button @click="resetForm">重置</el-button>
             </el-form-item>
           </el-form>
@@ -440,7 +440,7 @@
                 <span>{{ h.operator || '-' }}</span>
                 <el-tag v-if="h.voucher_no" size="small" type="success">{{ h.voucher_no }}</el-tag>
               </div>
-              <el-button v-if="canRevoke(h)" link type="danger" size="small" @click="revoke(h)">
+              <el-button v-if="canRevoke(h)" v-permission="'asset:change'" link type="danger" size="small" @click="revoke(h)">
                 撤销
               </el-button>
             </div>
@@ -789,7 +789,8 @@ onMounted(async () => {
 
 .change-header__left h3 {
   margin: 0;
-  font-size: 16px;
+  font-size: var(--cw-text-lg);
+  font-weight: 600;
 }
 
 .change-header__asset {

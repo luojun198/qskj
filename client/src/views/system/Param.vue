@@ -1140,7 +1140,7 @@ onMounted(async () => {
 .param-page-header__main h3 {
   margin: 0;
   color: var(--text-strong, #0c2a2e);
-  font-size: 17px;
+  font-size: var(--cw-text-lg);
   font-weight: 700;
   letter-spacing: -0.01em;
 }

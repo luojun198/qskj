@@ -47,7 +47,7 @@ defineProps<{
 
 .export-progress-panel__title {
   margin: 0 0 12px;
-  font-size: 18px;
+  font-size: var(--cw-text-xl);
   font-weight: 600;
   color: #303133;
 }

@@ -1,0 +1,12 @@
+xt_cshbz	110011	
+bbh	2013.02.10	
+xt_dwmc	深圳润衡财经软件有限公司	
+xt_pos_cpcd	333333	
+xt_pos_kzrq	26.1.1	
+xt_pos_tjqj	1	
+xt_pos_djws	2	
+xt_pos_slws	2	
+xt_pos_yysl	4	
+xt_pos_zzsl	17	
+xt_pos_sx	0	
+xt_pos_hzny	2025.12	

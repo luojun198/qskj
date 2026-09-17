@@ -1,0 +1,88 @@
+xt_gz_yfkm	2151
+xt_len1	4
+xt_len3	3
+xt_len5	2
+xt_gz_kzrq	2011.01.01
+xt_gz_yflm	g_l09
+xt_len7	0
+xt_len9	0
+xt_kzrq	2025.01.01
+xt_jzyf	2025.01
+xt_zc_kzrq	2011.01.01
+xt_zc_zjkm	
+xt_gz_jsed	1600
+xt_hlgl	1
+gs_bbh	2025.11.06
+xt_hy	05
+xt_gz_fplm	g_j4
+zzs_j_mc2	已交税金
+zzs_j_km5	
+xt_ht_bz	2
+xt_bb_win8	1
+xt_xjll_sz	1
+zzs_d_km5	
+zzs_j_em4	REDUCTION AND EXEMPTION TAXES
+zzs_d_em2	TAX REFUND OF EXPORT
+zzs_d_em5	
+zzs_j_km2	2221001002
+zc_top	24
+zzs_d_em1	OUTPUT TAXES
+zzs_d_mc4	转出多交增值税
+zzs_j_em1	INPUT TAXES
+zzs_j_km3	2221001003
+zzs_d_km4	2221001009
+zc_right	24
+zzs_j_mc4	减免税款
+zzs_d_mc3	进项税额转出
+zzs_d_km1	2221001005
+xt_zc_jzyf	2011.01
+xt_zc_qlkm	
+xt_gz_jzyf	2011.01
+xt_cb_kzrq	2012-01-01
+zzs_d_mc1	销项税额
+xt_cb_djws	0
+xt_cb_slws	0
+xt_cb_yysl	4
+xt_cb_zzsl	17
+xt_cb_jzyf	2011-12
+zzs_j_em5	
+pz_top	24
+sl_f	6
+xt_bbh	8.01
+xt_len2	3
+xt_len4	2
+xt_len6	2
+xt_len8	0
+xt_len10	0
+xt_bhsz	1
+xt_dwmc	xx公司
+xt_bwb	RMB
+xt_kjqj	1
+xt_print_bz	0
+print_dwmc	1
+xt_yh_kzyf	
+zzs_d_mc2	出口退税
+pz_left	24
+pz_right	1
+zc_left	24
+zzs_j_km4	2221001004
+zzs_d_km3	2221001007
+zzs_j_em2	TAXES-PAID
+print_color	0
+zzs_j_mc5	
+zzs_j_km1	2221001001
+zzs_j_em3	TRANSMIT.VAT PAYABLE
+zzs_d_em3	INPUT TAX TRANSMIT
+zzs_d_mc5	
+pz_zoom	98
+zzs_d_km2	2221001006
+zzs_d_em4	TRANSMIT.VAT OVERPAID
+zzs_j_mc3	转出未交增值税
+zc_len	38
+zc_bott	24
+dj_f	4
+gdzc_bz1	1
+hl_f	4
+print_fx	0
+pz_bott	24
+zzs_j_mc1	进项税额

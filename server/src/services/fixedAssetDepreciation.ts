@@ -54,6 +54,8 @@ export interface DeprLine {
   expense_account: string | null
   asset_account: string | null
   depr_account_code: string | null
+  /** AS-P1-2：工作量法本月录入的工作量，executeDepreciation 据此累加 workload_done */
+  current_workload?: number
 }
 
 // ── 四种折旧算法 ──────────────────────────────────────────
@@ -84,6 +86,8 @@ function calcMethodAvgYears(a: DeprAsset): number {
 
 function calcMethodWorkload(a: DeprAsset, currentWorkload: number): number {
   if (!a.total_workload || a.total_workload <= 0) return 0
+  // AS-P0-2：累计工作量已达总工作量则停提（预览 SQL 已过滤，这里是兜底）
+  if ((a.workload_done || 0) >= a.total_workload) return 0
 
   if (a.rebased) {
     // 剩余工作量摊余：(当前净值 - 残值) / 剩余工作量 × 当月工作量
@@ -149,11 +153,13 @@ export function previewDepreciation(params: {
       fc.account_code AS asset_account,
       fc.depr_account_code,
       -- P1-2：发生过改变折旧基数的变动后，改按「剩余期间摊余」计算（未来适用法）
+      -- AS-P1-14：拆分（split）缩水了父/子卡的原值与累折，同样需要 rebased 摊余，
+      -- 否则父卡按缩小后的原值配全期月数、子卡在已有累折之上再整段折旧，折旧总量错乱
       EXISTS (
         SELECT 1 FROM fixed_asset_change ch
          WHERE ch.account_set_id = fa.account_set_id
            AND ch.asset_no = fa.asset_no
-           AND ch.change_kind IN ('original_value', 'depr_factor', 'impairment', 'improvement')
+           AND ch.change_kind IN ('original_value', 'depr_factor', 'impairment', 'improvement', 'split')
       ) AS rebased
     FROM fixed_asset fa
     LEFT JOIN fixed_asset_purpose  fp ON fp.account_set_id = fa.account_set_id AND fp.code = fa.purpose_code
@@ -162,16 +168,27 @@ export function previewDepreciation(params: {
     WHERE fa.account_set_id = ?
       AND (fs.depreciable = 1 OR fa.status_code IS NULL)
       AND fa.depr_method IS NOT NULL
-      AND fa.use_months > 0
-      AND fa.depr_months_done < fa.use_months
+      AND (
+        -- AS-P0-2：工作量法按工作量判断结束，不再要求使用月数（不填 use_months 的工作量法资产此前被整体排除、静默漏提）
+        (fa.depr_method = '2' AND fa.total_workload > 0
+           AND (fa.workload_done IS NULL OR fa.workload_done < fa.total_workload))
+        OR
+        (fa.depr_method != '2' AND fa.use_months > 0 AND fa.depr_months_done < fa.use_months)
+      )
   `).all(accountSetId) as DeprAsset[]
 
   const lines: DeprLine[] = []
 
   for (const a of assets) {
     // 起折日期校验：计提月必须 > 起折月
+    // AS-P1-15：脏数据（如 "2026/06/15"）解析为 NaN 时比较恒 false，
+    // 会导致起折前的资产被计提——解析失败一律跳过并告警
     if (a.start_depr_date) {
       const [sy, sm] = a.start_depr_date.split('-').map(Number)
+      if (!Number.isFinite(sy) || !Number.isFinite(sm) || !sy || !sm) {
+        console.warn(`[固定资产折旧] 资产 ${a.asset_no} 的起折日期格式无效（${a.start_depr_date}），本期跳过计提`)
+        continue
+      }
       if (year * 12 + month <= sy * 12 + sm) continue
     }
 
@@ -182,9 +199,10 @@ export function previewDepreciation(params: {
     if (already) continue
 
     const method = a.depr_method || '1'
+    const currentWorkload = workloadMap[a.asset_no] ?? 0
     let monthDepr = 0
     if (method === '1') monthDepr = calcMethodAvgYears(a)
-    else if (method === '2') monthDepr = calcMethodWorkload(a, workloadMap[a.asset_no] ?? 0)
+    else if (method === '2') monthDepr = calcMethodWorkload(a, currentWorkload)
     else if (method === '3') monthDepr = calcMethodDoubleDeclining(a)
     else if (method === '4') monthDepr = calcMethodSumOfYears(a)
 
@@ -193,6 +211,15 @@ export function previewDepreciation(params: {
     // 不超过剩余可折余额（防止最后一月多折）
     const maxDepr = Math.max(0, Math.round((a.net_value - a.salvage_value) * 100) / 100)
     monthDepr = Math.min(monthDepr, maxDepr)
+
+    // AS-P1-6：平均年限法最后一期把各月舍入累积的尾差一次补足，
+    // 使提满后净值恰好等于残值（此前尾差留存到处置时虚增清理损益）。
+    // 双倍余额递减（最后 2 月转直线）与年数总和（末期公式已=全额）天然提满，无需处理。
+    const remainingMonths = (a.use_months || 0) - a.depr_months_done
+    if (method !== '2' && method !== '3' && remainingMonths === 1 && maxDepr > 0 && monthDepr !== maxDepr) {
+      monthDepr = maxDepr
+    }
+
     monthDepr = Math.round(monthDepr * 100) / 100
     if (monthDepr <= 0) continue
 
@@ -210,6 +237,7 @@ export function previewDepreciation(params: {
       expense_account: a.expense_account,
       asset_account: a.asset_account,
       depr_account_code: a.depr_account_code,
+      current_workload: method === '2' ? currentWorkload : 0,
     })
   }
 
@@ -240,6 +268,8 @@ export function executeDepreciation(params: {
       accum_depr       = ROUND(accum_depr + ?, 2),
       net_value        = ROUND(net_value  - ?, 2),
       depr_months_done = depr_months_done + 1,
+      -- AS-P1-2：工作量法同步累加累计工作量，否则 rebased 摊余的分母永远不变、折旧提不完
+      workload_done    = ROUND(COALESCE(workload_done, 0) + ?, 4),
       updated_at       = datetime('now')
     WHERE account_set_id = ? AND asset_no = ?
   `)
@@ -249,7 +279,7 @@ export function executeDepreciation(params: {
       uuidv4(), accountSetId, ln.asset_no, year, month,
       ln.dept_code, ln.purpose_code, ln.depr_method, ln.month_depr, ln.accum_depr_after
     )
-    updAsset.run(ln.month_depr, ln.month_depr, accountSetId, ln.asset_no)
+    updAsset.run(ln.month_depr, ln.month_depr, ln.current_workload || 0, accountSetId, ln.asset_no)
   }
 }
 
@@ -438,8 +468,8 @@ export function reverseDepreciation(params: {
 
   // 1. 取该期折旧明细
   const deprRows = db.prepare(
-    'SELECT asset_no, month_depr, voucher_id FROM fixed_asset_depr WHERE account_set_id=? AND year=? AND month=?'
-  ).all(accountSetId, year, month) as Array<{ asset_no: string; month_depr: number; voucher_id: string | null }>
+    'SELECT asset_no, depr_method, month_depr, voucher_id FROM fixed_asset_depr WHERE account_set_id=? AND year=? AND month=?'
+  ).all(accountSetId, year, month) as Array<{ asset_no: string; depr_method: string | null; month_depr: number; voucher_id: string | null }>
   if (deprRows.length === 0) {
     throw new Error('该期间没有折旧记录，无需反折旧')
   }
@@ -451,6 +481,24 @@ export function reverseDepreciation(params: {
   if (laterExists) {
     throw new Error('存在更晚期间的折旧记录，请先反折旧更晚的期间')
   }
+
+  // 2.5 AS-P1-4：该期涉及的资产已被处置时拒绝——处置清理凭证按当时累计折旧结转，
+  // 回退折旧会让固定资产/累计折旧/清理科目三方不平
+  const disposedCount = db.prepare(`
+    SELECT COUNT(*) AS c FROM fixed_asset fa
+    WHERE fa.account_set_id = ? AND fa.scrap_date IS NOT NULL
+      AND EXISTS (SELECT 1 FROM fixed_asset_depr fd WHERE fd.account_set_id = fa.account_set_id
+                    AND fd.asset_no = fa.asset_no AND fd.year = ? AND fd.month = ?)
+  `).get(accountSetId, year, month) as any
+  if (Number(disposedCount?.count || 0) > 0) {
+    throw new Error('该期折旧涉及的资产已处置，请先撤销处置后再反折旧')
+  }
+
+  // AS-P1-2：工作量法反计提需要该月录入的工作量，对称回退 workload_done
+  const workloadRows = db.prepare(
+    'SELECT asset_no, workload FROM fixed_asset_workload WHERE account_set_id=? AND year=? AND month=?'
+  ).all(accountSetId, year, month) as Array<{ asset_no: string; workload: number }>
+  const workloadMap = new Map(workloadRows.map(r => [r.asset_no, r.workload]))
 
   // 3. 校验关联凭证状态（已记账不可删）
   const voucherIds = [...new Set(deprRows.map(r => r.voucher_id).filter(Boolean))] as string[]
@@ -467,6 +515,7 @@ export function reverseDepreciation(params: {
       accum_depr       = ROUND(accum_depr - ?, 2),
       net_value        = ROUND(net_value  + ?, 2),
       depr_months_done = MAX(0, depr_months_done - 1),
+      workload_done    = ROUND(MAX(0, COALESCE(workload_done, 0) - ?), 4),
       updated_at       = datetime('now')
     WHERE account_set_id = ? AND asset_no = ?
   `)
@@ -476,9 +525,10 @@ export function reverseDepreciation(params: {
   const groupMap = new Map<string, { year: number; period: number; voucher_type_id: string | null }>()
 
   const tx = db.transaction(() => {
-    // 4. 回退各资产
+    // 4. 回退各资产（工作量法按该月录入工作量回退 workload_done）
     for (const r of deprRows) {
-      updAsset.run(r.month_depr, r.month_depr, accountSetId, r.asset_no)
+      const wl = r.depr_method === '2' ? workloadMap.get(r.asset_no) ?? 0 : 0
+      updAsset.run(r.month_depr, r.month_depr, wl, accountSetId, r.asset_no)
     }
     // 5. 删除该期折旧凭证（模块内部操作，绕过 API 删除拦截）
     for (const vid of voucherIds) {

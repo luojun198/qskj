@@ -1873,6 +1873,9 @@ watch(
 let voucherNoTimer: ReturnType<typeof setTimeout> | null = null
 function fetchNextVoucherNo() {
   if (voucherNoTimer) clearTimeout(voucherNoTimer)
+  // FIX-181：只对新增/插入取号。编辑/查看已有凭证时 loadVoucher 会触发日期/类型 watch，
+  // 若也取号会把原凭证号覆盖成「下一个号」，保存后凭证被静默改号
+  if (props.form.id || props.mode === 'edit' || props.mode === 'view') return
   voucherNoTimer = setTimeout(async () => {
     if (!props.form.voucher_date) return
     try {

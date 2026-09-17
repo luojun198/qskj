@@ -51,6 +51,7 @@
         <el-button type="primary" @click="fetchData"
           ><el-icon><Search /></el-icon>查询</el-button
         >
+        <FilterClearButton @clear="handleClearFilters" />
         <el-divider direction="vertical" />
         <el-button plain @click="exportData"
           ><el-icon><Download /></el-icon>导出 Excel</el-button
@@ -291,7 +292,9 @@ import {
 import { getSummaryAccountRows } from '@/utils/exportLedgerHelpers'
 import AccountScopeAlert from '@/components/AccountScopeAlert.vue'
 import AccountLevelButtons from '@/components/ledger/AccountLevelButtons.vue'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
 import { useAccountLevelFilter } from '@/composables/useAccountLevelFilter'
+import { useFilterClear } from '@/composables/useFilterClear'
 import { useUserStore } from '@/stores/user'
 import { useRacedQuery } from '@/composables/useRacedQuery'
 
@@ -340,6 +343,16 @@ const filters = ref<any>({
   filter_types: ['init_balance', 'has_amount', 'has_balance'],
   include_unposted: true,
 })
+const { clearFilters } = useFilterClear([filters])
+
+/** 清空筛选条件并恢复默认查询 */
+function handleClearFilters() {
+  hideZero.value = false
+  clearFilters()
+  // 级次若不在底层则一并恢复（内部会触发 fetchData），否则手动查询
+  if (levelFilter.atBottom.value) fetchData()
+  else levelFilter.goBottom()
+}
 
 // 顶层 / 上级 / 下级 / 底层：默认底层（不限级次），与科目维护同一套按钮与快捷键
 const levelFilter = useAccountLevelFilter({

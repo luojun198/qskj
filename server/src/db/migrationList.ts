@@ -172,6 +172,10 @@ import {
   down as backfillInitBalanceOpeningDown,
 } from './migrations/20260915_backfill_init_balance_opening.js'
 import {
+  up as fixSalvageRateUnitUp,
+  down as fixSalvageRateUnitDown,
+} from './migrations/20260915_fix_salvage_rate_unit.js'
+import {
   up as fixBalanceSheetTemplateFormulasUp,
   down as fixBalanceSheetTemplateFormulasDown,
 } from './migrations/20260531_fix_balance_sheet_template_formulas.js'
@@ -407,6 +411,14 @@ import {
   up as addScmReportQuerySchemeUp,
   down as addScmReportQuerySchemeDown,
 } from './migrations/20260714_add_scm_report_query_scheme.js'
+import {
+  up as cashierPeriodClosingUp,
+  down as cashierPeriodClosingDown,
+} from './migrations/20260916_cashier_period_closing.js'
+import {
+  up as detachStandardReportFooterUp,
+  down as detachStandardReportFooterDown,
+} from './migrations/20260916_detach_standard_report_footer.js'
 
 /**
  * 迁移示例：添加新字段
@@ -2062,5 +2074,23 @@ export const migrations: Migration[] = [
     name: 'backfill_init_balance_opening',
     up: backfillInitBalanceOpeningUp,
     down: backfillInitBalanceOpeningDown,
+  },
+  {
+    version: 123,
+    name: 'fix_salvage_rate_unit',
+    up: fixSalvageRateUnitUp,
+    down: fixSalvageRateUnitDown,
+  },
+  {
+    version: 124,
+    name: 'cashier_period_closing',
+    up: cashierPeriodClosingUp,
+    down: cashierPeriodClosingDown,
+  },
+  {
+    version: 125,
+    name: 'detach_standard_report_footer',
+    up: detachStandardReportFooterUp,
+    down: detachStandardReportFooterDown,
   },
 ]

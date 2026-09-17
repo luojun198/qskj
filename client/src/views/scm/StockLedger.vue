@@ -20,6 +20,7 @@
         <el-option v-for="row in partners" :key="row.code" :label="`${row.code} ${row.name}`" :value="row.code" />
       </el-select>
       <el-button type="primary" :loading="loading" @click="query">查询</el-button>
+      <FilterClearButton size="small" @clear="handleClearFilters" />
       <el-button type="success" plain :loading="exporting" @click="exportExcel">导出Excel</el-button>
     </div>
     <div class="summary-grid">
@@ -56,6 +57,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { scmApi } from '@/api/scm'
 import { ArrowLeft } from '@element-plus/icons-vue'
 import { scmDownstreamDocRoute } from '@/utils/scmDocNavigation'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
+import { useFilterClear } from '@/composables/useFilterClear'
 
 const route = useRoute()
 const router = useRouter()
@@ -76,6 +79,14 @@ const isDirectFullHistory = computed(() => queryValue(route.query.full_history) 
 const dateRange = ref<string[] | null>(isDirectFullHistory.value ? [] : [first, today]); const sortOrder = ref<'asc' | 'desc'>('asc')
 const hasDateRange = computed(() => Array.isArray(dateRange.value) && dateRange.value.length === 2)
 const isFullHistoryView = computed(() => isDirectFullHistory.value && !hasDateRange.value)
+const { clearFilters } = useFilterClear([filters, dateRange])
+
+/** 清空筛选条件并恢复默认查询 */
+function handleClearFilters() {
+  clearFilters()
+  page.value = 1
+  load()
+}
 const params = () => ({ ...filters.value, ...(hasDateRange.value ? { start_date: dateRange.value![0], end_date: dateRange.value![1] } : {}), page: page.value, page_size: pageSize.value, sort_order: sortOrder.value })
 const num = (v: any) => (Number(v) || 0).toLocaleString('zh-CN', { maximumFractionDigits: 6 }); const money = (v: any) => (Number(v) || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const cell = (v: any) => Number(v) ? num(v) : ''; const cellMoney = (v: any) => Number(v) ? money(v) : ''

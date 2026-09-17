@@ -6,6 +6,7 @@
       </el-select>
       <el-date-picker v-model="endDate" type="date" value-format="YYYY-MM-DD" placeholder="截止日期" style="width: 150px" @change="load" />
       <el-button type="primary" @click="load"><el-icon><Search /></el-icon>查询</el-button>
+      <FilterClearButton @clear="handleClearFilters" />
       <el-button plain :disabled="!data" @click="handlePrint"><el-icon><Printer /></el-icon>打印</el-button>
     </div>
 
@@ -108,6 +109,8 @@ import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Search, Printer, CircleCheck, WarningFilled } from '@element-plus/icons-vue'
 import { cashierApi, type ReconciliationData } from '@/api/cashier'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
+import { useFilterClear } from '@/composables/useFilterClear'
 
 const accounts = ref<{ code: string; name: string; is_cash: number; is_bank: number }[]>([])
 const bankAccounts = computed(() => accounts.value.filter(a => a.is_bank && !a.is_cash))
@@ -118,6 +121,13 @@ const endDate = ref(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(
 const data = ref<ReconciliationData | null>(null)
 const loading = ref(false)
 const renderKey = ref(0)
+const { clearFilters } = useFilterClear([accountCode, endDate])
+
+/** 清空筛选条件并恢复默认查询 */
+function handleClearFilters() {
+  clearFilters()
+  load()
+}
 
 const fmt = (v: number) =>
   v === 0 ? '0.00' : v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })

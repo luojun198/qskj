@@ -9,6 +9,7 @@
         <el-radio-button value="ar">应收（收款核销）</el-radio-button>
       </el-radio-group>
       <el-button type="primary" plain size="small" :disabled="!partnerCode" @click="load"><el-icon><Search /></el-icon>查询</el-button>
+      <FilterClearButton size="small" @clear="handleClearFilters" />
       <el-button type="success" plain size="small" @click="createAdvanceDoc">
         <el-icon><Plus /></el-icon>新增{{ side === 'ar' ? '预收款单' : '预付款单' }}
       </el-button>
@@ -103,6 +104,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { Plus, Search } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { scmApi, type ScmPartner } from '@/api/scm'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
+import { useFilterClear } from '@/composables/useFilterClear'
 import { allocateArapAmount, partnerMatchesArapSide, roundArapAmount, sumArapOpenAmount } from '@/utils/scmArapVerify'
 
 const route = useRoute()
@@ -112,6 +115,13 @@ const partners = ref<ScmPartner[]>([])
 const partnerCode = ref<string>((route.query.partner_code as string) || '')
 const side = ref<'ar' | 'ap'>(normalizeSide(route.query.side))
 const loading = ref(false)
+const { clearFilters } = useFilterClear([partnerCode, side])
+
+/** 清空筛选条件并恢复默认查询（未选单位时与页面行为一致不查询） */
+function handleClearFilters() {
+  clearFilters()
+  if (partnerCode.value) load()
+}
 const saving = ref(false)
 const inItems = ref<any[]>([])
 const outItems = ref<any[]>([])

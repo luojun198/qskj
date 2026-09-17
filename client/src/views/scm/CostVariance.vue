@@ -6,6 +6,7 @@
         range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期"
         value-format="YYYY-MM-DD" :clearable="false" style="width: 240px" />
       <el-button type="primary" size="small" :loading="loading" @click="load"><el-icon><Refresh /></el-icon>查询</el-button>
+      <FilterClearButton size="small" @clear="handleClearFilters" />
       <el-radio-group v-model="filterType" size="small">
         <el-radio-button value="">全部</el-radio-button>
         <el-radio-button value="over">超支</el-radio-button>
@@ -60,12 +61,21 @@
 import { ref, computed } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import { scmApi } from '@/api/scm'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
+import { useFilterClear } from '@/composables/useFilterClear'
 
 const rows = ref<any[]>([])
 const loading = ref(false)
 const ran = ref(false)
 const filterType = ref('')
 const dateRange = ref<[string, string]>(['2026-01-01', '2026-12-31'])
+const { clearFilters } = useFilterClear([dateRange, filterType])
+
+/** 清空筛选条件并恢复默认查询 */
+function handleClearFilters() {
+  clearFilters()
+  load()
+}
 
 const fmt = (v: any) => (Number(v) || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const fmtSigned = (v: any) => { const n = Number(v) || 0; return (n > 0 ? '+' : '') + fmt(n) }

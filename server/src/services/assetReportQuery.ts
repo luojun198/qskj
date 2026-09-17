@@ -43,6 +43,8 @@ export interface AssetLedgerEntry {
   accum_depr_after: number   // 变动后累计折旧
   net_value_after: number    // 变动后净值
   voucher_no?: string        // 关联凭证号
+  /** 内部使用：变动行的 change_kind，用于余额重算时区分原值类/减值类变动 */
+  change_kind?: string
 }
 
 export interface AssetLedgerResult {
@@ -82,7 +84,9 @@ export function queryDeprSummary(params: {
         SUM(fa.original_value) AS total_original,
         SUM(fd.month_depr) AS month_depr,
         SUM(fd.accum_depr) AS total_accum_depr,
-        SUM(fa.net_value) AS total_net_value
+        -- AS-P1-10：净值 = 该期期末原值口径 − 该期期末累计折旧（fd.accum_depr）− 减值，
+        -- 原先 SUM(fa.net_value) 取的是「今天的净值」，查历史月份时与累折列口径互相矛盾
+        SUM(fa.original_value - fd.accum_depr - COALESCE(fa.impairment_amount, 0)) AS total_net_value
       FROM fixed_asset_depr fd
       JOIN fixed_asset fa ON fa.account_set_id = fd.account_set_id AND fa.asset_no = fd.asset_no
       LEFT JOIN fixed_asset_category fc ON fc.account_set_id = fa.account_set_id AND fc.code = fa.category_code
@@ -101,7 +105,8 @@ export function queryDeprSummary(params: {
       SUM(fa.original_value) AS total_original,
       SUM(fd.month_depr) AS month_depr,
       SUM(fd.accum_depr) AS total_accum_depr,
-      SUM(fa.net_value) AS total_net_value
+      -- AS-P1-10：同上，净值按该期期末累折推算
+      SUM(fa.original_value - fd.accum_depr - COALESCE(fa.impairment_amount, 0)) AS total_net_value
     FROM fixed_asset_depr fd
     JOIN fixed_asset fa ON fa.account_set_id = fd.account_set_id AND fa.asset_no = fd.asset_no
     LEFT JOIN fixed_asset_dept fd2 ON fd2.account_set_id = fa.account_set_id AND fd2.code = fa.dept_code
@@ -148,7 +153,8 @@ export function queryDeprDetail(params: {
       fa.original_value,
       fd.month_depr,
       fd.accum_depr,
-      fa.net_value,
+      -- AS-P1-10：净值按该期期末累折推算，与汇总表口径一致
+      fa.original_value - fd.accum_depr - COALESCE(fa.impairment_amount, 0) AS net_value,
       fp.expense_account
     FROM fixed_asset_depr fd
     JOIN fixed_asset fa ON fa.account_set_id = fd.account_set_id AND fa.asset_no = fd.asset_no
@@ -381,6 +387,7 @@ export function queryAssetLedger(params: {
       depr_amount: 0,
       accum_depr_after: asset.accum_depr,
       net_value_after: (c.new_value ?? asset.original_value) - asset.accum_depr - (asset.salvage_value ?? 0),
+      change_kind: c.change_kind || undefined,
     })
   }
 
@@ -402,23 +409,34 @@ export function queryAssetLedger(params: {
   entries.sort((a, b) => a.date.localeCompare(b.date))
 
   // 重新计算每行的余额（保证时间顺序正确）
+  // AS-P1-9：净值口径改为「原值 − 累计折旧 − 累计减值」（与卡片/折旧引擎一致，不扣残值）；
+  // 只有原值类变动（original_value/improvement）推进原值余额，
+  // 减值行推进减值余额——此前减值行的 new_value（减值累计额）被当成原值余额，明细账余额错乱
   let runningOriginal = 0
   let runningAccumDepr = 0
+  let runningImpairment = 0
   for (const e of entries) {
     if (e.type === 'acquire') {
       runningOriginal = e.original_change
       runningAccumDepr = 0
+      runningImpairment = 0
     } else if (e.type === 'depr') {
       runningAccumDepr = e.accum_depr_after
     } else if (e.type === 'change') {
-      runningOriginal = e.original_after
+      if (e.change_kind === 'original_value' || e.change_kind === 'improvement') {
+        runningOriginal = e.original_after
+      } else if (e.change_kind === 'impairment') {
+        runningImpairment = e.original_after // impairment 行的 new_value 是减值准备累计额
+      }
+      // 部门调拨/状态变更等不影响原值余额
     } else if (e.type === 'disposal') {
       runningOriginal = 0
       runningAccumDepr = 0
+      runningImpairment = 0
     }
     e.original_after = runningOriginal
     e.accum_depr_after = runningAccumDepr
-    e.net_value_after = Math.max(0, Math.round((runningOriginal - runningAccumDepr - (asset.salvage_value ?? 0)) * 100) / 100)
+    e.net_value_after = Math.max(0, Math.round((runningOriginal - runningAccumDepr - runningImpairment) * 100) / 100)
   }
 
   return {
@@ -482,6 +500,8 @@ export function queryExpiryWarning(params: {
       AND (fs.depreciable = 1 OR fa.status_code IS NULL)
       AND fa.depr_method IS NOT NULL
       AND fa.use_months > 0
+      -- AS-P0-2：工作量法不按月数到期，不纳入月度到期预警
+      AND fa.depr_method != '2'
       AND (fa.use_months - fa.depr_months_done) BETWEEN 1 AND ?
     ORDER BY remaining_months
   `).all(accountSetId, withinMonths) as any[]
@@ -523,7 +543,8 @@ export function queryChangeSummary(params: {
   const lastDay = new Date(year, month, 0).getDate()
   const periodEnd = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
 
-  // 期初：截止期初的资产
+  // 期初：本期开始前已取得的资产（AS-P1-8：原条件 `acquire_date <= periodEnd`
+  // 会把本月新增资产同时计入期初和本期增加，closing 翻倍）
   const openingRows = db.prepare(`
     SELECT
       fa.category_code,
@@ -533,10 +554,10 @@ export function queryChangeSummary(params: {
     FROM fixed_asset fa
     LEFT JOIN fixed_asset_category fc ON fc.account_set_id = fa.account_set_id AND fc.code = fa.category_code
     WHERE fa.account_set_id = ?
-      AND (fa.acquire_date IS NULL OR fa.acquire_date <= ?)
+      AND (fa.acquire_date IS NULL OR fa.acquire_date < ?)
       AND (fa.scrap_date IS NULL OR fa.scrap_date > ?)
     GROUP BY fa.category_code
-  `).all(accountSetId, periodEnd, periodStart) as any[]
+  `).all(accountSetId, periodStart, periodStart) as any[]
 
   // 本期增加：acquire_date 在期内的资产
   const increaseRows = db.prepare(`
@@ -772,9 +793,14 @@ export function queryDeprForecast(params: {
     WHERE fa.account_set_id = ?
       AND (fs.depreciable = 1 OR fa.status_code IS NULL)
       AND fa.depr_method IS NOT NULL
-      AND fa.use_months > 0
-      AND fa.depr_months_done < fa.use_months
       AND fa.scrap_date IS NULL
+      AND (
+        -- AS-P0-2：工作量法按工作量判断是否提满，其余方法按月数
+        (fa.depr_method = '2' AND fa.total_workload > 0
+           AND (fa.workload_done IS NULL OR fa.workload_done < fa.total_workload))
+        OR
+        (fa.depr_method != '2' AND fa.use_months > 0 AND fa.depr_months_done < fa.use_months)
+      )
   `).all(accountSetId) as any[]
 
   const now = new Date()
@@ -798,17 +824,34 @@ export function queryDeprForecast(params: {
     const details: ForecastDetail[] = []
 
     for (const s of states) {
-      if (s.depr_months_done >= (s.use_months || 9999)) continue
+      // AS-P0-2：月数型按月数判断结束；工作量法按累计工作量判断结束
+      if ((s.depr_method || '1') === '2') {
+        const tw = s.total_workload || 0
+        if (!(tw > 0) || (s.workload_done || 0) >= tw) continue
+      } else if (s.depr_months_done >= (s.use_months || 9999)) {
+        continue
+      }
       if (s.net_value <= (s.salvage_value || 0)) continue
 
       const method = s.depr_method || '1'
       let monthDepr = 0
 
-      if (method === '1' || method === '2') {
-        // 平均年限法/工作量法(预测按平均年限): 每月depr = depreciable / use_months
+      if (method === '1') {
+        // 平均年限法: 每月depr = depreciable / use_months
         const depreciable = s.original_value - (s.salvage_value || 0)
         if (depreciable > 0 && s.use_months > 0) {
           monthDepr = Math.round((depreciable / s.use_months) * 100) / 100
+        }
+      } else if (method === '2') {
+        // AS-P0-2：工作量法按工作量口径预测（此前错按直线法），假定各月均衡工作量为 总工作量/使用月数
+        const totalWorkload = s.total_workload || 0
+        const doneWorkload = s.workload_done || 0
+        if (totalWorkload > 0 && doneWorkload < totalWorkload) {
+          const avgWorkload = s.use_months > 0 ? totalWorkload / s.use_months : 0
+          const depreciable = s.original_value - (s.salvage_value || 0)
+          if (depreciable > 0 && avgWorkload > 0) {
+            monthDepr = Math.round((depreciable / totalWorkload) * avgWorkload * 100) / 100
+          }
         }
       } else if (method === '3') {
         // 双倍余额递减法
@@ -844,6 +887,13 @@ export function queryDeprForecast(params: {
       s.accum_depr = Math.round((s.accum_depr + monthDepr) * 100) / 100
       s.net_value = Math.round((s.net_value - monthDepr) * 100) / 100
       s.depr_months_done += 1
+      // AS-P0-2：工作量法同步推进累计工作量（与当月估算工作量一致）
+      if (method === '2' && s.use_months > 0 && (s.total_workload || 0) > 0) {
+        s.workload_done = Math.min(
+          s.total_workload,
+          Math.round(((s.workload_done || 0) + (s.total_workload || 0) / s.use_months) * 100) / 100
+        )
+      }
 
       details.push({
         asset_no: s.asset_no,

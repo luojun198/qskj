@@ -51,7 +51,7 @@
           size="small"
         />
         <el-button type="primary" size="small" @click="handleSearch">查询</el-button>
-        <el-button size="small" @click="handleReset">重置</el-button>
+        <FilterClearButton size="small" @clear="handleReset" />
       </div>
     </div>
 
@@ -103,6 +103,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue'
 import request from '@/api/request'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
 import { useListColumnWidth } from '@/composables/useColumnWidthMemory'
 import { formatLogDetail, formatLogIp } from '@/utils/operationLog'
 

@@ -14,6 +14,7 @@ import {
   getAssetParam,
   assertPeriodOpen,
 } from './assetVoucherBuilder.js'
+import { assertVoucherEntriesInScopeById } from './accountAuthorization.js'
 import type { VoucherEntryInput } from './voucherEntry.js'
 
 export interface DisposalParams {
@@ -40,6 +41,8 @@ export interface DisposalParams {
   operatorName?: string
   /** 处置凭证类型（参数 asset:disposal_voucher_type_id，缺省时由取号逻辑推断） */
   voucherTypeId?: string | null
+  /** AS-P1-12：科目授权范围，生成凭证后校验，超权整体回滚（处置写账多，不允许「保留处理、只删凭证」） */
+  accountScope?: unknown
 }
 
 export interface DisposalResult {
@@ -75,6 +78,24 @@ export function disposeAsset(params: DisposalParams): DisposalResult {
     parseInt(scrapDate.split('-')[0]),
     parseInt(scrapDate.split('-')[1])
   )
+
+  // AS-P1-17：处置日期不得早于该资产最后一次已计提折旧的期间，
+  // 否则已计提的折旧会与处置基数对不上（与变动引擎同口径）
+  const lastDepr = db
+    .prepare(
+      'SELECT MAX(year * 100 + month) AS ym FROM fixed_asset_depr WHERE account_set_id=? AND asset_no=?'
+    )
+    .get(accountSetId, asset.asset_no) as { ym: number | null } | undefined
+  const lastDeprYm = lastDepr?.ym
+  if (lastDeprYm) {
+    const scrapYm =
+      parseInt(scrapDate.split('-')[0]) * 100 + parseInt(scrapDate.split('-')[1])
+    if (scrapYm < lastDeprYm) {
+      const y = Math.floor(lastDeprYm / 100)
+      const m = lastDeprYm % 100
+      throw new Error(`该资产已计提折旧至 ${y}年${m}月，处置日期不能早于该期间`)
+    }
+  }
 
   const originalValue = asset.original_value
   const accumDepr = asset.accum_depr
@@ -128,6 +149,14 @@ export function disposeAsset(params: DisposalParams): DisposalResult {
         operatorName, voucherTypeId,
       })
       db.prepare('UPDATE fixed_asset SET scrap_voucher_id=? WHERE id=?').run(vid, assetId)
+      // AS-P1-12：科目授权——超权时抛错让整个处置事务回滚
+      const scopeErr = assertVoucherEntriesInScopeById(
+        db,
+        params.accountScope as any,
+        vid,
+        accountSetId
+      )
+      if (scopeErr) throw new Error(scopeErr)
     }
   })()
 
@@ -174,12 +203,23 @@ function generateDisposalVoucher(params: VoucherGenParams): string {
 
   // 查找资产所属类别的科目配置
   const assetCat = (asset.category_code
-    ? db.prepare('SELECT account_code, depr_account_code, clearing_account_code FROM fixed_asset_category WHERE account_set_id=? AND code=?').get(accountSetId, asset.category_code)
+    ? db.prepare('SELECT account_code, depr_account_code, clearing_account_code, impairment_account_code FROM fixed_asset_category WHERE account_set_id=? AND code=?').get(accountSetId, asset.category_code)
     : null) as any
 
   const assetAccountCode = assetCat?.account_code || '1601'
   const actualAccumAccount = assetCat?.depr_account_code || accumAccount || '1602'
   const actualClearingAccount = assetCat?.clearing_account_code || clearingAccount || '1606'
+
+  // AS-P1-1：带减值准备的资产处置必须同时结转减值准备（借 减值准备科目），
+  // 否则借方合计 = 原值 − 减值 ≠ 贷方原值，凭证必然借贷不平、处置事务整体回滚
+  const impairmentAmount = Number(asset.impairment_amount || 0)
+  let impairmentAccountCode: string | null = null
+  if (impairmentAmount > 0) {
+    impairmentAccountCode = assetCat?.impairment_account_code || null
+    if (!impairmentAccountCode) {
+      throw new Error('该资产类别未配置「减值准备科目」，请先到「资产档案 → 资产类别」中设置后再处置')
+    }
+  }
 
   /**
    * P0-2：银行存款 / 营业外收支科目原先硬编码为 1001 / 6301 / 6711，且查不到时
@@ -193,6 +233,7 @@ function generateDisposalVoucher(params: VoucherGenParams): string {
   // 只预检本次实际会用到的科目
   const requiredCodes: string[] = [assetAccountCode, actualClearingAccount]
   if (accumDepr > 0) requiredCodes.push(actualAccumAccount)
+  if (impairmentAccountCode) requiredCodes.push(impairmentAccountCode)
   if (disposalIncome > 0 || disposalExpense > 0) requiredCodes.push(bankCode)
   if (disposalGainLoss > 0) requiredCodes.push(gainCode)
   if (disposalGainLoss < 0) requiredCodes.push(lossCode)
@@ -224,6 +265,10 @@ function generateDisposalVoucher(params: VoucherGenParams): string {
 
   // 借：累计折旧
   if (accumDepr > 0) push(actualAccumAccount, 'debit', accumDepr, summary)
+  // 借：固定资产减值准备（AS-P1-1，结转后借方合计恰好等于原值）
+  if (impairmentAmount > 0 && impairmentAccountCode) {
+    push(impairmentAccountCode, 'debit', impairmentAmount, `${summary}（结转减值准备）`)
+  }
   // 借：固定资产清理（净值）
   if (netValue > 0) push(actualClearingAccount, 'debit', netValue, summary)
   // 贷：固定资产（原值）
@@ -293,6 +338,15 @@ export function cancelDisposal(params: {
 
   if (!asset) throw new Error('资产不存在')
   if (!asset.scrap_date) throw new Error('该资产未处置，无需撤销')
+
+  // AS-P1-17：撤销处置会回写卡片财务字段，处置所属期间已结账则拒绝
+  // （此前 cancelDisposal 全程无期间校验，已结账月份的处置可被撤销并回写资产账）
+  assertPeriodOpen(
+    db,
+    accountSetId,
+    parseInt(String(asset.scrap_date).split('-')[0]),
+    parseInt(String(asset.scrap_date).split('-')[1])
+  )
 
   const restoredStatus = asset.pre_scrap_status || '01'
   let deletedVoucherNo: string | null = null

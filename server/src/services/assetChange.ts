@@ -23,6 +23,7 @@ import {
   resolveAccounts,
   assertPeriodOpen,
   getAssetParam,
+  normalizeSalvageRate,
 } from './assetVoucherBuilder.js'
 import { deleteVoucherRecords, type VoucherEntryInput } from './voucherEntry.js'
 
@@ -325,10 +326,13 @@ function applyValueChange(
   if (newOriginal < 0) throw new Error('变动后原值不能为负数')
 
   // 残值按残值率同步重算（残值率本身可在本次一并调整）
-  const salvageRate =
+  // AS-P0-1：残值率统一为小数口径（>1 视为百分数 ÷100），防止卡片页历史百分数把残值放大
+  const salvageRateRaw =
     ctx.payload.salvage_rate != null
-      ? Number(ctx.payload.salvage_rate)
-      : Number(asset.salvage_rate || 0)
+      ? ctx.payload.salvage_rate
+      : asset.salvage_rate || 0
+  const salvageRate = normalizeSalvageRate(salvageRateRaw)
+  if (salvageRate === null) throw new Error('残值率必须是 0~1 的小数（如 0.05 表示 5%）')
   const newSalvage = round2(newOriginal * salvageRate)
 
   // 改良可延长使用月数
@@ -569,7 +573,14 @@ function applyDeptChange(ctx: ChangeContext): ApplyChangeResult {
     kind: 'dept',
     // change_item 直接写成可读描述，报表无需再关联部门字典
     changeItem: `部门调拨：${nameOf(asset.dept_code) || '（无）'} → ${nameOf(newDept)}`,
-    oldText: asset.dept_code || null,
+    // AS-P1-13：调拨会一并改使用人/保管人/存放地点，撤销需要整组还原，
+    // 快照存 JSON；旧记录仍是纯 dept_code 字符串，撤销时做兼容解析
+    oldText: JSON.stringify({
+      dept_code: asset.dept_code || null,
+      user_name: asset.user_name ?? null,
+      keeper: asset.keeper ?? null,
+      install_place: asset.install_place ?? null,
+    }),
     newText: newDept,
     fieldKey: 'dept_code',
   })
@@ -661,11 +672,13 @@ function applyDeprFactorChange(ctx: ChangeContext): ApplyChangeResult {
     )
   }
 
-  // 残值率变化时同步重算残值与净值
+  // 残值率变化时同步重算残值与净值（AS-P0-1：统一小数口径）
   const salvageChange = changes.find(c => c.field === 'salvage_rate')
   if (salvageChange) {
-    const newSalvage = round2(Number(asset.original_value || 0) * Number(salvageChange.newVal))
-    db.prepare('UPDATE fixed_asset SET salvage_value=? WHERE id=?').run(newSalvage, asset.id)
+    const normalizedRate = normalizeSalvageRate(salvageChange.newVal)
+    if (normalizedRate === null) throw new Error('残值率必须是 0~1 的小数（如 0.05 表示 5%）')
+    const newSalvage = round2(Number(asset.original_value || 0) * normalizedRate)
+    db.prepare('UPDATE fixed_asset SET salvage_value=?, salvage_rate=? WHERE id=?').run(newSalvage, normalizedRate, asset.id)
   }
 
   const changeIds = changes.map(c =>
@@ -914,15 +927,17 @@ export function revokeAssetChange(params: {
   assertPeriodOpen(db, accountSetId, change.year, change.period)
 
   // 必须逆序撤销
+  // AS-P1-13：同日多笔变动原先按 change_date（日粒度）比较检测不到先后，
+  // 改用 rowid 比较（插入顺序即时间序）
   const later = db
     .prepare(
       `SELECT id FROM fixed_asset_change
         WHERE account_set_id=? AND asset_no=? AND id<>?
           AND change_kind NOT IN ('legacy')
-          AND change_date > ?
+          AND (change_date > ? OR (change_date = ? AND rowid > (SELECT rowid FROM fixed_asset_change WHERE id=?)))
         LIMIT 1`
     )
-    .get(accountSetId, change.asset_no, changeId, change.change_date)
+    .get(accountSetId, change.asset_no, changeId, change.change_date, change.change_date, changeId)
   if (later) throw new Error('该资产存在更晚的变动记录，请先撤销更晚的变动')
 
   // 变动之后已计提折旧则拒绝
@@ -994,12 +1009,29 @@ export function revokeAssetChange(params: {
         )
         break
       }
-      case 'dept':
-        db.prepare(`UPDATE fixed_asset SET dept_code=?, updated_at=datetime('now') WHERE id=?`).run(
-          change.old_text ?? null,
-          asset.id
-        )
+      case 'dept': {
+        // AS-P1-13：调拨可能一并改过使用人/保管人/存放地点，撤销整组还原。
+        // 新记录 oldText 为 JSON 快照；旧记录是纯 dept_code 字符串，兼容处理
+        let restoredDept: string | null = change.old_text ?? null
+        let restoredUser = asset.user_name
+        let restoredKeeper = asset.keeper
+        let restoredPlace = asset.install_place
+        try {
+          const snap = JSON.parse(String(change.old_text ?? ''))
+          if (snap && typeof snap === 'object') {
+            restoredDept = snap.dept_code ?? null
+            restoredUser = snap.user_name ?? null
+            restoredKeeper = snap.keeper ?? null
+            restoredPlace = snap.install_place ?? null
+          }
+        } catch {
+          /* 旧记录：纯 dept_code，仅还原部门 */
+        }
+        db.prepare(
+          `UPDATE fixed_asset SET dept_code=?, user_name=?, keeper=?, install_place=?, updated_at=datetime('now') WHERE id=?`
+        ).run(restoredDept, restoredUser ?? null, restoredKeeper ?? null, restoredPlace ?? null, asset.id)
         break
+      }
       case 'status':
         db.prepare(
           `UPDATE fixed_asset SET status_code=?, updated_at=datetime('now') WHERE id=?`

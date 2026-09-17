@@ -41,6 +41,7 @@
           style="width: 150px"
         />
         <el-button type="primary" @click="handleQuery"><el-icon><Search /></el-icon>查询</el-button>
+        <FilterClearButton @clear="handleClearFilters" />
         <el-divider direction="vertical" />
         <el-button plain @click="exportData"><el-icon><Download /></el-icon>导出 Excel</el-button>
         <el-button plain @click="printPage"><el-icon><Printer /></el-icon>打印</el-button>
@@ -280,6 +281,8 @@ import type { TableColumnCtx } from 'element-plus'
 import DrillDownReturnButton from '@/components/common/DrillDownReturnButton.vue'
 import AccountScopeAlert from '@/components/AccountScopeAlert.vue'
 import EmptyState from '@/components/EmptyState.vue'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
+import { useFilterClear } from '@/composables/useFilterClear'
 import { useAccountScopeHint } from '@/composables/useAccountScopeHint'
 import VoucherEntryDialogHost from '@/components/voucher/VoucherEntryDialogHost.vue'
 import { useLedgerWideTable } from '@/composables/useLedgerWideTable'
@@ -341,6 +344,15 @@ const filters = ref<any>({
   include_unposted: true,
   currency_code: '',
 })
+const { clearFilters } = useFilterClear([filters])
+
+/** 清空筛选条件并恢复默认查询 */
+function handleClearFilters() {
+  const currentAccountId = filters.value.account_id
+  clearFilters()
+  filters.value.account_id = currentAccountId || selectableAccounts.value[0]?.id || ''
+  handleQuery()
+}
 
 // FIX-157：请求序号防竞态，loading 由 raced 统一维护
 const raced = useRacedQuery()

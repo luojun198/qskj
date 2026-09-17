@@ -821,11 +821,75 @@ const ROWCOL_LABEL: Record<RhStandardReportRowColAction, string> = {
   delete_col: '删除列',
 }
 
+/** 把升序下标切成连续段 [start, count]，供逐段插删 */
+function splitContiguous(indexes: number[]): Array<{ start: number; count: number }> {
+  const runs: Array<{ start: number; count: number }> = []
+  for (const index of indexes) {
+    const last = runs[runs.length - 1]
+    if (last && last.start + last.count === index) last.count += 1
+    else runs.push({ start: index, count: 1 })
+  }
+  return runs
+}
+
+/**
+ * 当前选中的行号（升序）。
+ * 点行号（含 Shift/Ctrl 多选）用 selectedRowIndexes；拖选一片单元格时取选区覆盖到的行；
+ * 都没有则退回当前格所在行。列选择模式下选区会铺满全部行，此时不能按选区算。
+ */
+const selectedRowList = computed(() => {
+  if (grid.selectedRowIndexes.value.size) return [...grid.selectedRowIndexes.value].sort((a, b) => a - b)
+  const rows = new Set<number>()
+  if (!grid.selectedColIndexes.value.size) {
+    for (const range of grid.selectedRanges.value) {
+      for (let row = range.startRow; row <= range.endRow; row += 1) rows.add(row)
+    }
+  }
+  if (!rows.size && grid.selectedRow.value !== null) rows.add(grid.selectedRow.value)
+  return [...rows].sort((a, b) => a - b)
+})
+
+const selectedColList = computed(() => {
+  if (grid.selectedColIndexes.value.size) return [...grid.selectedColIndexes.value].sort((a, b) => a - b)
+  const cols = new Set<number>()
+  if (!grid.selectedRowIndexes.value.size) {
+    for (const range of grid.selectedRanges.value) {
+      for (let col = range.startCol; col <= range.endCol; col += 1) cols.add(col)
+    }
+  }
+  if (!cols.size && grid.selectedCol.value !== null) cols.add(grid.selectedCol.value)
+  return [...cols].sort((a, b) => a - b)
+})
+
+function colLabel(colIndex: number) {
+  let index = colIndex
+  let label = ''
+  do {
+    label = String.fromCharCode(65 + (index % 26)) + label
+    index = Math.floor(index / 26) - 1
+  } while (index >= 0)
+  return label
+}
+
+function describeRuns(isRow: boolean, runs: Array<{ start: number; count: number }>) {
+  const name = (index: number) => (isRow ? `第 ${index + 1} 行` : `${colLabel(index)} 列`)
+  return runs
+    .map(run => (run.count === 1 ? name(run.start) : `${name(run.start)}～${name(run.start + run.count - 1)}`))
+    .join('、')
+}
+
+/**
+ * 插删行列按整个选区生效：选了几行就删几行 / 插几行（Excel 习惯，在选区上方/左侧插入）。
+ * 不连续的选区按连续段逐段提交，从下标大的段往小的段做，前面段的下标才不会漂移。
+ */
 async function handleRowCol(action: RhStandardReportRowColAction) {
   if (!currentReport.value) return
   const isRow = action.endsWith('_row')
-  const index = isRow ? grid.selectedRow.value : grid.selectedCol.value
-  if (index === null) return
+  const indexes = isRow ? selectedRowList.value : selectedColList.value
+  if (!indexes.length) return
+  const runs = splitContiguous(indexes)
+  const total = indexes.length
+  const unit = isRow ? '行' : '列'
 
   // 行列结构改动在服务端是一个事务（含公式引用平移），先把未决的单元格改动落库
   await grid.flushSave()
@@ -833,7 +897,7 @@ async function handleRowCol(action: RhStandardReportRowColAction) {
   if (action.startsWith('delete')) {
     try {
       await ElMessageBox.confirm(
-        `确认${ROWCOL_LABEL[action]}？该${isRow ? '行' : '列'}的内容会被删除，指向它的公式会变成 #REF!。`,
+        `确认删除 ${describeRuns(isRow, runs)}（共 ${total} ${unit}）？其内容会被删除，指向它们的公式会变成 #REF!。`,
         ROWCOL_LABEL[action],
         { type: 'warning' }
       )
@@ -843,16 +907,20 @@ async function handleRowCol(action: RhStandardReportRowColAction) {
   }
 
   try {
-    const res: any = await updateStandardReportRowCol(currentReport.value.id, {
-      action,
-      index,
-      count: 1,
-    })
-    if (res.code !== 0) throw new Error(res.message || '操作失败')
-    ElMessage.success(`${ROWCOL_LABEL[action]}成功`)
+    for (const run of runs.slice().reverse()) {
+      const res: any = await updateStandardReportRowCol(currentReport.value.id, {
+        action,
+        index: run.start,
+        count: run.count,
+      })
+      if (res.code !== 0) throw new Error(res.message || '操作失败')
+    }
+    ElMessage.success(`${ROWCOL_LABEL[action]}成功${total > 1 ? `（${total} ${unit}）` : ''}`)
     await loadReportDetail(currentReport.value.id)
   } catch (error: any) {
     ElMessage.error(error?.message || `${ROWCOL_LABEL[action]}失败`)
+    // 多段操作中途失败时，前面的段已经生效，重新拉一遍避免界面与库对不上
+    await loadReportDetail(currentReport.value.id).catch(() => undefined)
   }
 }
 
@@ -874,11 +942,18 @@ onBeforeUnmount(() => {
   height: 100%;
   background: #fff;
   border-radius: 4px;
-  overflow: hidden;
+  /* 不能用 overflow:hidden：它会让容器成为 sticky 的参照，工具栏就吸不住了；
+     实际滚动的是外层 el-main，报表长了靠工具栏吸顶保证随时能点到编辑控件 */
+  overflow: visible;
   box-shadow: 0 1px 4px rgba(0,21,41,.08);
 }
 
 .report-header {
+  position: sticky;
+  /* 外层 el-main 有 8px 内边距，吸顶要贴到滚动口顶边，否则上方会露出一条网格 */
+  top: -8px;
+  z-index: 20;
+  background: #fff;
   padding: 12px 24px;
   border-bottom: 1px solid #ebeef5;
   display: flex;
@@ -895,7 +970,8 @@ onBeforeUnmount(() => {
 }
 
 .page-title {
-  font-size: 16px;
+  font-size: var(--cw-text-lg);
+  font-weight: 600;
   font-weight: 600;
   color: #303133;
 }

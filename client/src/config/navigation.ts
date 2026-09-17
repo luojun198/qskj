@@ -140,6 +140,7 @@ const ROUTE_PERMISSION_MAP: Record<string, string | string[]> = {
   '/cashier/document-query': 'cashier:journal',
   '/cashier/bank-import': 'cashier:reconcile',
   '/cashier/reset': 'cashier:initbal',
+  '/cashier/period-close': 'cashier:param',
   '/cashier/settle-type': 'cashier:dict',
   // 与 server/src/routes/fixedAsset.ts 的 ASSET_PERMISSION_RULES 保持一致，
   // 否则会出现「菜单可见但操作 403」
@@ -149,6 +150,7 @@ const ROUTE_PERMISSION_MAP: Record<string, string | string[]> = {
   '/asset/requisition': 'asset:requisition',
   '/asset/import': 'asset:edit',
   '/asset/depreciation': 'asset:depr',
+  '/asset/depreciation/reverse': 'asset:depr',
   '/asset/report': 'asset:report',
   '/asset/inventory': 'asset:inventory',
   '/asset/dict': 'asset:dict',
@@ -479,6 +481,7 @@ function getStaticNavApps(enableCashFlow: boolean, enableForeignCurrency = false
           items: [
             { path: '/cashier/settle-type', title: '结算方式', permission: 'cashier:dict', icon: 'CreditCard' },
             { path: '/cashier/init-balance', title: '出纳期初', permission: 'cashier:initbal', icon: 'Coins' },
+            { path: '/cashier/period-close', title: '出纳结账', permission: 'cashier:param', icon: 'CalendarCheck' },
             { path: '/cashier/reset', title: '出纳初始化', permission: 'cashier:initbal', icon: 'RotateCcw' },
           ],
         },

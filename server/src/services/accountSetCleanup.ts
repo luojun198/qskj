@@ -84,6 +84,7 @@ export function cleanupAccountSetCascade(db: Database, accountSetId: string) {
     { sql: 'DELETE FROM cashier_journal WHERE account_set_id = ?', params: [accountSetId] },
     { sql: 'DELETE FROM cashier_init_balance WHERE account_set_id = ?', params: [accountSetId] },
     { sql: 'DELETE FROM bank_statement WHERE account_set_id = ?', params: [accountSetId] },
+    { sql: 'DELETE FROM cashier_period_closing WHERE account_set_id = ?', params: [accountSetId] },
     { sql: 'DELETE FROM settle_type WHERE account_set_id = ?', params: [accountSetId] },
     // 固定资产模块（依赖表先删）
     { sql: 'DELETE FROM fixed_asset_attachments WHERE account_set_id = ?', params: [accountSetId] },

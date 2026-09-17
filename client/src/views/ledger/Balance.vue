@@ -28,6 +28,7 @@
         <el-checkbox v-model="filters.include_unposted" @change="fetchData">统计未记账凭证</el-checkbox>
         <el-divider direction="vertical" />
         <el-button type="primary" @click="fetchData"><el-icon><Search /></el-icon>查询</el-button>
+        <FilterClearButton @clear="handleClearFilters" />
         <el-divider direction="vertical" />
         <el-button plain @click="exportData"><el-icon><Download /></el-icon>导出 Excel</el-button>
         <el-button plain @click="printPage"><el-icon><Printer /></el-icon>打印</el-button>
@@ -216,7 +217,9 @@ import { useFillHeightTable } from '@/composables/useFillHeightTable'
 import { exportStyledTable } from '@/utils/exportStyledExcel'
 import AccountScopeAlert from '@/components/AccountScopeAlert.vue'
 import AccountLevelButtons from '@/components/ledger/AccountLevelButtons.vue'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
 import { useAccountLevelFilter } from '@/composables/useAccountLevelFilter'
+import { useFilterClear } from '@/composables/useFilterClear'
 import HiprintDialog from '@/components/print/HiprintDialog.vue'
 import { buildTablePrintHtml } from '@/utils/printTemplateHiprint'
 import { useUserStore } from '@/stores/user'
@@ -243,6 +246,17 @@ const filters = ref<any>({
   account_code: '',
   include_unposted: true,
 })
+const { clearFilters } = useFilterClear([filters], {
+  defaults: { year: new Date().getFullYear() },
+})
+
+/** 清空筛选条件并恢复默认查询 */
+function handleClearFilters() {
+  hideNoActivity.value = false
+  clearFilters()
+  if (levelFilter.atBottom.value) fetchData()
+  else levelFilter.goBottom()
+}
 
 /** 数据里出现过的最深级次；按级次过滤后的返回不能代表真实深度，故取累计最大值 */
 const deepestLevel = ref(0)

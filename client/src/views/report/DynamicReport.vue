@@ -3070,7 +3070,7 @@ onMounted(async () => {
 }
 
 .report-generate-message-box .el-message-box__title {
-  font-size: 18px;
+  font-size: var(--cw-text-lg);
   font-weight: 700;
 }
 
@@ -3122,7 +3122,8 @@ onMounted(async () => {
 }
 
 .report-generate-dialog__title {
-  font-size: 16px;
+  font-size: var(--cw-text-lg);
+  font-weight: 600;
   font-weight: 700;
   color: #303133;
   line-height: 1.4;

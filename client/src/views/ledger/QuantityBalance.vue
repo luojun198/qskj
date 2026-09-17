@@ -36,6 +36,7 @@
         <el-button type="primary" @click="fetchData"
           ><el-icon><Search /></el-icon>查询</el-button
         >
+        <FilterClearButton @clear="handleClearFilters" />
         <el-divider direction="vertical" />
         <el-button plain :disabled="list.length === 0" @click="exportData"
           ><el-icon><Download /></el-icon>导出 Excel</el-button
@@ -305,6 +306,8 @@ import { buildTablePrintHtml } from '@/utils/printTemplateHiprint'
 import { exportStyledTable } from '@/utils/exportStyledExcel'
 import { buildQuantityBalanceExportColumns } from '@/utils/ledgerExportBuilders'
 import AccountScopeAlert from '@/components/AccountScopeAlert.vue'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
+import { useFilterClear } from '@/composables/useFilterClear'
 import EmptyState from '@/components/EmptyState.vue'
 import { useUserStore } from '@/stores/user'
 import { useRacedQuery } from '@/composables/useRacedQuery'
@@ -327,6 +330,13 @@ const filters = ref<any>({
   account_code: '',
   include_unposted: true,
 })
+const { clearFilters } = useFilterClear([filters])
+
+/** 清空筛选条件并恢复默认查询 */
+function handleClearFilters() {
+  clearFilters()
+  fetchData()
+}
 
 const ledgerColumnDefs = computed(() => [
   { key: 'account_code', fallback: 110 },

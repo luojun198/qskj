@@ -148,9 +148,13 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted, onActivated, onBeforeUnmount, nextTick, computed } from 'vue'
 import { ElMessage } from 'element-plus'
-import { loadHiprint, mmToPt, normalizePanelForRender } from '@/utils/printTemplateHiprint'
 import {
-  HIPRINT_DEFAULT_TD_HEIGHT_PT,
+  centerVoucherHeaderCells,
+  loadHiprint,
+  mmToPt,
+  normalizePanelForRender,
+} from '@/utils/printTemplateHiprint'
+import {
   VOUCHER_MAX_FIXED_ROWS,
   VOUCHER_TABLE_FIELD,
   VOUCHER_TEXT_FIELDS,
@@ -342,7 +346,6 @@ function applySummaryToPanel() {
 
 const entriesRows = reactive({ rows: 0, rowHeight: 0 })
 
-const pxToPt = (px: number) => (px * 72) / 96
 
 /** 画布上的表格运行时实例（带 designTarget），getJson 出来的副本没有 DOM */
 function findLiveEntriesTable(): any {
@@ -350,20 +353,18 @@ function findLiveEntriesTable(): any {
   return findEntriesTable(panel)
 }
 
-/** 实测表头 / 合计行高度（pt）。量不到（还没挂上 DOM）时按 hiprint 默认 td 高度估 */
-function measureTableHeaderFooterPt(liveEl: any): { headerPt: number; footerPt: number } {
+/**
+ * 把统一行高刷到画布 DOM：列头 / 表体 / 合计行三处 td。
+ * 列头与表体 hiprint 会按 options 自己刷；合计行没有原生行高选项，画布上只能这样补
+ * （打印时由 VOUCHER_SUMMARY_FORMATTER_SRC 写进合计单元格）。
+ */
+function paintUniformRowHeight(liveEl: any, rowHeight: number) {
   const node: HTMLElement | undefined = liveEl?.designTarget?.[0] || liveEl?.designTarget
-  const thead = node?.querySelector?.('thead') as HTMLElement | null | undefined
-  const tfoot = node?.querySelector?.('tfoot') as HTMLElement | null | undefined
-  const scale = Number(liveEl?.designPaper?.scale) || 1
-  const h = (n?: HTMLElement | null) => (n ? pxToPt(n.getBoundingClientRect().height / scale) : NaN)
-  const header = h(thead)
-  const footer = h(tfoot)
-  const summaryOn = readVoucherTableSummary(tableColumnsOf(liveEl)).enabled
-  return {
-    headerPt: header > 0 ? header : HIPRINT_DEFAULT_TD_HEIGHT_PT,
-    footerPt: footer > 0 ? footer : summaryOn ? HIPRINT_DEFAULT_TD_HEIGHT_PT : 0,
-  }
+  node
+    ?.querySelectorAll?.('thead tr td:not([rowspan]), tbody tr td:not([rowspan]), tfoot tr td')
+    .forEach(td => {
+      ;(td as HTMLElement).style.height = `${rowHeight}pt`
+    })
 }
 
 /**
@@ -383,32 +384,28 @@ function syncRowsFromPanel() {
     entriesRows.rowHeight = 0
     return
   }
-  const measure = measureTableHeaderFooterPt(el)
   const rowHeight = computeVoucherBodyRowHeightPt({
     tableHeightPt: Number(el.options.height || 0),
     rows: current.rows,
-    ...measure,
+    summaryOn: readVoucherTableSummary(tableColumnsOf(el)).enabled,
   })
   entriesRows.rowHeight = rowHeight
-  if (Math.abs(rowHeight - current.rowHeight) < 0.5) return
+  // 合计行画布上没有原生行高，每次刷新都补一遍；options 只在行高变化（含老模板没存表头行高）时写
+  paintUniformRowHeight(el, rowHeight)
+  if (Math.abs(rowHeight - current.rowHeight) < 0.5 && el.options.tableHeaderRowHeight === rowHeight) return
   el.options.tableBodyRowHeight = rowHeight
-  const node: HTMLElement | undefined = el.designTarget?.[0] || el.designTarget
-  node?.querySelectorAll?.('tbody tr td:not([rowspan])').forEach(td => {
-    ;(td as HTMLElement).style.height = `${rowHeight}pt`
-  })
+  el.options.tableHeaderRowHeight = rowHeight
 }
 
 /** 面板改行数 → 写回表格元素；写法与 applySummaryToPanel 一致（改 json → tp.update） */
 function applyRowsToPanel() {
   if (!tp) return
-  const live = findLiveEntriesTable()
-  const measure = measureTableHeaderFooterPt(live)
   const json = tp.getJson()
   const panel = json?.panels?.[0]
   const el = findEntriesTable(panel)
   if (!el?.options) return
   const rows = Math.max(0, Math.floor(Number(entriesRows.rows) || 0))
-  el.options = applyVoucherTableRows(el.options, { rows, ...measure })
+  el.options = applyVoucherTableRows(el.options, { rows })
   tp.update(json)
   bindTableGuards()
   if (rows > 0) {
@@ -707,7 +704,8 @@ const loadExisting = async () => {
     syncPaperPreset()
     const panel: any = t.panel
     if (panel && Array.isArray(panel.panels) && panel.panels.length > 0) {
-      return panel as { panels: HiprintPanel[] }
+      // 老模板列定义没有 halign：加载时补上列头居中，画布与打印一致，保存时一并落库
+      return centerVoucherHeaderCells(panel as { panels: HiprintPanel[] })
     }
   }
   return null
@@ -899,8 +897,6 @@ const addEntriesTable = () => {
   // buildEntriesTable 时高度还是 0，行高按最终高度重算一次
   draft.options = applyVoucherTableRows(draft.options, {
     rows: readVoucherTableRows(draft.options).rows,
-    headerPt: HIPRINT_DEFAULT_TD_HEIGHT_PT,
-    footerPt: HIPRINT_DEFAULT_TD_HEIGHT_PT,
   }) as typeof draft.options
   panel.printElements.push(draft)
   tp.update(json)

@@ -35,7 +35,7 @@
         <el-option label="未生成" :value="0" />
       </el-select>
       <el-button type="primary" @click="handleQuery"><el-icon><Search /></el-icon>查询</el-button>
-      <el-button plain @click="resetFilters(); handleQuery()">重置</el-button>
+      <FilterClearButton @clear="handleClearFilters" />
       <el-divider direction="vertical" />
       <el-button plain :disabled="!rows.length" @click="handleExport"><el-icon><Download /></el-icon>导出</el-button>
       <el-button plain :disabled="!rows.length" @click="handlePrint"><el-icon><Printer /></el-icon>打印</el-button>
@@ -93,6 +93,7 @@ import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Search, Printer, Download, ArrowUp, ArrowDown, CircleCheck } from '@element-plus/icons-vue'
 import { cashierApi } from '@/api/cashier'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
 import { useFillHeightTable } from '@/composables/useFillHeightTable'
 import { useColumnWidthMemory } from '@/composables/useColumnWidthMemory'
 import { exportStyledTable, type ExportColumnDef } from '@/utils/exportStyledExcel'
@@ -179,7 +180,7 @@ onMounted(async () => {
 })
 
 function resetFilters() {
-  dateRange.value = getCurrentMonthRange()
+  dateRange.value = null
   filters.value = {
     account_codes: [],
     currency: '',
@@ -194,6 +195,11 @@ function resetFilters() {
     reconciled: undefined,
     has_voucher: undefined,
   }
+}
+
+async function handleClearFilters() {
+  resetFilters()
+  await handleQuery()
 }
 
 async function handleQuery() {

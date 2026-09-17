@@ -95,6 +95,7 @@
 
       <footer class="import-footer">
         <el-button
+          v-permission="'asset:edit'"
           type="primary"
           :disabled="!!errors.length"
           :loading="importing"
@@ -278,7 +279,8 @@ onMounted(async () => {
 
 .import-header__left h3 {
   margin: 0;
-  font-size: 16px;
+  font-size: var(--cw-text-lg);
+  font-weight: 600;
 }
 
 .import-steps {

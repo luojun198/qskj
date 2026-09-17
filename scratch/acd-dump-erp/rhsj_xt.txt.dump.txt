@@ -1,0 +1,46 @@
+xt_gz_yfkm	211001
+xt_bhsz	1
+xt_len1	3
+xt_len2	3
+xt_len3	3
+xt_len4	2
+xt_len5	2
+xt_len6	0
+xt_kzrq	2000-01-01
+xt_jzyf	2000.01
+xt_bwb	RMB
+xt_hy	01
+xt_zc_kzrq	1999.04.01
+xt_gz_yfgz	
+xt_gz_sfgz	
+xt_zc_jzyf	1999.04
+xt_gz_kzrq	1999.04.01
+xt_gz_jzyf	1999.04
+xt_zc_zjkm	165
+xt_zc_qlkm	166
+xt_print_bz	1
+pz_top	24
+pz_bott	24
+pz_left	30
+pz_right	10
+print_color	0
+print_dwmc	1
+xt_gz_yflm	g_l11
+xt_gz_fplm	g_j8
+xt_yh_kzyf	
+zc_top	30
+zc_bott	24
+zc_left	30
+zc_right	0
+zc_len	38
+xt_ht_bz	2
+xt_bbh	8.01
+xt_dwmc	深圳润衡财经软件有限公司
+xt_hlgl	1
+xt_xjll_sz	0
+xt_pzsh_sz	0
+xt_fzlr_sz	0
+sl_f	3
+dj_f	4
+hl_f	4
+xt_bb_win8	0

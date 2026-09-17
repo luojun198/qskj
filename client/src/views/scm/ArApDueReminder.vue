@@ -6,6 +6,7 @@
       <span class="lbl">临近到期(天)</span>
       <el-input-number v-model="upcomingDays" :min="0" :max="90" :controls="false" size="small" style="width:80px" />
       <el-button type="primary" plain size="small" @click="load"><el-icon><Search /></el-icon>查询</el-button>
+      <FilterClearButton size="small" @clear="handleClearFilters" />
       <span class="total-hint">逾期合计 <b class="over">{{ fmt(overdueTotal) }}</b>　临近到期 <b class="soon">{{ fmt(upcomingTotal) }}</b></span>
     </div>
 
@@ -69,9 +70,18 @@ import { ref, onMounted } from 'vue'
 import { Search } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { scmApi } from '@/api/scm'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
+import { useFilterClear } from '@/composables/useFilterClear'
 
 const asOf = ref('')
 const upcomingDays = ref(7)
+const { clearFilters } = useFilterClear([asOf, upcomingDays])
+
+/** 清空筛选条件并恢复默认查询 */
+function handleClearFilters() {
+  clearFilters()
+  load()
+}
 const loading = ref(false)
 const overdue = ref<any[]>([])
 const upcoming = ref<any[]>([])

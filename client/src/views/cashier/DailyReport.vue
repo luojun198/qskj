@@ -8,6 +8,7 @@
         <el-option v-for="c in currencies" :key="c" :label="c" :value="c" />
       </el-select>
       <el-button type="primary" @click="load"><el-icon><Search /></el-icon>查询</el-button>
+      <FilterClearButton @clear="handleClearFilters" />
       <el-button plain :disabled="!displayRows.length" @click="handleExport"><el-icon><Download /></el-icon>导出</el-button>
       <el-button plain :disabled="!displayRows.length" @click="handlePrint"><el-icon><Printer /></el-icon>打印</el-button>
       <el-checkbox v-model="showZero">显示零发生额</el-checkbox>
@@ -66,6 +67,8 @@ import { cashierApi } from '@/api/cashier'
 import { exportStyledTable, type ExportColumnDef } from '@/utils/exportStyledExcel'
 import { useRouter } from 'vue-router'
 import { useListColumnWidth } from '@/composables/useColumnWidthMemory'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
+import { useFilterClear } from '@/composables/useFilterClear'
 
 const { tableRef, colWidth, onDragEnd, widths } = useListColumnWidth('cashier_daily_report')
 function cw(key: string, fallback: number) { return colWidth(key, fallback) }
@@ -79,6 +82,17 @@ const loading = ref(false)
 const showZero = ref(false)
 const currency = ref('RMB')
 const currencies = ref<string[]>(['RMB'])
+const { clearFilters } = useFilterClear([dateRange], {
+  defaults: { currency: 'RMB' }
+})
+
+/** 清空筛选条件并恢复默认查询 */
+function handleClearFilters() {
+  showZero.value = true
+  clearFilters()
+  currency.value = 'RMB'
+  load()
+}
 
 const displayRows = computed(() => showZero.value ? rows.value : rows.value.filter(r => r.income || r.expense))
 const netFlow = computed(() => (data.value?.total_income ?? 0) - (data.value?.total_expense ?? 0))
@@ -158,7 +172,7 @@ async function handleExport() {
 .page-daily { display: flex; flex-direction: column; height: 100%; }
 .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .report-body { flex: 1; overflow: auto; padding: 16px; }
-.report-title { margin: 0 0 12px; font-size: 16px; text-align: center; }
+.report-title { margin: 0 0 12px; font-size: var(--cw-text-xl); text-align: center; }
 .subtitle { font-size: 12px; color: var(--el-text-color-secondary); }
 .summary-section { display: flex; gap: 16px; margin-top: 12px; justify-content: flex-end; }
 .summary-card { text-align: center; padding: 8px 20px; border-radius: 6px; background: var(--el-fill-color-lighter); }

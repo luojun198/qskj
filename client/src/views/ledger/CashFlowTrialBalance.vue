@@ -15,6 +15,7 @@
         </el-select>
         <el-checkbox v-model="filters.include_unposted" @change="fetchAll">统计未记账凭证</el-checkbox>
         <el-button type="primary" :loading="loading" @click="fetchAll"><el-icon><Search /></el-icon>查询</el-button>
+        <FilterClearButton @clear="handleClearFilters" />
         <el-divider direction="vertical" />
         <el-button plain :disabled="!canExport" @click="exportCurrentTab"><el-icon><Download /></el-icon>导出 Excel</el-button>
         <el-button plain :disabled="!data && !checkData" @click="printPage"><el-icon><Printer /></el-icon>打印</el-button>
@@ -255,6 +256,8 @@ import VoucherEntryDialogHost from '@/components/voucher/VoucherEntryDialogHost.
 import { exportStyledTable, exportStyledWorkbook, type ExportColumnDef } from '@/utils/exportStyledExcel'
 import { useListColumnWidth } from '@/composables/useColumnWidthMemory'
 import { useRacedQuery } from '@/composables/useRacedQuery'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
+import { useFilterClear } from '@/composables/useFilterClear'
 
 const { tableRef, colWidth, onDragEnd, widths } = useListColumnWidth('ledger_cf_trial_balance')
 function cw(key: string, fallback: number) { return colWidth(key, fallback) }
@@ -370,6 +373,13 @@ const filters = ref({
   scope: 'month' as 'month' | 'ytd',
   include_unposted: false,
 })
+const { clearFilters } = useFilterClear([filters])
+
+/** 清空筛选条件并恢复默认查询 */
+function handleClearFilters() {
+  clearFilters()
+  fetchAll()
+}
 
 const years = Array.from(
   { length: new Date().getFullYear() - 2000 + 1 },

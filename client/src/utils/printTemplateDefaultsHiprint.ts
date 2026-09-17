@@ -6,7 +6,6 @@ import type { HiprintTemplate } from '@/utils/printTemplateHiprint'
 import { mmToPt } from '@/utils/printTemplateHiprint'
 import type { VoucherPrintData } from '@/types/print'
 import {
-  HIPRINT_DEFAULT_TD_HEIGHT_PT,
   VOUCHER_TABLE_FIELD,
   VOUCHER_TEXT_FIELDS,
   applyVoucherTableRows,
@@ -183,12 +182,8 @@ export function buildEntriesTable(
     columns: [columns],
   }
   return {
-    // 建模板时量不到画布，表头/合计行按 hiprint 默认 td 高度估；设计器挂载后会按实测重算
-    options: applyVoucherTableRows(baseOptions, {
-      rows: fixedRows,
-      headerPt: HIPRINT_DEFAULT_TD_HEIGHT_PT,
-      footerPt: HIPRINT_DEFAULT_TD_HEIGHT_PT,
-    }),
+    // 列头 / 表体 / 合计行统一行高，均分表格框
+    options: applyVoucherTableRows(baseOptions, { rows: fixedRows, summaryOn: true }),
     printElementType: {
       type: 'table',
       title: '分录表',

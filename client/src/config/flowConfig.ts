@@ -1,8 +1,10 @@
 /**
  * flow：核心流程卡 + 辅助操作宫格；bento/grid：按分组宫格；
  * gl-workspace：财务总账专用工作页面（流程图 + 账簿链接列，配置见 glWorkspace.ts）
+ * asset-workspace：固定资产专用工作页面（左侧导航面板 + 流程图 + 链接列，配置见 assetWorkspace.ts）
+ * cashier-workspace：出纳管理专用工作页面（左侧导航面板 + 流程图 + 链接列，配置见 cashierWorkspace.ts）
  */
-export type LayoutType = 'flow' | 'bento' | 'grid' | 'gl-workspace'
+export type LayoutType = 'flow' | 'bento' | 'grid' | 'gl-workspace' | 'asset-workspace' | 'cashier-workspace'
 
 export interface FlowNode {
   id: string
@@ -114,6 +116,10 @@ export const groupFlowMap: Record<string, ModuleFlowConfig> = {
   },
   // 财务总账：流程图 + 账簿链接列的专用工作页面，节点与链接见 glWorkspace.ts
   财务总账: { layout: 'gl-workspace' },
+  // 固定资产：左侧导航面板 + 流程图 + 链接列，配置见 assetWorkspace.ts
+  固定资产: { layout: 'asset-workspace' },
+  // 出纳管理：左侧导航面板 + 流程图 + 链接列，配置见 cashierWorkspace.ts
+  出纳管理: { layout: 'cashier-workspace' },
   生产制造: {
     layout: 'flow',
     mainNodes: [
@@ -157,20 +163,6 @@ export const groupFlowMap: Record<string, ModuleFlowConfig> = {
       { id: 'wi', path: '/scm/docs?doc_type=WI', color: 'green' },
     ],
     auxNodes: [{ id: 'execution', path: '/scm/report/outsource/execution', color: 'cyan' }],
-  },
-  出纳管理: {
-    layout: 'flow',
-    mainNodes: [
-      { id: 'journal', path: '/cashier/journal', color: 'blue', next: ['flow'] },
-      { id: 'flow', path: '/cashier/flow-query', color: 'blue', next: ['report'] },
-      { id: 'report', path: '/cashier/daily-report', color: 'purple', next: ['summary'] },
-      { id: 'summary', path: '/cashier/summary-report', color: 'green' },
-    ],
-    auxNodes: [
-      { id: 'docs', path: '/cashier/document-query', color: 'cyan' },
-      { id: 'settle', path: '/cashier/settle-type', color: 'orange' },
-      { id: 'init', path: '/cashier/init-balance', color: 'orange' },
-    ],
   },
   应收应付: {
     layout: 'flow',

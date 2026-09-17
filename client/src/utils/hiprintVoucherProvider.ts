@@ -38,11 +38,15 @@ export const VOUCHER_TABLE_OPTIONAL_COLUMNS = [
   { title: '现金流量', field: 'cash_flow_name', width: 70, align: 'left' },
 ] as const
 
+/** 列头统一水平居中（hiprint 的 halign 只作用于 thead，表体仍按 align） */
+export const VOUCHER_HEADER_ALIGN: 'left' | 'right' | 'center' = 'center'
+
 export interface VoucherTableColumnDef {
   title: string
   field: string
   width: number
   align: 'left' | 'right' | 'center'
+  halign: 'left' | 'right' | 'center'
   columnId: string
   colspan: number
   checked: boolean
@@ -64,6 +68,7 @@ export function buildVoucherTableColumns(
     field: col.field,
     width: col.width,
     align: col.align as VoucherTableColumnDef['align'],
+    halign: VOUCHER_HEADER_ALIGN,
     columnId: col.field,
     colspan: 1,
     checked,
@@ -81,6 +86,7 @@ export function buildVoucherTableColumns(
         field,
         width: 56,
         align: 'left' as const,
+        halign: VOUCHER_HEADER_ALIGN,
         columnId: field,
         colspan: 1,
         checked: false,
@@ -297,6 +303,17 @@ export function applyVoucherTableSummary(
   return next
 }
 
+/**
+ * 给没设表头对齐的列补上居中。老模板的列定义里没有 halign，thead 会跟着表体的 align
+ * 走（摘要靠左、金额靠右）；渲染前与设计器加载时都过一遍，用户在属性面板里自己改过的保留。
+ * 不修改入参。
+ */
+export function applyVoucherHeaderAlign(columns: LooseColumn[] | undefined): LooseColumn[] {
+  return (columns || []).map(col =>
+    col && typeof col === 'object' && !col.halign ? { ...col, halign: VOUCHER_HEADER_ALIGN } : col
+  )
+}
+
 /** 从列定义里反解合计行配置，供设计器面板回显 */
 export function readVoucherTableSummary(
   columns: LooseColumn[] | undefined
@@ -319,8 +336,12 @@ export function readVoucherTableSummary(
  * hiprint 的 maxRows 是每页数据行、以及 autoCompletion 补空行的上限，只封顶不保底；
  * 一页实际放几行由「页脚线 - 表格顶」这段高度决定。要做到「每张凭证恰好 N 行」，
  * 得三件事同时成立：maxRows = N（封顶）、autoCompletion = true（补空行保底）、
- * tableBodyRowHeight = (表格高 - 表头高 - 合计行高) / N（让 N 行正好填满表格框，
- * 套打时行距也就对齐了预印格线）。
+ * 行高 = (表格高 - 余量) / (N + 表头 1 行 + 合计 1 行)：列头、表体、合计行统一行高，
+ * 让它们正好填满表格框，套打时行距也就对齐了预印格线。
+ *   - 表体：hiprint 原生 tableBodyRowHeight
+ *   - 列头：hiprint 原生 tableHeaderRowHeight
+ *   - 合计行：hiprint 没有表尾行高选项，由 VOUCHER_SUMMARY_FORMATTER_SRC 读 tableBodyRowHeight
+ *     写进合计单元格的 style（同一行只要一格有高度整行就跟着高）
  * ------------------------------------------------------------------ */
 
 /** hiprint 默认 td 高度（print-lock.css：`.hiprint-printElement-tableTarget td { height: 18pt }`） */
@@ -339,36 +360,33 @@ export const VOUCHER_ROWS_FILL_SLACK_PT = 2
 export interface VoucherTableRowsMeasure {
   /** 表格元素 options.height（pt） */
   tableHeightPt: number
-  /** 固定行数（不含合计行） */
+  /** 固定行数（不含列头与合计行） */
   rows: number
-  /** 表头实际高度（pt），量不到时用 hiprint 默认 */
-  headerPt?: number
-  /** 合计行实际高度（pt）；没开合计行传 0 */
-  footerPt?: number
+  /** 是否有合计行（多占一行高度）；不传按有 */
+  summaryOn?: boolean
 }
 
-/** N 行均分表格框可用高度得到的表体行高（pt，向下取整到 0.5pt） */
+/** 列头 + N 行 + 合计行均分表格框可用高度得到的统一行高（pt，向下取整到 0.5pt） */
 export function computeVoucherBodyRowHeightPt(measure: VoucherTableRowsMeasure): number {
   const rows = Math.floor(Number(measure.rows) || 0)
   if (rows <= 0) return 0
-  const header = measure.headerPt ?? HIPRINT_DEFAULT_TD_HEIGHT_PT
-  const footer = measure.footerPt ?? 0
-  const usable = Number(measure.tableHeightPt || 0) - header - footer - VOUCHER_ROWS_FILL_SLACK_PT
-  // 向下取整到 0.5pt：宁可 N 行略短一点留白，也不能撑破表格框导致最后一行补不进去
-  const raw = Math.floor((usable / rows) * 2) / 2
+  const lines = rows + 1 + (measure.summaryOn === false ? 0 : 1)
+  const usable = Number(measure.tableHeightPt || 0) - VOUCHER_ROWS_FILL_SLACK_PT
+  // 向下取整到 0.5pt：宁可略短一点留白，也不能撑破表格框导致最后一行补不进去
+  const raw = Math.floor((usable / lines) * 2) / 2
   return Math.max(raw, VOUCHER_MIN_BODY_ROW_HEIGHT_PT)
 }
 
 export interface VoucherTableRowsConfig {
   /** 固定行数；0 / 空 = 不固定，恢复 hiprint 按高度自动 */
   rows: number
-  headerPt?: number
-  footerPt?: number
+  /** 是否有合计行；不传时从 options.columns 反推 */
+  summaryOn?: boolean
 }
 
 /**
  * 把固定行数写进表格元素 options（hiprint 原生字段，随模板 JSON 保存）。
- * 不修改入参，返回新对象。rows 为 0 时清掉 maxRows / tableBodyRowHeight，
+ * 不修改入参，返回新对象。rows 为 0 时清掉 maxRows / tableBodyRowHeight / tableHeaderRowHeight，
  * autoCompletion 保持原值不动（合计行贴底仍依赖它）。
  */
 export function applyVoucherTableRows(
@@ -380,16 +398,22 @@ export function applyVoucherTableRows(
   if (rows <= 0) {
     delete next.maxRows
     delete next.tableBodyRowHeight
+    delete next.tableHeaderRowHeight
     return next
   }
+  const summaryOn =
+    config.summaryOn ??
+    readVoucherTableSummary(Array.isArray(next.columns?.[0]) ? next.columns[0] : []).enabled
   next.maxRows = rows
   next.autoCompletion = true
-  next.tableBodyRowHeight = computeVoucherBodyRowHeightPt({
+  const rowHeight = computeVoucherBodyRowHeightPt({
     tableHeightPt: Number(next.height || 0),
     rows,
-    headerPt: config.headerPt,
-    footerPt: config.footerPt,
+    summaryOn,
   })
+  next.tableBodyRowHeight = rowHeight
+  // 列头与表体同高（合计行的高度在 VOUCHER_SUMMARY_FORMATTER_SRC 里跟 tableBodyRowHeight）
+  next.tableHeaderRowHeight = rowHeight
   return next
 }
 
@@ -417,8 +441,10 @@ export function readVoucherTableRows(options: Record<string, any> | undefined): 
  * test 通过，Number('1,000.00') 却是 NaN，整列合计变 NaN。这里去掉千分位再求和。
  *
  * 签名 (column, nums, allData, options)，返回值必须是完整的 <td>…</td>。
+ * 第 4 参是表格元素 options：合计行没有 hiprint 原生行高选项，这里把 tableBodyRowHeight
+ * 写进合计单元格，让合计行与列头、表体同高（见 applyVoucherTableRows）。
  */
-export const VOUCHER_SUMMARY_FORMATTER_SRC = `function (column, nums, allData) {
+export const VOUCHER_SUMMARY_FORMATTER_SRC = `function (column, nums, allData, options) {
   var digits = Number(column.tableSummaryNumFormat)
   if (!(digits >= 0)) digits = 2
   var rows = Object.prototype.toString.call(allData) === '[object Array]' ? allData : []
@@ -437,5 +463,7 @@ export const VOUCHER_SUMMARY_FORMATTER_SRC = `function (column, nums, allData) {
   var align = column.tableSummaryAlign || 'right'
   var colspan = column.tableSummaryColspan === null || column.tableSummaryColspan === undefined
     ? 1 : column.tableSummaryColspan
-  return '<td style="text-align: ' + align + '" colspan="' + colspan + '">' + text + '</td>'
+  var rowHeight = options && Number(options.tableBodyRowHeight)
+  var style = 'text-align: ' + align + (rowHeight > 0 ? '; height: ' + rowHeight + 'pt' : '')
+  return '<td style="' + style + '" colspan="' + colspan + '">' + text + '</td>'
 }`

@@ -313,6 +313,22 @@ export function ensureBaseCurrency(
  * 预设固定资产字典的基础默认值（资产状态、增减方式等）。
  * 资产模块的表由迁移创建；迁移尚未执行或库里没有该模块时跳过对应字典，不阻断建账。
  */
+/**
+ * 折旧费用科目预设：在 parentCode 下优先取名称含「折旧」的末级科目，其次取任一末级，
+ * 都没有则退回 parentCode 本身（折旧凭证生成时再由科目解析兜底）。
+ */
+export function resolveDeprExpenseAccount(db: Database.Database, accountSetId: string, parentCode: string): string {
+  if (!hasTable(db, 'accounts')) return parentCode
+  const children = db.prepare(
+    "SELECT code, name FROM accounts WHERE account_set_id=? AND code LIKE ? AND code <> ? ORDER BY code"
+  ).all(accountSetId, `${parentCode}%`, parentCode) as Array<{ code: string; name: string }>
+  if (children.length === 0) return parentCode
+  const codes = new Set(children.map(c => c.code))
+  const leaves = children.filter(c => ![...codes].some(o => o !== c.code && o.startsWith(c.code)))
+  const named = leaves.find(c => /折旧/.test(c.name || ''))
+  return (named || leaves[0] || children[0]).code
+}
+
 export function ensureDefaultAssetDicts(db: Database.Database, accountSetId: string, specificType?: string) {
   // 1. 预设资产状态
   if ((!specificType || specificType === 'status') && hasTable(db, 'fixed_asset_status')) {
@@ -349,11 +365,12 @@ export function ensureDefaultAssetDicts(db: Database.Database, accountSetId: str
     const catCount = (db.prepare('SELECT COUNT(*) as c FROM fixed_asset_category WHERE account_set_id=?').get(accountSetId) as any).c
     if (catCount === 0) {
       const insCat = db.prepare('INSERT INTO fixed_asset_category (id, account_set_id, code, name, salvage_rate, account_code, depr_account_code, clearing_account_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      insCat.run(uuidv4(), accountSetId, '01', '房屋及建筑物', 5, '1601', '1602', '1606')
-      insCat.run(uuidv4(), accountSetId, '02', '机器设备', 5, '1601', '1602', '1606')
-      insCat.run(uuidv4(), accountSetId, '03', '运输工具', 5, '1601', '1602', '1606')
-      insCat.run(uuidv4(), accountSetId, '04', '电子设备', 5, '1601', '1602', '1606')
-      insCat.run(uuidv4(), accountSetId, '05', '办公家具', 5, '1601', '1602', '1606')
+      // AS-P0-1：残值率统一小数口径（5% = 0.05），此前预设写百分数 5，会被消费端当小数乘出 5 倍残值
+      insCat.run(uuidv4(), accountSetId, '01', '房屋及建筑物', 0.05, '1601', '1602', '1606')
+      insCat.run(uuidv4(), accountSetId, '02', '机器设备', 0.05, '1601', '1602', '1606')
+      insCat.run(uuidv4(), accountSetId, '03', '运输工具', 0.05, '1601', '1602', '1606')
+      insCat.run(uuidv4(), accountSetId, '04', '电子设备', 0.05, '1601', '1602', '1606')
+      insCat.run(uuidv4(), accountSetId, '05', '办公家具', 0.05, '1601', '1602', '1606')
     }
   }
 
@@ -362,9 +379,11 @@ export function ensureDefaultAssetDicts(db: Database.Database, accountSetId: str
     const purpCount = (db.prepare('SELECT COUNT(*) as c FROM fixed_asset_purpose WHERE account_set_id=?').get(accountSetId) as any).c
     if (purpCount === 0) {
       const insPurp = db.prepare('INSERT INTO fixed_asset_purpose (id, account_set_id, code, name, expense_account) VALUES (?, ?, ?, ?, ?)')
-      insPurp.run(uuidv4(), accountSetId, '01', '管理用', '6602')
-      insPurp.run(uuidv4(), accountSetId, '02', '经营用', '6601')
-      insPurp.run(uuidv4(), accountSetId, '03', '生产用', '5001')
+      // 管理用 → 管理费用下的折旧末级；经营用 → 销售费用下的折旧末级；生产用 → 制造费用下的折旧末级
+      // （此前配的是父科目，且生产用错配 5001 生产成本）
+      insPurp.run(uuidv4(), accountSetId, '01', '管理用', resolveDeprExpenseAccount(db, accountSetId, '6602'))
+      insPurp.run(uuidv4(), accountSetId, '02', '经营用', resolveDeprExpenseAccount(db, accountSetId, '6601'))
+      insPurp.run(uuidv4(), accountSetId, '03', '生产用', resolveDeprExpenseAccount(db, accountSetId, '5101'))
     }
   }
   // 5. 预设使用部门

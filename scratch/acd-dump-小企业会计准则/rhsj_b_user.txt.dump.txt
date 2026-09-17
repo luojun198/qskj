@@ -1,0 +1,4 @@
+000	MANAGER	系统管理		0	0	
+001	001	记账人				
+002	002	审核人				
+aaa	runsoft	runsoft	Q!W@E#	0		

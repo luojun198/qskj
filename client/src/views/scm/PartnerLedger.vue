@@ -12,6 +12,7 @@
       <el-date-picker v-model="startDate" type="date" value-format="YYYY-MM-DD" placeholder="开始日期" style="width:140px" size="small" />
       <el-date-picker v-model="endDate" type="date" value-format="YYYY-MM-DD" placeholder="结束日期" style="width:140px" size="small" />
       <el-button type="primary" plain size="small" @click="load"><el-icon><Search /></el-icon>查询</el-button>
+      <FilterClearButton size="small" @clear="handleClearFilters" />
       <span class="total-hint" v-if="isSummaryView">
         共 {{ summary.length }} 个单位
         <template v-if="arapType !== 'ap'">　<span class="amt-ar">应收 {{ fmt(totalReceivable) }}　收款 {{ fmt(totalReceived) }}　期末应收 {{ fmt(totalArClosing) }}</span></template>
@@ -107,6 +108,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { Search } from '@element-plus/icons-vue'
 import { scmApi, type ScmPartner } from '@/api/scm'
 import ScmDocActions from '@/components/scm/ScmDocActions.vue'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
+import { useFilterClear } from '@/composables/useFilterClear'
 
 const route = useRoute()
 const router = useRouter()
@@ -116,6 +119,13 @@ const arapType = ref<'' | 'ar' | 'ap'>('')
 const startDate = ref('')
 const endDate = ref('')
 const loading = ref(false)
+const { clearFilters } = useFilterClear([partnerCode, arapType, startDate, endDate])
+
+/** 清空筛选条件并恢复默认查询 */
+function handleClearFilters() {
+  clearFilters()
+  load()
+}
 const opening = ref(0)
 const closing = ref(0)
 const totalIn = ref(0)

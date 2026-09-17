@@ -97,6 +97,7 @@ declare module 'vue' {
     ElUpload: typeof import('element-plus/es')['ElUpload']
     EmptyState: typeof import('./components/EmptyState.vue')['default']
     ExportProgressOverlay: typeof import('./components/export/ExportProgressOverlay.vue')['default']
+    FilterClearButton: typeof import('./components/common/FilterClearButton.vue')['default']
     HiprintDesigner: typeof import('./components/print/HiprintDesigner.vue')['default']
     HiprintDialog: typeof import('./components/print/HiprintDialog.vue')['default']
     ItemBatchPicker: typeof import('./components/scm/ItemBatchPicker.vue')['default']

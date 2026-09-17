@@ -22,7 +22,7 @@
         <el-option v-for="item in availableTypes" :key="item.value" :label="item.label" :value="item.value" />
       </el-select>
       <el-button type="primary" @click="search">查询</el-button>
-      <el-button @click="resetFilters">重置</el-button>
+      <el-button @click="resetFilters">清空</el-button>
       <el-divider direction="vertical" />
       <el-button @click="setExpanded(true)">全部展开</el-button>
       <el-button @click="setExpanded(false)">全部收起</el-button>
@@ -306,7 +306,7 @@ onMounted(load)
 .pagination-bar { display: flex; justify-content: flex-end; padding-top: 10px; }
 .detail-panel { min-width: 0; max-height: 300px; overflow: auto; border: 1px solid var(--el-border-color); border-radius: 8px; background: var(--el-bg-color); padding: 14px; box-sizing: border-box; }
 .detail-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 14px; }
-.detail-header h3 { margin: 3px 0 0; font-size: 17px; }
+.detail-header h3 { margin: 3px 0 0; font-size: var(--cw-text-lg); }
 .detail-kicker { color: var(--el-color-primary); font-size: 12px; }
 .detail-panel h4 { margin: 18px 0 8px; }
 .detail-actions { display: flex; justify-content: flex-end; padding-top: 16px; }

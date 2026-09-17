@@ -22,6 +22,7 @@
         </el-select>
         <el-checkbox v-model="filters.includeUnposted">统计未记账凭证</el-checkbox>
         <el-button type="primary" :loading="loading" @click="handleQuery"><el-icon><Search /></el-icon>查询</el-button>
+        <FilterClearButton @clear="handleClearFilters" />
         <el-divider direction="vertical" />
         <el-button plain :disabled="loading || rows.length === 0" @click="exportData"><el-icon><Download /></el-icon>导出 Excel</el-button>
         <el-button plain :disabled="loading || rows.length === 0" @click="printPage"><el-icon><Printer /></el-icon>打印</el-button>
@@ -123,6 +124,8 @@ import { ElMessage } from 'element-plus'
 import { useUserStore } from '@/stores/user'
 import { useBaseDataStore } from '@/stores/baseData'
 import AccountScopeAlert from '@/components/AccountScopeAlert.vue'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
+import { useFilterClear } from '@/composables/useFilterClear'
 import EmptyState from '@/components/EmptyState.vue'
 import VoucherEntryDialogHost from '@/components/voucher/VoucherEntryDialogHost.vue'
 import HiprintDialog from '@/components/print/HiprintDialog.vue'
@@ -149,6 +152,13 @@ const baseDataStore = useBaseDataStore()
 const currentYear = new Date().getFullYear()
 const years = Array.from({ length: currentYear - 2000 + 1 }, (_, index) => currentYear - index)
 const filters = ref({ accountId: '', year: currentYear, startMonth: 1, endMonth: 12, includeUnposted: true })
+const { clearFilters } = useFilterClear([filters])
+
+/** 清空筛选条件并恢复默认查询 */
+function handleClearFilters() {
+  clearFilters()
+  handleQuery()
+}
 const rows = ref<MultiColumnLedgerRow[]>([])
 const columns = ref<MultiColumnAccount[]>([])
 const mainAccount = ref<MultiColumnMainAccount | null>(null)

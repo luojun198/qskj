@@ -10,6 +10,7 @@
         <el-option value="out" label="已出库" />
       </el-select>
       <el-button type="primary" plain size="small" :loading="loading" @click="load"><el-icon><Search /></el-icon>查询</el-button>
+      <FilterClearButton size="small" @clear="handleClearFilters" />
       <span class="rpt-hint">共 {{ rows.length }} 条（最多 500）</span>
     </div>
     <div class="rpt-body">
@@ -38,8 +39,17 @@
 import { ref, onMounted } from 'vue'
 import { Search } from '@element-plus/icons-vue'
 import { scmApi } from '@/api/scm'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
+import { useFilterClear } from '@/composables/useFilterClear'
 const rows = ref<any[]>([]); const loading = ref(false)
 const kw = ref(''); const sn = ref(''); const status = ref('')
+const { clearFilters } = useFilterClear([kw, sn, status])
+
+/** 清空筛选条件并恢复默认查询 */
+function handleClearFilters() {
+  clearFilters()
+  load()
+}
 async function load() {
   loading.value = true
   try {

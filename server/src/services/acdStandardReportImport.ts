@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { extractAcdReportTemplates, type AcdSheetLayout } from './acdReportFormulaSync.js'
 import { alignBoldWithLabel } from './reportBoldAlignment.js'
 import { centerHeaderDates } from './reportHeaderLayout.js'
+import { normalizeFooterRows } from './reportFooterLayout.js'
 
 export interface AcdStandardReportCell {
   rowIndex: number
@@ -615,8 +616,9 @@ export function previewAcdStandardReports(acdBuffer: Buffer): AcdStandardReportP
         ? trimDetachedBlocks(displaySheet ? clipToDisplayBounds(sheet.cells, displaySheet.cells) : sheet.cells)
         : sheet.cells
       : []
+    // 补框之后紧接着把签字行从表格里摘出来：去框、整句合并、删掉补出来的空格
     const normalized = alignBoldWithLabel(
-      applyCenterAcross(fillTableBorders(deduplicateStandardReportCells(sheetCells)))
+      applyCenterAcross(normalizeFooterRows(fillTableBorders(deduplicateStandardReportCells(sheetCells))))
     )
     if (normalized.length === 0) {
       warnings.push(`跳过空报表模板: ${template.reportName} (${template.sourceFile})`)

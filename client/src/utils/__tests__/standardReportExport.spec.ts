@@ -10,6 +10,7 @@ import {
   estimateTextWidth,
   fitNumericFontSize,
   inferNumberFormat,
+  resolveExportGridLayout,
   styleKeyHasBorder,
   type BuildModelOptions,
 } from '../standardReportExport'
@@ -517,5 +518,75 @@ describe('数值格缩小字体填充', () => {
     expect(Number(shrunk![1])).toBeLessThan(12)
     expect(kept).not.toBeNull()
     expect(Number(kept![1])).toBe(12)
+  })
+})
+
+describe('打印网格跳过签字行', () => {
+  const SIGN = '单位负责人：  会计主管：  审核：  制表：'
+
+  function footerModel() {
+    return buildReportExportModel(
+      makeOptions({
+        rowCount: 5,
+        colCount: 2,
+        getColWidth: () => 120,
+        getRowHeight: () => 24,
+        source: [
+          { row_index: 0, col_index: 0, style_key: 'border-all' },
+          { row_index: 0, col_index: 1, style_key: 'border-all' },
+          { row_index: 1, col_index: 0, style_key: 'font-size-16', merge_info: JSON.stringify({ rowSpan: 1, colSpan: 2 }) },
+          { row_index: 3, col_index: 0, style_key: 'border-all' },
+          { row_index: 3, col_index: 1, style_key: 'border-all' },
+          { row_index: 4, col_index: 0, style_key: 'border-all' },
+          { row_index: 4, col_index: 1, style_key: 'border-all' },
+        ],
+        getText: (row, col) => {
+          if (row === 0) return col === 0 ? '净利润' : '100.00'
+          if (row === 1 && col === 0) return SIGN
+          if (row === 3) return col === 0 ? '资产减值损失' : '1.00'
+          if (row === 4) return col === 0 ? '信用减值损失' : ''
+          return ''
+        },
+      })
+    )
+  }
+
+  it('签字行与其下空行不在网格内，下一段表格首行补上边', () => {
+    const model = ensureExportTableBorders(footerModel())
+    const layout = resolveExportGridLayout(model.cells)
+
+    expect(layout.bounds).toEqual({ firstRow: 0, lastRow: 4, lastCol: 1 })
+    expect([...layout.skippedRows].sort()).toEqual([1, 2])
+    const sign = model.cells.find(cell => cell.text === SIGN)!
+    expect(styleKeyHasBorder(sign.styleKey)).toBe(false)
+    expect(model.cells.filter(cell => cell.rowIndex === 2).every(cell => !styleKeyHasBorder(cell.styleKey))).toBe(true)
+
+    const html = buildReportPrintHtml(footerModel())
+    const rows = html.split('<tr')
+    expect(rows[2]).not.toContain('cw-grid')
+    expect(rows[3]).not.toContain('cw-grid')
+    expect(rows[4]).toContain('cw-grid-top')
+  })
+})
+
+describe('打印 HTML 的 style 属性', () => {
+  it('字体族里的双引号必须转义，排在其后的对齐/定位不能丢', () => {
+    const model = buildReportExportModel(
+      makeOptions({
+        rowCount: 1,
+        colCount: 1,
+        getColWidth: () => 200,
+        getRowHeight: () => 24,
+        source: [{ row_index: 0, col_index: 0, style_key: 'font-size-13 font-family-SimSun border-all' }],
+        getText: () => '139841.29',
+        getNumeric: () => 139841.29,
+      })
+    )
+    const html = buildReportPrintHtml(model)
+    const td = html.match(/<td[^>]*>/)![0]
+
+    expect(td).not.toMatch(/font-family:"/)
+    expect(td).toContain('&quot;SimSun&quot;')
+    expect(td).toContain('text-align:right;')
   })
 })

@@ -1,20 +1,20 @@
 <template>
   <div class="page page-asset-list">
     <div class="list-toolbar" style="margin-bottom:8px">
-      <el-button type="primary" size="small" @click="openAdd"><el-icon><Plus /></el-icon>新增固定资产</el-button>
+      <el-button v-permission="'asset:edit'" type="primary" size="small" @click="openAdd"><el-icon><Plus /></el-icon>新增固定资产</el-button>
       <el-button size="small" :disabled="!selection.length" @click="openPrint('card')">
         打印卡片{{ selection.length ? `（${selection.length}）` : '' }}
       </el-button>
       <el-button size="small" :disabled="!selection.length" @click="openPrint('label')">
         打印标签{{ selection.length ? `（${selection.length}）` : '' }}
       </el-button>
-      <el-button size="small" :disabled="!selection.length" @click="openBatchChange('dept')">
+      <el-button v-permission="'asset:change'" size="small" :disabled="!selection.length" @click="openBatchChange('dept')">
         批量调拨{{ selection.length ? `（${selection.length}）` : '' }}
       </el-button>
-      <el-button size="small" :disabled="!selection.length" @click="openBatchChange('status')">
+      <el-button v-permission="'asset:change'" size="small" :disabled="!selection.length" @click="openBatchChange('status')">
         批量停启用
       </el-button>
-      <el-button size="small" @click="$router.push('/asset/import')">批量导入</el-button>
+      <el-button v-permission="'asset:edit'" size="small" @click="$router.push('/asset/import')">批量导入</el-button>
     </div>
     <div ref="tableContainerRef" class="table-container">
       <el-table ref="tableRef" :data="list" :height="tableHeight" border stripe size="small" class="compact-data-table"
@@ -45,14 +45,16 @@
         </el-table-column>
         <el-table-column label="已提月数" prop="depr_months_done" :width="cw('depr_months_done', 80)" align="center" />
         <el-table-column label="使用人" prop="user_name" :width="cw('user_name', 90)" />
-        <el-table-column label="操作" :width="cw('actions', 240)" align="center" fixed="right">
+        <el-table-column label="操作" :width="cw('actions', 190)" align="center" fixed="right">
           <template #default="{ row }">
-            <el-button link type="success" size="small" @click.stop="$router.push(`/asset/detail/${row.id}`)">明细</el-button>
-            <el-button link type="primary" size="small" @click.stop="openEdit(row)">编辑</el-button>
-            <el-button v-if="!row.scrap_date" link type="primary" size="small" @click.stop="$router.push(`/asset/change?assetId=${row.id}`)">变动</el-button>
-            <el-button v-if="!row.scrap_date" link type="warning" size="small" @click.stop="openDispose(row)">处置</el-button>
-            <el-button v-if="row.scrap_date" link type="success" size="small" @click.stop="handleCancelDispose(row)">撤销处置</el-button>
-            <el-button link type="danger" size="small" @click.stop="handleDelete(row)">删除</el-button>
+            <div class="row-actions">
+              <el-button link type="success" size="small" @click.stop="$router.push(`/asset/detail/${row.id}`)">明细</el-button>
+              <el-button v-permission="'asset:edit'" link type="primary" size="small" @click.stop="openEdit(row)">编辑</el-button>
+              <el-button v-if="!row.scrap_date" v-permission="'asset:change'" link type="primary" size="small" @click.stop="$router.push(`/asset/change?assetId=${row.id}`)">变动</el-button>
+              <el-button v-if="!row.scrap_date" v-permission="'asset:dispose'" link type="warning" size="small" @click.stop="openDispose(row)">处置</el-button>
+              <el-button v-if="row.scrap_date" v-permission="'asset:dispose'" link type="success" size="small" @click.stop="handleCancelDispose(row)">撤销处置</el-button>
+              <el-button v-permission="'asset:edit'" link type="danger" size="small" @click.stop="handleDelete(row)">删除</el-button>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -168,8 +170,9 @@
               </el-form-item>
             </el-col>
             <el-col :span="8">
-              <el-form-item label="残值率(%)">
-                <el-input-number v-model="form.salvage_rate" :precision="2" :min="0" :max="100" style="width:100%" @change="calcSalvage" />
+              <el-form-item label="残值率">
+                <el-input-number v-model="form.salvage_rate" :precision="4" :step="0.01" :min="0" :max="1" style="width:100%" @change="calcSalvage" />
+                <span class="tip-text">小数口径，0.05 表示 5%</span>
               </el-form-item>
             </el-col>
             <el-col :span="8">
@@ -535,7 +538,8 @@ async function openAdd() {
   editId.value = null
   form.value = {
     original_value: 0,
-    salvage_rate: 5,
+    // AS-P0-1：残值率统一小数口径（0.05 表示 5%），与服务端/导入一致
+    salvage_rate: 0.05,
     salvage_value: 0,
     qty: 1,
     depr_method: '1',
@@ -612,7 +616,8 @@ function onCategoryChange(code: string) {
 
 function calcSalvage() {
   const ov = form.value.original_value ?? 0
-  const rate = (form.value.salvage_rate ?? 0) / 100
+  // AS-P0-1：残值率为小数口径，直接参与计算（不再 ÷100）
+  const rate = form.value.salvage_rate ?? 0
   form.value.salvage_value = Math.round(ov * rate * 100) / 100
 }
 
@@ -771,4 +776,8 @@ async function handleDispose() {
   font-size: 12px;
   font-weight: 500;
 }
+/* 操作列按钮紧凑排列：去掉相邻按钮默认 12px 间距，改为 2px 间隔 */
+.row-actions { display: inline-flex; align-items: center; gap: 0; }
+.row-actions .el-button + .el-button { margin-left: 6px; }
+.row-actions .el-button { padding: 0; }
 </style>

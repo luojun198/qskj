@@ -11,8 +11,6 @@ const mmToPt = (mm: number) => Math.round(mm * PT_PER_MM)
 
 /** 标准凭证每张固定打印的分录行数（不含合计行） */
 export const DEFAULT_VOUCHER_FIXED_ROWS = 6
-/** hiprint 默认 td 高度（print-lock.css） */
-const HIPRINT_DEFAULT_TD_HEIGHT_PT = 18
 /** 见客户端 VOUCHER_ROWS_FILL_SLACK_PT：补空行循环会删掉最后 clone 的一行，行高必须留余量 */
 const ROWS_FILL_SLACK_PT = 2
 const MIN_BODY_ROW_HEIGHT_PT = 8
@@ -63,23 +61,25 @@ interface ColDef {
   field: string
   width: number
   align: Align
+  /** 列头水平对齐（hiprint halign 只作用于 thead） */
+  halign: Align
   checked: boolean
 }
 
 /** 默认勾选的 5 列 + 可在属性面板按需打开的可选列，与客户端 VOUCHER_TABLE_COLUMNS / OPTIONAL 一致 */
 const TABLE_COLS: ColDef[] = [
-  { title: '摘要', field: 'summary', width: 90, align: 'left', checked: true },
-  { title: '科目编码', field: 'account_code', width: 56, align: 'left', checked: true },
-  { title: '会计科目', field: 'account_name', width: 90, align: 'left', checked: true },
-  { title: '借方金额', field: 'debit', width: 56, align: 'right', checked: true },
-  { title: '贷方金额', field: 'credit', width: 56, align: 'right', checked: true },
-  { title: '数量', field: 'quantity', width: 40, align: 'right', checked: false },
-  { title: '单价', field: 'unit_price', width: 45, align: 'right', checked: false },
-  { title: '单位', field: 'unit', width: 30, align: 'center', checked: false },
-  { title: '币种', field: 'currency_code', width: 30, align: 'center', checked: false },
-  { title: '汇率', field: 'exchange_rate', width: 40, align: 'right', checked: false },
-  { title: '外币金额', field: 'foreign_amount', width: 56, align: 'right', checked: false },
-  { title: '现金流量', field: 'cash_flow_name', width: 70, align: 'left', checked: false },
+  { title: '摘要', field: 'summary', width: 90, align: 'left', halign: 'center', checked: true },
+  { title: '科目编码', field: 'account_code', width: 56, align: 'left', halign: 'center', checked: true },
+  { title: '会计科目', field: 'account_name', width: 90, align: 'left', halign: 'center', checked: true },
+  { title: '借方金额', field: 'debit', width: 56, align: 'right', halign: 'center', checked: true },
+  { title: '贷方金额', field: 'credit', width: 56, align: 'right', halign: 'center', checked: true },
+  { title: '数量', field: 'quantity', width: 40, align: 'right', halign: 'center', checked: false },
+  { title: '单价', field: 'unit_price', width: 45, align: 'right', halign: 'center', checked: false },
+  { title: '单位', field: 'unit', width: 30, align: 'center', halign: 'center', checked: false },
+  { title: '币种', field: 'currency_code', width: 30, align: 'center', halign: 'center', checked: false },
+  { title: '汇率', field: 'exchange_rate', width: 40, align: 'right', halign: 'center', checked: false },
+  { title: '外币金额', field: 'foreign_amount', width: 56, align: 'right', halign: 'center', checked: false },
+  { title: '现金流量', field: 'cash_flow_name', width: 70, align: 'left', halign: 'center', checked: false },
 ]
 
 /** 合计列小数位（与客户端 VOUCHER_SUMMABLE_COLUMNS 一致） */
@@ -97,6 +97,7 @@ function buildColumns(widthPt: number): Array<Record<string, unknown>> {
     field: c.field,
     width: c.checked ? Math.round((widthPt * c.width) / weightSum) : c.width,
     align: c.align,
+    halign: c.halign,
     columnId: c.field,
     colspan: 1,
     checked: c.checked,
@@ -122,11 +123,15 @@ function buildColumns(widthPt: number): Array<Record<string, unknown>> {
   return cols
 }
 
-/** N 行均分表格框可用高度（见客户端 computeVoucherBodyRowHeightPt） */
+/**
+ * 列头 + N 行 + 合计行均分表格框可用高度得到的统一行高（见客户端 computeVoucherBodyRowHeightPt）。
+ * 列头用 tableHeaderRowHeight、表体用 tableBodyRowHeight，合计行由渲染时注入的
+ * 合计单元格函数按 tableBodyRowHeight 写高度。
+ */
 export function computeBodyRowHeightPt(tableHeightPt: number, rows: number): number {
   if (rows <= 0) return 0
-  const usable = tableHeightPt - HIPRINT_DEFAULT_TD_HEIGHT_PT * 2 - ROWS_FILL_SLACK_PT
-  return Math.max(Math.floor((usable / rows) * 2) / 2, MIN_BODY_ROW_HEIGHT_PT)
+  const usable = tableHeightPt - ROWS_FILL_SLACK_PT
+  return Math.max(Math.floor((usable / (rows + 2)) * 2) / 2, MIN_BODY_ROW_HEIGHT_PT)
 }
 
 function buildEntriesTable(leftMm: number, topMm: number, widthMm: number, heightMm: number, rows: number) {
@@ -146,6 +151,7 @@ function buildEntriesTable(leftMm: number, topMm: number, widthMm: number, heigh
       autoCompletion: true,
       maxRows: rows,
       tableBodyRowHeight: computeBodyRowHeightPt(heightPt, rows),
+      tableHeaderRowHeight: computeBodyRowHeightPt(heightPt, rows),
       fontSize: 11,
       columns: [columns],
     },

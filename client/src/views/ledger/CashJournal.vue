@@ -52,6 +52,7 @@
         </el-select>
         <el-checkbox v-model="filters.include_unposted" style="margin-left: 12px" @change="fetchData">统计未记账凭证</el-checkbox>
         <el-button type="primary" @click="fetchData"><el-icon><Search /></el-icon>查询</el-button>
+        <FilterClearButton @clear="handleClearFilters" />
         <el-divider direction="vertical" />
         <el-button plain @click="exportData"><el-icon><Download /></el-icon>导出 Excel</el-button>
         <el-button plain @click="printPage"><el-icon><Printer /></el-icon>打印</el-button>
@@ -191,6 +192,8 @@ import { storeToRefs } from 'pinia'
 import { Printer, Search, Download } from '@element-plus/icons-vue'
 import request from '@/api/request'
 import EmptyState from '@/components/EmptyState.vue'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
+import { useFilterClear } from '@/composables/useFilterClear'
 import AccountScopeAlert from '@/components/AccountScopeAlert.vue'
 import { useAccountScopeHint } from '@/composables/useAccountScopeHint'
 import VoucherEntryDialogHost from '@/components/voucher/VoucherEntryDialogHost.vue'
@@ -235,6 +238,14 @@ const filters = ref<any>({
   account_code_end: '',
   include_unposted: true,
 })
+const { clearFilters } = useFilterClear([filters])
+
+/** 清空筛选条件并恢复默认查询 */
+function handleClearFilters() {
+  clearFilters()
+  fetchData()
+}
+
 const years = Array.from({ length: new Date().getFullYear() - 2000 + 1 }, (_, i) => new Date().getFullYear() - i)
 
 const entryDialogHostRef = ref<InstanceType<typeof VoucherEntryDialogHost> | null>(null)

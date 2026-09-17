@@ -443,6 +443,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '单据综合查询', icon: 'Search', parent: '出纳管理' },
       },
       {
+        path: 'cashier/period-close',
+        name: 'CashierPeriodClose',
+        component: () => import('@/views/cashier/PeriodClose.vue'),
+        meta: { title: '出纳结账', icon: 'CalendarCheck', parent: '出纳管理' },
+      },
+      {
         path: 'cashier/reset',
         name: 'CashierReset',
         component: () => import('@/views/cashier/Reset.vue'),
@@ -1004,6 +1010,12 @@ const routes: RouteRecordRaw[] = [
         name: 'AssetDepreciation',
         component: () => import('@/views/asset/Depreciation.vue'),
         meta: { title: '折旧计提', icon: 'TrendCharts', parent: '固定资产' },
+      },
+      {
+        path: 'asset/depreciation/reverse',
+        name: 'AssetDepreciationReverse',
+        component: () => import('@/views/asset/DepreciationReverse.vue'),
+        meta: { title: '取消折旧', parent: '固定资产' },
       },
       {
         path: 'asset/report',

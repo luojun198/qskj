@@ -19,6 +19,7 @@
         <el-button type="primary" :loading="loading" @click="handleQuery">
           <el-icon><Search /></el-icon>查询
         </el-button>
+        <FilterClearButton @clear="handleClearFilters" />
         <el-divider direction="vertical" />
         <el-button plain :disabled="loading || rows.length === 0" @click="exportData">
           <el-icon><Download /></el-icon>导出 Excel
@@ -186,6 +187,8 @@ import { Download, Printer, Search } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useUserStore } from '@/stores/user'
 import AccountScopeAlert from '@/components/AccountScopeAlert.vue'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
+import { useFilterClear } from '@/composables/useFilterClear'
 import EmptyState from '@/components/EmptyState.vue'
 import VoucherEntryDialogHost from '@/components/voucher/VoucherEntryDialogHost.vue'
 import HiprintDialog from '@/components/print/HiprintDialog.vue'
@@ -215,6 +218,13 @@ const filters = ref({
   endMonth: 12,
   includeUnposted: true,
 })
+const { clearFilters } = useFilterClear([filters])
+
+/** 清空筛选条件并恢复默认查询 */
+function handleClearFilters() {
+  clearFilters()
+  handleQuery()
+}
 const columns = ref<VatColumn[]>([])
 const rows = ref<VatLedgerRow[]>([])
 const parent = ref<{ code: string; name: string } | null>(null)

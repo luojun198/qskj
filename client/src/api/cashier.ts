@@ -58,9 +58,32 @@ export interface SettleType {
   name: string
 }
 
+export interface CashierPeriodMonth {
+  year: number
+  month: number
+  status: 'open' | 'closed'
+  closed_by: string | null
+  closed_by_name: string | null
+  closed_at: string | null
+  journalCount: number
+  unvoucheredCount: number
+  glClosed: boolean
+  canClose: boolean
+  canReopen: boolean
+  blockReason: string | null
+}
+
 export const cashierApi = {
   getAccounts: () =>
     request.get<CashierAccount[]>('/cashier/accounts'),
+
+  // 出纳结账 / 反结账
+  getPeriods: (year: number) =>
+    request.get<{ year: number; months: CashierPeriodMonth[] }>(`/cashier/periods/${year}`),
+  closePeriod: (year: number, month: number) =>
+    request.post<CashierPeriodMonth>(`/cashier/periods/${year}/${month}/close`),
+  reopenPeriod: (year: number, month: number) =>
+    request.post<CashierPeriodMonth>(`/cashier/periods/${year}/${month}/reopen`),
 
   getCurrencies: () =>
     request.get<string[]>('/cashier/currencies'),

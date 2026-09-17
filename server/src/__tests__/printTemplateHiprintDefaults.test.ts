@@ -23,6 +23,7 @@ describe('buildDefaultVoucherHiprintPanel（新建账套默认凭证模板）', 
       computeBodyRowHeightPt(table.options.height, 6)
     )
     expect(table.options.tableBodyRowHeight).toBeGreaterThan(8)
+    expect(table.options.tableHeaderRowHeight).toBe(table.options.tableBodyRowHeight)
   })
 
   it('合计行：借/贷方求和，前置列合并成一格放「合计」', () => {
@@ -53,9 +54,9 @@ describe('buildDefaultVoucherHiprintPanel（新建账套默认凭证模板）', 
     }
   })
 
-  it('computeBodyRowHeightPt：扣掉表头/表尾与余量后均分，向下取到 0.5pt', () => {
-    // (244 - 36 - 2) / 6 = 34.33 → 34
-    expect(computeBodyRowHeightPt(244, 6)).toBe(34)
+  it('computeBodyRowHeightPt：列头 + N 行 + 合计行扣掉余量后均分，向下取到 0.5pt', () => {
+    // (244 - 2) / (6 + 2) = 30.25 → 30
+    expect(computeBodyRowHeightPt(244, 6)).toBe(30)
     expect(computeBodyRowHeightPt(244, 0)).toBe(0)
     expect(computeBodyRowHeightPt(40, 20)).toBe(8)
   })

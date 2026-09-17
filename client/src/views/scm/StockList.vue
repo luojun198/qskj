@@ -12,6 +12,7 @@
         <el-option v-for="w in warehouses" :key="w.code" :label="w.name || w.code" :value="w.code" />
       </el-select>
       <el-button type="primary" size="small" @click="load"><el-icon><Search /></el-icon>查询</el-button>
+      <FilterClearButton size="small" @clear="handleClearFilters" />
       <span class="filter-dim">
         <span class="filter-dim__label">分仓</span>
         <el-switch v-model="splitWarehouse" size="small" @change="onSplitWarehouseChange" />
@@ -124,6 +125,8 @@ import { scmApi } from '@/api/scm'
 import { useListColumnWidth } from '@/composables/useColumnWidthMemory'
 import { usePageToolbarTeleport } from '@/composables/usePageToolbarTeleport'
 import ColumnSettingsDialog from '@/components/common/ColumnSettingsDialog.vue'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
+import { useFilterClear } from '@/composables/useFilterClear'
 import { loadColumnSettings, saveColumnSettings, type ColumnSetting } from '@/utils/columnSettings'
 
 const { ptActive } = usePageToolbarTeleport()
@@ -172,6 +175,13 @@ const warehouses = ref<any[]>([])
 const loading = ref(false)
 const keyword = ref('')
 const warehouse = ref('')
+const { clearFilters } = useFilterClear([keyword, warehouse])
+
+/** 清空筛选条件并恢复默认查询 */
+function handleClearFilters() {
+  clearFilters()
+  load()
+}
 
 // ── 查询维度：是否分仓 / 是否分批号（默认 分仓、不分批 = 原行为；状态记忆 localStorage）──
 const STORAGE_KEY_DIM = 'scm_stock_dimensions'

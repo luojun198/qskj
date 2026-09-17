@@ -329,6 +329,24 @@ const tabsStore = useTabsStore()
 let scmDocListPreload: Promise<unknown> | null = null
 let scmDocFormPreload: Promise<unknown> | null = null
 let scmDocFormPreloadScheduled = false
+let groupNavPreload: Promise<unknown> | null = null
+
+/**
+ * 模块主页（GroupNav）自身也要预热。
+ *
+ * 空闲预取的路径来自菜单项，全是叶子页面，`/group/:groupTitle` 不在其中——
+ * 于是每次冷启动（重启 dev server / 首次进入）后，第一次点任意应用图标
+ * 都要现场编译 GroupNav 及其整棵依赖树，开发环境实测要卡 2~3 秒。
+ * 直接预取组件本身，把编译挪到登录后的空闲时段。
+ */
+function preloadGroupNav() {
+  if (groupNavPreload) return groupNavPreload
+  groupNavPreload = import('@/views/GroupNav.vue').catch(error => {
+    groupNavPreload = null
+    console.warn('预加载模块主页失败:', error)
+  })
+  return groupNavPreload
+}
 
 /**
  * 供应链各类单据共用 DocList。登录后空闲预取，并在用户靠近相关菜单时立即预取，
@@ -373,11 +391,14 @@ function preloadScmEntryChain() {
 
 /** 移到应用图标上：整个应用低优先级排队预取 */
 function preloadNavApp(app: NavApp) {
+  // 模块主页是点应用图标的第一落点，和叶子页面一起预取
+  preloadGroupNav()
   preloadRoutePathsWhenIdle(router, flattenNavApp(app).map(item => item.path))
 }
 
 /** 登录后空闲时按应用顺序把各模块铺开预取，不与首屏抢资源 */
 function preloadMenusWhenIdle() {
+  preloadGroupNav()
   preloadRoutePathsWhenIdle(router, flattenNavApps(navApps.value).map(item => item.path))
 }
 
@@ -391,8 +412,12 @@ onMounted(() => {
     preloadMenusWhenIdle()
   }
   if (typeof requestIdle === 'function') {
+    // 模块主页是点应用图标的第一落点：用更短的超时先单独预热，
+    // 不跟 SCM 单据链（全项目最大的组件树）挤同一个空闲回调
+    requestIdle(preloadGroupNav, { timeout: 400 })
     requestIdle(warmUp, { timeout: 2000 })
   } else {
+    globalThis.setTimeout(preloadGroupNav, 300)
     globalThis.setTimeout(warmUp, 800)
   }
 })

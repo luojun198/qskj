@@ -29,6 +29,7 @@
         />
         <el-checkbox v-model="filters.include_unposted" style="margin-left: 12px" @change="fetchData">统计未记账凭证</el-checkbox>
         <el-button type="primary" @click="fetchData"><el-icon><Search /></el-icon>查询</el-button>
+        <FilterClearButton @clear="handleClearFilters" />
         <el-divider direction="vertical" />
         <el-button plain @click="exportData"><el-icon><Download /></el-icon>导出 Excel</el-button>
         <el-button plain @click="printPage"><el-icon><Printer /></el-icon>打印</el-button>
@@ -149,6 +150,8 @@ import HiprintDialog from '@/components/print/HiprintDialog.vue'
 import { buildTablePrintHtml } from '@/utils/printTemplateHiprint'
 import { exportStyledTable, type ExportColumnDef } from '@/utils/exportStyledExcel'
 import AccountScopeAlert from '@/components/AccountScopeAlert.vue'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
+import { useFilterClear } from '@/composables/useFilterClear'
 import { useRacedQuery } from '@/composables/useRacedQuery'
 import { fetchAllPages } from '@/utils/ledgerFetchAll'
 
@@ -170,6 +173,13 @@ const filters = ref<any>({
   maker_name: '',
   auditor_name: '',
 })
+const { clearFilters } = useFilterClear([filters], { page: currentPage })
+
+/** 清空筛选条件并恢复默认查询 */
+function handleClearFilters() {
+  clearFilters()
+  fetchData()
+}
 const years = Array.from({ length: new Date().getFullYear() - 2000 + 1 }, (_, i) => new Date().getFullYear() - i)
 
 const entryDialogHostRef = ref<InstanceType<typeof VoucherEntryDialogHost> | null>(null)

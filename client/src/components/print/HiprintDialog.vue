@@ -72,6 +72,7 @@ import {
   renderElementToPdfBlob,
   paperDimensionsMm,
   normalizePanelForRender,
+  hiprintBrowserPrintOptions,
   PRINT_FONT_SIZE_MAP,
   type PrintFontSizeKey,
 } from '@/utils/printTemplateHiprint'
@@ -295,7 +296,8 @@ const handlePrint = async () => {
       return
     }
     const tp = new mod.hiprint.PrintTemplate({ template: resolved.panel })
-    tp.print(resolved.data)
+    // 第三参：把 print-lock.css 与项目覆盖样式带进打印 iframe（否则表格无网格线、纸张失效）
+    tp.print(resolved.data, {}, hiprintBrowserPrintOptions())
   } catch (e: any) {
     ElMessage.error('打印失败：' + (e?.message || e))
   } finally {

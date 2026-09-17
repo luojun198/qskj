@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { collectFlowCoveredPaths, groupFlowMap, normalizeNavPath } from '@/config/flowConfig'
 import { GL_FLOW_NODES, GL_LINK_COLUMNS, collectGlCoveredPaths } from '@/config/glWorkspace'
-import { buildNavApps } from '@/config/navigation'
+import { ASSET_FLOW_NODES, ASSET_LINK_COLUMNS } from '@/config/assetWorkspace'
+import { buildNavApps, getRoutePermissions } from '@/config/navigation'
 
 describe('flowConfig 路径去重', () => {
   it('normalizeNavPath 忽略查询参数顺序与尾斜杠', () => {
@@ -62,5 +63,23 @@ describe('flowConfig 路径去重', () => {
         expect(leftovers, `${title} 仍有未覆盖项：${leftovers.map(i => i.title).join('、')}`).toEqual([])
       }
     }
+  })
+})
+
+describe('固定资产工作台：折旧 / 取消折旧流程', () => {
+  it('主流程四节点，取消折旧挂在计提折旧上方并指向独立页面', () => {
+    expect(groupFlowMap['固定资产'].layout).toBe('asset-workspace')
+    expect(ASSET_FLOW_NODES.map(n => n.title)).toEqual(['固定资产管理', '计提折旧', '凭证生成', '折旧查询'])
+    expect(ASSET_FLOW_NODES[1].path).toBe('/asset/depreciation?action=preview')
+    expect(ASSET_FLOW_NODES[1].above?.title).toBe('取消折旧')
+    expect(ASSET_FLOW_NODES[1].above?.path).toBe('/asset/depreciation/reverse')
+    expect(ASSET_FLOW_NODES[2].path).toBe('/asset/depreciation?tab=history')
+    expect(ASSET_FLOW_NODES[3].path).toBe('/asset/report?tab=depr-summary')
+  })
+
+  it('底部链接列含取消折旧，且取消折旧页沿用 asset:depr 权限', () => {
+    const titles = ASSET_LINK_COLUMNS.flatMap(c => c.items.map(i => i.title))
+    expect(titles).toContain('取消折旧')
+    expect(getRoutePermissions('/asset/depreciation/reverse')).toEqual(['asset:depr'])
   })
 })

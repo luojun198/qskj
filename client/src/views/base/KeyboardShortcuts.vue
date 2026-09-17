@@ -411,7 +411,7 @@ onMounted(() => {
 
 .page-header h2 {
   margin: 0;
-  font-size: 18px;
+  font-size: var(--cw-text-lg);
   font-weight: 600;
 }
 

@@ -253,6 +253,7 @@
           <el-date-picker v-model="changesPeriod" type="month" value-format="YYYY-MM" placeholder="筛选期间" clearable style="width:140px" @change="queryChanges" />
           <el-input v-model="changesAssetNo" placeholder="资产编号" clearable style="width:150px" @keyup.enter="queryChanges" />
           <el-button type="primary" @click="queryChanges" size="small">查询</el-button>
+          <FilterClearButton size="small" @clear="handleClearChangesFilters" />
         </div>
         <el-table ref="t7Ref" :data="changeRecordRows" size="small" border stripe max-height="360" @header-dragend="t7Drag">
           <el-table-column label="日期" prop="change_date" :width="t7Cw('change_date', 100)" />
@@ -320,6 +321,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import {
   fixedAssetApi,
   type DeprSummaryRow,
@@ -334,6 +336,8 @@ import {
   DEPR_METHODS,
 } from '@/api/fixedAsset'
 import { useListColumnWidth } from '@/composables/useColumnWidthMemory'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
+import { useFilterClear } from '@/composables/useFilterClear'
 
 // 各报表 Tab 表格列宽记忆
 const { tableRef: t1Ref, colWidth: t1Cw, onDragEnd: t1Drag, widths: t1Widths } = useListColumnWidth('asset_rpt_depr_summary')
@@ -348,7 +352,10 @@ const { tableRef: t8Ref, colWidth: t8Cw, onDragEnd: t8Drag, widths: t8Widths } =
 const now = new Date()
 const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
 
-const activeTab = ref('depr-summary')
+const REPORT_TABS = ['depr-summary', 'depr-allocation', 'category-summary', 'dept-summary', 'expiry-warning', 'change-summary', 'changes', 'depr-forecast']
+const route = useRoute()
+const initialTab = typeof route.query.tab === 'string' && REPORT_TABS.includes(route.query.tab) ? route.query.tab : 'depr-summary'
+const activeTab = ref(initialTab)
 const dictStatus = ref<{ code: string; name: string }[]>([])
 
 const fmtAmt = (v: number) =>
@@ -516,6 +523,14 @@ const changesTotal = ref(0)
 const changesPage = ref(1)
 const changesPageSize = ref(20)
 const changesLoaded = ref(false)
+const { clearFilters: clearChangesFilters } = useFilterClear([changesPeriod, changesAssetNo])
+
+/** 清空变动记录筛选条件并恢复默认查询 */
+function handleClearChangesFilters() {
+  clearChangesFilters()
+  changesPage.value = 1
+  queryChanges()
+}
 
 async function loadChanges() {
   const params: any = { page: changesPage.value, page_size: changesPageSize.value }
@@ -525,7 +540,7 @@ async function loadChanges() {
     params.month = m
   }
   if (changesAssetNo.value) params.asset_no = changesAssetNo.value
-  const res = await fixedAssetApi.getChanges(params)
+  const res = await fixedAssetApi.getGlobalChanges(params)
   if (res.code === 0) {
     const maxPage = Math.max(1, Math.ceil((res.data as any).total / changesPageSize.value))
     if ((res.data as any).rows.length === 0 && (res.data as any).total > 0 && changesPage.value > maxPage) {

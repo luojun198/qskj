@@ -5,6 +5,7 @@
  * 这里承载「字典能不能删」「卡片更新要写哪些列」两处需要单测覆盖的规则。
  */
 import type { Database } from 'better-sqlite3'
+import { normalizeSalvageRate } from './assetVoucherBuilder.js'
 
 // ── 字典删除引用检查 ───────────────────────────────────────
 
@@ -125,16 +126,36 @@ export function buildAssetCardUpdate(
     body.original_value !== undefined ? Number(body.original_value) : Number(current.original_value)
   const accumDepr =
     body.accum_depr !== undefined ? Number(body.accum_depr) : Number(current.accum_depr)
-  const salvageRate =
-    body.salvage_rate !== undefined && body.salvage_rate !== ''
-      ? Number(body.salvage_rate)
-      : Number(current.salvage_rate ?? 0)
+  if (!Number.isFinite(originalValue) || originalValue < 0) {
+    throw new Error('原值必须是大于等于 0 的数字')
+  }
+  if (!Number.isFinite(accumDepr) || accumDepr < 0) {
+    throw new Error('累计折旧必须是大于等于 0 的数字')
+  }
+  if (accumDepr > originalValue) {
+    throw new Error('累计折旧不能大于原值')
+  }
 
-  // 残值可显式给定，否则按（可能已变化的）原值与残值率重算
+  // AS-P0-1：残值率统一为小数口径（>1 视为百分数 ÷100）；非法输入保留原值
+  const rawRate =
+    body.salvage_rate !== undefined && body.salvage_rate !== ''
+      ? normalizeSalvageRate(body.salvage_rate)
+      : normalizeSalvageRate(current.salvage_rate ?? 0)
+  const salvageRate = rawRate ?? 0
+  if (body.salvage_rate !== undefined && body.salvage_rate !== '' && rawRate === null) {
+    throw new Error('残值率必须是 0~1 的小数（如 0.05 表示 5%）')
+  }
+
+  // AS-P1-7：未显式给残值且本次未改原值/残值率时，保留现有残值，
+  // 避免改备注/使用人等无关字段把手工维护的残值按「原值×残值率=0」冲掉
+  const originalChanged = body.original_value !== undefined
+  const rateChanged = body.salvage_rate !== undefined && body.salvage_rate !== ''
   const salvageValue =
     body.salvage_value !== undefined && body.salvage_value !== ''
       ? Number(body.salvage_value)
-      : round2(originalValue * (salvageRate || 0))
+      : originalChanged || rateChanged
+        ? round2(originalValue * (salvageRate || 0))
+        : Number(current.salvage_value ?? 0)
 
   fields.original_value = round2(originalValue)
   fields.accum_depr = round2(accumDepr)

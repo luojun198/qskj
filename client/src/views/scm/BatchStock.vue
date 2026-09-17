@@ -5,6 +5,7 @@
       <el-input v-model="kw" placeholder="物料编码/名称" size="small" clearable style="width:180px" @keyup.enter="load" />
       <el-input v-model="batchNo" placeholder="批次号" size="small" clearable style="width:140px" @keyup.enter="load" />
       <el-button type="primary" plain size="small" :loading="loading" @click="load"><el-icon><Search /></el-icon>查询</el-button>
+      <FilterClearButton size="small" @clear="handleClearFilters" />
       <span class="rpt-hint">共 {{ rows.length }} 个批次</span>
     </div>
     <div class="rpt-body">
@@ -36,8 +37,17 @@
 import { ref, onMounted } from 'vue'
 import { Search } from '@element-plus/icons-vue'
 import { scmApi } from '@/api/scm'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
+import { useFilterClear } from '@/composables/useFilterClear'
 const rows = ref<any[]>([]); const loading = ref(false)
 const kw = ref(''); const batchNo = ref('')
+const { clearFilters } = useFilterClear([kw, batchNo])
+
+/** 清空筛选条件并恢复默认查询 */
+function handleClearFilters() {
+  clearFilters()
+  load()
+}
 const num = (v: any) => { const n = Number(v) || 0; return Number.isInteger(n) ? String(n) : n.toFixed(3).replace(/\.?0+$/, '') }
 const tagClass = (d: number) => Number(d) < 0 ? 'rpt-danger' : Number(d) <= 30 ? 'rpt-warn' : ''
 async function load() {

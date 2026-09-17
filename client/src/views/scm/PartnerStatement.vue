@@ -17,6 +17,7 @@
       <el-date-picker v-model="startDate" type="date" value-format="YYYY-MM-DD" placeholder="开始日期" style="width:140px" size="small" />
       <el-date-picker v-model="endDate" type="date" value-format="YYYY-MM-DD" placeholder="结束日期" style="width:140px" size="small" />
       <el-button type="primary" plain size="small" @click="load"><el-icon><Search /></el-icon>查询</el-button>
+      <FilterClearButton size="small" @clear="handleClearFilters" />
       <el-button size="small" :disabled="isAll" @click="toggleDetailMode">
         {{ detailMode === 'flat' ? '当前：逐笔明细（润衡）' : '当前：仅汇总' }} · 切换
       </el-button>
@@ -61,6 +62,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { Search, Printer, Setting } from '@element-plus/icons-vue'
 import { scmApi, type ScmPartner } from '@/api/scm'
 import ScmDocActions from '@/components/scm/ScmDocActions.vue'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
+import { useFilterClear } from '@/composables/useFilterClear'
 import { exportStyledTable } from '@/utils/exportStyledExcel'
 import { useStatementColumns } from '@/composables/useStatementColumns'
 import { usePageToolbarTeleport } from '@/composables/usePageToolbarTeleport'
@@ -98,6 +101,13 @@ const arapType = ref<'' | 'ar' | 'ap'>('')
 const startDate = ref('')
 const endDate = ref('')
 const loading = ref(false)
+const { clearFilters } = useFilterClear([partnerCode, arapType, startDate, endDate])
+
+/** 清空筛选条件并恢复默认查询 */
+function handleClearFilters() {
+  clearFilters()
+  load()
+}
 const opening = ref(0)
 const closing = ref(0)
 const totalIn = ref(0)

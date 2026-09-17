@@ -208,6 +208,7 @@ import {
   ArrowLeft,
 } from 'lucide-vue-next'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { getAssetVoucherLockMessage } from '@/utils/voucherSourceGuard'
 import BatchPrintDialog from '@/components/print/BatchPrintDialog.vue'
 import VoucherHiprintDialog from '@/components/print/VoucherHiprintDialog.vue'
 import VoucherFilterBar from '@/components/voucher/VoucherFilterBar.vue'
@@ -729,6 +730,13 @@ async function exportData() {
 async function handleDelete(row: any) {
   const voucher = list.value.find((v: any) => v.id === row._voucherId)
   if (!voucher) return
+
+  // 固定资产生成的凭证只能回固定资产模块反折旧/撤销处置后删除（后端同样拦截）
+  const lock = getAssetVoucherLockMessage(voucher as { source?: string | null }, '删除')
+  if (lock) {
+    ElMessage.warning(lock)
+    return
+  }
 
   const confirmed = await useDeleteConfirm(`凭证 ${voucher.voucher_no}`)
   if (!confirmed) return

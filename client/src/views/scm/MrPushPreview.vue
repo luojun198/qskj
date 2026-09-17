@@ -51,7 +51,7 @@
                 :model-value="groupChecked(group)"
                 :indeterminate="groupIndeterminate(group)"
                 :disabled="!group.rows.some(row => Number(row.remain_qty) > 0)"
-                @change="value => toggleGroup(group, Boolean(value))"
+                @change="(value: boolean | string | number) => toggleGroup(group, Boolean(value))"
               />
               <div>
               <h3>{{ group.target }}</h3>

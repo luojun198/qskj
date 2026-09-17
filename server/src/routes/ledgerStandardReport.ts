@@ -9,7 +9,8 @@ import {
   importAcdStandardReports,
   previewAcdStandardReports,
 } from '../services/acdStandardReportImport.js'
-import { rewriteFormulaForRowCol, type RowColOperation } from '../services/reportFormulaRewrite.js'
+import type { RowColOperation } from '../services/reportFormulaRewrite.js'
+import { applyStandardReportRowCol } from '../services/standardReportRowCol.js'
 import { resolveReportUnitName } from '../services/reportUnitName.js'
 import { randomUUID } from 'crypto'
 
@@ -427,55 +428,14 @@ router.post('/:id/rowcol', auth, (req: AuthRequest, res) => {
       return res.status(400).json({ code: 400, message: 'count 必须为正整数' })
     }
 
-    const isRow = action.endsWith('_row')
-    const axisColumn = isRow ? 'row_index' : 'col_index'
     const operation: RowColOperation = {
       type: action.startsWith('insert') ? 'insert' : 'delete',
-      axis: isRow ? 'row' : 'col',
+      axis: action.endsWith('_row') ? 'row' : 'col',
       index,
       count,
     }
 
-    const apply = db.transaction(() => {
-      // 先重写公式：引用坐标与单元格自身位置无关，但必须在同一事务内完成，
-      // 否则插删后既有的 =B5+B6 会静默指向错误的行列。
-      const formulaCells = db
-        .prepare(
-          `SELECT id, formula_text FROM rh_standard_report_cells
-           WHERE report_id = ? AND formula_text IS NOT NULL AND length(formula_text) > 0`
-        )
-        .all(report.id) as Array<{ id: string; formula_text: string }>
-      const updateFormula = db.prepare(
-        "UPDATE rh_standard_report_cells SET formula_text = ?, updated_at = datetime('now') WHERE id = ?"
-      )
-      for (const cell of formulaCells) {
-        const next = rewriteFormulaForRowCol(cell.formula_text, operation)
-        if (next !== cell.formula_text) updateFormula.run(next, cell.id)
-      }
-
-      // 再移动 / 删除单元格
-      if (operation.type === 'insert') {
-        db.prepare(
-          `UPDATE rh_standard_report_cells SET ${axisColumn} = ${axisColumn} + ?, updated_at = datetime('now')
-           WHERE report_id = ? AND ${axisColumn} >= ?`
-        ).run(count, report.id, index)
-      } else {
-        db.prepare(
-          `DELETE FROM rh_standard_report_cells
-           WHERE report_id = ? AND ${axisColumn} >= ? AND ${axisColumn} < ?`
-        ).run(report.id, index, index + count)
-        db.prepare(
-          `UPDATE rh_standard_report_cells SET ${axisColumn} = ${axisColumn} - ?, updated_at = datetime('now')
-           WHERE report_id = ? AND ${axisColumn} >= ?`
-        ).run(count, report.id, index + count)
-      }
-
-      db.prepare("UPDATE rh_standard_reports SET updated_at = datetime('now') WHERE id = ?").run(
-        report.id
-      )
-    })
-
-    apply()
+    applyStandardReportRowCol(db, report.id, operation)
     res.json({ code: 0, message: '操作成功' })
   } catch (error: any) {
     res.status(500).json({ code: 500, message: error.message })

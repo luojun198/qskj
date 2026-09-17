@@ -1,8 +1,8 @@
 <template>
   <PageListLayout title="资产领用归还">
     <template #actions>
-      <el-button type="primary" :icon="Plus" @click="openDialog('out')">登记领用</el-button>
-      <el-button :icon="Back" @click="openDialog('in')">登记归还</el-button>
+      <el-button v-permission="'asset:requisition'" type="primary" :icon="Plus" @click="openDialog('out')">登记领用</el-button>
+      <el-button v-permission="'asset:requisition'" :icon="Back" @click="openDialog('in')">登记归还</el-button>
     </template>
 
     <template #filters>
@@ -47,6 +47,7 @@
       <el-checkbox v-model="filters.outstanding_only" @change="reload">仅未归还</el-checkbox>
       <el-checkbox v-model="filters.overdue_only" @change="reload">仅逾期</el-checkbox>
       <el-button type="primary" :icon="Search" @click="reload">查询</el-button>
+      <FilterClearButton size="small" @clear="handleClearFilters" />
     </template>
 
     <div ref="tableContainerRef" class="table-container">
@@ -86,7 +87,7 @@
         <el-table-column label="操作人" prop="operator" width="90" />
         <el-table-column label="操作" width="70" align="center" fixed="right">
           <template #default="{ row }">
-            <el-button link type="danger" size="small" @click="remove(row)">删除</el-button>
+            <el-button v-permission="'asset:requisition'" link type="danger" size="small" @click="remove(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -228,6 +229,8 @@ import {
   type AssetDicts,
 } from '@/api/fixedAsset'
 import PageListLayout from '@/components/layout/PageListLayout.vue'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
+import { useFilterClear } from '@/composables/useFilterClear'
 import { useFillHeightTable } from '@/composables/useFillHeightTable'
 
 const { containerRef: tableContainerRef, tableHeight } = useFillHeightTable()
@@ -247,6 +250,15 @@ const filters = reactive({
   page: 1,
   page_size: 20,
 })
+const { clearFilters } = useFilterClear([filters, dateRange], {
+  defaults: { page: 1, page_size: 20 }
+})
+
+/** 清空筛选条件并恢复默认查询 */
+function handleClearFilters() {
+  clearFilters()
+  reload()
+}
 
 // ── 登记弹窗 ────────────────────────────────────────────────
 

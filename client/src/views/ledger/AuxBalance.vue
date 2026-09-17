@@ -208,7 +208,7 @@
 
       <template #footer>
         <div class="drawer-footer">
-          <el-button @click="resetFilters">重置</el-button>
+          <el-button @click="resetFilters">清空</el-button>
           <el-button type="primary" @click="handleQuery">查询</el-button>
         </div>
       </template>
@@ -1752,29 +1752,21 @@ async function handleLoadAll() {
   }
 }
 
-// 重置筛选条件
+// 重置筛选条件并查询全部
 function resetFilters() {
-  const year = new Date().getFullYear()
   filters.value = {
     aux_category_ids: [],
     aux_ids: [],
-    start_date: `${year}-01-01`,
-    end_date: `${year}-12-31`,
+    start_date: '',
+    end_date: '',
     account_code: '',
     currency_code: '',
     include_unposted: true,
   }
-  list.value = []
-  allRows.value = []
-  total.value = 0
-  grandTotals.value = null
-  foreignTotals.value = null
-  foreignRates.value = {}
+  itemCheckMap.value = {}
   currentPage.value = 1
-  hasQueried.value = false
-  clientSidePagination.value = false
-  loadProgress.value = { loaded: 0, total: 0 }
-  categoryFields.value = {}
+  drawerVisible.value = false
+  handleQuery()
 }
 
 /** 全选/反选/清空：仅作用于当前列表可见项（大类别即检索命中的项），避免一次性勾选海量项目 */
@@ -1880,7 +1872,8 @@ onMounted(async () => {
 
 .header-left h3 {
   margin: 0;
-  font-size: 16px;
+  font-size: var(--cw-text-lg);
+  font-weight: 600;
   font-weight: 600;
 }
 

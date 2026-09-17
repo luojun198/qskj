@@ -515,7 +515,8 @@ onMounted(async () => {
 }
 .page-title h3 {
   margin: 0;
-  font-size: 16px;
+  font-size: var(--cw-text-lg);
+  font-weight: 600;
 }
 .page-title span {
   color: var(--el-text-color-secondary);

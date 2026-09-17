@@ -22,7 +22,7 @@
         </div>
         <div class="module-head__side">
           <span class="module-head__stat">{{ currentApp.sections.length }} 个分组 · {{ availableItems.length }} 项功能</span>
-          <div v-if="currentFlowConfig?.layout !== 'gl-workspace'" class="module-head__actions">
+          <div v-if="currentFlowConfig?.layout !== 'gl-workspace' && currentFlowConfig?.layout !== 'asset-workspace' && currentFlowConfig?.layout !== 'cashier-workspace'" class="module-head__actions">
             <router-link v-if="primaryEntry" class="module-btn module-btn--primary" :to="primaryEntry.path">
               <component :is="getIcon(primaryEntry)" :size="14" :stroke-width="1.8" />
               {{ primaryEntry.title }}
@@ -39,6 +39,14 @@
 
       <GlWorkspace
         v-if="currentFlowConfig && currentFlowConfig.layout === 'gl-workspace'"
+        :available-items="flowAvailableItems"
+      />
+      <AssetWorkspace
+        v-else-if="currentFlowConfig && currentFlowConfig.layout === 'asset-workspace'"
+        :available-items="flowAvailableItems"
+      />
+      <CashierWorkspace
+        v-else-if="currentFlowConfig && currentFlowConfig.layout === 'cashier-workspace'"
         :available-items="flowAvailableItems"
       />
       <template v-else-if="currentFlowConfig && currentFlowConfig.layout === 'flow'">
@@ -83,6 +91,8 @@ import { resolveNavAppTitle } from '@/utils/groupNavigation'
 import ProcessFlow from './components/ProcessFlow.vue'
 import BentoGrid from './components/BentoGrid.vue'
 import GlWorkspace from './components/GlWorkspace.vue'
+import AssetWorkspace from './components/AssetWorkspace.vue'
+import CashierWorkspace from './components/CashierWorkspace.vue'
 import NavFunctionSearch from '@/components/layout/NavFunctionSearch.vue'
 
 const route = useRoute()
@@ -151,7 +161,7 @@ const secondaryEntry = computed(() => availableItems.value[1])
 const MODULE_ACCENTS: Record<string, string> = {
   finance: 'mint',
   cashier: 'foam',
-  asset: 'lilac',
+  asset: 'mint',
   purchase: 'amber',
   sales: 'rose',
   inventory: 'blue',

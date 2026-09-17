@@ -4,6 +4,7 @@
       <span class="lbl">截止日期</span>
       <el-date-picker v-model="asOfDate" type="date" value-format="YYYY-MM-DD" placeholder="截止日期" style="width:150px" size="small" />
       <el-button type="primary" plain size="small" @click="load"><el-icon><Search /></el-icon>查询</el-button>
+      <FilterClearButton size="small" @clear="handleClearFilters" />
       <span class="total-hint">共 {{ rows.length }} 个往来单位</span>
     </div>
 
@@ -49,11 +50,20 @@ import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { Search } from '@element-plus/icons-vue'
 import { scmApi } from '@/api/scm'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
+import { useFilterClear } from '@/composables/useFilterClear'
 
 const router = useRouter()
 const asOfDate = ref('')
 const loading = ref(false)
 const rows = ref<any[]>([])
+const { clearFilters } = useFilterClear([asOfDate])
+
+/** 清空筛选条件并恢复默认查询 */
+function handleClearFilters() {
+  clearFilters()
+  load()
+}
 
 const fmt = (v: any) => (Number(v) || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 function partnerTypeLabel(t: string) { return t === 'customer' ? '客户' : t === 'supplier' ? '供应商' : (t || '-') }

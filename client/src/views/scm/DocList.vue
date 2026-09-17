@@ -21,7 +21,7 @@
       </el-select>
       <el-date-picker v-model="filters.date_range" type="daterange" value-format="YYYY-MM-DD" range-separator="—" start-placeholder="开始日期" end-placeholder="结束日期" style="width:240px" size="small" />
       <el-button type="primary" plain @click="reloadFromFirstPage" size="small"><el-icon><Search /></el-icon>查询</el-button>
-      <el-button size="small" @click="resetFilters"><el-icon><RefreshLeft /></el-icon>重置</el-button>
+      <FilterClearButton size="small" @clear="resetFilters" />
       <el-button type="primary" size="small" :loading="creating" @mouseenter="preloadDocFormNow" @focus="preloadDocFormNow" @pointerdown="preloadDocFormNow" @click="handleCreate"><el-icon><Plus /></el-icon>{{ createBtnLabel }}</el-button>
       <el-button v-if="propType === 'SOa'" size="small" @click="openSalesOrderRelations"><el-icon><Connection /></el-icon>订单关联表</el-button>
       <template v-if="selection.length">
@@ -98,6 +98,7 @@ import {
   type ScmDocNavContext,
 } from '@/utils/scmDocNavigation'
 import ColumnSettingsDialog from '@/components/common/ColumnSettingsDialog.vue'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
 import { loadColumnSettings, mergeColumnSettings, saveColumnSettings, serializeColumnSettings, type ColumnSetting } from '@/utils/columnSettings'
 
 const { ptActive } = usePageToolbarTeleport()

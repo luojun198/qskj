@@ -22,6 +22,7 @@
           :rows="activeRows"
           :columns="activeColumns"
           :loading="initializing"
+          :editable="canEditDict"
           @add="openAdd(activeTab)"
           @edit="row => openEdit(activeTab, row)"
           @delete="row => handleDelete(activeTab, row)"
@@ -49,11 +50,11 @@
           <el-input v-model="form.name" />
         </el-form-item>
         <template v-if="activeTab === 'category'">
-          <el-form-item label="默认残值率(%)">
+          <el-form-item label="默认残值率">
             <el-tooltip placement="right" :show-after="300" popper-class="salvage-rate-tip">
               <template #content>
                 <div class="salvage-tip-content">
-                  <div class="salvage-tip-title">中国各类资产通用残值率参考</div>
+                  <div class="salvage-tip-title">中国各类资产通用残值率参考（输入小数，5% 填 0.05）</div>
                   <table class="salvage-tip-table">
                     <tr><td>房屋及构筑物</td><td>5%</td></tr>
                     <tr><td>专用设备</td><td>5%</td></tr>
@@ -68,7 +69,7 @@
                   </div>
                 </div>
               </template>
-              <el-input-number v-model="form.salvage_rate" :precision="2" :min="0" :max="100" style="width:100%" />
+              <el-input-number v-model="form.salvage_rate" :precision="4" :step="0.01" :min="0" :max="1" style="width:100%" />
             </el-tooltip>
           </el-form-item>
           <el-form-item label="资产科目">
@@ -113,28 +114,35 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, defineComponent, h } from 'vue'
+import { formatAccountFullPath } from '@/utils/accountPathDisplay'
 import { ElMessage, ElMessageBox, ElTable, ElTableColumn, ElButton } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import { fixedAssetApi, type AssetDicts } from '@/api/fixedAsset'
 import AccountSelect from '@/components/base/AccountSelect.vue'
 import DialogNavigation from '@/components/common/DialogNavigation.vue'
 import { useBaseDataStore } from '@/stores/baseData'
+import { hasPermission } from '@/utils/permission'
 
 // 内联 DictPanel 子组件
 const DictPanel = defineComponent({
-  props: { rows: Array, columns: Array, title: String, loading: Boolean },
+  props: { rows: Array, columns: Array, title: String, loading: Boolean, editable: { type: Boolean, default: true } },
   emits: ['add', 'edit', 'delete', 'init'],
   setup(props, { emit }) {
+    // AS-P1-12：无 asset:dict 权限时不渲染写操作按钮（后端守卫仍会拦截）
     return () =>
       h('div', { class: 'dict-panel' }, [
         h('div', { class: 'dict-panel-toolbar' }, [
-          h(ElButton, { type: 'primary', size: 'small', onClick: () => emit('add') }, () => [h(Plus), ' 新增项目']),
-          h(ElButton, { 
-            type: 'warning', 
-            size: 'small', 
-            loading: props.loading,
-            onClick: () => emit('init') 
-          }, () => '一键预设通用项目'),
+          props.editable
+            ? h(ElButton, { type: 'primary', size: 'small', onClick: () => emit('add') }, () => [h(Plus), ' 新增项目'])
+            : null,
+          props.editable
+            ? h(ElButton, {
+                type: 'warning',
+                size: 'small',
+                loading: props.loading,
+                onClick: () => emit('init')
+              }, () => '一键预设通用项目')
+            : null,
         ]),
         h(ElTable, { data: props.rows, size: 'small', border: true, style: 'width:100%; margin-bottom: 16px;', maxHeight: 'calc(100vh - 280px)' }, {
           default: () => [
@@ -148,10 +156,10 @@ const DictPanel = defineComponent({
               })
             ),
             h(ElTableColumn, { label: '操作', width: 120, align: 'center' }, {
-              default: ({ row }: any) => h('div', [
+              default: ({ row }: any) => props.editable ? h('div', [
                 h(ElButton, { link: true, type: 'primary', size: 'small', onClick: () => emit('edit', row) }, () => '编辑'),
                 h(ElButton, { link: true, type: 'danger', size: 'small', onClick: () => emit('delete', row) }, () => '删除'),
-              ]),
+              ]) : null,
             }),
           ],
         }),
@@ -160,6 +168,8 @@ const DictPanel = defineComponent({
 })
 
 const activeTab = ref('category')
+// AS-P1-12：无 asset:dict 权限隐藏写操作按钮
+const canEditDict = hasPermission('asset:dict') || hasPermission('*')
 const dicts = ref<AssetDicts>({ category: [], status: [], purpose: [], dept: [], change_type: [] })
 const dialogVisible = ref(false)
 const editRow = ref<any>(null)
@@ -200,11 +210,11 @@ function handleNavigate(direction: 'first' | 'previous' | 'next' | 'last') {
 
 const baseDataStore = useBaseDataStore()
 
-// 科目编码 → "编码 名称" 显示
+// 科目编码 → "编码 上级/.../末级" 完整路径显示（与凭证录入「完整路径」一致）
 function formatAccountCode(code: any): string {
   if (!code) return ''
   const acc = baseDataStore.accounts.find((a: any) => String(a.code) === String(code))
-  return acc ? `${acc.code} ${acc.name}` : String(code)
+  return acc ? formatAccountFullPath(acc.code, String(acc.id), baseDataStore.accounts as any[], acc.name) : String(code)
 }
 
 const categoryColumns = computed(() => {
@@ -213,11 +223,11 @@ const categoryColumns = computed(() => {
   return [
     { label: '编码', prop: 'code', width: 80 },
     { label: '名称', prop: 'name', width: 120 },
-    { label: '默认残值率(%)', prop: 'salvage_rate', width: 110, align: 'right' },
-    { label: '资产科目', prop: 'account_code', width: 160, formatter: (r: any) => formatAccountCode(r.account_code) },
-    { label: '累计折旧科目', prop: 'depr_account_code', width: 170, formatter: (r: any) => formatAccountCode(r.depr_account_code) },
-    { label: '减值准备科目', prop: 'impairment_account_code', width: 180, formatter: (r: any) => formatAccountCode(r.impairment_account_code) },
-    { label: '清理科目', prop: 'clearing_account_code', width: 170, formatter: (r: any) => formatAccountCode(r.clearing_account_code) },
+    { label: '默认残值率', prop: 'salvage_rate', width: 110, align: 'right', formatter: (r: any) => (r.salvage_rate == null || r.salvage_rate === '' ? '' : `${(Number(r.salvage_rate) * 100).toFixed(2).replace(/\.00$/, '')}%`) },
+    { label: '资产科目', prop: 'account_code', width: 200, formatter: (r: any) => formatAccountCode(r.account_code) },
+    { label: '累计折旧科目', prop: 'depr_account_code', width: 220, formatter: (r: any) => formatAccountCode(r.depr_account_code) },
+    { label: '减值准备科目', prop: 'impairment_account_code', width: 230, formatter: (r: any) => formatAccountCode(r.impairment_account_code) },
+    { label: '清理科目', prop: 'clearing_account_code', width: 220, formatter: (r: any) => formatAccountCode(r.clearing_account_code) },
   ]
 })
 const statusColumns = [
@@ -230,7 +240,7 @@ const purposeColumns = computed(() => {
   return [
     { label: '编码', prop: 'code', width: 100 },
     { label: '名称', prop: 'name', width: 150 },
-    { label: '折旧费用科目', prop: 'expense_account', width: 200, formatter: (r: any) => formatAccountCode(r.expense_account) },
+    { label: '折旧费用科目', prop: 'expense_account', width: 260, formatter: (r: any) => formatAccountCode(r.expense_account) },
   ]
 })
 const deptColumns = [

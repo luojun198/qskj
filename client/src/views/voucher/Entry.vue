@@ -332,6 +332,7 @@ import {
   showNoNegativeBalanceAlert,
 } from '@/composables/useMessage'
 import { useDeleteConfirm } from '@/composables/useConfirm'
+import { getAssetVoucherLockMessage } from '@/utils/voucherSourceGuard'
 import { useKeyboardShortcuts, commonShortcuts } from '@/composables/useKeyboardShortcuts'
 import { useOperationHistory } from '@/composables/useOperationHistory'
 import { performanceMonitor } from '@/utils/performanceMonitor'
@@ -1105,7 +1106,7 @@ async function handleImportTemplateInDialog() {
 }
 
 const dialogVisible = ref(false)
-const dialogMode = ref<'add' | 'edit' | 'insert'>('add')
+const dialogMode = ref<'add' | 'edit' | 'insert' | 'view'>('add')
 const renumberDialogVisible = ref(false)
 const renumberForm = ref({
   year: new Date().getFullYear(),
@@ -1378,7 +1379,7 @@ async function prepareNewVoucherForm(preserve?: {
 }
 
 async function openVoucherDialog(
-  mode: 'add' | 'edit' | 'insert' = 'add',
+  mode: 'add' | 'edit' | 'insert' | 'view' = 'add',
   voucher?: any,
   index?: number
 ) {
@@ -1398,7 +1399,9 @@ async function openVoucherDialog(
 
     // 编辑场景优先使用草稿列表中的完整凭证对象（而不是列表展平后的行数据）
     const sourceVoucher =
-      mode === 'edit' ? sortedVouchers.value.find(v => v.id === voucher.id) || voucher : voucher
+      mode === 'edit' || mode === 'view'
+        ? sortedVouchers.value.find(v => v.id === voucher.id) || voucher
+        : voucher
 
     loadVoucherData(sourceVoucher)
 
@@ -1415,6 +1418,13 @@ async function openVoucherDialog(
 function handleEdit(row: any) {
   const index = sortedVouchers.value.findIndex(v => v.id === row.id)
   const voucher = sortedVouchers.value[index] || row
+  // 固定资产生成的凭证（折旧/处置/变动/盘点/购置）只读：只能查看，不能改；要删只能回固定资产模块反折旧等
+  const lock = getAssetVoucherLockMessage(voucher, '编辑')
+  if (lock) {
+    ElMessage.warning(lock)
+    openVoucherDialog('view', voucher, index)
+    return
+  }
   openVoucherDialog('edit', voucher, index)
 }
 
@@ -1964,6 +1974,11 @@ async function handlePageChange(page: number, pageSize: number) {
 }
 
 async function handleDeleteDraft(row: any) {
+  const lock = getAssetVoucherLockMessage(row, '删除')
+  if (lock) {
+    ElMessage.warning(lock)
+    return
+  }
   const confirmed = await useDeleteConfirm(`未审核凭证「${row.voucher_no}」`)
   if (!confirmed) return
 

@@ -60,7 +60,7 @@ const GROUP_PALETTE: Record<string, PaletteName> = {
   辅助核算: 'lavender',
   报表管理: 'mint',
   出纳管理: 'cyan',
-  固定资产: 'amber',
+  固定资产: 'mint',
   销售管理: 'rose',
   采购管理: 'peach',
   生产管理: 'violet',

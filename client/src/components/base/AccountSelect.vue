@@ -24,7 +24,7 @@
             fontStyle: item.isParent ? 'italic' : 'normal',
           }"
         >
-          {{ item.code }} {{ item.name }}
+          {{ item.isParent ? `${item.code} ${item.name}` : item.value }}
         </span>
         <span
           v-if="item.isParent"
@@ -51,6 +51,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, nextTick } from 'vue'
+import { formatAccountFullPath } from '@/utils/accountPathDisplay'
 import { Search } from '@element-plus/icons-vue'
 import { useBaseDataStore } from '@/stores/baseData'
 
@@ -102,7 +103,7 @@ const inputText = ref('')
 function resolveDisplayFromCode(code: string | null | undefined): string {
   if (!code) return ''
   const acc = accounts.value.find((a: any) => String(a.code) === String(code))
-  return acc ? `${acc.code} ${acc.name}` : String(code)
+  return acc ? leafLabel(acc) : String(code)
 }
 
 // modelValue / accounts 变化时同步显示文本
@@ -127,9 +128,14 @@ type AccountSuggestion = {
   isParent: boolean
 }
 
+// 末级科目统一显示「编码 上级/.../末级」完整路径（与凭证录入「完整路径」开关一致）
+function leafLabel(acc: any): string {
+  return formatAccountFullPath(acc.code, acc.id, accounts.value as any[], acc.name)
+}
+
 function buildLeaf(acc: any): AccountSuggestion {
   return {
-    value: `${acc.code} ${acc.name}`,
+    value: leafLabel(acc),
     id: acc.id,
     code: acc.code,
     name: acc.name,
@@ -292,7 +298,7 @@ function onSuggestionPointer(item: any, e: MouseEvent) {
 }
 
 function applySelected(acc: any) {
-  inputText.value = `${acc.code} ${acc.name}`
+  inputText.value = leafLabel(acc)
   emit('update:modelValue', String(acc.code))
   emit('change', acc)
 }

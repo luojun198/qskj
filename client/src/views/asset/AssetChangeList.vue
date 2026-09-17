@@ -1,7 +1,7 @@
 <template>
   <PageListLayout title="资产变动记录">
     <template #actions>
-      <el-button type="primary" :icon="Plus" @click="router.push('/asset/change')">
+      <el-button v-permission="'asset:change'" type="primary" :icon="Plus" @click="router.push('/asset/change')">
         登记变动
       </el-button>
     </template>
@@ -49,6 +49,7 @@
         <el-option v-for="d in dicts?.dept || []" :key="d.code" :label="d.name" :value="d.code" />
       </el-select>
       <el-button type="primary" :icon="Search" @click="reload">查询</el-button>
+      <FilterClearButton size="small" @clear="handleClearFilters" />
     </template>
 
     <div ref="tableContainerRef" class="table-container">
@@ -107,7 +108,7 @@
         <el-table-column label="操作人" prop="operator" width="90" />
         <el-table-column label="操作" width="90" align="center" fixed="right">
           <template #default="{ row }">
-            <el-button v-if="canRevoke(row)" link type="danger" size="small" @click="revoke(row)">
+            <el-button v-if="canRevoke(row)" v-permission="'asset:change'" link type="danger" size="small" @click="revoke(row)">
               撤销
             </el-button>
             <span v-else class="zero">-</span>
@@ -143,6 +144,8 @@ import {
   type AssetDicts,
 } from '@/api/fixedAsset'
 import PageListLayout from '@/components/layout/PageListLayout.vue'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
+import { useFilterClear } from '@/composables/useFilterClear'
 import { useFillHeightTable } from '@/composables/useFillHeightTable'
 
 const router = useRouter()
@@ -161,6 +164,15 @@ const filters = reactive({
   page: 1,
   page_size: 20,
 })
+const { clearFilters } = useFilterClear([filters, period], {
+  defaults: { page: 1, page_size: 20 }
+})
+
+/** 清空筛选条件并恢复默认查询 */
+function handleClearFilters() {
+  clearFilters()
+  reload()
+}
 
 const fmtAmt = (n: number | null | undefined) =>
   (Number(n) || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })

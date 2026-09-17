@@ -8,20 +8,62 @@ import type { HiprintPanel } from '@/types/print'
 import {
   createVoucherPrintProvider,
   VOUCHER_SUMMARY_FORMATTER_SRC,
+  VOUCHER_TABLE_FIELD,
+  applyVoucherHeaderAlign,
+  applyVoucherTableRows,
 } from '@/utils/hiprintVoucherProvider'
+// 以 URL 形式拿到 print-lock.css：hiprint 浏览器打印时要从 <link media="print"> 复制样式进打印 iframe
+import printLockCssUrl from 'vue-plugin-hiprint/dist/print-lock.css?url'
 
 type HiprintModule = typeof import('vue-plugin-hiprint')
 
 let hiprintModulePromise: Promise<HiprintModule> | null = null
 let initialized = false
 
+const PRINT_LOCK_LINK_ID = 'cw-hiprint-print-lock'
+
+/**
+ * 在 <head> 挂一个 `<link rel="stylesheet" media="print" href="…print-lock.css">`。
+ *
+ * hiprint 的浏览器打印（`$.fn.hiwprint`）会新建一个隐藏 iframe，只把当前文档里
+ * `link[media=print]` 且 href 含 `print-lock.css` 的样式链接复制进去；
+ * 用 `import '…/print-lock.css'` 引入时 Vite 注入的是 <style>（或不带 media 的 <link>），
+ * iframe 里完全没有 hiprint 样式：分录表网格线丢失、@page 纸张失效、页码挤到第二页，
+ * 打印结果与设计器/预览对不上。这里补一个 media="print" 的 link 让 hiprint 能找到。
+ */
+function ensurePrintLockLink() {
+  if (typeof document === 'undefined') return
+  if (document.getElementById(PRINT_LOCK_LINK_ID)) return
+  const link = document.createElement('link')
+  link.id = PRINT_LOCK_LINK_ID
+  link.rel = 'stylesheet'
+  link.media = 'print'
+  link.href = printLockCssUrl
+  document.head.appendChild(link)
+}
+
+/**
+ * 项目对 hiprint 样式的覆盖（与 assets/styles.css 里的 `.hiprint-printElement-table thead` 保持一致）。
+ * 打印 iframe 不会继承页面上的全局样式表，需要通过 hiprint 的 styleHandler 显式带进去。
+ */
+const HIPRINT_PRINT_OVERRIDE_CSS =
+  '<style>.hiprint-printElement-table thead{background:transparent!important}</style>'
+
+/** 传给 `tp.print(data, options, printOptions)` 第三参的浏览器打印选项 */
+export function hiprintBrowserPrintOptions() {
+  ensurePrintLockLink()
+  return { styleHandler: () => HIPRINT_PRINT_OVERRIDE_CSS }
+}
+
 /** 懒加载并初始化 hiprint（全局只初始化一次） */
 export async function loadHiprint(): Promise<HiprintModule> {
   if (!hiprintModulePromise) {
     hiprintModulePromise = (async () => {
       const mod = await import('vue-plugin-hiprint')
-      // 引入设计/打印锁定样式
+      // 引入设计/打印锁定样式（屏幕上的设计器 / 预览用）
       await import('vue-plugin-hiprint/dist/print-lock.css')
+      // 打印 iframe 用的 media="print" 链接
+      ensurePrintLockLink()
       if (!initialized) {
         try {
           // 关闭自动 socket 连接，避免本地未装打印服务时反复报错
@@ -252,11 +294,107 @@ export function injectVoucherSummaryFormatter<T>(template: T): T {
 }
 
 /**
+ * 分录表列头统一水平居中（补 halign，老模板不用重存）。不改入参。
+ */
+export function centerVoucherHeaderCells<T>(template: T): T {
+  const panels = (template as { panels?: unknown[] } | null | undefined)?.panels
+  if (!Array.isArray(panels)) return template
+  return {
+    ...(template as object),
+    panels: panels.map(panel => {
+      const p = panel as HiprintPanel
+      const els = p?.printElements
+      if (!Array.isArray(els)) return panel
+      return {
+        ...p,
+        printElements: els.map(el => {
+          const e = el as {
+            options?: Record<string, any>
+            printElementType?: { type?: string; columns?: unknown[] }
+          }
+          const o = e?.options
+          if (e?.printElementType?.type !== 'table' || !o || o.field !== VOUCHER_TABLE_FIELD) return el
+          const fix = (cols: unknown) =>
+            Array.isArray(cols) ? cols.map(row => (Array.isArray(row) ? applyVoucherHeaderAlign(row) : row)) : cols
+          return {
+            ...e,
+            options: { ...o, columns: fix(o.columns) },
+            printElementType: { ...e.printElementType, columns: fix(e.printElementType.columns) },
+          }
+        }),
+      }
+    }),
+  } as T
+}
+
+/**
+ * 固定行数的分录表：渲染前按当前公式重算「列头 / 表体 / 合计行统一行高」。
+ *
+ * 行高随模板 JSON 保存（tableBodyRowHeight / tableHeaderRowHeight），但公式改过
+ * （早先只均分表体、列头与合计行用 hiprint 默认 18pt），已保存的老模板里存的是旧值、
+ * 也没有列头行高。这里按 maxRows 重算一遍，不用重新保存模板打印就能对齐。不改入参。
+ */
+export function applyVoucherUniformRowHeights<T>(template: T): T {
+  const panels = (template as { panels?: unknown[] } | null | undefined)?.panels
+  if (!Array.isArray(panels)) return template
+  return {
+    ...(template as object),
+    panels: panels.map(panel => {
+      const p = panel as HiprintPanel
+      const els = p?.printElements
+      if (!Array.isArray(els)) return panel
+      return {
+        ...p,
+        printElements: els.map(el => {
+          const e = el as { options?: Record<string, any>; printElementType?: { type?: string } }
+          const o = e?.options
+          if (e?.printElementType?.type !== 'table' || !o || o.field !== VOUCHER_TABLE_FIELD) return el
+          const rows = Math.floor(Number(o.maxRows) || 0)
+          if (rows <= 0) return el
+          return { ...e, options: applyVoucherTableRows(o, { rows }) }
+        }),
+      }
+    }),
+  } as T
+}
+
+/** hiprint 内置纸张类型（hinnn.instance 里的 A0~A8 / B0~B8），@page size 认得这些关键字 */
+const HIPRINT_PAPER_TYPE_RE = /^[AB]\d$/i
+
+/**
+ * 自定义纸张（项目里存成 `paperType: 'other'`）在打印时要把 paperType 清掉。
+ *
+ * hiprint 的 `getPrintSizeStyle()` 只要 paperType 非空就直接拼成 `@page { size: other landscape }`，
+ * 这不是合法的 CSS 尺寸，整条 @page 会被浏览器丢弃 → 打印对话框按打印机默认纸张（一般 A4）
+ * 出纸，210×148 的凭证纸就对不上模板。paperType 为空时 hiprint 才会按面板宽高输出
+ * `size: 210mm 148mm`。只在渲染前处理、不改落库的模板 JSON。
+ */
+export function normalizeCustomPaperType<T>(template: T): T {
+  const panels = (template as { panels?: unknown[] } | null | undefined)?.panels
+  if (!Array.isArray(panels)) return template
+  return {
+    ...(template as object),
+    panels: panels.map(panel => {
+      const p = panel as HiprintPanel
+      if (!p || typeof p !== 'object') return panel
+      if (!p.paperType || HIPRINT_PAPER_TYPE_RE.test(p.paperType)) return panel
+      const { paperType: _omit, ...rest } = p
+      void _omit
+      return rest
+    }),
+  } as T
+}
+
+/**
  * 渲染（预览 / 打印 / 导出 PDF）前对面板做的全部归一化处理。
  * 调用方只要记住这一个函数即可，不用逐个记得要调哪几步。
  */
 export function normalizePanelForRender<T>(template: T): T {
-  return injectVoucherSummaryFormatter(pinDesignedPanelElements(template))
+  return normalizeCustomPaperType(
+    injectVoucherSummaryFormatter(
+      applyVoucherUniformRowHeights(centerVoucherHeaderCells(pinDesignedPanelElements(template)))
+    )
+  )
 }
 
 /** 把单 HTML 面板需要的打印数据（绑定 field=content） */

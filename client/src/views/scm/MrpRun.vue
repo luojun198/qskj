@@ -13,6 +13,7 @@
         <el-option label="草稿" value="draft" /><el-option label="已审核" value="audited" />
       </el-select>
       <el-button :loading="loading" @click="load"><el-icon><Search /></el-icon>查询</el-button>
+      <FilterClearButton size="small" @clear="handleClearFilters" />
     </div>
     <el-table v-loading="loading" :data="rows" border stripe height="100%" @row-dblclick="openView">
       <el-table-column label="计算单号" prop="doc_no" min-width="170" fixed="left" />
@@ -55,12 +56,21 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search } from '@element-plus/icons-vue'
 import { scmApi } from '@/api/scm'
 import { scmDocumentRoute, scmDownstreamDocRoute } from '@/utils/scmDocNavigation'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
+import { useFilterClear } from '@/composables/useFilterClear'
 
 const router = useRouter()
 const loading = ref(false)
 const openingNew = ref(false)
 const rows = ref<any[]>([])
 const filters = reactive({ keyword: '', status: '' })
+const { clearFilters } = useFilterClear([filters])
+
+/** 清空筛选条件并恢复默认查询 */
+function handleClearFilters() {
+  clearFilters()
+  load()
+}
 const fmt = (v: any) => (Number(v) || 0).toLocaleString('zh-CN', { maximumFractionDigits: 6 })
 async function load() { loading.value = true; try { const r = await scmApi.getMrpDocs(filters); if (r.code === 0) rows.value = r.data || [] } finally { loading.value = false } }
 function openView(row: any) { router.push(scmDocumentRoute(row.id, 'MRP', row.status)) }

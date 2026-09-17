@@ -5,6 +5,7 @@ import {
   bootstrapNewAccountSetDefaults,
   readAccountSetStartDate,
   resolveAccountSetStartDate,
+  resolveDeprExpenseAccount,
   syncAccountSetStartDate,
 } from '../services/accountSetDefaults.js'
 import {
@@ -228,5 +229,35 @@ describe('accountSetDefaults', () => {
       .prepare(`SELECT param_value FROM system_params WHERE account_set_id='as1' AND param_key='start_date'`)
       .get() as { param_value: string }
     expect(row.param_value).toBe('2026-06-01')
+  })
+})
+
+describe('resolveDeprExpenseAccount：资产用途预设折旧费用科目', () => {
+  function makeDb() {
+    const db = new Database(':memory:')
+    db.exec(`CREATE TABLE accounts (id TEXT PRIMARY KEY, account_set_id TEXT NOT NULL, code TEXT NOT NULL, name TEXT NOT NULL)`)
+    const ins = db.prepare('INSERT INTO accounts (id, account_set_id, code, name) VALUES (?, ?, ?, ?)')
+    ins.run('a1', 'as1', '6602', '管理费用')
+    ins.run('a2', 'as1', '6602001', '办公费')
+    ins.run('a3', 'as1', '6602010', '折旧')
+    ins.run('a4', 'as1', '5101', '制造费用')
+    ins.run('a5', 'as1', '5101001', '维修费')
+    ins.run('a6', 'as1', '5101003', '折旧费')
+    ins.run('a7', 'as1', '6601', '销售费用')
+    return db
+  }
+
+  it('优先取父科目下名称含「折旧」的末级', () => {
+    const db = makeDb()
+    expect(resolveDeprExpenseAccount(db, 'as1', '6602')).toBe('6602010')
+    expect(resolveDeprExpenseAccount(db, 'as1', '5101')).toBe('5101003')
+  })
+
+  it('无折旧末级时取第一个末级，无下级时退回父科目', () => {
+    const db = makeDb()
+    db.prepare("DELETE FROM accounts WHERE code='5101003'").run()
+    expect(resolveDeprExpenseAccount(db, 'as1', '5101')).toBe('5101001')
+    expect(resolveDeprExpenseAccount(db, 'as1', '6601')).toBe('6601')
+    expect(resolveDeprExpenseAccount(db, 'as2', '6602')).toBe('6602')
   })
 })

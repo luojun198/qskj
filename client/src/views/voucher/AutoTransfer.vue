@@ -115,7 +115,7 @@
               <el-checkbox
                 :model-value="selectedCodes.includes(preview.transferTypeCode)"
                 :disabled="!preview.selectable"
-                @change="checked => toggleType(preview, Boolean(checked))"
+                @change="(checked: boolean | string | number) => toggleType(preview, Boolean(checked))"
               />
               <div class="type-title">
                 <div>
@@ -526,7 +526,7 @@ onMounted(() => {
 
 .transfer-hero h3 {
   margin: 0;
-  font-size: 17px;
+  font-size: var(--cw-text-lg);
   font-weight: 700;
   white-space: nowrap;
 }

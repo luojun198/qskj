@@ -251,6 +251,16 @@ function escapeHtml(value: string) {
     .replace(/>/g, '&gt;')
 }
 
+/**
+ * 写进 style="..." 的 CSS 必须把双引号转义。
+ * 字体族 css 是 `"SimSun", 宋体, serif` 这种带引号的写法，直接塞进双引号属性会把属性截断：
+ * 排在字体之后的 text-align / position:relative 全部丢失——数值格变成左对齐被裁掉末位，
+ * 抬头日期的绝对定位 span 失去参照，飘到整页中间。
+ */
+function escapeAttr(value: string) {
+  return String(value ?? '').replace(/"/g, '&quot;')
+}
+
 /** style_key 是否带了会打印出来的边框（border-none / 仅颜色粗细不算） */
 export function styleKeyHasBorder(styleKey: string | null | undefined) {
   return BORDER_SIDE_RE.test(styleKey || '')
@@ -299,18 +309,81 @@ export function resolveExportTableBounds(
   }
 }
 
+/** 与服务端 reportFooterLayout 同一判据：含「xx负责人：/会计主管：/制表：/审核：」的落款标签 */
+const FOOTER_SIGNATURE_RE =
+  /(单位负责人|财务负责人|会计主管|财务主管|主管会计|制表人?|审核人?|复核人?|填表人?)\s*[：:]/
+
+export function isFooterSignatureText(text: string | null | undefined) {
+  const value = String(text || '').trim()
+  if (!value || value.length > 80) return false
+  return FOOTER_SIGNATURE_RE.test(value)
+}
+
+export interface ExportGridLayout {
+  bounds: { firstRow: number; lastRow: number; lastCol: number } | null
+  /** 位于表格矩形内但不属于表格的行：签字行，以及签字行之后没有任何内容与边框的空行 */
+  skippedRows: Set<number>
+}
+
+/**
+ * 圈出「真正要画网格」的范围。
+ *
+ * 签字行「单位负责人： 会计主管： …」是表格之下的自由文字；若它下方还挂着带框内容
+ * （利润表表尾的辅助取数行、季报的「补充资料」小表），单纯按「最上到最下有边框的行」补框，
+ * 签字行和它下面的留白行就会被框进表里。这里把这两类行摘出来，其余照旧。
+ */
+export function resolveExportGridLayout(
+  cells: Array<{ rowIndex: number; colIndex: number; styleKey: string | null; text: string }>
+): ExportGridLayout {
+  const bounds = resolveExportTableBounds(cells)
+  const skippedRows = new Set<number>()
+  if (!bounds) return { bounds, skippedRows }
+
+  const byRow = new Map<number, typeof cells>()
+  for (const cell of cells) {
+    if (cell.colIndex > bounds.lastCol) continue
+    const list = byRow.get(cell.rowIndex)
+    if (list) list.push(cell)
+    else byRow.set(cell.rowIndex, [cell])
+  }
+
+  let firstFooter: number | null = null
+  for (let row = bounds.firstRow; row <= bounds.lastRow; row += 1) {
+    const list = byRow.get(row) || []
+    if (list.some(cell => isFooterSignatureText(cell.text))) {
+      skippedRows.add(row)
+      if (firstFooter === null) firstFooter = row
+      continue
+    }
+    if (firstFooter === null) continue
+    const blank = list.every(cell => !cell.text.trim() && !styleKeyHasBorder(cell.styleKey))
+    if (blank) skippedRows.add(row)
+  }
+  return { bounds, skippedRows }
+}
+
+function inGridArea(
+  cell: { rowIndex: number; colIndex: number },
+  layout: ExportGridLayout
+) {
+  const { bounds, skippedRows } = layout
+  if (!bounds) return false
+  if (cell.rowIndex < bounds.firstRow || cell.rowIndex > bounds.lastRow) return false
+  if (cell.colIndex > bounds.lastCol) return false
+  return !skippedRows.has(cell.rowIndex)
+}
+
 /**
  * 表格主体内没有边框的格子补上 border-all。
- * 标题行（带框区域之上）不动；已经设过单边/全边的格子也不改。
+ * 标题行（带框区域之上）、签字行及其下方留白不动；已经设过单边/全边的格子也不改。
  */
 export function ensureExportTableBorders(model: ReportExportModel): ReportExportModel {
-  const bounds = resolveExportTableBounds(model.cells)
-  if (!bounds) return model
+  const layout = resolveExportGridLayout(model.cells)
+  if (!layout.bounds) return model
   return {
     ...model,
     cells: model.cells.map(cell => {
-      if (cell.rowIndex < bounds.firstRow || cell.rowIndex > bounds.lastRow) return cell
-      if (cell.colIndex > bounds.lastCol) return cell
+      if (!inGridArea(cell, layout)) return cell
       if (styleKeyHasBorder(cell.styleKey)) return cell
       return { ...cell, styleKey: appendBorderAll(cell.styleKey) }
     }),
@@ -462,17 +535,15 @@ function styleWithoutBorder(style: CellStyle): CellStyle {
 /**
  * 表格主体用「右+下」画线，外沿再补左/上，才能连成一张网。
  * 每格写四边 `border:1px` 再 collapse，Chrome / hiprint / html2canvas 会拆成孤立方框。
+ * 被签字行隔开的下一段表格，其首行同样要补上边。
  */
-function gridClassNames(
-  cell: ReportExportCell,
-  bounds: { firstRow: number; lastRow: number; lastCol: number } | null
-) {
-  if (!bounds) return ''
-  if (cell.rowIndex < bounds.firstRow || cell.rowIndex > bounds.lastRow) return ''
-  if (cell.colIndex > bounds.lastCol) return ''
+function gridClassNames(cell: ReportExportCell, layout: ExportGridLayout) {
+  if (!inGridArea(cell, layout)) return ''
   const names = ['cw-grid']
   if (cell.colIndex === 0) names.push('cw-grid-left')
-  if (cell.rowIndex === bounds.firstRow) names.push('cw-grid-top')
+  if (cell.rowIndex === layout.bounds!.firstRow || layout.skippedRows.has(cell.rowIndex - 1)) {
+    names.push('cw-grid-top')
+  }
   return names.join(' ')
 }
 
@@ -495,7 +566,7 @@ export function buildReportPrintHtml(
   if (model.rowCount === 0 || model.colCount === 0) return ''
 
   const printModel = ensureExportTableBorders(model)
-  const bounds = resolveExportTableBounds(printModel.cells)
+  const layout = resolveExportGridLayout(printModel.cells)
   const scale = options.scale && options.scale > 0 ? options.scale : 1
   const tdBase = `padding:3px ${CELL_PADDING_X}px;font-size:12px;white-space:nowrap;box-sizing:border-box;`
 
@@ -513,12 +584,12 @@ export function buildReportPrintHtml(
 
     const tds = list.map(cell => {
       const cellStyle = parseStyleKey(cell.styleKey)
-      const inGrid = Boolean(gridClassNames(cell, bounds))
+      const inGrid = Boolean(gridClassNames(cell, layout))
       let style = tdBase + styleToCssText(inGrid ? styleWithoutBorder(cellStyle) : cellStyle)
       // 与屏幕、Excel 一致：格子自带对齐（如居中的行次列）优先，未设对齐的数值才右对齐
       if (cell.isError) style += 'color:#c00;text-align:right;'
       else if (cell.numericValue !== null && !cellStyle.textAlign) style += 'text-align:right;'
-      const classAttr = inGrid ? ` class="${gridClassNames(cell, bounds)}"` : ''
+      const classAttr = inGrid ? ` class="${gridClassNames(cell, layout)}"` : ''
       const spanAttr =
         (cell.colSpan > 1 ? ` colspan="${cell.colSpan}"` : '') +
         (cell.rowSpan > 1 ? ` rowspan="${cell.rowSpan}"` : '')
@@ -554,7 +625,7 @@ export function buildReportPrintHtml(
           cell.colIndex
         )
         return (
-          `<td${classAttr}${spanAttr} style="${style}position:relative;">` +
+          `<td${classAttr}${spanAttr} style="${escapeAttr(style)}position:relative;">` +
           `<span style="position:absolute;left:${Math.round(offset)}px;top:50%;` +
           `transform:translate(-50%,-50%);white-space:nowrap;">${content}</span>` +
           `</td>`
@@ -570,13 +641,13 @@ export function buildReportPrintHtml(
             ? `white-space:normal;word-break:break-all;max-height:${Math.max(0, rowHeight - 6)}px;`
             : 'white-space:nowrap;'
         return (
-          `<td${classAttr}${spanAttr} style="${style}">` +
+          `<td${classAttr}${spanAttr} style="${escapeAttr(style)}">` +
           `<div style="overflow:hidden;${wrap}">${content}</div>` +
           `</td>`
         )
       }
       return (
-        `<td${classAttr}${spanAttr} style="${style}">` +
+        `<td${classAttr}${spanAttr} style="${escapeAttr(style)}">` +
         `<span style="display:inline-block;width:${spill}px;overflow:hidden;">${content}</span>` +
         `</td>`
       )

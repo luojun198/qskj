@@ -14,6 +14,7 @@
           <el-option label="本年累计" value="ytd" />
         </el-select>
         <el-button type="primary" size="small" @click="fetchData">查询</el-button>
+        <FilterClearButton size="small" @clear="handleClearFilters" />
         <el-button size="small" @click="exportData">导出 Excel</el-button>
         <el-button size="small" @click="printData">打印</el-button>
       </div>
@@ -302,6 +303,8 @@ import { useRoute } from 'vue-router'
 import request from '@/api/request'
 import printJS from 'print-js'
 import EmptyState from '@/components/EmptyState.vue'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
+import { useFilterClear } from '@/composables/useFilterClear'
 import AccountScopeAlert from '@/components/AccountScopeAlert.vue'
 import { showOperationError } from '@/composables/useMessage'
 import { formatAmount } from '@/utils/format'
@@ -317,6 +320,13 @@ const filters = ref({
   period: new Date().getMonth() + 1,
   scope: 'month' as 'month' | 'ytd',
 })
+const { clearFilters } = useFilterClear([filters])
+
+/** 清空筛选条件并恢复默认查询 */
+function handleClearFilters() {
+  clearFilters()
+  fetchData()
+}
 const years = Array.from({ length: new Date().getFullYear() - 2000 + 1 }, (_, i) => new Date().getFullYear() - i)
 
 const validationWarnings = computed(() => reportData.value?.validation?.warnings || [])

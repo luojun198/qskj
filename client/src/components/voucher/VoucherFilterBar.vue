@@ -13,6 +13,7 @@ import type { VoucherFilters } from '@/composables/useVoucherQuery'
 import { cloneVoucherFilters } from '@/composables/useVoucherQuery'
 import { useQueryScheme } from '@/composables/useQueryScheme'
 import { ACCOUNT_SELECT_POPPER_CLASS } from '@/utils/accountSelectDisplay'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
 
 interface Props {
   filters: VoucherFilters
@@ -61,6 +62,22 @@ const emit = defineEmits<{
 const showDateDialog = ref(false)
 const tempDateRange = ref<string[]>([])
 const filterExpanded = ref(false)
+function handleClearFilters() {
+  props.filters.keyword = ''
+  props.filters.status = ''
+  props.filters.dateRange = []
+  tempDateRange.value = ['', '']
+  props.filters.year = null
+  props.filters.period = null
+  props.filters.voucherTypeIds = []
+  props.filters.accountIds = []
+  props.filters.auxItems = {}
+  props.filters.auxFields = {}
+  if (props.filters.makerName !== undefined) props.filters.makerName = ''
+  if (props.filters.auditorName !== undefined) props.filters.auditorName = ''
+  if (props.filters.posterName !== undefined) props.filters.posterName = ''
+  emit('search')
+}
 
 // 查询方案管理
 const showSchemeDialog = ref(false)
@@ -448,6 +465,7 @@ function handleSetDefault(schemeId: string) {
             </el-dropdown>
           </template>
           <el-button type="primary" size="small" @click="emit('search')">查询</el-button>
+          <FilterClearButton size="small" @clear="handleClearFilters" />
           <slot name="actions" />
         </div>
       </div>
@@ -856,6 +874,7 @@ function handleSetDefault(schemeId: string) {
         </el-select>
       </template>
       <el-button type="primary" @click="emit('search')">查询</el-button>
+      <FilterClearButton @clear="handleClearFilters" />
       <div v-if="$slots.actions" class="voucher-filter-actions">
         <slot name="actions" />
       </div>

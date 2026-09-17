@@ -363,7 +363,8 @@ onUnmounted(() => {
 }
 
 .task-type {
-  font-size: 16px;
+  font-size: var(--cw-text-lg);
+  font-weight: 600;
   font-weight: bold;
 }
 

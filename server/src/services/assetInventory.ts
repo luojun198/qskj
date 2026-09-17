@@ -11,7 +11,8 @@ import {
   resolveAccounts,
   assertPeriodOpen,
 } from './assetVoucherBuilder.js'
-import type { VoucherEntryInput } from './voucherEntry.js'
+import { deleteVoucherRecords, type VoucherEntryInput } from './voucherEntry.js'
+import { assertVoucherEntriesInScopeById } from './accountAuthorization.js'
 
 // ── 创建盘点 ──────────────────────────────────────────────
 
@@ -203,6 +204,8 @@ export function completeInventory(params: {
   surplusAccount?: string
   deficitAccount?: string
   operatorName?: string
+  /** AS-P1-12：科目授权范围，生成凭证后校验，超权删凭证并告警 */
+  accountScope?: unknown
 }): { surplusCount: number; deficitCount: number; voucher?: any; voucherWarning?: string | null } {
   const { db, accountSetId, inventoryId, generateVoucher = false, accumAccount = '1602', surplusAccount = '6901', deficitAccount = '6901', operatorName = '系统' } = params
 
@@ -255,6 +258,18 @@ export function completeInventory(params: {
         db, accountSetId, inventoryId,
         accumAccount, surplusAccount, deficitAccount, operatorName,
       })
+      // AS-P1-12：科目授权——超权时删除凭证并告警（卡片处理保留）
+      const scopeErr = assertVoucherEntriesInScopeById(db, params.accountScope as any, voucherResult.voucherId, accountSetId)
+      if (scopeErr) {
+        deleteVoucherRecords(db, voucherResult.voucherId)
+        voucherResult = null
+        throw new Error(scopeErr)
+      }
+      // AS-P0-4：凭证回写到明细行（表已设计 voucher_id 列但此前从未写入），
+      // 完成后可从盘点记录反查凭证，也便于后续对账与撤销
+      db.prepare(
+        "UPDATE fixed_asset_inventory_item SET voucher_id=? WHERE inventory_id=? AND actual_status IN ('surplus','deficit')"
+      ).run(voucherResult.voucherId, inventoryId)
     } catch (e: any) {
       voucherWarning = e.message
     }
@@ -536,9 +551,16 @@ export function deleteInventory(params: {
   inventoryId: string
 }): void {
   const row = params.db.prepare(
-    'SELECT id FROM fixed_asset_inventory WHERE id=? AND account_set_id=?'
-  ).get(params.inventoryId, params.accountSetId)
+    'SELECT id, status FROM fixed_asset_inventory WHERE id=? AND account_set_id=?'
+  ).get(params.inventoryId, params.accountSetId) as any
   if (!row) throw new Error('盘点记录不存在')
+
+  // AS-P0-4：已完成盘点已写入卡片（盘亏置报废、盘盈调增原值）并可能生成凭证，
+  // 删除盘点记录后这些副作用既不回滚也无痕迹（凭证被 asset_ 守卫拦死）。
+  // 完成的盘点不允许删除；作废场景应提供显式的反向还原，不在本接口范围。
+  if (row.status === 'completed') {
+    throw new Error('该盘点已完成并已写入资产/凭证，不允许删除；如需作废请先撤销相关处理')
+  }
 
   params.db.transaction(() => {
     params.db.prepare('DELETE FROM fixed_asset_inventory_item WHERE inventory_id=?').run(params.inventoryId)

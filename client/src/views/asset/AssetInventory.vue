@@ -35,7 +35,7 @@
         <el-table-column label="创建时间" prop="created_at" :width="cw('created_at', 160)" />
         <el-table-column label="操作" column-key="操作" :width="cw('操作', 80)" align="center">
           <template #default="{ row }">
-            <el-button link type="danger" size="small" @click.stop="handleDeleteInventory(row)">删除</el-button>
+            <el-button v-permission="'asset:inventory'" link type="danger" size="small" @click.stop="handleDeleteInventory(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -52,10 +52,10 @@
           <el-tag :type="statusTag(currentInventory.status)" size="small">{{ statusLabel(currentInventory.status) }}</el-tag>
         </div>
         <div class="detail-actions" v-if="currentInventory.status !== 'completed'">
-          <el-button type="success" size="small" @click="batchMark('normal')">
+          <el-button v-permission="'asset:inventory'" type="success" size="small" @click="batchMark('normal')">
             <el-icon><Select /></el-icon>全部正常
           </el-button>
-          <el-button type="primary" size="small" :loading="completing" @click="handleComplete">
+          <el-button v-permission="'asset:inventory'" type="primary" size="small" :loading="completing" @click="handleComplete">
             <el-icon><Check /></el-icon>完成盘点
           </el-button>
         </div>

@@ -1,7 +1,8 @@
 import Database from 'better-sqlite3'
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { rewriteFormulaForRowCol, type RowColOperation } from '../services/reportFormulaRewrite.js'
+import type { RowColOperation } from '../services/reportFormulaRewrite.js'
+import { applyStandardReportRowCol, shiftSizeList } from '../services/standardReportRowCol.js'
 
 /**
  * 这里不起 Express，而是把 `POST /:id/rowcol` 与 `PUT /:id/cells` 的 SQL 语义
@@ -50,43 +51,15 @@ function addCell(
   ).run(id, rowIndex, colIndex, formula ? 'formula' : 'text', text, formula)
 }
 
-/** 复刻路由里的 rowcol 事务 */
+/** 直接调路由背后的服务，事务语义与线上完全一致 */
 function applyRowCol(db: Database.Database, action: string, index: number, count = 1) {
-  const isRow = action.endsWith('_row')
-  const axis = isRow ? 'row_index' : 'col_index'
   const operation: RowColOperation = {
     type: action.startsWith('insert') ? 'insert' : 'delete',
-    axis: isRow ? 'row' : 'col',
+    axis: action.endsWith('_row') ? 'row' : 'col',
     index,
     count,
   }
-
-  const formulaCells = db
-    .prepare(
-      `SELECT id, formula_text FROM rh_standard_report_cells
-       WHERE report_id = 'r1' AND formula_text IS NOT NULL AND length(formula_text) > 0`
-    )
-    .all() as Array<{ id: string; formula_text: string }>
-  const updateFormula = db.prepare(
-    'UPDATE rh_standard_report_cells SET formula_text = ? WHERE id = ?'
-  )
-  for (const cell of formulaCells) {
-    const next = rewriteFormulaForRowCol(cell.formula_text, operation)
-    if (next !== cell.formula_text) updateFormula.run(next, cell.id)
-  }
-
-  if (operation.type === 'insert') {
-    db.prepare(
-      `UPDATE rh_standard_report_cells SET ${axis} = ${axis} + ? WHERE report_id = 'r1' AND ${axis} >= ?`
-    ).run(count, index)
-  } else {
-    db.prepare(
-      `DELETE FROM rh_standard_report_cells WHERE report_id = 'r1' AND ${axis} >= ? AND ${axis} < ?`
-    ).run(index, index + count)
-    db.prepare(
-      `UPDATE rh_standard_report_cells SET ${axis} = ${axis} - ? WHERE report_id = 'r1' AND ${axis} >= ?`
-    ).run(count, index + count)
-  }
+  applyStandardReportRowCol(db, 'r1', operation)
 }
 
 describe('标准报表编辑接口语义', () => {
@@ -191,5 +164,52 @@ describe('标准报表编辑接口语义', () => {
       expect(merged.side).toBe('left')
       expect(merged.formula_text).toBe('=A1+1')
     })
+  })
+})
+
+describe('shiftSizeList：行高/列宽数组随插删行列平移', () => {
+  it('插入：在位置处补入同尺寸的项', () => {
+    expect(shiftSizeList('[10,20,30]', { type: 'insert', axis: 'row', index: 1, count: 2 })).toBe(
+      '[10,20,20,20,30]'
+    )
+  })
+
+  it('删除：去掉对应位置的项', () => {
+    expect(shiftSizeList('[10,20,30,40]', { type: 'delete', axis: 'row', index: 1, count: 2 })).toBe(
+      '[10,40]'
+    )
+  })
+
+  it('位置超出数组或数据缺失时不动', () => {
+    expect(shiftSizeList('[10,20]', { type: 'insert', axis: 'row', index: 5, count: 1 })).toBeUndefined()
+    expect(shiftSizeList(null, { type: 'delete', axis: 'row', index: 0, count: 1 })).toBeUndefined()
+    expect(shiftSizeList('oops', { type: 'delete', axis: 'row', index: 0, count: 1 })).toBeUndefined()
+  })
+})
+
+describe('applyStandardReportRowCol：中间插行不撞唯一约束', () => {
+  it('连续多行有内容时在中间插两行，坐标整体下移且不报数据重复', () => {
+    const db = createDb()
+    for (let row = 0; row < 6; row += 1) addCell(db, `c${row}`, row, 0, null, `r${row}`)
+    db.prepare(`UPDATE rh_standard_reports SET row_heights = '[10,11,12,13,14,15]' WHERE id = 'r1'`).run()
+
+    applyRowCol(db, 'insert_row', 2, 2)
+
+    const rows = db
+      .prepare(`SELECT row_index, text_value FROM rh_standard_report_cells ORDER BY row_index`)
+      .all() as Array<{ row_index: number; text_value: string }>
+    expect(rows.map(item => `${item.row_index}:${item.text_value}`)).toEqual([
+      '0:r0', '1:r1', '4:r2', '5:r3', '6:r4', '7:r5',
+    ])
+    const heights = db.prepare(`SELECT row_heights FROM rh_standard_reports WHERE id = 'r1'`).get() as {
+      row_heights: string
+    }
+    expect(heights.row_heights).toBe('[10,11,12,12,12,13,14,15]')
+
+    applyRowCol(db, 'delete_row', 2, 2)
+    const back = db.prepare(`SELECT row_index FROM rh_standard_report_cells ORDER BY row_index`).all() as Array<{
+      row_index: number
+    }>
+    expect(back.map(item => item.row_index)).toEqual([0, 1, 2, 3, 4, 5])
   })
 })

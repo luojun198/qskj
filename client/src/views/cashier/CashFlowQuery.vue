@@ -16,6 +16,7 @@
         <el-option v-for="c in currencies" :key="c" :label="c" :value="c" />
       </el-select>
       <el-button type="primary" @click="handleQuery"><el-icon><Search /></el-icon>查询</el-button>
+      <FilterClearButton @clear="handleClearFilters" />
       <el-button plain :disabled="!journalResult" @click="handleExport"><el-icon><Download /></el-icon>导出</el-button>
       <el-button plain :disabled="!journalResult" @click="handlePrint"><el-icon><Printer /></el-icon>打印</el-button>
     </div>
@@ -73,6 +74,8 @@ import { Search, Printer, Download, CircleCheck } from '@element-plus/icons-vue'
 import { cashierApi, type JournalResult } from '@/api/cashier'
 import { useFillHeightTable } from '@/composables/useFillHeightTable'
 import { useListColumnWidth } from '@/composables/useColumnWidthMemory'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
+import { useFilterClear } from '@/composables/useFilterClear'
 import { exportStyledTable, type ExportColumnDef } from '@/utils/exportStyledExcel'
 import { useRoute } from 'vue-router'
 
@@ -110,6 +113,16 @@ const rowClassName = ({ row }: any) => row._is_opening ? 'opening-row' : ''
 const now = new Date()
 const currencies = ref<string[]>(['RMB'])
 const filters = ref({ account_code: '', currency: 'RMB', start_date: `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-01`, end_date: '' })
+const { clearFilters } = useFilterClear([filters])
+
+/** 清空筛选条件并查询全部（保留科目，清空起止日期） */
+function handleClearFilters() {
+  const currentAccount = filters.value.account_code || accounts.value[0]?.code || ''
+  clearFilters()
+  filters.value.account_code = currentAccount
+  filters.value.currency = 'RMB'
+  handleQuery()
+}
 
 const fmt = (v: number) => v === 0 ? '0.00' : v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 

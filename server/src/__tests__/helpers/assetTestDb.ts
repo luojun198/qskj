@@ -264,6 +264,17 @@ export function createAssetTestDb(): Database.Database {
       created_by TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
     );
+    -- 反折旧会按该月录入工作量对称回退 workload_done（AS-P1-2）
+    CREATE TABLE fixed_asset_workload (
+      id TEXT PRIMARY KEY,
+      account_set_id TEXT NOT NULL,
+      asset_no TEXT NOT NULL,
+      year INTEGER NOT NULL,
+      month INTEGER NOT NULL,
+      workload REAL,
+      updated_at TEXT,
+      UNIQUE(account_set_id, asset_no, year, month)
+    );
     CREATE TABLE fixed_asset_attachments (
       id TEXT PRIMARY KEY,
       account_set_id TEXT NOT NULL,

@@ -46,6 +46,20 @@ export const ASSET_PARAM_DEFAULTS: Record<string, string> = {
   'asset:aux_person_category_code': 'person',
 }
 
+/**
+ * AS-P0-1：残值率统一为小数口径（0~1，如 0.05 表示 5%）。
+ * 历史上卡片页/类别字典按百分数（5 表示 5%）录入并原样写库，
+ * 而消费端（原值变动重算残值等）按小数乘——直接产生残值=原值×5 的坏数据。
+ * 所有写入入口统一经此归一：>1 视为百分数 ÷100；非法输入返回 null。
+ */
+export function normalizeSalvageRate(raw: unknown): number | null {
+  if (raw === undefined || raw === null || raw === '') return null
+  const n = Number(raw)
+  if (!Number.isFinite(n)) return null
+  if (n < 0) return null
+  return n > 1 ? Math.round((n / 100) * 1e6) / 1e6 : n
+}
+
 /** 读取单个资产参数；未配置时返回 ASSET_PARAM_DEFAULTS 中的默认值 */
 export function getAssetParam(db: Database, accountSetId: string, key: string): string | null {
   const row = db

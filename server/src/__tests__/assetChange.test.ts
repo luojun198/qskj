@@ -186,7 +186,8 @@ describe('固定资产变动引擎', () => {
       const row = db.prepare("SELECT * FROM fixed_asset_change WHERE asset_no='A1'").get() as any
       expect(row.change_kind).toBe('dept')
       expect(row.change_item).toBe('部门调拨：生产部 → 销售部')
-      expect(row.old_text).toBe('D1')
+      // AS-P1-13：old_text 存整组 JSON 快照（撤销时整组还原使用人/保管人/存放地点）
+      expect(JSON.parse(row.old_text)).toEqual({ dept_code: 'D1', user_name: null, keeper: null, install_place: null })
       expect(row.new_text).toBe('D2')
     })
 
@@ -198,6 +199,20 @@ describe('固定资产变动引擎', () => {
       const a = asset()
       expect(a.user_name).toBe('张三')
       expect(a.install_place).toBe('二号车间')
+    })
+
+    it('AS-P1-13：撤销调拨整组还原使用人/保管人/存放地点', () => {
+      const result = change({
+        kind: 'dept',
+        payload: { dept_code: 'D2', user_name: '张三', keeper: '李四', install_place: '二号车间' },
+      })
+      expect(asset().dept_code).toBe('D2')
+      revokeAssetChange({ db, accountSetId: SET_ID, changeId: result.changeId })
+      const a = asset()
+      expect(a.dept_code).toBe('D1')
+      expect(a.user_name).toBeNull()
+      expect(a.keeper).toBeNull()
+      expect(a.install_place).toBeNull()
     })
 
     it('调入部门与当前部门相同时拒绝', () => {

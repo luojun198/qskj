@@ -1338,8 +1338,8 @@ export function buildChronologicalQuery(filters: {
   accountScope?: AccountScopeContext
 }) {
   const hasDateRange = Boolean(filters.startDate || filters.endDate)
-  const y = Number(filters.year) || new Date().getFullYear()
-  const p = Number(filters.period) || new Date().getMonth() + 1
+  const hasYear = filters.year !== undefined && filters.year !== '' && filters.year !== null
+  const hasPeriod = filters.period !== undefined && filters.period !== '' && filters.period !== null
 
   // 构建凭证状态过滤条件
   const statusCondition = filters.includeUnposted
@@ -1350,8 +1350,17 @@ export function buildChronologicalQuery(filters: {
   const params: SqlParam[] = [filters.accountSetId]
 
   if (!hasDateRange) {
-    conditions.push('v.year = ?', 'v.period = ?')
-    params.push(y, p)
+    if (hasYear) {
+      conditions.push('v.year = ?')
+      params.push(Number(filters.year))
+      if (hasPeriod) {
+        conditions.push('v.period = ?')
+        params.push(Number(filters.period))
+      }
+    } else if (hasPeriod) {
+      conditions.push('v.period = ?')
+      params.push(Number(filters.period))
+    }
   }
 
   if (filters.startDate) {

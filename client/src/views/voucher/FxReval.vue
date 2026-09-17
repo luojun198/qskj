@@ -346,7 +346,7 @@ onMounted(loadPreview)
 
 .fx-hero h3 {
   margin: 0;
-  font-size: 17px;
+  font-size: var(--cw-text-lg);
   font-weight: 700;
   white-space: nowrap;
 }

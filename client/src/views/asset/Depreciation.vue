@@ -10,10 +10,11 @@
         :clearable="false"
         style="width: 140px"
       />
-      <el-button type="primary" :loading="previewing" @click="handlePreview">
+      <el-button v-permission="'asset:depr'" type="primary" :loading="previewing" @click="handlePreview">
         <el-icon><Search /></el-icon>预览折旧
       </el-button>
       <el-button
+        v-permission="'asset:depr'"
         type="success"
         :loading="executing"
         :disabled="!previewLines.length || !!priorUnvouchered"
@@ -21,8 +22,11 @@
       >
         <el-icon><Check /></el-icon>计提折旧
       </el-button>
-      <el-button plain @click="openWorkloadDialog">
+      <el-button v-permission="'asset:depr'" plain @click="openWorkloadDialog">
         <el-icon><Edit /></el-icon>工作量录入
+      </el-button>
+      <el-button v-permission="'asset:depr'" plain @click="router.push('/asset/depreciation/reverse')">
+        <el-icon><RefreshLeft /></el-icon>取消折旧
       </el-button>
       <el-checkbox v-model="generateVoucher">同时生成凭证</el-checkbox>
       <span class="header-acc-select">
@@ -143,6 +147,7 @@
               <template #default="{ row }">
                 <el-button
                   v-if="!row.voucherNo"
+                  v-permission="'asset:depr'"
                   link
                   type="primary"
                   size="small"
@@ -150,6 +155,7 @@
                   @click="handleGenerateVoucherForPeriod(row)"
                 >生成凭证</el-button>
                 <el-button
+                  v-permission="'asset:depr'"
                   link
                   type="danger"
                   size="small"
@@ -209,14 +215,16 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Search, Check, List, Edit } from '@element-plus/icons-vue'
+import { Search, Check, List, Edit, RefreshLeft } from '@element-plus/icons-vue'
 import { fixedAssetApi, type DeprLine, DEPR_METHODS } from '@/api/fixedAsset'
 import { useFillHeightTable } from '@/composables/useFillHeightTable'
 import AccountSelect from '@/components/base/AccountSelect.vue'
 import { useBaseDataStore } from '@/stores/baseData'
 import { confirmRenumberAfterDelete } from '@/composables/useRenumberPrompt'
 import { useColumnWidthMemory, useListColumnWidth } from '@/composables/useColumnWidthMemory'
+import { groupDeprHistoryByPeriod } from './deprHistory'
 
 const { tableRef, containerRef: tableContainerRef, tableHeight } = useFillHeightTable()
 // 折旧预览表（复用 useFillHeightTable 的 tableRef）+ 历史期间/历史明细表的列宽记忆
@@ -225,6 +233,8 @@ pvBind(tableRef)
 const { tableRef: hpTableRef, colWidth: hpCw, onDragEnd: hpDrag, widths: hpWidths } = useListColumnWidth('asset_depr_history_periods')
 const { tableRef: hrTableRef, colWidth: hrCw, onDragEnd: hrDrag, widths: hrWidths } = useListColumnWidth('asset_depr_history_rows')
 const baseData = useBaseDataStore()
+const route = useRoute()
+const router = useRouter()
 
 const now = new Date()
 const period = ref(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`)
@@ -287,6 +297,8 @@ async function checkPriorVoucher() {
 
 watch(period, () => {
   checkPriorVoucher()
+  // AS-P1-16：切期后预览数据已过期——不清空的话用户会在旧期间的合计金额下确认新期间的计提
+  previewLines.value = []
 })
 
 const executed = ref(false)
@@ -299,21 +311,8 @@ const historyPeriod = ref(`${now.getFullYear()}-${String(now.getMonth() + 1).pad
 const historyRows = ref<any[]>([])
 const periodActing = ref('')
 
-// 按 year-month 分组历史明细，供「补生成凭证 / 反折旧」操作
-const historyPeriods = computed(() => {
-  const map = new Map<string, { period: string; year: number; month: number; count: number; total: number; voucherNo: string | null }>()
-  for (const r of historyRows.value) {
-    const key = `${r.year}-${String(r.month).padStart(2, '0')}`
-    if (!map.has(key)) {
-      map.set(key, { period: key, year: r.year, month: r.month, count: 0, total: 0, voucherNo: r.voucher_no || null })
-    }
-    const g = map.get(key)!
-    g.count++
-    g.total += r.month_depr || 0
-    if (r.voucher_no) g.voucherNo = r.voucher_no
-  }
-  return [...map.values()].sort((a, b) => b.period.localeCompare(a.period))
-})
+// 按 year-month 分组历史明细，供「补生成凭证 / 反折旧」操作（与取消折旧页共用）
+const historyPeriods = computed(() => groupDeprHistoryByPeriod(historyRows.value))
 
 async function handleGenerateVoucherForPeriod(row: { period: string; year: number; month: number; total: number }) {
   await ElMessageBox.confirm(
@@ -394,7 +393,9 @@ async function handlePreview() {
 }
 
 async function handleExecute() {
-  if (!previewLines.value.length) return
+  if (!previewLines.value.length) {
+    return ElMessage.warning('预览为空：请先对当前期间执行「重新预览」后再计提')
+  }
   await ElMessageBox.confirm(
     `确认对 ${period.value} 计提折旧（共 ${previewLines.value.length} 条，合计 ¥${fmtAmt(previewTotal.value)}）？此操作不可撤销。`,
     '计提确认', { type: 'warning' }
@@ -488,6 +489,9 @@ onMounted(() => {
   baseData.loadAccounts()
   loadHistory()
   checkPriorVoucher()
+  // 工作台流程图入口：?tab=history 直达历史记录（补生成凭证）；?action=preview 进页即预览当前期间
+  if (route.query.tab === 'history') switchTab('history')
+  else if (route.query.action === 'preview') handlePreview()
 })
 </script>
 

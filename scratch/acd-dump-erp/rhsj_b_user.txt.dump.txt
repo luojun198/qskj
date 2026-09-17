@@ -1,0 +1,5 @@
+002	002	仓管一		0	0					
+001	MANAGER	MANAGER		0	0					
+003	003	生产一		0	0					
+004	004	往来管理		0	0					
+aaa	runsoft	runsoft	Q!W@E#	0						

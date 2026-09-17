@@ -205,14 +205,16 @@ describe('模块首页（星辰风）', () => {
   })
 
 
-  it('出纳管理：流程未覆盖的银行对账仍出现在其他功能', () => {
+  it('出纳管理：专用工作页面，主干为 单据录入→凭证生成→对账→结账，结账上方挂反结账并指向出纳结账页', () => {
     const wrapper = mountGroupNav('出纳管理')
-    expect(wrapper.find('.module-sections__heading').text()).toBe('其他功能')
-    const labels = bentoLabels(wrapper)
-    expect(labels).toContain('银行勾对')
-    expect(labels).toContain('出纳初始化')
-    expect(labels).not.toContain('出纳录单')
-    expect(labels).not.toContain('账户余额表')
+    expect(wrapper.find('.cashier-workspace').exists()).toBe(true)
+    expect(wrapper.find('.module-section').exists()).toBe(false)
+    const mainTitles = wrapper.findAll('.cashier-cell--main .gl-tile__title').map(n => n.text())
+    expect(mainTitles).toEqual(['单据录入', '凭证生成', '对账', '结账'])
+    const above = wrapper.find('.cashier-cell--above a')
+    expect(above.exists()).toBe(true)
+    expect(above.text()).toContain('反结账')
+    expect(above.attributes('href')).toBe('/cashier/period-close')
   })
 
   it('旧模块名地址仍能打开对应首页', () => {

@@ -302,6 +302,7 @@ function clearMasterDataForReinit(
   deleteIfExists(db, 'DELETE FROM cashier_journal WHERE account_set_id = ?', accountSetId)
   deleteIfExists(db, 'DELETE FROM cashier_init_balance WHERE account_set_id = ?', accountSetId)
   deleteIfExists(db, 'DELETE FROM bank_statement WHERE account_set_id = ?', accountSetId)
+  deleteIfExists(db, 'DELETE FROM cashier_period_closing WHERE account_set_id = ?', accountSetId)
   deleteIfExists(db, 'DELETE FROM settle_type WHERE account_set_id = ?', accountSetId)
   deleteIfExists(db, 'DELETE FROM fixed_asset_attachments WHERE account_set_id = ?', accountSetId)
   deleteIfExists(db, 'DELETE FROM fixed_asset_inventory_item WHERE account_set_id = ?', accountSetId)

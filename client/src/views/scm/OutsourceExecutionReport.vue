@@ -10,7 +10,7 @@
       <el-input v-model="filters.item_code" clearable placeholder="成品编码/名称" style="width:160px" />
       <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" start-placeholder="开始日期" end-placeholder="结束日期" style="width:240px" />
       <el-select v-model="filters.status" clearable placeholder="执行状态" style="width:130px"><el-option v-for="s in ['未入库','部分入库','已完成']" :key="s" :label="s" :value="s" /></el-select>
-      <el-button type="primary" :loading="loading" @click="query">查询</el-button><el-button type="success" plain :loading="exporting" @click="exportExcel">导出Excel</el-button>
+      <el-button type="primary" :loading="loading" @click="query">查询</el-button><FilterClearButton size="small" @clear="handleClearFilters" /><el-button type="success" plain :loading="exporting" @click="exportExcel">导出Excel</el-button>
     </div>
     <div class="cards"><div><span>委外计划数</span><b>{{ summary.plan_count || 0 }}</b></div><div><span>计划数量</span><b>{{ num(summary.plan_qty) }}</b></div><div><span>已入库</span><b>{{ num(summary.finished_qty) }}</b></div><div><span>未完成</span><b>{{ num(summary.remaining_qty) }}</b></div><div><span>含税加工费</span><b>{{ money(summary.fee_gross) }}</b></div><div><span>未付金额</span><b>{{ money(summary.outstanding_amount) }}</b></div></div>
     <div class="table-wrap"><el-table v-loading="loading" :data="rows" border stripe height="100%">
@@ -28,10 +28,14 @@
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'; import { useRouter } from 'vue-router'; import { scmApi } from '@/api/scm'; import { ArrowLeft } from '@element-plus/icons-vue'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'; import { useFilterClear } from '@/composables/useFilterClear'
 const router=useRouter(); const loading=ref(false),exporting=ref(false),rows=ref<any[]>([]),total=ref(0),page=ref(1),pageSize=ref(50); const suppliers=ref<any[]>([]); const summary=ref<Record<string,number>>({}); const dateRange=ref<[string,string]|[]>([]); const filters=ref({plan_code:'',supplier_code:'',item_code:'',status:''})
 const params=()=>({...filters.value,start_date:dateRange.value[0]||undefined,end_date:dateRange.value[1]||undefined,page:page.value,page_size:pageSize.value}); const num=(v:any)=>(Number(v)||0).toLocaleString('zh-CN',{maximumFractionDigits:6}); const money=(v:any)=>(Number(v)||0).toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2})
 async function load(){loading.value=true;try{const r=await scmApi.getOutsourceExecution(params());if(r.code===0){rows.value=r.data.rows;total.value=r.data.total;summary.value=r.data.summary}}finally{loading.value=false}} function query(){page.value=1;load()} function openPlan(row:any){router.push({name:'ScmProductionOrder',params:{id:row.plan_id}})}
 async function exportExcel(){exporting.value=true;try{const blob=await scmApi.exportOutsourceExecution(params());const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='委外执行及结存表.xlsx';a.click();URL.revokeObjectURL(url)}finally{exporting.value=false}}
+const { clearFilters } = useFilterClear([filters, dateRange])
+/** 清空筛选条件并恢复默认查询 */
+function handleClearFilters(){ clearFilters(); page.value = 1; load() }
 onMounted(async()=>{const r=await scmApi.getPartners({partner_type:'supplier'});suppliers.value=(r.data||[]).filter((p:any)=>p.is_outsource===1);load()})
 </script>
 <style scoped>.outsource-page{height:100%;display:flex;flex-direction:column;padding:12px 16px;gap:10px}.report-header{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--el-border-color-lighter);padding-bottom:8px}.report-header__left{display:flex;align-items:center;gap:8px}.report-header__note{font-size:12px;color:var(--el-text-color-secondary)}.toolbar{display:flex;gap:8px;flex-wrap:wrap}.cards{display:grid;grid-template-columns:repeat(6,minmax(130px,1fr));gap:8px}.cards>div{padding:10px 14px;border:1px solid var(--el-border-color-light);border-radius:8px}.cards span{display:block;font-size:12px;color:var(--el-text-color-secondary)}.cards b{font-size:18px}.table-wrap{flex:1;min-height:240px}.tip{font-size:12px;color:var(--el-text-color-secondary)}</style>
