@@ -10,6 +10,26 @@
  */
 import type Database from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
+import { assertCashierPeriodOpen, normalizeBizDate } from './cashierPeriodClosing.js'
+
+/**
+ * P1-1：收付款单写 / 删出纳日记账前必须过出纳结账闸。
+ * 此前审核 / 反审核直接 INSERT / DELETE cashier_journal，已结账月份的出纳余额被静默篡改。
+ */
+function assertCashierWritable(db: Database.Database, accountSetId: string, docDate: unknown): string {
+  let bizDate: string
+  try {
+    bizDate = normalizeBizDate(docDate)
+  } catch (e: any) {
+    throw new Error(`单据日期不合法：${e?.message || String(docDate)}`)
+  }
+  try {
+    assertCashierPeriodOpen(db, accountSetId, bizDate)
+  } catch (e: any) {
+    throw new Error(`${e?.message || '出纳已结账'}（收付款单不能在已结账月份审核 / 反审核）`)
+  }
+  return bizDate
+}
 
 /** 到期日：单据显式 due_date 优先；否则 doc_date + 账期天数（单据 credit_days 优先，其次往来单位 credit_days）。UTC 计算避免时区漂移。 */
 export function computeDueDate(doc: any, partner: any): string {
@@ -28,6 +48,7 @@ export function applyPayment(db: Database.Database, accountSetId: string, doc: a
   const partner = db.prepare('SELECT * FROM scm_partner WHERE account_set_id=? AND code=?').get(accountSetId, doc.partner_code) as any
   const cashCode = String(doc.settle_account || '')
   const currency = String(doc.currency || 'CNY')
+  const bizDate = assertCashierWritable(db, accountSetId, doc.doc_date)
   const settleType = ({ cash: '现金', transfer: '转账', credit: '挂账' } as Record<string, string>)[doc.payment_type] || doc.payment_type || null
   const paramKey = isReceive ? 'scm:acc_ar' : 'scm:acc_ap'
   const defaultArAp = isReceive ? '1122' : '2202'
@@ -52,7 +73,7 @@ export function applyPayment(db: Database.Database, accountSetId: string, doc: a
     // 出纳日记账
     const journalId = uuidv4()
     insCj.run(
-      journalId, accountSetId, cashCode, currency, doc.doc_date,
+      journalId, accountSetId, cashCode, currency, bizDate,
       l.remark || doc.remark || `${isReceive ? '收款' : '付款'}：${doc.doc_no} ${partner?.name || doc.partner_code}`,
       isReceive ? amount : 0, isReceive ? 0 : amount, settleType, arApCode, operator
     )
@@ -234,6 +255,12 @@ export function reversePayment(db: Database.Database, accountSetId: string, doc:
       unbump.run(v.amount, v.out_log_id)
       delVerify.run(v.id)
     }
+  }
+  // P1-1：删出纳流水前先过闸（按流水自身的 biz_date，兼容单据日期被改过的情况）
+  for (const r of logs) {
+    if (!r.cashier_journal_id) continue
+    const j = db.prepare('SELECT biz_date FROM cashier_journal WHERE id=?').get(r.cashier_journal_id) as any
+    if (j) assertCashierWritable(db, accountSetId, j.biz_date)
   }
   for (const r of logs) {
     if (r.cashier_journal_id) db.prepare('DELETE FROM cashier_journal WHERE id=?').run(r.cashier_journal_id)

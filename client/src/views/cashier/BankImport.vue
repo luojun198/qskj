@@ -204,7 +204,12 @@ async function handleImport() {
       header_row: headerRow.value,
     })
     if (res.code === 0) {
-      ElMessage.success(`导入成功，共 ${res.data.inserted} 条记录`)
+      const errors = res.data.errors || []
+      if (errors.length) {
+        ElMessage.warning(`导入 ${res.data.inserted} 条，跳过 ${errors.length} 条：第 ${errors[0].row} 行 ${errors[0].message}${errors.length > 1 ? ' …' : ''}`)
+      } else {
+        ElMessage.success(`导入成功，共 ${res.data.inserted} 条记录`)
+      }
       step.value = 0
     }
   } catch { ElMessage.error('导入失败') }

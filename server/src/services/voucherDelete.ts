@@ -8,6 +8,12 @@ import { getSourceImmutableReason, getVoucherImmutableReason } from './voucherMu
  * 筛选模式批量删除直接跳过，导致出纳/固定资产单据 voucher_id 悬空、红字凭证删除后原凭证永远无法再冲红。
  */
 
+function hasColumn(db: Database, table: string, column: string): boolean {
+  const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)
+  if (!exists) return false
+  return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some(c => c.name === column)
+}
+
 export interface DeletableVoucherLike {
   id: string
   voucher_no?: string | number | null
@@ -52,6 +58,13 @@ export function deleteVoucherWithRefs(db: Database, accountSetId: string, vouche
     )
     // 供应链单据回写清理：否则单据既不能重新生成凭证、也无法反审核（死锁）
     db.prepare('UPDATE scm_doc SET voucher_id=NULL WHERE account_set_id=? AND voucher_id=?').run(accountSetId, voucher.id)
+    // 出纳日记账关联清理（迁移 127 voucher_id 列；老库无该列时跳过）：凭证没了，日记账应回到"未生成凭证"
+    if (hasColumn(db, 'cashier_journal', 'voucher_id')) {
+      db.prepare(
+        `UPDATE cashier_journal SET voucher_year=NULL, voucher_month=NULL, voucher_type=NULL, voucher_no=NULL, voucher_id=NULL
+          WHERE account_set_id=? AND voucher_id=?`
+      ).run(accountSetId, voucher.id)
+    }
   })
   run()
 }

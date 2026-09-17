@@ -423,6 +423,10 @@ import {
   up as faSalvageRateGuardUp,
   down as faSalvageRateGuardDown,
 } from './migrations/20260917_fa_salvage_rate_guard.js'
+import {
+  up as cashierJournalLinksUp,
+  down as cashierJournalLinksDown,
+} from './migrations/20260917_cashier_journal_links.js'
 
 /**
  * 迁移示例：添加新字段
@@ -2102,5 +2106,11 @@ export const migrations: Migration[] = [
     name: 'fa_salvage_rate_guard',
     up: faSalvageRateGuardUp,
     down: faSalvageRateGuardDown,
+  },
+  {
+    version: 127,
+    name: 'cashier_journal_links',
+    up: cashierJournalLinksUp,
+    down: cashierJournalLinksDown,
   },
 ]

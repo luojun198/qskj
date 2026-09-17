@@ -49,7 +49,7 @@ function createDb(): Database.Database {
       settle_type TEXT, bill_no TEXT, counter_unit TEXT, counter_account TEXT,
       bank_name TEXT, bank_account TEXT, unit_code TEXT, reconciled INTEGER DEFAULT 0,
       match_batch TEXT, voucher_year INTEGER, voucher_month INTEGER, voucher_type TEXT, voucher_no TEXT,
-      counter_aux_item_id TEXT, created_by TEXT,
+      counter_aux_item_id TEXT, created_by TEXT, bank_statement_id TEXT, voucher_id TEXT,
       created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
     );
     CREATE TABLE bank_statement (

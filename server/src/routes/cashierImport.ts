@@ -10,6 +10,7 @@ import { v4 as uuidv4 } from 'uuid'
 import multer from 'multer'
 import { getDb } from '../db/index.js'
 import { authMiddleware, AuthRequest } from '../middleware/index.js'
+import { assertCashierPeriodOpen, normalizeBizDate } from '../services/cashierPeriodClosing.js'
 
 const router = Router()
 router.use(authMiddleware)
@@ -66,6 +67,7 @@ router.post('/cashier/bank-statement/import/confirm', (req: AuthRequest, res) =>
   }
 
   let inserted = 0
+  const errors: Array<{ row: number; message: string }> = []
   const insert = db.prepare(`
     INSERT INTO bank_statement (id, account_set_id, account_code, biz_date, debit, credit, settle_type, bill_no, source)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'import')
@@ -86,7 +88,15 @@ router.post('/cashier/bank-statement/import/confirm', (req: AuthRequest, res) =>
       const date = typeof colMap[Object.keys(colMap).find(k => colMap[Number(k)] === 'biz_date') as any] !== 'undefined'
         ? row[Number(Object.keys(colMap).find(k => colMap[Number(k)] === 'biz_date'))] : ''
       if (!date) continue
-      const dateStr = normalizeExcelDate(date)
+      // P1-6 / P1-7：日期严格规范化（含 Excel 序列号）+ 出纳已结账月份拒绝写入
+      let dateStr: string
+      try {
+        dateStr = normalizeBizDate(date)
+        assertCashierPeriodOpen(db, asid, dateStr)
+      } catch (e: any) {
+        errors.push({ row: i + 1, message: e.message })
+        continue
+      }
 
       insert.run(
         uuidv4(), asid, account_code, dateStr,
@@ -101,7 +111,7 @@ router.post('/cashier/bank-statement/import/confirm', (req: AuthRequest, res) =>
   txn()
 
   previewCache.delete(preview_id)
-  res.json({ code: 0, data: { inserted } })
+  res.json({ code: 0, data: { inserted, errors } })
 })
 
 /** 获取已保存的列映射配置 */
@@ -132,16 +142,6 @@ function rowCol(row: any[], colMap: Record<number, string>, field: string): stri
   const idx = Number(Object.keys(colMap).find(k => colMap[Number(k)] === field))
   if (isNaN(idx) || idx < 0) return ''
   return String(row[idx] ?? '').trim()
-}
-
-/** Excel 日期序列号 → YYYY-MM-DD */
-function normalizeExcelDate(v: any): string {
-  if (typeof v === 'number' && v > 30000 && v < 80000) {
-    const d = new Date((v - 25569) * 86400 * 1000)
-    return d.toISOString().slice(0, 10)
-  }
-  const s = String(v).trim()
-  return s.replace(/[./]/g, '-')
 }
 
 export default router

@@ -173,7 +173,7 @@ export const cashierApi = {
     )
   },
   confirmImport: (data: { preview_id: string; account_code: string; mapping: Record<string, number>; skip_rows?: number; header_row?: number }) =>
-    request.post<{ inserted: number }>('/cashier/bank-statement/import/confirm', data),
+    request.post<{ inserted: number; errors?: Array<{ row: number; message: string }> }>('/cashier/bank-statement/import/confirm', data),
   getImportProfiles: () =>
     request.get<Record<string, any>>('/cashier/bank-statement/import/profiles'),
 

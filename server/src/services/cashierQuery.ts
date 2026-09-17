@@ -6,7 +6,8 @@ import { v4 as uuidv4 } from 'uuid'
 import { buildVoucherNo } from './voucherEntry.js'
 import { appendAccountScopeCondition, type AccountScopeContext } from './accountAuthorization.js'
 import { assertGlPeriodOpen } from './voucherMutationGuard.js'
-import { parseBizDate } from './cashierPeriodClosing.js'
+import { assertCashierPeriodOpen, isCashierPeriodClosed, parseBizDate } from './cashierPeriodClosing.js'
+import { deleteVoucherWithRefs } from './voucherDelete.js'
 
 export interface CashierAccount {
   code: string
@@ -314,7 +315,9 @@ export function autoReconcile(params: {
     .all(...sp) as Array<{ id: string; biz_date: string; debit: number; credit: number; bill_no: string | null }>
 
   const batch = Date.now() % 2147483647
-  const markJ = db.prepare('UPDATE cashier_journal SET reconciled = 1, match_batch = ? WHERE id = ?')
+  // P1-5：每对分配唯一批次号（batch_序号）并写 bank_statement_id，撤销时精确反写单条；
+  // 此前全批共用一个 match_batch，撤销任意一条会把同批 50 条对账单全部置回未匹配
+  const markJ = db.prepare('UPDATE cashier_journal SET reconciled = 1, match_batch = ?, bank_statement_id = ? WHERE id = ?')
   const markS = db.prepare('UPDATE bank_statement SET matched = 1, match_batch = ? WHERE id = ?')
 
   const amountMatch = (j: typeof journal[0], st: typeof statements[0]) =>
@@ -322,41 +325,49 @@ export function autoReconcile(params: {
     Math.abs(j.debit - st.debit) < 0.005 &&
     Math.abs(j.credit - st.credit) < 0.005
 
+  // P1-6：出纳已结账月份的日记账 / 对账单不参与勾对（勾对会改写已结账月的 reconciled）
+  const closedCache = new Map<string, boolean>()
+  const inClosedMonth = (bizDate: string) => {
+    const ym = parseBizDate(bizDate)
+    if (!ym) return true
+    const key = `${ym.year}-${ym.month}`
+    if (!closedCache.has(key)) closedCache.set(key, isCashierPeriodClosed(db, accountSetId, ym.year, ym.month))
+    return closedCache.get(key)!
+  }
+  const openJournal = journal.filter(j => !inClosedMonth(j.biz_date))
+  const openStatements = statements.filter(s => !inClosedMonth(s.biz_date))
+
   let matched = 0
   const usedJournal = new Set<string>()
   const usedStatement = new Set<string>()
+  const pair = (j: typeof journal[0], st: typeof statements[0]) => {
+    usedJournal.add(j.id)
+    usedStatement.add(st.id)
+    matched++
+    const pairBatch = `${batch}_${matched}`
+    markJ.run(pairBatch, st.id, j.id)
+    markS.run(pairBatch, st.id)
+  }
 
   const tx = db.transaction(() => {
     // 第一遍（仅 useBillNo=true）：票据号 + 日期 + 金额 三者均匹配
     if (params.useBillNo) {
-      for (const st of statements) {
+      for (const st of openStatements) {
         if (!st.bill_no || usedStatement.has(st.id)) continue
-        const hit = journal.find(
+        const hit = openJournal.find(
           j =>
             !usedJournal.has(j.id) &&
             j.bill_no === st.bill_no &&
             amountMatch(j, st)
         )
-        if (hit) {
-          usedJournal.add(hit.id)
-          usedStatement.add(st.id)
-          markJ.run(String(batch), hit.id)
-          markS.run(batch, st.id)
-          matched++
-        }
+        if (hit) pair(hit, st)
       }
     }
     // 第二遍：日期 + 金额（跳过已匹配记录）
-    for (const st of statements) {
+    for (const st of openStatements) {
       if (usedStatement.has(st.id)) continue
-      const hit = journal.find(j => !usedJournal.has(j.id) && amountMatch(j, st))
-      if (hit) {
-        usedJournal.add(hit.id)
-        usedStatement.add(st.id)
-        markJ.run(String(batch), hit.id)
-        markS.run(batch, st.id)
-        matched++
-      }
+      const hit = openJournal.find(j => !usedJournal.has(j.id) && amountMatch(j, st))
+      if (hit) pair(hit, st)
     }
   })
   tx()
@@ -375,17 +386,25 @@ export function manualReconcile(params: {
 }): { ok: true } | { error: string } {
   const { db, accountSetId, journalId, bankStatementId } = params
 
-  const j = db.prepare('SELECT id, reconciled FROM cashier_journal WHERE id=? AND account_set_id=?').get(journalId, accountSetId) as any
+  const j = db.prepare('SELECT id, reconciled, biz_date FROM cashier_journal WHERE id=? AND account_set_id=?').get(journalId, accountSetId) as any
   if (!j) return { error: '日记账记录不存在' }
   if (j.reconciled) return { error: '该日记账记录已对账' }
 
-  const st = db.prepare('SELECT id, matched FROM bank_statement WHERE id=? AND account_set_id=?').get(bankStatementId, accountSetId) as any
+  const st = db.prepare('SELECT id, matched, biz_date FROM bank_statement WHERE id=? AND account_set_id=?').get(bankStatementId, accountSetId) as any
   if (!st) return { error: '银行对账单记录不存在' }
   if (st.matched) return { error: '该银行对账单记录已对账' }
 
+  // P1-6：出纳已结账月份不允许勾对
+  try {
+    assertCashierPeriodOpen(db, accountSetId, j.biz_date)
+    assertCashierPeriodOpen(db, accountSetId, st.biz_date)
+  } catch (e: any) {
+    return { error: e.message }
+  }
+
   const batch = String(Date.now() % 2147483647) + '_m'
   const tx = db.transaction(() => {
-    db.prepare('UPDATE cashier_journal SET reconciled=1, match_batch=? WHERE id=?').run(batch, journalId)
+    db.prepare('UPDATE cashier_journal SET reconciled=1, match_batch=?, bank_statement_id=? WHERE id=?').run(batch, bankStatementId, journalId)
     db.prepare('UPDATE bank_statement SET matched=1, match_batch=? WHERE id=?').run(batch, bankStatementId)
   })
   tx()
@@ -402,15 +421,28 @@ export function cancelReconcile(params: {
 }): { ok: true } | { error: string } {
   const { db, accountSetId, journalId } = params
 
-  const j = db.prepare('SELECT id, reconciled, match_batch FROM cashier_journal WHERE id=? AND account_set_id=?').get(journalId, accountSetId) as any
+  const j = db.prepare('SELECT id, reconciled, match_batch, bank_statement_id, biz_date FROM cashier_journal WHERE id=? AND account_set_id=?').get(journalId, accountSetId) as any
   if (!j) return { error: '日记账记录不存在' }
   if (!j.reconciled) return { error: '该日记账记录未处于对账状态' }
 
+  // P1-6：出纳已结账月份不允许撤销勾对
+  try {
+    assertCashierPeriodOpen(db, accountSetId, j.biz_date)
+  } catch (e: any) {
+    return { error: e.message }
+  }
+
   const tx = db.transaction(() => {
-    db.prepare('UPDATE cashier_journal SET reconciled=0, match_batch=NULL WHERE id=?').run(journalId)
-    if (j.match_batch) {
-      // 通过 match_batch 精确撤销对应的银行对账单
-      db.prepare('UPDATE bank_statement SET matched=0, match_batch=NULL WHERE match_batch=? AND account_set_id=?').run(j.match_batch, accountSetId)
+    db.prepare('UPDATE cashier_journal SET reconciled=0, match_batch=NULL, bank_statement_id=NULL WHERE id=?').run(journalId)
+    if (j.bank_statement_id) {
+      // P1-5：按 bank_statement_id 精确反写单条
+      db.prepare('UPDATE bank_statement SET matched=0, match_batch=NULL WHERE id=? AND account_set_id=?').run(j.bank_statement_id, accountSetId)
+    } else if (j.match_batch) {
+      // 迁移 127 之前的存量：只有在该批次仅剩一条对账单时才按批次反写，避免连带清整批
+      const cnt = (db.prepare('SELECT COUNT(*) c FROM bank_statement WHERE match_batch=? AND account_set_id=?').get(j.match_batch, accountSetId) as any)?.c ?? 0
+      if (cnt === 1) {
+        db.prepare('UPDATE bank_statement SET matched=0, match_batch=NULL WHERE match_batch=? AND account_set_id=?').run(j.match_batch, accountSetId)
+      }
     }
   })
   tx()
@@ -628,7 +660,7 @@ export function generateCashierVoucher(params: {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
   const updJournal = db.prepare(`
-    UPDATE cashier_journal SET voucher_year=?, voucher_month=?, voucher_type=?, voucher_no=?, updated_at=datetime('now') WHERE id=?
+    UPDATE cashier_journal SET voucher_year=?, voucher_month=?, voucher_type=?, voucher_no=?, voucher_id=?, updated_at=datetime('now') WHERE id=?
   `)
 
   // 加载辅助类别映射（用于 ID 转 Code 及分配列）
@@ -713,7 +745,7 @@ export function generateCashierVoucher(params: {
         runEntry(2, cashAcc.id, accountCode, cashAcc.name, 'credit', false)
       }
 
-      updJournal.run(year, month, voucherTypeId, voucherNo, r.id)
+      updJournal.run(year, month, voucherTypeId, voucherNo, voucherId, r.id)
       voucherNos.push(voucherNo)
     }
   })
@@ -857,9 +889,11 @@ export function syncCashierFromVoucher(params: {
   voucherMonth: number
   voucherType: number | string | null
   voucherNo: string
+  /** 凭证 id（迁移 127 后作为真正的关联键写入 cashier_journal.voucher_id） */
+  voucherId?: string | null
   entries: Array<{ account_code: string; direction: 'debit' | 'credit'; amount: number; summary?: string }>
 }): { synced: number } {
-  const { db, accountSetId, voucherDate, voucherYear, voucherMonth, voucherType, voucherNo, entries } = params
+  const { db, accountSetId, voucherDate, voucherYear, voucherMonth, voucherType, voucherNo, voucherId = null, entries } = params
 
   // 检查是否启用自动同步（默认不启用，按账套独立配置）
   const cfg = db.prepare(
@@ -872,23 +906,38 @@ export function syncCashierFromVoucher(params: {
     'SELECT code FROM accounts WHERE account_set_id=? AND (is_cash=1 OR is_bank=1)'
   ).all(accountSetId) as Array<{ code: string }>
   const codeSet = new Set(cashBankCodes.map(a => a.code))
+  const hasCashEntry = entries.some(e => codeSet.has(e.account_code))
+  if (!hasCashEntry) return { synced: 0 }
+
+  // P1-6：目标月份出纳已结账则拒绝写入（总账侧守卫已先拦，这里兜底）
+  assertCashierPeriodOpen(db, accountSetId, voucherDate)
 
   // 查重用空值安全的 IS 比较：CW 凭证类型为 UUID，vt 恒为 null，
   // 若用 `voucher_type=?`（NULL 比较永不成立）会导致每次编辑凭证都重复插入日记账（FIX：见修复日志）。
+  // P2-6：查重键不再含 biz_date——仅改凭证日期时此前会新插一行、原行留存，出纳余额翻倍；
+  // 优先按 voucher_id 定位（迁移 127），无 voucher_id 的存量行回退到 年/期/类型/号。
+  const findByVoucherId = db.prepare(`
+    SELECT id, biz_date FROM cashier_journal
+    WHERE account_set_id=? AND account_code=? AND voucher_id=?
+    LIMIT 1
+  `)
   const find = db.prepare(`
-    SELECT id FROM cashier_journal
-    WHERE account_set_id=? AND account_code=? AND biz_date=?
+    SELECT id, biz_date FROM cashier_journal
+    WHERE account_set_id=? AND account_code=?
       AND voucher_year=? AND voucher_month=? AND voucher_type IS ? AND voucher_no=?
     LIMIT 1
   `)
   const insert = db.prepare(`
     INSERT INTO cashier_journal
       (id, account_set_id, account_code, currency, biz_date, seq, summary, debit, credit,
-       counter_account, voucher_year, voucher_month, voucher_type, voucher_no, created_by)
-    VALUES (?, ?, ?, 'RMB', ?, 0, ?, ?, ?, NULL, ?, ?, ?, ?, '凭证同步')
+       counter_account, voucher_year, voucher_month, voucher_type, voucher_no, voucher_id, created_by)
+    VALUES (?, ?, ?, 'RMB', ?, 0, ?, ?, ?, NULL, ?, ?, ?, ?, ?, '凭证同步')
   `)
   const update = db.prepare(`
-    UPDATE cashier_journal SET debit=?, credit=?, summary=?, updated_at=datetime('now') WHERE id=?
+    UPDATE cashier_journal
+       SET debit=?, credit=?, summary=?, biz_date=?, voucher_year=?, voucher_month=?, voucher_id=COALESCE(?, voucher_id),
+           updated_at=datetime('now')
+     WHERE id=?
   `)
 
   let synced = 0
@@ -901,13 +950,16 @@ export function syncCashierFromVoucher(params: {
     const credit = entry.direction === 'credit' ? entry.amount : 0
     const summary = entry.summary || '凭证'
 
-    const existing = find.get(accountSetId, entry.account_code, voucherDate,
-      voucherYear, voucherMonth, vt, voucherNo) as any
+    const existing =
+      (voucherId ? (findByVoucherId.get(accountSetId, entry.account_code, voucherId) as any) : null) ||
+      (find.get(accountSetId, entry.account_code, voucherYear, voucherMonth, vt, voucherNo) as any)
     if (existing) {
-      update.run(debit, credit, summary, existing.id)
+      // 原行所在月份已结账同样拒绝改写
+      if (existing.biz_date !== voucherDate) assertCashierPeriodOpen(db, accountSetId, existing.biz_date)
+      update.run(debit, credit, summary, voucherDate, voucherYear, voucherMonth, voucherId, existing.id)
     } else {
       insert.run(uuidv4(), accountSetId, entry.account_code, voucherDate, summary, debit, credit,
-        voucherYear, voucherMonth, vt, voucherNo)
+        voucherYear, voucherMonth, vt, voucherNo, voucherId)
     }
     synced++
   }
@@ -942,26 +994,37 @@ export function syncCashierCounterFromVoucher(params: {
   newMonth: number
   newVoucherType: number | string | null
   newVoucherNo: string
+  /** 凭证 id：迁移 127 后优先按 voucher_id 定位 */
+  voucherId?: string | null
 }): { updated: number } {
   const {
     db, accountSetId,
     oldYear, oldMonth, oldVoucherType, oldVoucherNo,
     entries,
     newYear, newMonth, newVoucherType, newVoucherNo,
+    voucherId = null,
   } = params
 
-  // 1. 用编辑前标识定位日记账关联行（voucher_type/voucher_no 列声明为 INTEGER 但实存 UUID/字符串，CAST 成文本比较）
-  const journalRow = db.prepare(`
-    SELECT id, account_code FROM cashier_journal
-    WHERE account_set_id=? AND voucher_year=? AND voucher_month=?
-      AND CAST(voucher_type AS TEXT)=? AND CAST(voucher_no AS TEXT)=?
-    LIMIT 1
-  `).get(
-    accountSetId, oldYear, oldMonth,
-    oldVoucherType == null ? '' : String(oldVoucherType),
-    oldVoucherNo == null ? '' : String(oldVoucherNo),
-  ) as any
+  // 1. 优先按 voucher_id 定位；存量行回退到编辑前标识
+  //   （voucher_type/voucher_no 列声明为 INTEGER 但实存 UUID/字符串，CAST 成文本比较）
+  const journalRow =
+    (voucherId
+      ? (db.prepare('SELECT id, account_code, biz_date FROM cashier_journal WHERE account_set_id=? AND voucher_id=? LIMIT 1').get(accountSetId, voucherId) as any)
+      : null) ||
+    (db.prepare(`
+      SELECT id, account_code, biz_date FROM cashier_journal
+      WHERE account_set_id=? AND voucher_year=? AND voucher_month=?
+        AND CAST(voucher_type AS TEXT)=? AND CAST(voucher_no AS TEXT)=?
+      LIMIT 1
+    `).get(
+      accountSetId, oldYear, oldMonth,
+      oldVoucherType == null ? '' : String(oldVoucherType),
+      oldVoucherNo == null ? '' : String(oldVoucherNo),
+    ) as any)
   if (!journalRow) return { updated: 0 }
+
+  // P1-6：已结账月份的日记账行不回写
+  assertCashierPeriodOpen(db, accountSetId, journalRow.biz_date)
 
   // 2. 对方分录 = account_code ≠ 现金科目；必须恰好一条，否则歧义跳过
   const counters = entries.filter(e => String(e.account_code) !== String(journalRow.account_code))
@@ -971,12 +1034,14 @@ export function syncCashierCounterFromVoucher(params: {
   // 3. 回写 counter_account，并刷新链接字段（号/日期若没改即原值）
   db.prepare(`
     UPDATE cashier_journal
-    SET counter_account=?, voucher_year=?, voucher_month=?, voucher_type=?, voucher_no=?, updated_at=datetime('now')
+    SET counter_account=?, voucher_year=?, voucher_month=?, voucher_type=?, voucher_no=?,
+        voucher_id=COALESCE(?, voucher_id), updated_at=datetime('now')
     WHERE id=?
   `).run(
     newCounterCode, newYear, newMonth,
     newVoucherType == null ? null : String(newVoucherType),
     newVoucherNo == null ? null : String(newVoucherNo),
+    voucherId,
     journalRow.id,
   )
 

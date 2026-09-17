@@ -805,6 +805,7 @@ router.post(
               voucherMonth: period,
               voucherType: effectiveTypeId,
               voucherNo,
+              voucherId,
               entries: cashEntries,
             })
           } catch (syncErr) {
@@ -1540,6 +1541,7 @@ router.put(
           voucherMonth: updatedVoucher.period,
           voucherType: updatedVoucher.voucher_type_id,
           voucherNo: updatedVoucher.voucher_no,
+          voucherId: id,
           entries: cashEntries,
         })
 
@@ -1548,6 +1550,7 @@ router.put(
           syncCashierCounterFromVoucher({
             db,
             accountSetId: req.accountSetId || '',
+            voucherId: id,
             // 编辑前标识（定位日记账行）
             oldYear: voucher.year,
             oldMonth: voucher.period,

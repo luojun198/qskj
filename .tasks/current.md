@@ -7,7 +7,7 @@
 - [ ] 三模块综合评审（2026-09-17）P0/P1 修复（计划：`~/.claude/plans/silly-sparking-petal.md`，批次 A~E）
   - [x] 批次 A 期间闸收口（FIX-183 ~ FIX-187）：`voucherMutationGuard.ts` 统一守卫接入 12 处入口；`assertGlPeriodOpen` 接入出纳生成凭证 / 日记账写入 / SCM 生成凭证；出纳闸 fail-closed + `normalizeBizDate`；结账年月整数 / 未来月校验 + 权限规则收紧。服务端 171 文件 1644 用例全绿、tsc 0
   - [x] 批次 B 固定资产数据完整性（FIX-188 ~ FIX-190）：残值率四入口归一 + 迁移 126 触发器兜底；盘点完成前一致性校验、部分盘亏按比例核销、损毁并入盘亏；原值减少下限。服务端 172 文件 1653 用例全绿、tsc / vue-tsc 0；迁移 126 已应用
-  - [ ] 批次 C 出纳完整性（P1-1、P1-4、P1-5、P1-6、P2-5、P2-6、P2-10；迁移 126 `bank_statement_id` / `voucher_id`）
+  - [x] 批次 C 出纳完整性（FIX-191 ~ FIX-193）：出纳闸补齐 8 类入口 + SCM 收付款接闸；已勾对行保护；勾对每对独立批次 + `bank_statement_id`；迁移 127 加 `bank_statement_id` / `voucher_id` 并回填；删除统一走 `deleteVoucherWithRefs`；同步查重去 `biz_date`；金额校验前移。服务端 173 文件 1659 用例全绿、tsc / vue-tsc 0；迁移 127 已应用
   - [ ] 批次 D 口径 / 权限 / 关联（P1-2、P1-3、P1-10、P1-11、P2-12、P2-13）
   - [ ] 批次 E 业务规则（P1-18 自动顺延、P1-19 变动表取 `fixed_asset_change`、P1-20 禁填未来、出纳有未生成凭证流水禁止结账）
 
