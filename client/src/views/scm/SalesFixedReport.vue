@@ -205,8 +205,12 @@ function applyRouteDrilldown() {
 function resetFilters() {
   const d = meta.value?.defaults
   const defaults = d as any
-  dateRange.value = []
+  // P2-13：默认期间从 meta.defaults 回填（趋势表用 trend_dates），否则页面打开即提示「请选择业务日期」
+  const dd = props.reportCode === 'trend' && defaults?.trend_dates ? defaults.trend_dates : defaults
+  dateRange.value = dd?.start_date && dd?.end_date ? [String(dd.start_date), String(dd.end_date)] : []
   expectDateRange.value = []
+  // 清空筛选的同时清空上一次结果，避免「清空」后仍显示旧数据
+  result.value = { ...result.value, rows: [], summary: {}, total: 0 }
   filters.value = {
     currency: d?.currency || 'CNY', partner_codes: [], item_codes: [], category_codes: [], warehouse_codes: [],
     batch_nos: [], biz_persons: [], dept_codes: [], source_types: [], empty_fields: [],

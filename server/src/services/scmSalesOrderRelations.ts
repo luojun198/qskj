@@ -146,15 +146,17 @@ function queryDocNodes(db: Database.Database, aid: string, ids: string[]): Map<s
     const pushedByLine = new Map<string, number>()
     if (allLineIds.length) {
       for (const linePart of chunks(allLineIds)) {
+        // P2-12：口径与 computeSourceLineUsedQty 对齐——排除作废单据并限定账套
         const downRows = db.prepare(`
-          SELECT source_line_id AS lid, COALESCE(SUM(qty), 0) AS q FROM scm_doc_line
-          WHERE source_line_id IN (${ph(linePart)}) GROUP BY source_line_id
-        `).all(...linePart) as any[]
+          SELECT l.source_line_id AS lid, COALESCE(SUM(l.qty), 0) AS q
+          FROM scm_doc_line l JOIN scm_doc d ON d.id=l.doc_id
+          WHERE d.account_set_id=? AND d.status<>'voided' AND l.source_line_id IN (${ph(linePart)}) GROUP BY l.source_line_id
+        `).all(aid, ...linePart) as any[]
         for (const r of downRows) pushedByLine.set(r.lid, (pushedByLine.get(r.lid) || 0) + numberValue(r.q))
         const planRows = db.prepare(`
           SELECT source_line_id AS lid, COALESCE(SUM(plan_qty), 0) AS q FROM scm_production_plan_product
-          WHERE source_line_id IN (${ph(linePart)}) GROUP BY source_line_id
-        `).all(...linePart) as any[]
+          WHERE account_set_id=? AND source_line_id IN (${ph(linePart)}) GROUP BY source_line_id
+        `).all(aid, ...linePart) as any[]
         for (const r of planRows) pushedByLine.set(r.lid, (pushedByLine.get(r.lid) || 0) + numberValue(r.q))
       }
     }

@@ -8,7 +8,7 @@ import { Router, type Response } from 'express'
 import { v4 as uuidv4 } from 'uuid'
 import { getDb } from '../db/index.js'
 import { authMiddleware, AuthRequest, operationLog } from '../middleware/index.js'
-import { applyMovingAvgIn, applyMovingAvgOut, reverseDocMoves, getCostingMethod, currentUnitCost } from '../services/scmCosting.js'
+import { applyMovingAvgIn, applyMovingAvgOut, reverseDocMoves, getCostingMethod, currentUnitCost, getNegativeStockWarehouses } from '../services/scmCosting.js'
 import { applyPayment, applyInvoice, reverseInvoice, reversePayment, sumGrossAmount, getPartnerLedger, getAllPartnerLedger, applyReceivableFromShipment, applyPayableFromReceipt, applyReturnAdjustment, applyOutsourceFeePayable, getOpenItems, getPaymentSources, verifyArAp, cancelVerify, listVerifies, getDocVerifiedInfo, getArApAging, getDueReminder, getPartnerCredit, getPartnerOpenAr, getPartnerBalanceSummary } from '../services/scmArAp.js'
 import { assertAccountIdsInScope, type AccountScopeContext } from '../services/accountAuthorization.js'
 import { assertGlPeriodOpen } from '../services/voucherMutationGuard.js'
@@ -44,6 +44,7 @@ import { getStatementExternalOrderNos, getStatementSalesOrderNos } from '../serv
 import { getPurchaseReceiptOrderNosByLine, getSalesDispatchOrderNosByLine } from '../services/scmSalesDispatchOrderNumbers.js'
 import { executeBatchAtomically, normalizeBatchIds, validateBatchPushDocuments, validateProductionPlanBatchAction } from '../services/scmBatchDocuments.js'
 import { applyAuditDefaultWarehouses, inspectAuditDefaultWarehouses } from '../services/scmAuditDefaultWarehouse.js'
+import { normalizePaging } from '../utils/paging.js'
 import {
   validateFinishKitting,
   PHYSICAL_CHILD_DOC_TYPES,
@@ -156,6 +157,9 @@ router.use((req: AuthRequest, res, next) => {
     else if (req.method === 'DELETE') needAction = 'scm:delete'
   } else if (p.startsWith('/scm/arap')) {
     needAny = ['scm:arap']
+  } else if (p.startsWith('/scm/push-options')) {
+    // P2-16：下推选项按来源域授权——销售订单来源要销售域，工单/组装来源要生产或委外域
+    needAny = String(req.query?.source_kind || '') === 'sales_order' ? ['scm:sale'] : ['scm:production', 'scm:outsource']
   } else {
     return next()                        // 其余 /scm/* 由各自路由文件守卫
   }
@@ -243,7 +247,7 @@ export function nextDocNo(db: ReturnType<typeof getDb>, accountSetId: string, do
   const MM = String(now.getMonth() + 1).padStart(2, '0'); const DD = String(now.getDate()).padStart(2, '0')
   const tmpl = rule.replace(/\{YYYY\}/g, YYYY).replace(/\{YY\}/g, YY).replace(/\{MM\}/g, MM).replace(/\{DD\}/g, DD).replace(/\{CODE\}/g, docTypeCode)
   const seqM = tmpl.match(/\{SEQ(?::(\d+))?\}/)!
-  const seqWidth = seqM[1] ? parseInt(seqM[1]) : 3
+  const seqWidth = Math.min(10, Math.max(1, seqM[1] ? parseInt(seqM[1]) : 3))   // P2-3：位宽钳制 1~10
   const prefix = tmpl.slice(0, tmpl.indexOf(seqM[0]))
   const rows = db.prepare(
     'SELECT doc_no FROM scm_doc WHERE account_set_id=? AND doc_type=? AND doc_no LIKE ?'
@@ -802,10 +806,10 @@ router.get('/scm/docs', (req: AuthRequest, res) => {
   }
   const where = conds.join(' AND ')
   const total = (db.prepare(`SELECT COUNT(*) c FROM scm_doc d WHERE ${where}`).get(...ps) as any).c
-  const off = (parseInt(page) - 1) * parseInt(page_size)
-  const list = queryDocRows(db, where, [...ps, parseInt(page_size), off], 'ORDER BY d.doc_date DESC, d.doc_no DESC LIMIT ? OFFSET ?')
+  const paging = normalizePaging(page, page_size)
+  const list = queryDocRows(db, where, [...ps, paging.pageSize, paging.offset], 'ORDER BY d.doc_date DESC, d.doc_no DESC LIMIT ? OFFSET ?')
 
-  res.json({ code: 0, data: { list, total, page: parseInt(page), page_size: parseInt(page_size) } })
+  res.json({ code: 0, data: { list, total, page: paging.page, page_size: paging.pageSize } })
 })
 
 // 单据翻页（首/上一/下一/尾）：按与列表相同的过滤与排序，返回有序 id 数组（轻量，不分页）。
@@ -1189,12 +1193,14 @@ function checkAggregatedOutStock(
   aid: string,
   rows: Array<{ item_code: string; warehouse_code: string | null | undefined; qty: number }>,
   label: (itemName: string, onHand: number, need: number) => string,
+  allowNegative: Set<string> = new Set(),
 ): string | null {
   const needByStock = new Map<string, { item: string; warehouse: string; qty: number }>()
   for (const r of rows) {
     const qty = Number(r.qty) || 0
     if (qty <= 0) continue
     const warehouse = String(r.warehouse_code || '')
+    if (allowNegative.has(warehouse)) continue   // P2-7：允许负库存的仓库不做库存预检
     const key = `${warehouse}|${r.item_code}`
     const cur = needByStock.get(key) || { item: r.item_code, warehouse, qty: 0 }
     cur.qty = r6(cur.qty + qty)
@@ -1263,6 +1269,7 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
   }
 
   const lines = db.prepare('SELECT * FROM scm_doc_line WHERE doc_id=? ORDER BY seq').all(doc.id) as any[]
+  const negWh = docType.affects_stock ? getNegativeStockWarehouses(db, aid) : new Set<string>()   // P2-7：允许负库存的仓库
   const originalWarehouseCode = doc.warehouse_code
   const defaultWarehouseInspection = docType.affects_stock && !['AS', 'TR'].includes(doc.doc_type)
     ? inspectAuditDefaultWarehouses(db, aid, doc, lines)
@@ -1305,7 +1312,7 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
     if (doc.doc_type === 'PF' || doc.doc_type === 'WI') {
       const kittingError = validateFinishKitting(db, aid, doc.plan_id, lines)
       if (kittingError) return res.status(400).json({ code: 400, message: kittingError })
-      const qcError = validateFinishQc(db, aid, doc)
+      const qcError = validateFinishQc(db, aid, doc, lines)
       if (qcError) return res.status(400).json({ code: 400, message: qcError })
     }
   }
@@ -1354,7 +1361,7 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
   if (docType.direction === 'out' && docType.affects_stock) {
     const err = checkAggregatedOutStock(db, aid,
       lines.map((l: any) => ({ item_code: l.item_code, warehouse_code: l.warehouse_code, qty: l.qty })),
-      (name, onHand, need) => `${name} 库存不足（当前 ${onHand}，需 ${need}）`)
+      (name, onHand, need) => `${name} 库存不足（当前 ${onHand}，需 ${need}）`, negWh)
     if (err) return res.status(400).json({ code: 400, message: err })
   }
 
@@ -1375,7 +1382,7 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
     }
     const compStockErr = checkAggregatedOutStock(db, aid,
       compLines.map((l: any) => ({ item_code: l.item_code, warehouse_code: l.warehouse_code || doc.warehouse_code, qty: l.qty })),
-      (name, onHand, need) => `子件「${name}」库存不足（当前 ${onHand}，需 ${need}）`)
+      (name, onHand, need) => `子件「${name}」库存不足（当前 ${onHand}，需 ${need}）`, negWh)
     if (compStockErr) return res.status(400).json({ code: 400, message: compStockErr })
     // 按成品分组模式（每条子件都带 product_group）：每个成品必须有本组子件
     const activeComps = compLines.filter((l: any) => Number(l.qty) > 0)
@@ -1413,7 +1420,7 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
       }
       const bomCompStockErr = checkAggregatedOutStock(db, aid,
         lines.map((l: any) => ({ item_code: l.item_code, warehouse_code: l.warehouse_code || doc.warehouse_code, qty: l.qty })),
-        (name, onHand, need) => `子件「${name}」库存不足（当前 ${onHand}，需 ${need}）`)
+        (name, onHand, need) => `子件「${name}」库存不足（当前 ${onHand}，需 ${need}）`, negWh)
       if (bomCompStockErr) return res.status(400).json({ code: 400, message: bomCompStockErr })
       if (!doc.warehouse_code) return res.status(400).json({ code: 400, message: '组装单需指定成品入库仓库' })
     } else {
@@ -1438,7 +1445,7 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
     }
     const trStockErr = checkAggregatedOutStock(db, aid,
       lines.map((l: any) => ({ item_code: l.item_code, warehouse_code: srcWh, qty: l.qty })),
-      (name, onHand, need) => `${name} 调出仓库存不足（当前 ${onHand}，需 ${need}）`)
+      (name, onHand, need) => `${name} 调出仓库存不足（当前 ${onHand}，需 ${need}）`, negWh)
     if (trStockErr) return res.status(400).json({ code: 400, message: trStockErr })
   }
 
@@ -1470,7 +1477,7 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
       for (const l of lines) {
         if (!l.qty || l.qty <= 0) continue
         const docRef = { type: doc.doc_type, no: doc.doc_no, seq: l.seq, date: doc.doc_date }
-        const { unitCost } = applyMovingAvgOut(db, aid, srcWh, l.item_code, l.qty, docRef)
+        const { unitCost } = applyMovingAvgOut(db, aid, srcWh, l.item_code, l.qty, docRef, { allowNegative: negWh.has(srcWh) })
         applyMovingAvgIn(db, aid, l.warehouse_code, l.item_code, l.qty, unitCost, docRef)
         db.prepare('UPDATE scm_doc_line SET unit_cost=? WHERE id=?').run(unitCost, l.id)
       }
@@ -1484,7 +1491,7 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
         const diff = Math.round((Number(l.qty) - bookQty) * 10000) / 10000
         const docRef = { type: doc.doc_type, no: doc.doc_no, seq: l.seq, date: doc.doc_date }
         if (diff > 0) applyMovingAvgIn(db, aid, wh, l.item_code, diff, cost, docRef)
-        else if (diff < 0) applyMovingAvgOut(db, aid, wh, l.item_code, -diff, docRef)
+        else if (diff < 0) applyMovingAvgOut(db, aid, wh, l.item_code, -diff, docRef, { allowNegative: negWh.has(wh) })
         db.prepare('UPDATE scm_doc_line SET unit_cost=? WHERE id=?').run(cost, l.id)
       }
     } else if (doc.doc_type === 'AS' && isAsProductMode) {
@@ -1496,7 +1503,7 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
       for (const l of lines) {
         if (l.line_role === 'product' || !l.qty || l.qty <= 0) continue
         const wh = l.warehouse_code || doc.warehouse_code
-        const { unitCost } = applyMovingAvgOut(db, aid, wh, l.item_code, l.qty, { type: doc.doc_type, no: doc.doc_no, seq: l.seq, date: doc.doc_date })
+        const { unitCost } = applyMovingAvgOut(db, aid, wh, l.item_code, l.qty, { type: doc.doc_type, no: doc.doc_no, seq: l.seq, date: doc.doc_date }, { allowNegative: negWh.has(wh) })
         db.prepare('UPDATE scm_doc_line SET unit_cost=? WHERE id=?').run(unitCost, l.id)
         compCosts.push({ product_group: l.product_group, qty: Number(l.qty) || 0, unitCost })
       }
@@ -1531,7 +1538,7 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
         if (!l.qty || l.qty <= 0) continue
         const wh = l.warehouse_code || doc.warehouse_code
         const docRef = { type: doc.doc_type, no: doc.doc_no, seq: l.seq, date: doc.doc_date }
-        const { unitCost } = applyMovingAvgOut(db, aid, wh, l.item_code, l.qty, docRef)
+        const { unitCost } = applyMovingAvgOut(db, aid, wh, l.item_code, l.qty, docRef, { allowNegative: negWh.has(wh) })
         db.prepare('UPDATE scm_doc_line SET unit_cost=? WHERE id=?').run(unitCost, l.id)
         totalCost += unitCost * l.qty
       }
@@ -1549,7 +1556,7 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
         if (dl && Number(bl.qty) > 0) fpQty = Math.max(fpQty, Number(dl.qty) / Number(bl.qty))
       }
       const docRef0 = { type: doc.doc_type, no: doc.doc_no, seq: 0, date: doc.doc_date }
-      const { unitCost: fpCost } = applyMovingAvgOut(db, aid, doc.warehouse_code, bom.item_code, fpQty, docRef0)
+      const { unitCost: fpCost } = applyMovingAvgOut(db, aid, doc.warehouse_code, bom.item_code, fpQty, docRef0, { allowNegative: negWh.has(doc.warehouse_code) })
       const totalCost = fpCost * fpQty
       const totalBomQty = bomLines.reduce((s: number, bl: any) => s + Number(bl.qty), 0)
       for (const l of lines) {
@@ -1705,7 +1712,7 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
           // 销售退货的凭证按 unit_cost×qty 冲回主营业务成本，成本口径须回写到行
           if (doc.doc_type === 'SR') db.prepare('UPDATE scm_doc_line SET unit_cost=? WHERE id=?').run(cost, l.id)
         } else if (docType.direction === 'out') {
-          const { unitCost } = applyMovingAvgOut(db, aid, l.warehouse_code, l.item_code, l.qty, { type: doc.doc_type, no: doc.doc_no, seq: l.seq, date: doc.doc_date })
+          const { unitCost } = applyMovingAvgOut(db, aid, l.warehouse_code, l.item_code, l.qty, { type: doc.doc_type, no: doc.doc_no, seq: l.seq, date: doc.doc_date }, { allowNegative: negWh.has(l.warehouse_code) })
           db.prepare('UPDATE scm_doc_line SET unit_cost=? WHERE id=?').run(unitCost, l.id)
         }
       }
@@ -1800,7 +1807,7 @@ export const unauditDocHandler = (req: AuthRequest, res: Response) => {
     if (doc.doc_type === 'RP' || doc.doc_type === 'RS') reverseInvoice(db, aid, doc)
     // 委外入库(WI) 反审核：回退委外厂应付（reversePayment 按 doc_no 删除往来台账）
     if (doc.doc_type === 'WI') reversePayment(db, aid, doc)
-    if (docType?.affects_stock) reverseDocMoves(db, aid, doc.id)
+    if (docType?.affects_stock) reverseDocMoves(db, aid, doc.id, { allowNegativeWarehouses: getNegativeStockWarehouses(db, aid) })
     // 批次台账回退（与库存移动回退并行）
     if (docType?.affects_stock) reverseDocBatches(db, aid, doc.id)
     // 序列号台账回退
@@ -2555,7 +2562,7 @@ router.get('/scm/boms/where-used', (req: AuthRequest, res) => {
 })
 // 写 BOM 明细行（含行类型/替代料组）——删旧重插
 function writeBomLines(db: ReturnType<typeof getDb>, aid: string, bomId: string, lines: any[]) {
-  db.prepare('DELETE FROM scm_bom_line WHERE bom_id=?').run(bomId)
+  db.prepare('DELETE FROM scm_bom_line WHERE bom_id=? AND account_set_id=?').run(bomId, aid)
   if (!Array.isArray(lines)) return
   const ins = db.prepare('INSERT INTO scm_bom_line (id,account_set_id,bom_id,seq,item_code,qty,unit,scrap_rate,remark,line_type,sub_group,sub_priority) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
   let seq = 0
@@ -2585,10 +2592,11 @@ router.post('/scm/boms', operationLog('BOM新增', '供应链'), (req: AuthReque
 })
 router.put('/scm/boms/:id', operationLog('BOM修改', '供应链'), (req: AuthRequest, res) => {
   const db = getDb(); const b = req.body
-  if (!db.prepare('SELECT id FROM scm_bom WHERE id=?').get(req.params.id)) return res.status(404).json({ code: 404, message: 'BOM不存在' })
+  // P2-15：归属校验必须带账套，否则可跨账套改写/清空他人 BOM 明细
+  if (!db.prepare('SELECT id FROM scm_bom WHERE id=? AND account_set_id=?').get(req.params.id, asid(req))) return res.status(404).json({ code: 404, message: 'BOM不存在' })
   db.transaction(() => {
-    db.prepare('UPDATE scm_bom SET name=?,item_code=?,status=?,version=?,effective_date=?,expire_date=?,is_default=? WHERE id=?')
-      .run(b.name ?? null, b.item_code, b.status || 'active', b.version || '1.0', b.effective_date ?? null, b.expire_date ?? null, b.is_default === 0 ? 0 : 1, req.params.id)
+    db.prepare('UPDATE scm_bom SET name=?,item_code=?,status=?,version=?,effective_date=?,expire_date=?,is_default=? WHERE id=? AND account_set_id=?')
+      .run(b.name ?? null, b.item_code, b.status || 'active', b.version || '1.0', b.effective_date ?? null, b.expire_date ?? null, b.is_default === 0 ? 0 : 1, req.params.id, asid(req))
     if (Array.isArray(b.lines)) writeBomLines(db, asid(req), req.params.id, b.lines)
   })()
   res.json({ code: 0, data: { ok: true } })
@@ -2623,10 +2631,6 @@ router.get('/scm/production-plans', (req: AuthRequest, res) => {
 })
 // ── MRP 计算单 ────────────────────────────────────────────────
 // 旧即时全账套运算已退出业务流程，保留明确响应避免旧客户端静默得到错误口径。
-router.get('/scm/mrp/run', (_req: AuthRequest, res) => {
-  res.status(410).json({ code: 410, message: '即时MRP运算已停用，请创建MRP计算单并选择来源单据' })
-})
-
 // 销售订单、生产/委外计划、组装单的统一下推目标状态。
 // 页面只负责展示和导航，真正生成时各写接口仍会再次校验，防止过期页面重复下推。
 router.get('/scm/push-options', (req: AuthRequest, res) => {
@@ -3532,6 +3536,8 @@ router.get('/scm/partners/:code/credit', (req: AuthRequest, res) => {
 // ── BOM 展开：返回按成品数量折算的子项用量列表 ─────────────────────
 router.get('/scm/boms/:id/explode', (req: AuthRequest, res) => {
   const db = getDb(); const qty = Number(req.query.qty) || 1
+  // P2-15：账套归属校验
+  if (!db.prepare('SELECT id FROM scm_bom WHERE id=? AND account_set_id=?').get(req.params.id, asid(req))) return res.status(404).json({ code: 404, message: 'BOM不存在' })
   // 仅炸主件(component)为物料需求；副产品/联产品(by_product/co_product)是产出，不计入领料需求
   const lines = db.prepare("SELECT l.*, i.name AS item_name, i.spec, i.unit FROM scm_bom_line l LEFT JOIN scm_item i ON i.account_set_id=l.account_set_id AND i.code=l.item_code WHERE l.bom_id=? AND l.line_type='component' ORDER BY l.seq").all(req.params.id) as any[]
   const exploded = lines.map(l => ({
@@ -3852,10 +3858,18 @@ export const genVoucherHandler = (req: AuthRequest, res: Response) => {
   if (entryScopeErr) return res.status(403).json({ code: 403, message: entryScopeErr })
 
   // 生成凭证
-  const totalDebit = Math.round(entries.reduce((s, e) => s + e.debit, 0) * 100) / 100
-  const totalCredit = Math.round(entries.reduce((s, e) => s + e.credit, 0) * 100) / 100
+  let totalDebit = Math.round(entries.reduce((s, e) => s + e.debit, 0) * 100) / 100
+  let totalCredit = Math.round(entries.reduce((s, e) => s + e.credit, 0) * 100) / 100
   if (Math.abs(totalDebit - totalCredit) > 0.01) {
     return res.status(400).json({ code: 400, message: `借贷不平衡（借 ${totalDebit} / 贷 ${totalCredit}），请检查单据成本与税额` })
+  }
+  // 1 分以内的分摊尾差（AS/DS 4 位分摊、多行舍入）落到金额最大的分录上，凭证必须严格平衡后再入账（原来允许差 1 分直接入账）
+  if (totalDebit !== totalCredit) {
+    const side: 'debit' | 'credit' = totalDebit < totalCredit ? 'debit' : 'credit'
+    const target = entries.filter(e => e[side] > 0).sort((a, b) => b[side] - a[side])[0]
+    if (target) target[side] = Math.round((target[side] + Math.abs(totalDebit - totalCredit)) * 100) / 100
+    totalDebit = Math.round(entries.reduce((s, e) => s + e.debit, 0) * 100) / 100
+    totalCredit = Math.round(entries.reduce((s, e) => s + e.credit, 0) * 100) / 100
   }
   const voucherId = uuidv4()
   const year = parseInt((doc.doc_date || '').split('-')[0]) || new Date().getFullYear()
@@ -3864,10 +3878,10 @@ export const genVoucherHandler = (req: AuthRequest, res: Response) => {
   try { assertGlPeriodOpen(db, aid, year, month) } catch (e: any) {
     return res.status(400).json({ code: 400, message: e.message })
   }
-  const lastNo = (db.prepare('SELECT CAST(CASE WHEN INSTR(voucher_no,\'-\')>0 THEN SUBSTR(voucher_no,INSTR(voucher_no,\'-\')+1) ELSE voucher_no END AS INTEGER) no FROM vouchers WHERE account_set_id=? AND year=? AND period=? ORDER BY no DESC LIMIT 1').get(aid, year, month) as any)?.no ?? 0
-  const voucherNo = String(lastNo + 1).padStart(3, '0')
-
-  db.transaction(() => {
+  // P2-5：取号与写入同放排它事务并带重试（与单据取号 withDocNoRetry 同机制），并发制证不再撞号
+  const voucherNo = withDocNoRetry(db, () => {
+    const lastNo = (db.prepare('SELECT CAST(CASE WHEN INSTR(voucher_no,\'-\')>0 THEN SUBSTR(voucher_no,INSTR(voucher_no,\'-\')+1) ELSE voucher_no END AS INTEGER) no FROM vouchers WHERE account_set_id=? AND year=? AND period=? ORDER BY no DESC LIMIT 1').get(aid, year, month) as any)?.no ?? 0
+    const voucherNo = String(lastNo + 1).padStart(3, '0')
     db.prepare(`INSERT INTO vouchers (id,account_set_id,voucher_no,voucher_type_id,voucher_date,year,period,total_amount,maker_name,remark,source) VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(
       voucherId, aid, voucherNo, null, doc.doc_date, year, month, totalDebit, userName(req),
       `供应链单据${doc.doc_no}`, `scm_${doc.doc_type.toLowerCase()}`
@@ -3879,7 +3893,8 @@ export const genVoucherHandler = (req: AuthRequest, res: Response) => {
       if (e.credit > 0) insE.run(uuidv4(), aid, voucherId, seq++, e.id, e.code, e.name, 'credit', e.credit, Math.round(e.credit * 100), e.summary)
     }
     db.prepare('UPDATE scm_doc SET voucher_id=? WHERE id=?').run(voucherId, doc.id)
-  })()
+    return voucherNo
+  })
   res.json({ code: 0, data: { voucher_id: voucherId, voucher_no: voucherNo, entry_count: entries.length } })
 }
 router.post('/scm/docs/:id/gen-voucher', operationLog('单据生成凭证', '供应链'), genVoucherHandler)

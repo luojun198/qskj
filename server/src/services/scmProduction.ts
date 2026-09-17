@@ -20,8 +20,7 @@ export function computePushedQty(db: Database.Database, lineId: string): number 
  * 工单领料建议 / 计划「应领 − 已领」。
  *
  * @param issueDocTypes 计入「已领」的单据类型（按 plan_id 关联，出库为领、入库为退）。
- *   默认 ['PL','PB','PJ'] = 领料建议口径（生产领用/补料 出 − 退料 入）。
- *   库存页「计划未领用」传 ['PL','PB','WO','PJ']，把委外发货(WO)也算作已领，覆盖委外计划。
+ *   默认 ['PL','PB','WO','PJ']：生产领用/补料/委外发货 出 − 退料 入（委外发货计入已领，委外工单的齐套/领料建议才不会恒缺料）。
  * @returns 每材料 { item_code, item_name, unit, bom_qty, scrap_rate, need, issued, suggest }，suggest=max(0, need−issued)
  */
 export function computeIssueSuggestion(
@@ -111,6 +110,19 @@ export interface ProductionPlanActionState {
 export type IssueSuggestionRow = ReturnType<typeof computeIssueSuggestion>[number]
 
 /**
+ * 工单是否已全部完工（Σ 已完工 + 已报废 ≥ Σ 计划数）。
+ * P2-18：领料锁定原来只看「是否存在任意一张已审核完工单」，分批完工后第二批的正常补料/领料全被拦；
+ * 现在只在工单做完时才锁定领料，与末批判定（isLastOfOrder）同口径。
+ */
+export function isPlanFullyFinished(db: Database.Database, aid: string, planId: string): boolean {
+  const row = db.prepare(`SELECT COALESCE(SUM(plan_qty),0) plan_qty, COALESCE(SUM(finished_qty),0) finished_qty, COALESCE(SUM(COALESCE(scrap_qty,0)),0) scrap_qty
+    FROM scm_production_plan_product WHERE account_set_id=? AND plan_id=?`).get(aid, planId) as any
+  const planQty = Number(row?.plan_qty) || 0
+  if (planQty <= 0) return false
+  return (Number(row?.finished_qty) || 0) + (Number(row?.scrap_qty) || 0) >= planQty - 1e-6
+}
+
+/**
  * 工单可执行动作的唯一判定口径。
  * 页面展示与生成接口必须共用本函数，避免前端按钮状态和后端防重判断漂移。
  */
@@ -139,11 +151,12 @@ export function computeProductionPlanActionState(
     return sum + Math.max(0, max - (Number(row.issued) || 0))
   }, 0))
   const issueMeta = { base_remaining: issueRemainingQty, max_allowed_qty: issueMaxAllowedQty, overrun_remaining: issueOverrunRemainingQty }
-  const auditedFinish = db.prepare(`
+  // P2-18：只有工单全部完工（含报废）才锁定领料；分批完工后仍可为剩余批次领料/补料
+  const auditedFinish = isPlanFullyFinished(db, aid, plan.id) ? db.prepare(`
     SELECT doc_no,doc_type FROM scm_doc
     WHERE account_set_id=? AND plan_id=? AND status='audited' AND doc_type IN ('PF','WI')
     ORDER BY doc_no DESC LIMIT 1
-  `).get(aid, plan.id) as any
+  `).get(aid, plan.id) as any : null
   const draftIssue = db.prepare(`
     SELECT id,doc_no,doc_type FROM scm_doc
     WHERE account_set_id=? AND plan_id=? AND status='draft' AND doc_type IN ('PL','PB','WO')
@@ -153,7 +166,7 @@ export function computeProductionPlanActionState(
   if (auditedFinish) {
     issue = {
       status: 'unavailable', remaining_qty: issueRemainingQty, remaining_lines: issueRemainingRows.length, ...issueMeta,
-      reason: `已有已审核${auditedFinish.doc_type === 'WI' ? '委外入库单' : '完工入库单'} ${auditedFinish.doc_no}，领料已锁定`,
+      reason: `工单已全部完工（末批 ${auditedFinish.doc_type === 'WI' ? '委外入库单' : '完工入库单'} ${auditedFinish.doc_no}），领料已锁定`,
     }
   } else if (draftIssue) {
     issue = {

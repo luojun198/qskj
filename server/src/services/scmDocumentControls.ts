@@ -5,6 +5,7 @@ import {
   resolvePlanOverrunScope,
   resolveSourceOverrunScope,
 } from './scmOverrunPolicy.js'
+import { isPlanFullyFinished } from './scmProduction.js'
 
 const EPS = 0.000001
 
@@ -200,12 +201,13 @@ export function validatePlanIssueQuantities(
 ): string | null {
   if (docType === 'PJ') return validatePlanReturnQuantities(db, accountSetId, planId, lines, excludeDocId)
   if (!['PL', 'PB', 'WO'].includes(docType)) return null
-  const auditedFinish = db.prepare(`SELECT doc_no,doc_type FROM scm_doc
+  // P2-18：只在工单全部完工（含报废）后锁定领料，分批完工后仍可为剩余批次领料/补料（与 computeProductionPlanActionState 同口径）
+  const auditedFinish = isPlanFullyFinished(db, accountSetId, planId) ? db.prepare(`SELECT doc_no,doc_type FROM scm_doc
     WHERE account_set_id=? AND plan_id=? AND status='audited' AND doc_type IN ('PF','WI')
-    ORDER BY doc_no DESC LIMIT 1`).get(accountSetId, planId) as any
+    ORDER BY doc_no DESC LIMIT 1`).get(accountSetId, planId) as any : null
   if (auditedFinish) {
     const finishName = auditedFinish.doc_type === 'WI' ? '委外入库单' : '完工入库单'
-    return `该工单已有已审核${finishName} ${auditedFinish.doc_no}，领料已锁定；如需继续领料，请先反审核完工单`
+    return `该工单已全部完工（末批${finishName} ${auditedFinish.doc_no}），领料已锁定；如需继续领料，请先反审核完工单`
   }
   const needMap = new Map(planMaterialNeed(db, accountSetId, planId).map(row => [row.item_code, Number(row.need) || 0]))
   const scope = resolvePlanOverrunScope(docType)

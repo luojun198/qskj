@@ -19,7 +19,7 @@ function createDb() {
     CREATE TABLE scm_doc (id TEXT, account_set_id TEXT, doc_type TEXT, doc_no TEXT, status TEXT, plan_id TEXT);
     CREATE TABLE scm_doc_line (id TEXT, account_set_id TEXT, doc_id TEXT, item_code TEXT, qty REAL, source_line_id TEXT, field_values TEXT DEFAULT '{}');
     CREATE TABLE scm_production_plan (id TEXT, account_set_id TEXT, code TEXT, status TEXT, plan_type TEXT);
-    CREATE TABLE scm_production_plan_product (id TEXT, account_set_id TEXT, plan_id TEXT, item_code TEXT, plan_qty REAL, finished_qty REAL);
+    CREATE TABLE scm_production_plan_product (id TEXT, account_set_id TEXT, plan_id TEXT, item_code TEXT, plan_qty REAL, finished_qty REAL, scrap_qty REAL DEFAULT 0);
     CREATE TABLE scm_production_plan_line (id TEXT, account_set_id TEXT, plan_id TEXT, product_id TEXT, item_code TEXT, qty REAL, scrap_rate REAL);
     CREATE TABLE scm_stock_move (id TEXT, account_set_id TEXT, doc_type TEXT, doc_no TEXT, item_code TEXT, direction TEXT, qty REAL);
   `)
@@ -28,7 +28,7 @@ function createDb() {
   db.prepare('INSERT INTO scm_doc VALUES (?,?,?,?,?,?)').run('SOA1', AID, 'SOa', 'SO-001', 'audited', null)
   db.prepare('INSERT INTO scm_doc_line VALUES (?,?,?,?,?,?,?)').run('SOAL1', AID, 'SOA1', 'FG1', 100, null, '{}')
   db.prepare('INSERT INTO scm_production_plan VALUES (?,?,?,?,?)').run('P1', AID, 'MO-001', 'released', 'self')
-  db.prepare('INSERT INTO scm_production_plan_product VALUES (?,?,?,?,?,?)').run('PP1', AID, 'P1', 'FG1', 10, 0)
+  db.prepare('INSERT INTO scm_production_plan_product (id,account_set_id,plan_id,item_code,plan_qty,finished_qty) VALUES (?,?,?,?,?,?)').run('PP1', AID, 'P1', 'FG1', 10, 0)
   db.prepare('INSERT INTO scm_production_plan_line VALUES (?,?,?,?,?,?,?)').run('PLN1', AID, 'P1', 'PP1', 'RM1', 2, 0)
   return db
 }
@@ -153,7 +153,7 @@ describe('供应链单据数量与工单来源控制', () => {
 
   it('委外超量使用独立参数，不读取生产超量参数', () => {
     db.prepare('INSERT INTO scm_production_plan VALUES (?,?,?,?,?)').run('P2', AID, 'WW-001', 'released', 'outsource')
-    db.prepare('INSERT INTO scm_production_plan_product VALUES (?,?,?,?,?,?)').run('PP2', AID, 'P2', 'OFG1', 10, 0)
+    db.prepare('INSERT INTO scm_production_plan_product (id,account_set_id,plan_id,item_code,plan_qty,finished_qty) VALUES (?,?,?,?,?,?)').run('PP2', AID, 'P2', 'OFG1', 10, 0)
     db.prepare('INSERT INTO scm_production_plan_line VALUES (?,?,?,?,?,?,?)').run('PLN2', AID, 'P2', 'PP2', 'ORM1', 2, 0)
     db.prepare('INSERT INTO system_params VALUES (?,?,?)').run(AID, 'scm:production_overrun_enabled', '1')
     db.prepare('INSERT INTO system_params VALUES (?,?,?)').run(AID, 'scm:production_overrun_rate', '10')
@@ -165,17 +165,24 @@ describe('供应链单据数量与工单来源控制', () => {
     expect(validatePlanFinishQuantities(db, AID, 'P2', 'WI', [{ item_code: 'OFG1', qty: 11 }])).toBeNull()
   })
 
-  it('已审核完工单锁定领料，草稿完工单不影响补料', () => {
+  it('P2-18 分批完工不锁领料；工单全部完工（含报废）后才锁定', () => {
     addDoc(db, 'FIN-DRAFT', 'PF', 'draft', 'FG1', 1, null, 'P1')
     expect(validatePlanIssueQuantities(db, AID, 'P1', 'PL', [{ item_code: 'RM1', qty: 1 }])).toBeNull()
 
-    addDoc(db, 'FIN-AUDITED', 'PF', 'audited', 'FG1', 1, null, 'P1')
+    // 第一批完工 4 件已审核：剩余批次仍可领料/补料
+    addDoc(db, 'FIN-AUDITED', 'PF', 'audited', 'FG1', 4, null, 'P1')
+    db.prepare("UPDATE scm_production_plan_product SET finished_qty=4 WHERE id='PP1'").run()
+    expect(validatePlanIssueQuantities(db, AID, 'P1', 'PB', [{ item_code: 'RM1', qty: 1 }])).toBeNull()
+
+    // 完工 8 + 报废 2 = 计划 10 → 锁定
+    db.prepare("UPDATE scm_production_plan_product SET finished_qty=8, scrap_qty=2 WHERE id='PP1'").run()
     expect(validatePlanIssueQuantities(db, AID, 'P1', 'PL', [{ item_code: 'RM1', qty: 1 }]))
       .toContain('领料已锁定')
   })
 
   it('已审核委外入库锁定委外发货', () => {
-    addDoc(db, 'WI-AUDITED', 'WI', 'audited', 'FG1', 1, null, 'P1')
+    addDoc(db, 'WI-AUDITED', 'WI', 'audited', 'FG1', 10, null, 'P1')
+    db.prepare("UPDATE scm_production_plan_product SET finished_qty=10 WHERE id='PP1'").run()   // 全部完工后锁定（P2-18）
     expect(validatePlanIssueQuantities(db, AID, 'P1', 'WO', [{ item_code: 'RM1', qty: 1 }]))
       .toContain('领料已锁定')
   })

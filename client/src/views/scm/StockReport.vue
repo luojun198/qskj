@@ -1,5 +1,16 @@
 <template>
   <div class="page scm-report-page">
+    <!-- P2-11：筛选行（原来 startDate/endDate/wh 声明后从未绑定 UI） -->
+    <div class="filter-row" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+      <el-date-picker v-model="startDate" type="date" value-format="YYYY-MM-DD" placeholder="开始日期" size="small" style="width:140px" />
+      <span>至</span>
+      <el-date-picker v-model="endDate" type="date" value-format="YYYY-MM-DD" placeholder="结束日期" size="small" style="width:140px" />
+      <el-select v-model="wh" clearable filterable placeholder="全部仓库" size="small" style="width:160px">
+        <el-option v-for="w in warehouses" :key="w.code" :label="`${w.code} ${w.name}`" :value="w.code" />
+      </el-select>
+      <el-button type="primary" plain size="small" @click="load"><el-icon><Search /></el-icon>查询</el-button>
+      <span style="margin-left:auto;font-size:var(--cw-text-base);color:var(--el-text-color-secondary)">共 {{ list.length }} 行</span>
+    </div>
         <el-table ref="tableRef" :data="list" v-loading="loading" border stripe size="small" height="calc(100vh - 200px)"
       :summary-method="summaryMethod" show-summary @header-dragend="onDragEnd">
       <el-table-column label="仓库" prop="warehouse_code" :width="cw('warehouse_code', 90)" />

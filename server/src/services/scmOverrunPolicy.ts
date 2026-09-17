@@ -65,7 +65,7 @@ export function resolveSourceOverrunScope(
 }
 
 export function resolvePlanOverrunScope(docType: string): ScmOverrunScope | null {
-  if (['PL', 'PB', 'PF'].includes(docType)) return 'production'
+  if (['PL', 'PB', 'PF', 'PS'].includes(docType)) return 'production'   // P2-20：PS 与 PF 同组计数，超量策略也同组
   if (['WO', 'WI'].includes(docType)) return 'outsource'
   return null
 }

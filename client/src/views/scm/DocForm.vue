@@ -2254,8 +2254,33 @@ async function initForm() {
     }
     // 带出上一张同类型单据的常用字段：新增→全部带；下推→只补源单没带的空白
     if (form.value.doc_type) applyLastDocDefaults(form.value.doc_type)
+    // 采购建议等报表「生成采购」带入：?prefill_item=物料&prefill_qty=数量&prefill_supplier=供应商（§5.3）
+    await applyQueryPrefill()
   } else if (editId.value) {
     await loadDoc(editId.value)
+  }
+}
+
+/** 按路由 query 预填首行物料/数量/供应商（仅新增单、且未从源单/工单带入行时生效） */
+async function applyQueryPrefill() {
+  const itemCode = String(route.query.prefill_item || '').trim()
+  if (!itemCode || !isNew.value) return
+  const qty = Number(route.query.prefill_qty) || 0
+  const supplier = String(route.query.prefill_supplier || '').trim()
+  try {
+    const r = await scmApi.getItems({ keyword: itemCode, page: 1, page_size: 20 })
+    const item = (((r.data as any)?.list || r.data || []) as any[]).find(it => it.code === itemCode)
+    if (item) {
+      const row = lines.value[0]?.item_code ? newLine() : lines.value[0]
+      if (!lines.value.includes(row)) lines.value.push(row)
+      onItemPick(row, item)
+      if (qty > 0) { row.qty = qty; recalcRow(row) }
+    }
+  } catch { /* 物料查不到就留空行，由用户手选 */ }
+  if (supplier && !form.value.partner_code) {
+    form.value.partner_code = supplier
+    const p = allPartners.value.find((x: any) => x.code === supplier)
+    partnerSearch.value = p ? `${p.code} ${p.name || ''}`.trim() : supplier
   }
 }
 
@@ -2264,7 +2289,11 @@ onMounted(async () => {
   // 新增单不应为了下拉选项而阻塞表头和第一条空白明细出现。
   const metaTask = loadMeta()
   await initForm()
-  void metaTask.catch(() => {})
+  void metaTask.then(() => {
+    // 预填的供应商在基础资料到位后补全显示名
+    const p = form.value.partner_code ? allPartners.value.find((x: any) => x.code === form.value.partner_code) : null
+    if (p && partnerSearch.value === p.code) partnerSearch.value = `${p.code} ${p.name || ''}`.trim()
+  }).catch(() => {})
 })
 
 // 新增页复用同一路由组件；直接在预收款/预付款入口间切换时不会触发重新挂载，

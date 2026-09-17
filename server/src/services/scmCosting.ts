@@ -14,6 +14,17 @@ export function getCostingMethod(db: Database.Database, accountSetId: string): s
   return (row?.param_value as string) || 'moving_avg'
 }
 
+/** 允许负库存的仓库集合（系统参数 scm:negative_stock_warehouses，JSON 数组）。P2-7：该参数此前写入后无任何读取方。 */
+export function getNegativeStockWarehouses(db: Database.Database, accountSetId: string): Set<string> {
+  const row = db.prepare(
+    "SELECT param_value FROM system_params WHERE account_set_id=? AND param_key='scm:negative_stock_warehouses'"
+  ).get(accountSetId) as any
+  try {
+    const arr = JSON.parse(String(row?.param_value || '[]'))
+    return new Set(Array.isArray(arr) ? arr.map((x: any) => String(x)).filter(Boolean) : [])
+  } catch { return new Set() }
+}
+
 interface StockMoveRow {
   id: string; account_set_id: string; move_date: string
   doc_type: string; doc_no: string; line_seq: number
@@ -38,7 +49,9 @@ export function applyMovingAvgIn(
   const oldQty = stock?.qty || 0
   const oldAmt = stock?.amount || 0
   const newQty = oldQty + inQty
-  const newAmt = Math.round((oldAmt + inCost * inQty) * 10000) / 10000
+  // P2-2：入库金额按分舍入后累计，库存金额与流水金额同为 2 位口径，Σ(流水) 恒等于结存，不再以 4 位/2 位持续漂移
+  const inAmt = Math.round(inCost * inQty * 100) / 100
+  const newAmt = Math.round((oldAmt + inAmt) * 100) / 100
   const avg = newQty > 0 ? Math.round((newAmt / newQty) * 10000) / 10000 : 0
 
   if (stock) {
@@ -53,10 +66,10 @@ export function applyMovingAvgIn(
   db.prepare(`INSERT INTO scm_stock_move (id,account_set_id,move_date,doc_type,doc_no,line_seq,warehouse_code,item_code,direction,qty,unit_cost,amount,batch_no,balance_qty,balance_amount,balance_avg_cost)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     moveId, accountSetId, doc.date, doc.type, doc.no, doc.seq,
-    warehouse, itemCode, 'in', inQty, inCost, Math.round(inCost * inQty * 100) / 100, null,
+    warehouse, itemCode, 'in', inQty, inCost, inAmt, null,
     newQty, newAmt, avg
   )
-  return { id: moveId, account_set_id: accountSetId, move_date: doc.date, doc_type: doc.type, doc_no: doc.no, line_seq: doc.seq, warehouse_code: warehouse, item_code: itemCode, direction: 'in', qty: inQty, unit_cost: inCost, amount: Math.round(inCost * inQty * 100) / 100, balance_qty: newQty, balance_amount: newAmt, balance_avg_cost: avg }
+  return { id: moveId, account_set_id: accountSetId, move_date: doc.date, doc_type: doc.type, doc_no: doc.no, line_seq: doc.seq, warehouse_code: warehouse, item_code: itemCode, direction: 'in', qty: inQty, unit_cost: inCost, amount: inAmt, balance_qty: newQty, balance_amount: newAmt, balance_avg_cost: avg }
 }
 
 /**
@@ -112,7 +125,7 @@ export function applyMovingAvgOut(
   }
   const newQty = Math.abs(newQtyRaw) < 0.000001 ? 0 : newQtyRaw
   const outAmt = Math.round(unitCost * outQty * 100) / 100
-  const newAmtRaw = Math.round((oldAmt - outAmt) * 10000) / 10000
+  const newAmtRaw = Math.round((oldAmt - outAmt) * 100) / 100
   const newAmt = newQty === 0 ? 0 : (options.allowNegative ? newAmtRaw : Math.max(0, newAmtRaw))
   const avg = newQty !== 0 ? Math.round((newAmt / newQty) * 10000) / 10000 : 0
 
@@ -185,7 +198,7 @@ export function reverseDocMoves(
     const allowNegative = options.allowNegativeWarehouses?.has(rollback.warehouse) || false
     const newQtyRaw = oldQty + rollback.qtyDelta
     const newQty = Math.abs(newQtyRaw) < 0.000001 ? 0 : newQtyRaw
-    const newAmtRaw = oldAmt + rollback.amountDelta
+    const newAmtRaw = Math.round((oldAmt + rollback.amountDelta) * 100) / 100
     const newAmt = newQty === 0 ? 0 : (allowNegative ? newAmtRaw : Math.max(0, newAmtRaw))
     // 与 applyMovingAvgIn/Out 统一按 4 位舍入，避免回滚后均价出现长尾差
     const avg = newQty !== 0 ? Math.round((newAmt / newQty) * 10000) / 10000 : 0

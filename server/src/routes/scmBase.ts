@@ -11,6 +11,7 @@ import { queryProductionExecution, type ProductionExecutionFilters } from '../se
 import { resolveScmAccount, SCM_ACCOUNT_SPECS, suggestScmAccounts } from '../services/scmAccountResolver.js'
 import { queryStockLedger, type StockLedgerFilters } from '../services/scmStockLedger.js'
 import type { ExportColumnSpec } from '../services/styledExcelExport.js'
+import { normalizePaging } from '../utils/paging.js'
 
 async function buildStyledXlsxBuffer(options: any) {
   const module = await import('../services/styledExcelExport.js')
@@ -132,13 +133,19 @@ router.post('/scm/reset', operationLog('供应链初始化', '供应链'), async
   } catch (e: any) {
     return res.status(500).json({ code: 500, message: e?.message || '初始化前自动备份失败，已中止操作' })
   }
+  // P2-6：业务表补齐序列号/批次流水、核销、MRP 来源、工单成品与用料、质检、报工；主数据补齐工艺路线/工作中心/库位/字段配置。
+  // 顺序：先明细后头表（无外键约束，但便于阅读与将来加约束）。
   const businessTables = [
-    'scm_doc_line', 'scm_doc', 'scm_stock_move', 'scm_stock_batch', 'scm_stock',
-    'scm_production_plan', 'scm_ar_ap_log', 'scm_work_report',
+    'scm_qc_line', 'scm_qc_doc', 'scm_work_report', 'scm_mrp_source',
+    'scm_serial_move', 'scm_serial', 'scm_batch_move', 'scm_stock_batch',
+    'scm_ar_ap_verify', 'scm_ar_ap_log',
+    'scm_doc_line', 'scm_doc', 'scm_stock_move', 'scm_stock',
+    'scm_production_plan_line', 'scm_production_plan_product', 'scm_production_plan',
   ]
   const masterTables = [
-    'scm_bom_line', 'scm_bom', 'scm_item_unit', 'scm_item_field_defs',
-    'scm_item_category', 'scm_item', 'scm_partner', 'scm_warehouse', 'scm_unit',
+    'scm_routing_line', 'scm_routing', 'scm_work_center',
+    'scm_bom_line', 'scm_bom', 'scm_item_unit', 'scm_item_field_defs', 'scm_doc_field_defs',
+    'scm_item_category', 'scm_item', 'scm_partner', 'scm_bin', 'scm_warehouse', 'scm_unit',
   ]
   const tables = mode === 'all' ? [...businessTables, ...masterTables] : businessTables
   const existing = new Set(
@@ -151,6 +158,45 @@ router.post('/scm/reset', operationLog('供应链初始化', '供应链'), async
   })()
   res.json({ code: 0, data: { ok: true, mode, cleared: tables.filter(t => existing.has(t)), backup: backupFile } })
 })
+
+/**
+ * 主数据删除引用校验（P2-1）：物料 / 往来单位 / 仓库被单据、库存、往来台账、BOM、工单引用时禁止硬删（应改停用）。
+ * 返回可读的阻断原因；无引用返回 null。
+ */
+export function masterRefError(db: ReturnType<typeof getDb>, aid: string, kind: 'item' | 'partner' | 'warehouse', code: string): string | null {
+  const count = (sql: string, ...ps: any[]) => Number((db.prepare(sql).get(...ps) as any)?.c) || 0
+  const label = kind === 'item' ? '物料' : kind === 'partner' ? '往来单位' : '仓库'
+  const reasons: string[] = []
+  if (kind === 'item') {
+    const stock = count('SELECT COUNT(*) c FROM scm_stock WHERE account_set_id=? AND item_code=? AND ABS(qty) > 0.000001', aid, code)
+    if (stock) reasons.push(`存在库存结存（${stock} 个仓）`)
+    const docs = count('SELECT COUNT(*) c FROM scm_doc_line WHERE account_set_id=? AND item_code=?', aid, code)
+    if (docs) reasons.push(`被 ${docs} 行单据明细引用`)
+    const boms = count('SELECT COUNT(*) c FROM scm_bom WHERE account_set_id=? AND item_code=?', aid, code)
+      + count('SELECT COUNT(*) c FROM scm_bom_line WHERE account_set_id=? AND item_code=?', aid, code)
+    if (boms) reasons.push(`被 ${boms} 处 BOM 引用`)
+    const plans = count('SELECT COUNT(*) c FROM scm_production_plan_product WHERE account_set_id=? AND item_code=?', aid, code)
+      + count('SELECT COUNT(*) c FROM scm_production_plan_line WHERE account_set_id=? AND item_code=?', aid, code)
+    if (plans) reasons.push(`被 ${plans} 处工单引用`)
+  } else if (kind === 'partner') {
+    const open = count("SELECT COUNT(*) c FROM scm_ar_ap_log WHERE account_set_id=? AND partner_code=? AND ABS(amount - COALESCE(verified_amount,0)) > 0.005", aid, code)
+    if (open) reasons.push(`存在 ${open} 笔未核销往来`)
+    const docs = count('SELECT COUNT(*) c FROM scm_doc WHERE account_set_id=? AND partner_code=?', aid, code)
+    if (docs) reasons.push(`被 ${docs} 张单据引用`)
+    const plans = count('SELECT COUNT(*) c FROM scm_production_plan WHERE account_set_id=? AND supplier_code=?', aid, code)
+    if (plans) reasons.push(`被 ${plans} 张委外工单引用`)
+  } else {
+    const stock = count('SELECT COUNT(*) c FROM scm_stock WHERE account_set_id=? AND warehouse_code=? AND ABS(qty) > 0.000001', aid, code)
+    if (stock) reasons.push(`存在 ${stock} 个物料的库存结存`)
+    const docs = count('SELECT COUNT(*) c FROM scm_doc WHERE account_set_id=? AND warehouse_code=?', aid, code)
+      + count('SELECT COUNT(*) c FROM scm_doc_line WHERE account_set_id=? AND warehouse_code=?', aid, code)
+    if (docs) reasons.push(`被 ${docs} 处单据引用`)
+    const items = count('SELECT COUNT(*) c FROM scm_item WHERE account_set_id=? AND default_warehouse_code=?', aid, code)
+    if (items) reasons.push(`是 ${items} 个物料的默认仓库`)
+  }
+  if (!reasons.length) return null
+  return `${label}「${code}」${reasons.join('、')}，不能删除；如不再使用请改为停用`
+}
 
 // ── 通用：自动编号（前缀+数字，参照固定资产 next-no） ────────────────────
 function nextCode(db: ReturnType<typeof getDb>, table: string, accountSetId: string, fallbackPrefix: string): string {
@@ -299,12 +345,12 @@ router.get('/scm/items', (req: AuthRequest, res) => {
   }
 
   const total = (db.prepare(`SELECT COUNT(*) c FROM scm_item i WHERE ${where}`).get(...params) as any).c
-  const offset = (parseInt(page) - 1) * parseInt(page_size)
-  const list = db.prepare(`SELECT ${selectCols} FROM scm_item i WHERE ${where} ORDER BY i.code LIMIT ? OFFSET ?`).all(...params, parseInt(page_size), offset) as any[]
+  const paging = normalizePaging(page, page_size)
+  const list = db.prepare(`SELECT ${selectCols} FROM scm_item i WHERE ${where} ORDER BY i.code LIMIT ? OFFSET ?`).all(...params, paging.pageSize, paging.offset) as any[]
   appendItemUnits(db, asid(req), list)
   parseFieldValues(list)
 
-  res.json({ code: 0, data: { list, total, page: parseInt(page), page_size: parseInt(page_size) } })
+  res.json({ code: 0, data: { list, total, page: paging.page, page_size: paging.pageSize } })
 })
 // ── 辅助：同步物料-单位关联 ────────────────────────────────────────────
 function syncItemUnits(db: ReturnType<typeof getDb>, aid: string, itemCode: string, primaryUnitCode?: string, secondaryUnits?: Array<{ unit_code: string; conversion_rate: number }>) {
@@ -435,10 +481,12 @@ router.put('/scm/items/:id', operationLog('物料修改', '供应链'), (req: Au
 })
 router.delete('/scm/items/:id', operationLog('物料删除', '供应链'), (req: AuthRequest, res) => {
   const db = getDb(); const aid = asid(req)
-  const ex = db.prepare('SELECT id FROM scm_item WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
+  const ex = db.prepare('SELECT id, code FROM scm_item WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
   if (!ex) return res.status(404).json({ code: 404, message: '物料不存在' })
   const children = db.prepare('SELECT COUNT(*) c FROM scm_item WHERE parent_id=? AND account_set_id=?').get(req.params.id, aid) as any
   if (children?.c > 0) return res.status(409).json({ code: 409, message: `该物料下有 ${children.c} 个子物料，请先删除子物料` })
+  const refErr = masterRefError(db, aid, 'item', ex.code)
+  if (refErr) return res.status(409).json({ code: 409, message: refErr })
   db.prepare('DELETE FROM scm_item WHERE id=? AND account_set_id=?').run(req.params.id, aid)
   res.json({ code: 0, data: { ok: true } })
 })
@@ -505,7 +553,12 @@ router.put('/scm/partners/:id', operationLog('往来单位修改', '供应链'),
   res.json({ code: 0, data: { ok: true } })
 })
 router.delete('/scm/partners/:id', operationLog('往来单位删除', '供应链'), (req: AuthRequest, res) => {
-  getDb().prepare('DELETE FROM scm_partner WHERE id=? AND account_set_id=?').run(req.params.id, asid(req))
+  const db = getDb(); const aid = asid(req)
+  const ex = db.prepare('SELECT id, code FROM scm_partner WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
+  if (!ex) return res.status(404).json({ code: 404, message: '往来单位不存在' })
+  const refErr = masterRefError(db, aid, 'partner', ex.code)
+  if (refErr) return res.status(409).json({ code: 409, message: refErr })
+  db.prepare('DELETE FROM scm_partner WHERE id=? AND account_set_id=?').run(req.params.id, aid)
   res.json({ code: 0, data: { ok: true } })
 })
 
@@ -542,7 +595,12 @@ router.put('/scm/warehouses/:id', operationLog('仓库修改', '供应链'), (re
   res.json({ code: 0, data: { ok: true } })
 })
 router.delete('/scm/warehouses/:id', operationLog('仓库删除', '供应链'), (req: AuthRequest, res) => {
-  getDb().prepare('DELETE FROM scm_warehouse WHERE id=? AND account_set_id=?').run(req.params.id, asid(req))
+  const db = getDb(); const aid = asid(req)
+  const ex = db.prepare('SELECT id, code FROM scm_warehouse WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
+  if (!ex) return res.status(404).json({ code: 404, message: '仓库不存在' })
+  const refErr = masterRefError(db, aid, 'warehouse', ex.code)
+  if (refErr) return res.status(409).json({ code: 409, message: refErr })
+  db.prepare('DELETE FROM scm_warehouse WHERE id=? AND account_set_id=?').run(req.params.id, aid)
   res.json({ code: 0, data: { ok: true } })
 })
 
@@ -666,38 +724,47 @@ router.get('/scm/stock/summary', (req: AuthRequest, res) => {
   const currentStock = db.prepare(
     'SELECT warehouse_code, item_code, qty, amount FROM scm_stock WHERE account_set_id=?'
   ).all(aid) as any[]
-  // 期间流水
+  // 起始日之后的全部流水：期间内的累计本期收发，期间之后的用于从当前库存倒推（否则 end_date 早于今天时期初/期末会错）
   const moves = db.prepare(
-    `SELECT m.warehouse_code, m.item_code, m.direction, m.qty, m.amount,
+    `SELECT m.warehouse_code, m.item_code, m.direction, m.qty, m.amount, m.move_date,
       i.name AS item_name, i.spec, i.unit, w.name AS warehouse_name
      FROM scm_stock_move m
      LEFT JOIN scm_item i ON i.account_set_id=m.account_set_id AND i.code=m.item_code
      LEFT JOIN scm_warehouse w ON w.account_set_id=m.account_set_id AND w.code=m.warehouse_code
-     WHERE m.account_set_id=? AND m.move_date BETWEEN ? AND ?`
-  ).all(aid, sd, ed) as any[]
-  if (warehouse_code) { return res.json({ code: 0, data: { summary: [], moves: moves.filter(m => m.warehouse_code === warehouse_code) } }) }
+     WHERE m.account_set_id=? AND m.move_date >= ?`
+  ).all(aid, sd) as any[]
 
-  // 先累计期间变动
   const map = new Map<string, any>()
+  const rowOf = (whCode: string, itemCode: string) => {
+    const k = `${whCode}|${itemCode}`
+    if (!map.has(k)) map.set(k, { in_qty: 0, in_amt: 0, out_qty: 0, out_amt: 0, after_qty: 0, after_amt: 0, item_name: '', spec: '', unit: '', warehouse_name: '', warehouse_code: whCode, item_code: itemCode })
+    return map.get(k)!
+  }
   for (const m of moves) {
-    const k = `${m.warehouse_code}|${m.item_code}`
-    if (!map.has(k)) map.set(k, { in_qty: 0, in_amt: 0, out_qty: 0, out_amt: 0 })
-    const r = map.get(k)!
-    if (m.direction === 'in') { r.in_qty += m.qty; r.in_amt += m.amount }
-    else { r.out_qty += m.qty; r.out_amt += m.amount }
-    r.item_name = m.item_name; r.spec = m.spec; r.unit = m.unit
-    r.warehouse_name = m.warehouse_name; r.warehouse_code = m.warehouse_code; r.item_code = m.item_code
+    const r = rowOf(m.warehouse_code, m.item_code)
+    const sign = m.direction === 'in' ? 1 : -1
+    if (String(m.move_date) <= ed) {
+      if (sign > 0) { r.in_qty += m.qty; r.in_amt += m.amount } else { r.out_qty += m.qty; r.out_amt += m.amount }
+    } else {
+      r.after_qty += sign * m.qty; r.after_amt += sign * m.amount
+    }
+    r.item_name = m.item_name; r.spec = m.spec; r.unit = m.unit; r.warehouse_name = m.warehouse_name
   }
-  // 用当前库存计算期初：opening = closing - in + out
+  // 期初 = 当前库存 − 期间净变动 − 期间之后的净变动
   for (const s of currentStock) {
-    const k = `${s.warehouse_code}|${s.item_code}`
-    if (!map.has(k)) map.set(k, { in_qty: 0, in_amt: 0, out_qty: 0, out_amt: 0, item_name: '', spec: '', unit: '', warehouse_name: '', warehouse_code: s.warehouse_code, item_code: s.item_code })
-    const r = map.get(k)!
-    r.opening_qty = Math.round((s.qty - (r.in_qty || 0) + (r.out_qty || 0)) * 10000) / 10000
-    r.opening_amt = Math.round((s.amount - (r.in_amt || 0) + (r.out_amt || 0)) * 100) / 100
-    r.warehouse_code = s.warehouse_code; r.item_code = s.item_code
+    const r = rowOf(s.warehouse_code, s.item_code)
+    r.opening_qty = Math.round((s.qty - (r.in_qty - r.out_qty) - r.after_qty) * 10000) / 10000
+    r.opening_amt = Math.round((s.amount - (r.in_amt - r.out_amt) - r.after_amt) * 100) / 100
   }
-  const summary = [...map.values()].filter(r => r.opening_qty !== undefined).map(r => ({
+  // 名称补齐（期间无流水的行没有 JOIN 到名称）
+  const itemNames = new Map((db.prepare('SELECT code, name, spec, unit FROM scm_item WHERE account_set_id=?').all(aid) as any[]).map(i => [i.code, i]))
+  const whNames = new Map((db.prepare('SELECT code, name FROM scm_warehouse WHERE account_set_id=?').all(aid) as any[]).map(w => [w.code, w.name]))
+  for (const r of map.values()) {
+    if (!r.item_name) { const i = itemNames.get(r.item_code); if (i) { r.item_name = i.name; r.spec = i.spec; r.unit = i.unit } }
+    if (!r.warehouse_name) r.warehouse_name = whNames.get(r.warehouse_code) || ''
+  }
+  // P2-11：仓库参数改为过滤结果，不再直接返回空
+  const summary = [...map.values()].filter(r => r.opening_qty !== undefined).filter(r => !warehouse_code || r.warehouse_code === warehouse_code).map(r => ({
     warehouse_code: r.warehouse_code, warehouse_name: r.warehouse_name,
     item_code: r.item_code, item_name: r.item_name, spec: r.spec, unit: r.unit,
     opening_qty: r.opening_qty || 0, opening_amt: r.opening_amt || 0,

@@ -37,21 +37,51 @@ export function validateFinishQc(
   db: Database.Database,
   accountSetId: string,
   doc: { id: string; doc_no: string; doc_type: string; plan_id?: string | null },
+  lines?: Array<{ item_code?: string | null; qty?: number | null }>,
 ): string | null {
   if (doc.doc_type !== 'PF' && doc.doc_type !== 'WI') return null
   if (!isQcRequiredForFinish(db, accountSetId)) return null
 
   const sources = [doc.id, doc.plan_id].filter(Boolean) as string[]
   const placeholders = sources.map(() => '?').join(',')
-  const hit = db.prepare(
-    `SELECT qc_no FROM scm_qc_doc
+  const hits = db.prepare(
+    `SELECT id, qc_no FROM scm_qc_doc
      WHERE account_set_id=? AND qc_type='FQC' AND status='audited' AND result='pass'
-       AND source_doc_id IN (${placeholders}) LIMIT 1`,
-  ).get(accountSetId, ...sources) as { qc_no?: string } | undefined
-  if (hit) return null
+       AND source_doc_id IN (${placeholders})`,
+  ).all(accountSetId, ...sources) as Array<{ id: string; qc_no: string }>
+  if (!hits.length) {
+    return `系统参数已开启「完工入库须先质检」，单据 ${doc.doc_no} 没有判定合格的已审核完工检验单(FQC)。`
+      + '请先在「质检管理」新建 FQC 质检单（来源选本工单或本完工单）、判定合格并审核。'
+  }
+  if (!lines || !lines.length) return null
 
-  return `系统参数已开启「完工入库须先质检」，单据 ${doc.doc_no} 没有判定合格的已审核完工检验单(FQC)。`
-    + '请先在「质检管理」新建 FQC 质检单（来源选本工单或本完工单）、判定合格并审核。'
+  // P2-19：只判「存在一张合格 FQC」会让一次合格后所有成品、所有批次永久放行。
+  // 这里校验合格明细覆盖本单每个完工成品，且 合格数 − 已按该工单入库数 ≥ 本次完工数。
+  const qcPh = hits.map(() => '?').join(',')
+  const qualified = new Map<string, number>()
+  for (const row of db.prepare(
+    `SELECT item_code, COALESCE(SUM(qualified_qty),0) q FROM scm_qc_line
+     WHERE account_set_id=? AND qc_doc_id IN (${qcPh}) GROUP BY item_code`,
+  ).all(accountSetId, ...hits.map(h => h.id)) as any[]) qualified.set(String(row.item_code), Number(row.q) || 0)
+  const used = new Map<string, number>()
+  if (doc.plan_id) {
+    for (const row of db.prepare(
+      `SELECT l.item_code, COALESCE(SUM(l.qty),0) q FROM scm_doc_line l JOIN scm_doc d ON d.id=l.doc_id
+       WHERE d.account_set_id=? AND d.plan_id=? AND d.id<>? AND d.status='audited' AND d.doc_type IN ('PF','WI')
+       GROUP BY l.item_code`,
+    ).all(accountSetId, doc.plan_id, doc.id) as any[]) used.set(String(row.item_code), Number(row.q) || 0)
+  }
+  const need = new Map<string, number>()
+  for (const l of lines) {
+    const code = String(l.item_code || ''); const qty = Number(l.qty) || 0
+    if (code && qty > 0) need.set(code, (need.get(code) || 0) + qty)
+  }
+  for (const [code, qty] of need) {
+    if (!qualified.has(code)) return `合格的完工检验单（${hits.map(h => h.qc_no).join('、')}）未覆盖成品 ${code}，请先对该成品做 FQC 检验`
+    const avail = Math.round(((qualified.get(code) || 0) - (used.get(code) || 0)) * 1e6) / 1e6
+    if (qty > avail + 1e-6) return `成品 ${code} 合格数 ${qualified.get(code)}，已按合格入库 ${used.get(code) || 0}，剩余 ${avail} 不足本次完工 ${qty}，请补做 FQC 检验`
+  }
+  return null
 }
 
 /**

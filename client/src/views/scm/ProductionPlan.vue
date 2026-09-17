@@ -53,6 +53,15 @@
             <el-tag :type="STATUS_TYPE[row.status] || 'info'" size="small" effect="plain">{{ STATUS_LABEL[row.status] || row.status || '草稿' }}</el-tag>
           </template>
         </el-table-column>
+        <el-table-column v-else-if="column.key === 'mrp_status'" label="MRP" :width="cw('mrp_status', 110)" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.mrp_status" :type="row.mrp_status === 'audited' ? 'success' : 'warning'" size="small" effect="plain" :title="row.mrp_doc_no">{{ row.mrp_status === 'audited' ? '已进入MRP' : '草稿MRP' }}</el-tag>
+            <span v-else class="text-muted">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column v-else-if="column.key === 'doc_count'" label="下游单据" :width="cw('doc_count', 90)" align="right">
+          <template #default="{ row }">{{ Number(row.doc_count) || 0 }}</template>
+        </el-table-column>
         <el-table-column v-else-if="column.key === 'remark'" label="备注" prop="remark" min-width="120" :width="widths.remark" show-overflow-tooltip />
         </template>
       </el-table>
@@ -106,6 +115,8 @@ const planColumns: ColumnSetting[] = [
   { key: 'progress', label: '进度', visible: true },
   { key: 'supplier_code', label: '供应商', visible: true },
   { key: 'status', label: '状态', visible: true },
+  { key: 'mrp_status', label: 'MRP', visible: true },
+  { key: 'doc_count', label: '下游单据', visible: false },
   { key: 'remark', label: '备注', visible: true },
 ]
 const columnStorageKey = 'scm_production_plan_visible_columns'

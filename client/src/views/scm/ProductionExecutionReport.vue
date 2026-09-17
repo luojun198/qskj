@@ -11,6 +11,7 @@
     <div class="toolbar">
       <el-input v-model="filters.plan_code" clearable placeholder="工单号" style="width:150px" />
       <el-input v-model="filters.item_code" clearable placeholder="成品编码/名称" style="width:170px" />
+      <el-input v-model="filters.dept_code" clearable placeholder="部门编码" style="width:120px" />
       <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD"
         start-placeholder="开工日期起" end-placeholder="开工日期止" style="width:240px" />
       <el-select v-model="filters.status" clearable placeholder="执行状态" style="width:130px">
@@ -97,7 +98,7 @@ const pageSize = ref(50)
 const onlyWip = ref(false)
 const summary = ref<Record<string, number>>({})
 const dateRange = ref<[string, string] | []>([])
-const filters = ref({ plan_code: '', item_code: '', status: '' })
+const filters = ref({ plan_code: '', item_code: '', status: '', dept_code: '' })
 
 const params = () => ({
   ...filters.value,

@@ -29,8 +29,7 @@ export function queryStockLedger(db: Database.Database, accountSetId: string, fi
   const base = itemWarehouseConditions(filters)
   const conds = ['m.account_set_id=?', ...base.conds]
   const params: any[] = [accountSetId, ...base.params]
-  if (filters.doc_type) { conds.push('m.doc_type=?'); params.push(filters.doc_type) }
-  if (filters.partner_code) { conds.push('d.partner_code=?'); params.push(filters.partner_code) }
+  // P2-10：单据类型 / 往来单位只作用于展示行，逐笔结存必须按全部流水推进，否则筛选后「期末」≠ 实际结存
   if (filters.start_date) { conds.push('m.move_date>=?'); params.push(filters.start_date) }
   if (filters.end_date) { conds.push('m.move_date<=?'); params.push(filters.end_date) }
   const direction = filters.sort_order === 'desc' ? 'DESC' : 'ASC'
@@ -86,8 +85,12 @@ export function queryStockLedger(db: Database.Database, accountSetId: string, fi
     }
   }
   const running = new Map<string, { qty: number; amount: number }>()
-  let inQty = 0, outQty = 0, inAmount = 0, outAmount = 0
-  const enriched = rows.map(row => {
+  let inQty = 0, outQty = 0, inAmount = 0, outAmount = 0          // 全部流水（决定实际期末）
+  let shownInQty = 0, shownOutQty = 0, shownInAmount = 0, shownOutAmount = 0   // 展示行（受类型/往来筛选）
+  const matchesDisplay = (row: any) =>
+    (!filters.doc_type || row.doc_type === filters.doc_type) && (!filters.partner_code || row.partner_code === filters.partner_code)
+  const enriched: any[] = []
+  for (const row of rows) {
     const key = `${row.item_code}|${row.warehouse_code}`
     const current = running.get(key) || { ...(openingMap.get(key) || { qty: 0, amount: 0 }) }
     const sign = row.direction === 'in' ? 1 : -1
@@ -96,14 +99,18 @@ export function queryStockLedger(db: Database.Database, accountSetId: string, fi
     running.set(key, current)
     if (sign > 0) { inQty += Number(row.qty) || 0; inAmount += Number(row.amount) || 0 }
     else { outQty += Number(row.qty) || 0; outAmount += Number(row.amount) || 0 }
-    return { ...row, in_qty: sign > 0 ? Number(row.qty) || 0 : 0, out_qty: sign < 0 ? Number(row.qty) || 0 : 0,
+    if (!matchesDisplay(row)) continue
+    if (sign > 0) { shownInQty += Number(row.qty) || 0; shownInAmount += Number(row.amount) || 0 }
+    else { shownOutQty += Number(row.qty) || 0; shownOutAmount += Number(row.amount) || 0 }
+    enriched.push({ ...row, in_qty: sign > 0 ? Number(row.qty) || 0 : 0, out_qty: sign < 0 ? Number(row.qty) || 0 : 0,
       in_amount: sign > 0 ? Number(row.amount) || 0 : 0, out_amount: sign < 0 ? Number(row.amount) || 0 : 0,
-      running_qty: current.qty, running_amount: current.amount }
-  })
+      running_qty: current.qty, running_amount: current.amount })
+  }
   const openingQty = [...openingMap.values()].reduce((sum, row) => sum + row.qty, 0)
   const openingAmount = [...openingMap.values()].reduce((sum, row) => sum + row.amount, 0)
-  const summary = { opening_qty: r6(openingQty), opening_amount: r2(openingAmount), in_qty: r6(inQty), in_amount: r2(inAmount),
-    out_qty: r6(outQty), out_amount: r2(outAmount), closing_qty: r6(openingQty + inQty - outQty),
+  // 收发合计按展示行；期末按全部流水（筛选只改变看到哪些行，不改变结存事实）
+  const summary = { opening_qty: r6(openingQty), opening_amount: r2(openingAmount), in_qty: r6(shownInQty), in_amount: r2(shownInAmount),
+    out_qty: r6(shownOutQty), out_amount: r2(shownOutAmount), closing_qty: r6(openingQty + inQty - outQty),
     closing_amount: r2(openingAmount + inAmount - outAmount) }
   const page = Math.max(1, Number(filters.page) || 1)
   const pageSize = Math.min(500, Math.max(10, Number(filters.page_size) || 50))

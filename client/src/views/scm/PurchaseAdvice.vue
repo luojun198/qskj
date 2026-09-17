@@ -41,7 +41,12 @@ const router = useRouter()
 const rows = ref<any[]>([]); const loading = ref(false)
 const num = (v: any) => { const n = Number(v) || 0; return Number.isInteger(n) ? String(n) : n.toFixed(3).replace(/\.?0+$/, '') }
 async function load() { loading.value = true; try { const r = await scmApi.getPurchaseAdvice(); if (r.code === 0) rows.value = r.data || [] } finally { loading.value = false } }
-function createPO(_row?: any) { router.push({ name: 'ScmDocNew', query: { doc_type: 'PO' } }) }
+/** 生成采购：带上物料/建议量/默认供应商到采购订单新增页（§5.3，原来参数完全未使用） */
+function createPO(row?: any) {
+  const query: Record<string, string> = { doc_type: 'PO' }
+  if (row?.item_code) { query.prefill_item = String(row.item_code); if (Number(row.advice_qty) > 0) query.prefill_qty = String(row.advice_qty); if (row.supplier_code) query.prefill_supplier = String(row.supplier_code) }
+  router.push({ name: 'ScmDocNew', query })
+}
 onMounted(load)
 </script>
 

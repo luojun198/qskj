@@ -123,23 +123,29 @@ describe('computeProductionPlanActionState 工单动作状态', () => {
     expect(restored).toMatchObject({ status: 'available', remaining_qty: 20, remaining_lines: 1 })
   })
 
-  it('完工草稿不锁定领料，已审核完工入库锁定领料', () => {
+  it('P2-18 完工草稿 / 分批完工不锁定领料，工单全部完工后锁定', () => {
     addIssueDoc(db, 'PF-DRAFT', 'draft', 1, 'PF')
     expect(computeProductionPlanActionState(db, AID, RELEASED_PLAN).issue.status).toBe('available')
 
-    addIssueDoc(db, 'PF-001', 'audited', 1, 'PF')
+    // 第一批完工已审核但未做完：剩余批次仍可领料
+    addIssueDoc(db, 'PF-001', 'audited', 4, 'PF')
+    db.prepare('UPDATE scm_production_plan_product SET finished_qty=4 WHERE id=?').run('P1-PROD')
+    expect(computeProductionPlanActionState(db, AID, RELEASED_PLAN).issue.status).toBe('available')
+
+    db.prepare('UPDATE scm_production_plan_product SET finished_qty=8, scrap_qty=2 WHERE id=?').run('P1-PROD')
     expect(computeProductionPlanActionState(db, AID, RELEASED_PLAN).issue).toMatchObject({
       status: 'unavailable',
-      reason: '已有已审核完工入库单 PF-001，领料已锁定',
+      reason: '工单已全部完工（末批 完工入库单 PF-001），领料已锁定',
     })
   })
 
-  it('已审核委外入库同样锁定委外发货', () => {
-    addIssueDoc(db, 'WI-001', 'audited', 1, 'WI')
+  it('委外工单全部入库后锁定委外发货', () => {
+    addIssueDoc(db, 'WI-001', 'audited', 10, 'WI')
+    db.prepare('UPDATE scm_production_plan_product SET finished_qty=10 WHERE id=?').run('P1-PROD')
     const state = computeProductionPlanActionState(db, AID, { ...RELEASED_PLAN, plan_type: 'outsource' }).issue
     expect(state).toMatchObject({
       status: 'unavailable',
-      reason: '已有已审核委外入库单 WI-001，领料已锁定',
+      reason: '工单已全部完工（末批 委外入库单 WI-001），领料已锁定',
     })
   })
 

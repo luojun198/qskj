@@ -345,6 +345,56 @@ async function main() {
     assert('⑬ 账龄返回未到期列', bal930 && 'not_due' in bal930)
   }
 
+  // ── 阶段 D ──────────────────────────────────────────────
+  // ⑭ 主数据删除引用校验（P2-1）
+  {
+    const items = (await get('/api/scm/items?keyword=M1&page=1&page_size=10')).data
+    const m1 = (items.list || items).find(i => i.code === 'M1')
+    const del = await api('DELETE', `/api/scm/items/${m1.id}`, undefined, { allowError: true })
+    assert('⑭ [P2-1] 有库存/单据引用的物料不能删除', del.status === 409 && /不能删除/.test(del.message || ''), del.message)
+    const partners = (await get('/api/scm/partners')).data
+    const cus = (partners.list || partners).find(p => p.code === 'CUS1')
+    const delP = await api('DELETE', `/api/scm/partners/${cus.id}`, undefined, { allowError: true })
+    assert('⑭ [P2-1] 有未核销往来的客户不能删除', delP.status === 409 && /未核销往来/.test(delP.message || ''), delP.message)
+    const whs = (await get('/api/scm/warehouses')).data
+    const w1 = (whs.list || whs).find(w => w.code === 'W1')
+    const delW = await api('DELETE', `/api/scm/warehouses/${w1.id}`, undefined, { allowError: true })
+    assert('⑭ [P2-1] 有库存结存的仓库不能删除', delW.status === 409 && /库存结存/.test(delW.message || ''), delW.message)
+  }
+  // ⑮ 分页参数容错（P2-4）
+  {
+    const r = await api('GET', '/api/scm/docs?page=abc&page_size=-5', undefined, { allowError: true })
+    assert('⑮ [P2-4] page=abc 不再 500，回落到第 1 页', r.status === 200 && r.data.page === 1 && r.data.page_size === 50, `status=${r.status} page=${r.data?.page}`)
+  }
+  // ⑯ 允许负库存仓库参数（P2-7）
+  {
+    await ensure('/api/scm/warehouses', { code: 'W9', name: '负库存仓' })
+    const cur = (await get('/api/scm/params')).data
+    const list = Array.isArray(cur) ? cur : (cur.list || [])
+    const others = list.filter(p => p.param_key !== 'scm:negative_stock_warehouses')
+    const save = await api('PUT', '/api/scm/params', { params: [...others, { param_key: 'scm:negative_stock_warehouses', param_value: JSON.stringify(['W9']) }] }, { allowError: true })
+    if (save.status !== 200) bad('⑯ 保存负库存仓库参数', save.message)
+    const so = await createDoc({ doc_type: 'SO', doc_date: D, partner_code: 'CUS1', warehouse_code: 'W9',
+      lines: [{ item_code: 'M1', qty: 3, price: 100, tax_rate: 13, tax_amount: 39, warehouse_code: 'W9' }] })
+    const ra = await audit(so.id)
+    assert('⑯ [P2-7] 允许负库存的仓库可无库存出库', ra.code === 0, ra.message)
+    const st = await stock('W9', 'M1')
+    assert('⑯ 负库存仓结存为 −3', Number(st.qty) === -3, `qty=${st.qty}`)
+    const so2 = await createDoc({ doc_type: 'SO', doc_date: D, partner_code: 'CUS1', warehouse_code: 'W2',
+      lines: [{ item_code: 'M1', qty: 3, price: 100, tax_rate: 13, tax_amount: 39, warehouse_code: 'W2' }] })
+    const ra2 = await audit(so2.id)
+    assert('⑯ 未允许负库存的仓库仍拦截', ra2.code !== 0 && /库存不足/.test(ra2.message || ''), ra2.message)
+  }
+  // ⑰ 库存明细账筛选后期末 = 实际结存（P2-10）
+  {
+    const all = (await get('/api/scm/stock/ledger?item_code=M1&warehouse_code=W1')).data
+    const onlyPI = (await get('/api/scm/stock/ledger?item_code=M1&warehouse_code=W1&doc_type=PI')).data
+    assert('⑰ [P2-10] 按单据类型筛选后期末数量仍等于实际结存', onlyPI.summary.closing_qty === all.summary.closing_qty && onlyPI.rows.every(r => r.doc_type === 'PI'),
+      `all=${all.summary.closing_qty} onlyPI=${onlyPI.summary.closing_qty} rows=${onlyPI.rows.length}`)
+    const sum = (await get('/api/scm/stock/summary?warehouse_code=W1')).data.summary
+    assert('⑰ [P2-11] 收发存汇总带仓库参数返回该仓数据', Array.isArray(sum) && sum.length > 0 && sum.every(r => r.warehouse_code === 'W1'), `rows=${sum?.length}`)
+  }
+
   // 汇总
   const fails = results.filter(r => !r.pass)
   console.log(`\n==== ${results.length} 项断言，${fails.length} 项失败 ====`)

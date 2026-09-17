@@ -890,6 +890,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: 'BOM多级展开', parent: '供应链' },
       },
       {
+        path: 'scm/boms/where-used',
+        name: 'ScmBomWhereUsed',
+        component: () => import('@/views/scm/BomWhereUsed.vue'),
+        meta: { title: 'BOM反查用途', parent: '供应链' },
+      },
+      {
         path: 'scm/sales-order-relations',
         name: 'ScmSalesOrderRelations',
         component: () => import('@/views/scm/SalesOrderRelations.vue'),

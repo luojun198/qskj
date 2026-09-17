@@ -3,6 +3,7 @@
     
     <div class="filter-row" style="margin-bottom: 8px;">
       <el-button type="primary" size="small" @click="openAdd"><el-icon><Plus /></el-icon>新增BOM</el-button>
+      <el-button size="small" @click="openWhereUsed()"><el-icon><Search /></el-icon>反查用途</el-button>
     </div>
 
     <div class="page-body">
@@ -13,9 +14,10 @@
         <el-table-column label="物料名称" prop="item_name" :width="cw('item_name', 150)" />
         <el-table-column label="规格" prop="spec" :width="cw('spec', 120)" show-overflow-tooltip />
         <el-table-column label="状态" prop="status" :width="cw('status', 80)" />
-        <el-table-column label="操作" column-key="操作" :width="cw('操作', 170)" fixed="right">
+        <el-table-column label="操作" column-key="操作" :width="cw('操作', 210)" fixed="right">
           <template #default="{ row }">
             <el-button link type="success" size="small" @click="openTree(row)">展开</el-button>
+            <el-button link type="info" size="small" @click="openWhereUsed(row.item_code)">用途</el-button>
             <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
             <el-button link type="danger" size="small" @click="handleDelete(row)">删除</el-button>
           </template>
@@ -29,7 +31,7 @@
 import { ref, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus } from '@element-plus/icons-vue'
+import { Plus, Search } from '@element-plus/icons-vue'
 import { scmApi } from '@/api/scm'
 import { useListColumnWidth } from '@/composables/useColumnWidthMemory'
 
@@ -65,6 +67,11 @@ function openEdit(row: any) {
 
 function openTree(row: any) {
   router.push(`/scm/boms/${row.id}/tree`)
+}
+
+/** BOM 反查用途全页面（有物料时直接带入） */
+function openWhereUsed(itemCode?: string) {
+  router.push({ path: '/scm/boms/where-used', query: itemCode ? { item_code: itemCode } : {} })
 }
 
 async function handleDelete(row: any) {
