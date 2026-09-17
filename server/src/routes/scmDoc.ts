@@ -1229,6 +1229,35 @@ function checkAggregatedOutStock(
   return null
 }
 
+/** 物料参考价值：参考成本 → 进价 → 0（副产品固定价值、联产品分摊权重） */
+function itemRefValue(db: ReturnType<typeof getDb>, aid: string, itemCode: string): number {
+  const it = getItem(db, aid, itemCode)
+  return Number(it?.ref_cost) || Number(it?.purchase_price) || 0
+}
+
+type PlanOutput = { kind: 'by_product' | 'co_product'; item_code: string; qty: number; unit_value: number; unit?: string | null }
+
+/** 某成品按 BOM 产出的副产品 / 联产品（数量 = BOM 行用量 × 本次完工数）。序列号物料暂不支持。 */
+function planOutputLines(db: ReturnType<typeof getDb>, aid: string, bomId: string | null | undefined, mainQty: number, mainItem: string): PlanOutput[] {
+  if (!bomId || !(mainQty > 0)) return []
+  const rows = db.prepare("SELECT item_code, qty, unit, line_type FROM scm_bom_line WHERE bom_id=? AND line_type IN ('by_product','co_product') ORDER BY seq").all(bomId) as any[]
+  return rows.map(r => {
+    const qty = r6((Number(r.qty) || 0) * mainQty)
+    if (qty <= 0) return null
+    const it = getItem(db, aid, r.item_code)
+    if (!it) throw new Error(`BOM 产出物料 ${r.item_code} 不存在`)
+    if (Number(it.serial_flag)) throw new Error(`副产品/联产品 ${r.item_code} 为序列号物料，完工入库暂不支持自动产出，请改为手工入库`)
+    if (r.item_code === mainItem) throw new Error(`BOM 产出物料 ${r.item_code} 与主产品相同`)
+    return { kind: r.line_type as PlanOutput['kind'], item_code: r.item_code, qty, unit_value: itemRefValue(db, aid, r.item_code), unit: r.unit || it.unit || null }
+  }).filter(Boolean) as PlanOutput[]
+}
+
+function insertOutputLine(db: ReturnType<typeof getDb>, aid: string, doc: any, seq: number, o: PlanOutput, wh: string, unitCost: number, amount: number) {
+  db.prepare(`INSERT INTO scm_doc_line (id,account_set_id,doc_id,seq,item_code,warehouse_code,qty,price,amount,unit_cost,unit,line_role,remark,field_values)
+    VALUES (?,?,?,?,?,?,?,0,0,?,?,?,?,'{}')`).run(uuidv4(), aid, doc.id, seq, o.item_code, wh, o.qty, unitCost, o.unit ?? null, o.kind,
+    o.kind === 'by_product' ? `副产品（按参考价值 ${o.unit_value} 扣减主产品料成本，合计 ${amount}）` : `联产品（按数量×参考成本分摊料成本，合计 ${amount}）`)
+}
+
 /**
  * 通用入库分支的单位成本。
  *  - 行已带成本（下推带入的来源出库成本、盘点/退料回写等）→ 直接用；
@@ -1592,7 +1621,7 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
       // 委外入库另加「加工费」(行 process_fee 单价)：成品成本=料分摊+加工费；加工费生成委外厂应付。
       const sum = getPlanCostSummary(db, aid, doc.plan_id, 0)   // 本次入库尚未过账（finished_qty 未变）
       const issueUnitCost = sum.issueUnitCost
-      const planProducts = db.prepare('SELECT id, item_code, plan_qty, finished_qty, COALESCE(scrap_qty,0) AS scrap_qty, labor_absorbed, overhead_absorbed FROM scm_production_plan_product WHERE plan_id=? AND account_set_id=?').all(doc.plan_id, aid) as any[]
+      const planProducts = db.prepare('SELECT id, item_code, plan_qty, finished_qty, COALESCE(scrap_qty,0) AS scrap_qty, labor_absorbed, overhead_absorbed, bom_id FROM scm_production_plan_product WHERE plan_id=? AND account_set_id=?').all(doc.plan_id, aid) as any[]
       const prodByItem = new Map<string, any>(planProducts.map(p => [p.item_code, p]))
       // 各完工行的料上卷成本（不含加工费）+ 本批各成品完工数
       const lineRollup: number[] = []
@@ -1634,6 +1663,7 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
       for (const l of lines) { if (Number(l.qty) > 0) { const p = prodByItem.get(l.item_code); if (p) lineCountByProduct.set(p.id, (lineCountByProduct.get(p.id) || 0) + 1) } }
       const allocL = new Map<string, number>(); const allocO = new Map<string, number>(); const seen = new Map<string, number>()
       let inTotal = 0; let feeTotal = 0; let feeTaxTotal = 0; let i = 0
+      let outputSeqBase = lines.reduce((m: number, l: any) => Math.max(m, Number(l.seq) || 0), 0)   // 副/联产品行接在现有行之后
       for (const l of lines) {
         if (!l.qty || l.qty <= 0) { i++; continue }
         const q = Number(l.qty) || 0
@@ -1653,11 +1683,44 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
           allocL.set(prod.id, round2((allocL.get(prod.id) || 0) + lineLabor))
           allocO.set(prod.id, round2((allocO.get(prod.id) || 0) + lineOverhead))
         }
-        const inCostUnit = round2(matCost / q + feeUnit + (lineLabor + lineOverhead) / q)
+        const wh = l.warehouse_code || doc.warehouse_code
+        // 副产品 / 联产品（BOM 行类型 by_product / co_product，阶段 C-1 项 3）：
+        //   副产品按档案参考成本（参考成本 → 进价）作固定价值从本行料成本中扣减后入库；
+        //   联产品与主产品按「数量 × 参考成本」权重分摊扣减副产品后的料成本；人工/制费全部留在主产品。
+        //   产出行以 line_role='by_product'/'co_product' 追加到本单明细，凭证按行 借存货/贷生产成本，反审核时删除。
+        const outputs = doc.doc_type === 'PF' ? planOutputLines(db, aid, prod?.bom_id, q, l.item_code) : []
+        let mainMat = matCost
+        let outSeq = outputSeqBase
+        for (const o of outputs.filter(x => x.kind === 'by_product')) {
+          const v = round2(Math.min(mainMat, o.unit_value * o.qty))
+          mainMat = round2(mainMat - v)
+          outSeq++
+          const unit = o.qty > 0 ? round4(v / o.qty) : 0
+          insertOutputLine(db, aid, doc, outSeq, o, wh, unit, v)
+          applyMovingAvgIn(db, aid, wh, o.item_code, o.qty, unit, { type: doc.doc_type, no: doc.doc_no, seq: outSeq, date: doc.doc_date })
+          inTotal = round2(inTotal + v)
+        }
+        const cos = outputs.filter(x => x.kind === 'co_product')
+        if (cos.length) {
+          const mainW = q * (itemRefValue(db, aid, l.item_code) || 1)
+          const totalW = mainW + cos.reduce((s, o) => s + o.qty * (o.unit_value || 1), 0)
+          let allocated = 0
+          for (const o of cos) {
+            const v = round2(mainMat * (o.qty * (o.unit_value || 1)) / totalW)
+            allocated = round2(allocated + v)
+            outSeq++
+            const unit = o.qty > 0 ? round4(v / o.qty) : 0
+            insertOutputLine(db, aid, doc, outSeq, o, wh, unit, v)
+            applyMovingAvgIn(db, aid, wh, o.item_code, o.qty, unit, { type: doc.doc_type, no: doc.doc_no, seq: outSeq, date: doc.doc_date })
+            inTotal = round2(inTotal + v)
+          }
+          mainMat = round2(mainMat - allocated)
+        }
+        outputSeqBase = outSeq
+        const inCostUnit = round2(mainMat / q + feeUnit + (lineLabor + lineOverhead) / q)
         feeTotal = round2(feeTotal + feeUnit * q)
         feeTaxTotal = round2(feeTaxTotal + feeTax)
         inTotal = round2(inTotal + inCostUnit * q)
-        const wh = l.warehouse_code || doc.warehouse_code
         applyMovingAvgIn(db, aid, wh, l.item_code, l.qty, inCostUnit, { type: doc.doc_type, no: doc.doc_no, seq: l.seq, date: doc.doc_date })
         db.prepare('UPDATE scm_doc_line SET unit_cost=?, labor_cost=?, overhead_cost=? WHERE id=?').run(inCostUnit, lineLabor, lineOverhead, l.id)
         i++
@@ -1847,6 +1910,8 @@ export const unauditDocHandler = (req: AuthRequest, res: Response) => {
       }
       syncPlanScrapQty(db, aid, doc.plan_id)
     }
+    // 完工入库(PF) 反审核：删除审核时追加的副产品/联产品产出行（库存移动已由 reverseDocMoves 回退）
+    if (doc.doc_type === 'PF') db.prepare("DELETE FROM scm_doc_line WHERE doc_id=? AND line_role IN ('by_product','co_product')").run(doc.id)
     // 结案结转(CA) 反审核：回退成品已吸收的人工/制费（库存金额已由 reverseDocMoves 回退）
     if (doc.doc_type === 'CA' && doc.plan_id) {
       const caLines = db.prepare('SELECT item_code, COALESCE(SUM(labor_cost),0) lc, COALESCE(SUM(overhead_cost),0) oc FROM scm_doc_line WHERE doc_id=? GROUP BY item_code').all(doc.id) as any[]

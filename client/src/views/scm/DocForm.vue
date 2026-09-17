@@ -496,6 +496,8 @@
           <template #default="{ row }">
             <template v-if="isView">
               <span>{{ row.item_code }}</span>
+              <!-- 完工入库审核时按 BOM 自动产出的副产品/联产品行 -->
+              <el-tag v-if="row.line_role === 'by_product' || row.line_role === 'co_product'" size="small" effect="plain" type="warning" style="margin-left:4px">{{ row.line_role === 'by_product' ? '副产品' : '联产品' }}</el-tag>
             </template>
             <template v-else>
               <ItemPicker v-if="isEditing(row, 'item_code')" v-model="row.item_code" :warehouse-code="lineStockWarehouse(row)" auto-open :focus-search="itemPickerFocusSearch" :browsable="false" :default-stock-only="isOutbound" @pick="(item:any) => { onItemPick(row, item); stopEdit() }" />

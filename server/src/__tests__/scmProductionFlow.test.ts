@@ -32,7 +32,7 @@ function createDb() {
     CREATE TABLE system_params (id TEXT, account_set_id TEXT, param_key TEXT, param_value TEXT);
     CREATE TABLE scm_item (id TEXT, account_set_id TEXT, code TEXT, name TEXT,
       batch_flag INTEGER DEFAULT 0, batch_out_mode TEXT, shelf_life_days INTEGER DEFAULT 0,
-      serial_flag INTEGER DEFAULT 0, default_warehouse_code TEXT, inv_account TEXT);
+      serial_flag INTEGER DEFAULT 0, default_warehouse_code TEXT, inv_account TEXT, ref_cost REAL DEFAULT 0, purchase_price REAL DEFAULT 0, unit TEXT);
     CREATE TABLE scm_doc (id TEXT, account_set_id TEXT, doc_type TEXT, doc_no TEXT, status TEXT,
       doc_date TEXT, warehouse_code TEXT, partner_code TEXT, plan_id TEXT, bom_id TEXT,
       voucher_id TEXT, total_amount REAL, auditor TEXT, audited_at TEXT, updated_at TEXT,
@@ -41,7 +41,7 @@ function createDb() {
       warehouse_code TEXT, qty REAL, price REAL, amount REAL, unit_cost REAL, tax_amount REAL DEFAULT 0,
       labor_cost REAL DEFAULT 0, overhead_cost REAL DEFAULT 0, process_fee REAL DEFAULT 0,
       batch_no TEXT, serial_nos TEXT, source_line_id TEXT, field_values TEXT, line_role TEXT,
-      product_group INTEGER, remark TEXT);
+      product_group INTEGER, remark TEXT, unit TEXT);
     CREATE TABLE scm_doc_type (account_set_id TEXT, code TEXT, category TEXT, direction TEXT, affects_stock INTEGER);
     CREATE TABLE scm_stock (id TEXT, account_set_id TEXT, warehouse_code TEXT, item_code TEXT,
       qty REAL DEFAULT 0, amount REAL DEFAULT 0, avg_cost REAL DEFAULT 0, updated_at TEXT);
@@ -323,6 +323,42 @@ describe('完工入库(PF) 审核', () => {
     const sum = costSummary()
     expect(sum.wip).toBe(0)
     expect(sum.laborWip).toBe(0)
+  })
+
+  it('副产品按参考价值扣减主产品料成本、联产品按权重分摊（C-1 项 3）', () => {
+    // BOM：主产品 FP，每件产出副产品 BY 0.5（参考成本 4）、联产品 CO 1（参考成本 10）；FP 参考成本 20
+    testDb.prepare("INSERT INTO scm_item (id,account_set_id,code,name,inv_account,ref_cost) VALUES (?,?,'BY','副产品','1405',4)").run(uuidv4(), AID)
+    testDb.prepare("INSERT INTO scm_item (id,account_set_id,code,name,inv_account,ref_cost) VALUES (?,?,'CO','联产品','1405',10)").run(uuidv4(), AID)
+    testDb.prepare("UPDATE scm_item SET ref_cost=20 WHERE code='FP'").run()
+    testDb.prepare("INSERT INTO scm_bom (id,account_set_id,code,item_code,status,is_default) VALUES ('B-FP',?,'B-FP','FP','active',1)").run(AID)
+    testDb.prepare("INSERT INTO scm_bom_line (id,account_set_id,bom_id,seq,item_code,qty,line_type) VALUES ('B-FP-1',?,'B-FP',1,'R1',2,'component')").run(AID)
+    testDb.prepare("INSERT INTO scm_bom_line (id,account_set_id,bom_id,seq,item_code,qty,line_type) VALUES ('B-FP-2',?,'B-FP',2,'BY',0.5,'by_product')").run(AID)
+    testDb.prepare("INSERT INTO scm_bom_line (id,account_set_id,bom_id,seq,item_code,qty,line_type) VALUES ('B-FP-3',?,'B-FP',3,'CO',1,'co_product')").run(AID)
+    testDb.prepare("UPDATE scm_production_plan_product SET bom_id='B-FP' WHERE id=?").run(PRODUCT)
+    issueMaterials()
+    seedWorkReport(30, 20)
+    const pf = seedDoc('PF', 'PF-BP', 'WF', [{ item: 'FP', qty: 10 }])
+    const res = callHandler(auditDocHandler, pf)
+    expect(res.body.message).toBeUndefined()
+    expect(res.body.code).toBe(0)
+    // 料 250 − 副产品 5×4=20 = 230；联产品权重 10×10=100 vs 主产品 10×20=200 → 联产品 76.67、主产品 153.33
+    // 主产品单价 = (153.33 + 人工 30 + 制费 20) / 10 = 20.33
+    expect(stock('WF', 'BY')).toMatchObject({ qty: 5, amount: 20 })
+    expect(stock('WF', 'CO')).toMatchObject({ qty: 10, amount: 76.67 })
+    expect(stock('WF', 'FP')).toMatchObject({ qty: 10, amount: 203.3 })
+    const outLines = testDb.prepare("SELECT item_code, line_role, qty, unit_cost FROM scm_doc_line WHERE doc_id=? AND line_role IN ('by_product','co_product') ORDER BY seq").all(pf) as any[]
+    expect(outLines.map(l => [l.item_code, l.line_role, l.qty])).toEqual([['BY', 'by_product', 5], ['CO', 'co_product', 10]])
+    // 料在制仍归零（副/联产品的价值也来自领料）
+    expect(costSummary().wip).toBe(0)
+    // 凭证：借存货 20 + 76.67 + 203.3 = 299.97 ≈ 300（尾差落最大分录）
+    const gv = callHandler(genVoucherHandler, pf)
+    expect(gv.body.code).toBe(0)
+    // 反审核：产出行删除、库存回退
+    testDb.prepare('UPDATE scm_doc SET voucher_id=NULL WHERE id=?').run(pf)
+    expect(callHandler(unauditDocHandler, pf).body.code).toBe(0)
+    expect(testDb.prepare("SELECT COUNT(*) c FROM scm_doc_line WHERE doc_id=? AND line_role IN ('by_product','co_product')").get(pf)).toMatchObject({ c: 0 })
+    expect(stock('WF', 'BY')?.qty ?? 0).toBe(0)
+    expect(stock('WF', 'FP')?.qty ?? 0).toBe(0)
   })
 
   it('分批完工：首批按进度暂提人工制费，在制留存余额', () => {

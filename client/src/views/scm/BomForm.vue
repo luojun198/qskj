@@ -92,13 +92,18 @@
             <div v-else class="editable-cell">{{ row.scrap_rate }}</div>
           </template>
         </el-table-column>
-        <!-- 阶段 C 决策：副产品/联产品的产出与成本冲减尚未实现，UI 收敛为「主件」，历史数据里的其它类型只读显示 -->
         <el-table-column label="行类型" width="110">
+          <template #header>
+            行类型
+            <el-tooltip content="主件：用料，进需求/领料/成本上卷。副产品：完工入库时按 BOM 用量 × 完工数自动产出，按物料档案参考成本（无则进价）作固定价值扣减主产品料成本。联产品：同样自动产出，与主产品按「数量 × 参考成本」分摊料成本；人工/制费全部归主产品。" placement="top">
+              <el-icon style="vertical-align:middle"><QuestionFilled /></el-icon>
+            </el-tooltip>
+          </template>
           <template #default="{ row }">
             <el-select v-model="row.line_type" size="small" style="width:100%">
               <el-option label="主件" value="component" />
-              <el-option v-if="row.line_type === 'by_product'" label="副产品（未启用）" value="by_product" disabled />
-              <el-option v-if="row.line_type === 'co_product'" label="联产品（未启用）" value="co_product" disabled />
+              <el-option label="副产品" value="by_product" />
+              <el-option label="联产品" value="co_product" />
             </el-select>
           </template>
         </el-table-column>
