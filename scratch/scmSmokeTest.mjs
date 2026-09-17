@@ -1,0 +1,264 @@
+/**
+ * 进销存（SCM）回归冒烟脚本 —— 评审计划「阶段 0-2」
+ *
+ * 在独立数据库副本 + 独立端口上起真实服务，用 HTTP 走完整链路并断言：
+ *   ① 采购入库（含税 + 整单折扣）→ 库存金额 / 往来
+ *   ② 采购入库 → 下推采购发票（金额不一致）→ 反审核发票 → 来源单往来还原          [P0-1 / FIX-203]
+ *   ③ 销售发货 → 销售退货 → 往来余额 = 发货 − 退货                                  [P0-2 / FIX-204]
+ *   ④ 序列号物料：入库 → 调拨 → 反审核调拨 → 档案保留 / 可重新审核                  [P0-3 / FIX-205]
+ *   ⑤ 序列号物料：组装消耗 → 该序列号不能再销售出库；反审核组装恢复                  [P0-4 / FIX-206]
+ *   ⑥ 批次物料：组装消耗批次                                                        [P0-4 / FIX-206]
+ *   ⑦ 折扣是否进入库存成本（P1-1，当前记录现状）
+ *
+ * 运行：node scratch/scmSmokeTest.mjs
+ */
+import Database from 'better-sqlite3'
+import { spawn } from 'node:child_process'
+import { mkdirSync, rmSync } from 'node:fs'
+import { resolve, join } from 'node:path'
+import { tmpdir } from 'node:os'
+
+const ROOT = resolve(import.meta.dirname, '..')
+const SRC_DB = join(ROOT, 'data', 'finance-0523.db')
+const WORK = join(tmpdir(), 'cw-scm-smoke')
+const TEMP_DB = join(WORK, 'finance.db')
+const PORT = 3198
+const BASE = `http://127.0.0.1:${PORT}`
+const TEST_SET = '1409b0d2-7e8c-4e27-ab5f-5e143be3e89d'   // ZT001 测试
+const D = '2026-09-10'
+const results = []
+let step = 0
+function ok(name, detail) { step++; results.push({ n: step, name, pass: true, detail }); console.log(`PASS ${step}. ${name}${detail ? ' — ' + detail : ''}`) }
+function bad(name, detail) { step++; results.push({ n: step, name, pass: false, detail }); console.log(`FAIL ${step}. ${name}${detail ? ' — ' + detail : ''}`) }
+function assert(name, cond, detail) { (cond ? ok : bad)(name, detail) }
+/** 已知缺陷（评审已登记、排在后续阶段修复）：不通过时记 KNOWN 而不是 FAIL，转绿后提示可升级为 assert */
+function known(name, cond, detail) { step++; results.push({ n: step, name, pass: true, known: !cond, detail }); console.log(`${cond ? 'PASS(已修复，可改为 assert)' : 'KNOWN'} ${step}. ${name}${detail ? ' — ' + detail : ''}`) }
+const sleep = ms => new Promise(r => setTimeout(r, ms))
+const r2 = n => Math.round((Number(n) || 0) * 100) / 100
+
+function prepDb() {
+  rmSync(WORK, { recursive: true, force: true })
+  mkdirSync(WORK, { recursive: true })
+  const src = new Database(SRC_DB, { readonly: true })
+  return src.backup(TEMP_DB).then(() => src.close())
+}
+
+async function waitServer(timeoutMs = 90000) {
+  const t0 = Date.now()
+  while (Date.now() - t0 < timeoutMs) {
+    try { const r = await fetch(`${BASE}/api/auth/account-sets`); if (r.ok) return true } catch { /* not up */ }
+    await sleep(700)
+  }
+  throw new Error('server did not come up in time')
+}
+
+let child, log = ''
+async function startServer() {
+  child = spawn(process.execPath, ['--import', 'tsx/esm', 'src/index.ts'], {
+    cwd: join(ROOT, 'server'),
+    env: { ...process.env, DB_PATH: TEMP_DB, PORT: String(PORT), NODE_ENV: 'test' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  child.stdout.on('data', d => { log += d.toString() })
+  child.stderr.on('data', d => { log += d.toString() })
+  try { await waitServer() } catch (e) { console.log('--- server log ---\n' + log.slice(-4000)); throw e }
+}
+
+let token = ''
+async function api(method, path, body, { allowError = false } = {}) {
+  const r = await fetch(`${BASE}${path}`, {
+    method,
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+  const txt = await r.text()
+  let json
+  try { json = txt ? JSON.parse(txt) : {} } catch { json = { raw: txt } }
+  if (!r.ok && !allowError) throw new Error(`${method} ${path} -> ${r.status} ${JSON.stringify(json).slice(0, 300)}`)
+  return { status: r.status, ...json }
+}
+const post = (p, b, o) => api('POST', p, b, o)
+const get = p => api('GET', p)
+
+// ── 业务辅助 ───────────────────────────────────────────────
+async function ensure(path, body) {
+  const r = await post(path, body, { allowError: true })
+  if (r.status !== 200 && !/已存在/.test(r.message || '')) throw new Error(`${path} ${r.status} ${r.message}`)
+}
+async function createDoc(doc) {
+  const r = await post('/api/scm/docs', doc)
+  return r.data   // { id, doc_no }
+}
+async function audit(id, extra = {}) { return post(`/api/scm/docs/${id}/audit`, { apply_item_default_warehouses: true, ...extra }, { allowError: true }) }
+async function unaudit(id) { return post(`/api/scm/docs/${id}/unaudit`, {}, { allowError: true }) }
+async function ledger(partner) { return (await get(`/api/scm/arap/${partner}`)).data }
+async function serial(sn) { return (await get(`/api/scm/serials?serial_no=${encodeURIComponent(sn)}`)).data.find(s => s.serial_no === sn) }
+async function stock(wh, item) {
+  const list = (await get(`/api/scm/stock?warehouse_code=${wh}&keyword=${item}`)).data
+  const rows = Array.isArray(list) ? list : (list.list || [])
+  return rows.find(r => r.item_code === item && r.warehouse_code === wh) || { qty: 0, amount: 0, avg_cost: 0 }
+}
+function dbq(sql, ...ps) { const db = new Database(TEMP_DB, { readonly: true }); try { return db.prepare(sql).all(...ps) } finally { db.close() } }
+
+async function main() {
+  await prepDb()
+  await startServer()
+
+  // 登录
+  {
+    const lr = await fetch(`${BASE}/api/auth/login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'admin123', targetAccountSetId: TEST_SET }),
+    }).then(x => x.json())
+    token = lr.token
+    assert('admin 登录测试账套', !!token)
+  }
+
+  // 主数据
+  const types = (await get('/api/scm/docs/types')).data
+  assert('单据类型已种子化', types.some(t => t.code === 'PI') && types.some(t => t.code === 'AS'), `${types.length} 种`)
+  for (const [code, name] of [['W1', '主仓'], ['W2', '分仓']]) await ensure('/api/scm/warehouses', { code, name })
+  await ensure('/api/scm/partners', { code: 'SUP1', name: '供应商甲', partner_type: 'supplier', ar_account: '1122', ap_account: '2202' })
+  await ensure('/api/scm/partners', { code: 'CUS1', name: '客户乙', partner_type: 'customer', ar_account: '1122', ap_account: '2202' })
+  await ensure('/api/scm/items', { code: 'M1', name: '普通物料', unit: '个', purchase_price: 100, sale_price: 150, default_warehouse_code: 'W1' })
+  await ensure('/api/scm/items', { code: 'SN1', name: '序列号物料', unit: '台', serial_flag: 1, purchase_price: 500, default_warehouse_code: 'W1' })
+  await ensure('/api/scm/items', { code: 'BT1', name: '批次物料', unit: '箱', batch_flag: 1, purchase_price: 20, default_warehouse_code: 'W1' })
+  await ensure('/api/scm/items', { code: 'FP1', name: '组装成品', unit: '套', serial_flag: 1, default_warehouse_code: 'W1' })
+  ok('主数据就绪', '2 仓 / 2 往来 / 4 物料')
+
+  // ── ① 采购入库：含税 + 整单折扣 ─────────────────────────
+  {
+    const pi = await createDoc({ doc_type: 'PI', doc_date: D, partner_code: 'SUP1', warehouse_code: 'W1', discount_rate: 9.5,
+      lines: [{ item_code: 'M1', qty: 10, price: 100, tax_rate: 13, tax_amount: 123.5 }, { item_code: 'M1', qty: 10, price: 100, tax_rate: 13, tax_amount: 123.5 }] })
+    const r = await audit(pi.id)
+    assert('① PI 含税+整单折扣 审核通过', r.code === 0, r.message)
+    const lines = dbq('SELECT amount, tax_amount, unit_cost FROM scm_doc_line WHERE doc_id=? ORDER BY seq', pi.id)
+    const sumAmt = r2(lines.reduce((s, l) => s + l.amount, 0))
+    assert('① 整单折扣已分摊到行：Σ行金额 = 1900', sumAmt === 1900, `Σ=${sumAmt}`)
+    const lg = await ledger('SUP1')
+    // 整单折扣同时缩放税额：(2000 + 247) × 0.95 = 2134.65
+    assert('① 应付挂账 = 折后价税合计 2134.65', Math.abs(r2(lg.closing) - 2134.65) < 0.02, `closing=${lg.closing}`)
+    const st = await stock('W1', 'M1')
+    // P1-1：入库成本取行单价（折前 100）还是折后（95）？当前实现取折前 → 库存金额 2000 ≠ 存货 1900
+    known('⑦ [P1-1] 库存金额 == 折后行金额 1900（折扣进成本）', r2(st.amount) === 1900, `库存金额=${st.amount} 均价=${st.avg_cost}（≠1900 即折扣未进成本）`)
+  }
+
+  // ── ② 下推发票 → 反审核 → 来源单还原（FIX-203）──────────
+  {
+    const pi = await createDoc({ doc_type: 'PI', doc_date: D, partner_code: 'SUP1', warehouse_code: 'W1',
+      lines: [{ item_code: 'M1', qty: 10, price: 100, tax_rate: 13, tax_amount: 130 }] })
+    await audit(pi.id)
+    const before = r2((await ledger('SUP1')).closing)
+    const piLine = dbq('SELECT id FROM scm_doc_line WHERE doc_id=?', pi.id)[0]
+    const rp = await createDoc({ doc_type: 'RP', doc_date: D, partner_code: 'SUP1', source_doc_id: pi.id,
+      lines: [{ item_code: 'M1', qty: 10, price: 80, tax_rate: 13, tax_amount: 104, source_line_id: piLine.id }] })
+    const ra = await audit(rp.id)
+    assert('② 下推采购发票（904）审核通过', ra.code === 0, ra.message)
+    const mid = r2((await ledger('SUP1')).closing)
+    assert('② 发票审核后来源单暂估额校正为发票额（余额 −226）', r2(before - mid) === 226, `before=${before} after=${mid}`)
+    const ru = await unaudit(rp.id)
+    assert('② 发票反审核通过', ru.code === 0, ru.message)
+    const after = r2((await ledger('SUP1')).closing)
+    assert('② [FIX-203] 反审核后来源单暂估额回到 1130，余额还原', after === before, `before=${before} after=${after}`)
+    const piLog = dbq("SELECT amount, remark FROM scm_ar_ap_log WHERE doc_no=(SELECT doc_no FROM scm_doc WHERE id=?)", pi.id)[0]
+    assert('② 来源单台账仍在且金额 = 1130', piLog && r2(piLog.amount) === 1130, JSON.stringify(piLog))
+  }
+
+  // ── ③ 销售发货 → 销售退货（FIX-204）────────────────────
+  {
+    const so = await createDoc({ doc_type: 'SO', doc_date: D, partner_code: 'CUS1', warehouse_code: 'W1',
+      lines: [{ item_code: 'M1', qty: 10, price: 1000, tax_rate: 13, tax_amount: 1300 }] })
+    const ra = await audit(so.id)
+    assert('③ 销售发货 11300 审核通过', ra.code === 0, ra.message)
+    const sr = await createDoc({ doc_type: 'SR', doc_date: D, partner_code: 'CUS1', warehouse_code: 'W1',
+      lines: [{ item_code: 'M1', qty: 2, price: 1000, tax_rate: 13, tax_amount: 260 }] })
+    const rs = await audit(sr.id)
+    assert('③ 销售退货 2260 审核通过', rs.code === 0, rs.message)
+    const lg = await ledger('CUS1')
+    assert('③ [FIX-204] 往来余额 = 11300 − 2260 = 9040', r2(lg.closing) === 9040, `closing=${lg.closing}`)
+    const srRow = lg.detail.find(d => d.doc_type === 'SR')
+    assert('③ 退货行归「调整」列、不计入收款', srRow && srRow.adjustment_amount === 2260 && srRow.settlement_amount === 0, JSON.stringify(srRow && { a: srRow.adjustment_amount, s: srRow.settlement_amount }))
+    const aging = (await get('/api/scm/arap-aging?as_of=2026-09-30')).data.find(a => a.partner_code === 'CUS1')
+    assert('③ 账龄表余额同步 9040', aging && r2(aging.balance) === 9040, JSON.stringify(aging))
+    const credit = (await get('/api/scm/partners/CUS1/credit')).data
+    assert('③ 信用占用 = 9040', r2(credit.used_ar) === 9040, JSON.stringify(credit))
+    const ru = await unaudit(sr.id)
+    assert('③ 退货反审核后余额回到 11300', ru.code === 0 && r2((await ledger('CUS1')).closing) === 11300, ru.message)
+  }
+
+  // ── ④ 序列号：入库 → 调拨 → 反审核调拨（FIX-205）────────
+  {
+    const pi = await createDoc({ doc_type: 'PI', doc_date: D, partner_code: 'SUP1', warehouse_code: 'W1',
+      lines: [{ item_code: 'SN1', qty: 2, price: 500, serial_nos: ['S-001', 'S-002'] }] })
+    const ra = await audit(pi.id)
+    assert('④ 序列号入库 S-001/S-002', ra.code === 0, ra.message)
+    const tr = await createDoc({ doc_type: 'TR', doc_date: D, warehouse_code: 'W1',
+      lines: [{ item_code: 'SN1', qty: 1, warehouse_code: 'W2', serial_nos: ['S-001'] }] })
+    const rt = await audit(tr.id)
+    assert('④ 调拨 S-001 W1→W2 审核通过', rt.code === 0, rt.message)
+    assert('④ 调拨后 S-001 在 W2', (await serial('S-001'))?.warehouse_code === 'W2')
+    const ru = await unaudit(tr.id)
+    assert('④ 调拨反审核通过', ru.code === 0, ru.message)
+    const s = await serial('S-001')
+    assert('④ [FIX-205] 反审核后档案保留、回到 W1、入库单号仍为 PI', s && s.status === 'in_stock' && s.warehouse_code === 'W1' && s.in_doc_no === pi.doc_no, JSON.stringify(s))
+    const rt2 = await audit(tr.id)
+    assert('④ [FIX-205] 调拨可重新审核', rt2.code === 0 && (await serial('S-001'))?.warehouse_code === 'W2', rt2.message)
+  }
+
+  // ── ⑤ 序列号：组装消耗 → 不能再出库（FIX-206）──────────
+  {
+    const as = await createDoc({ doc_type: 'AS', doc_date: D, warehouse_code: 'W1',
+      lines: [
+        { item_code: 'FP1', qty: 1, line_role: 'product', product_group: 1, warehouse_code: 'W1', serial_nos: ['FP-001'] },
+        { item_code: 'SN1', qty: 1, product_group: 1, warehouse_code: 'W1', serial_nos: ['S-002'] },
+        { item_code: 'M1', qty: 2, product_group: 1, warehouse_code: 'W1' },
+      ] })
+    const ra = await audit(as.id)
+    assert('⑤ 组装单（成品行模式）审核通过', ra.code === 0, ra.message)
+    const s2 = await serial('S-002'); const fp = await serial('FP-001')
+    assert('⑤ [FIX-206] 子件 S-002 已核销（out）、成品 FP-001 登记在库', s2?.status === 'out' && fp?.status === 'in_stock', JSON.stringify({ s2: s2?.status, fp: fp?.status }))
+    // 再补一台在库（S-003），使库存数量足够、只有序列号台账能拦住 S-002
+    const pi2 = await createDoc({ doc_type: 'PI', doc_date: D, partner_code: 'SUP1', warehouse_code: 'W1',
+      lines: [{ item_code: 'SN1', qty: 1, price: 500, serial_nos: ['S-003'] }] })
+    await audit(pi2.id)
+    const so = await createDoc({ doc_type: 'SO', doc_date: D, partner_code: 'CUS1', warehouse_code: 'W1',
+      lines: [{ item_code: 'SN1', qty: 1, price: 800, serial_nos: ['S-002'] }] })
+    const rs = await audit(so.id)
+    assert('⑤ [FIX-206] 被组装消耗的 S-002 不能再销售出库', rs.code !== 0 && /不在库|无法出库/.test(rs.message || ''), rs.message)
+    const ru = await unaudit(as.id)
+    assert('⑤ 组装反审核：S-002 恢复在库、FP-001 撤销建档', ru.code === 0 && (await serial('S-002'))?.status === 'in_stock' && !(await serial('FP-001')), ru.message)
+  }
+
+  // ── ⑥ 批次：组装消耗批次（FIX-206）─────────────────────
+  {
+    const pi = await createDoc({ doc_type: 'PI', doc_date: D, partner_code: 'SUP1', warehouse_code: 'W1',
+      lines: [{ item_code: 'BT1', qty: 10, price: 20, batch_no: 'B-2026-01' }] })
+    await audit(pi.id)
+    const as = await createDoc({ doc_type: 'AS', doc_date: D, warehouse_code: 'W1',
+      lines: [
+        { item_code: 'M1', qty: 1, line_role: 'product', product_group: 1, warehouse_code: 'W1' },
+        { item_code: 'BT1', qty: 4, product_group: 1, warehouse_code: 'W1' },
+      ] })
+    const ra = await audit(as.id)
+    assert('⑥ 组装消耗批次物料 审核通过', ra.code === 0, ra.message)
+    const b = dbq("SELECT qty FROM scm_stock_batch WHERE account_set_id=? AND item_code='BT1' AND batch_no='B-2026-01'", TEST_SET)[0]
+    assert('⑥ [FIX-206] 批次 B-2026-01 余量 10 − 4 = 6', b && Number(b.qty) === 6, JSON.stringify(b))
+  }
+
+  // 汇总
+  const fails = results.filter(r => !r.pass)
+  console.log(`\n==== ${results.length} 项断言，${fails.length} 项失败 ====`)
+  for (const f of fails) console.log(`  FAIL ${f.n}. ${f.name} — ${f.detail || ''}`)
+  return fails.length
+}
+
+let exitCode = 1
+try {
+  exitCode = await main()
+} catch (e) {
+  console.error('ERROR:', e?.message || e)
+  console.log('--- server log tail ---\n' + log.slice(-3000))
+} finally {
+  if (child) child.kill()
+}
+process.exit(exitCode)

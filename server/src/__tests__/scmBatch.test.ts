@@ -20,7 +20,7 @@ function createDb() {
       line_seq INTEGER, warehouse_code TEXT, item_code TEXT, batch_no TEXT, direction TEXT, qty REAL,
       produce_date TEXT, expire_date TEXT, created_at TEXT);
     CREATE TABLE scm_stock_move (id TEXT, account_set_id TEXT, doc_type TEXT, doc_no TEXT, line_seq INTEGER,
-      item_code TEXT, direction TEXT, unit_cost REAL, qty REAL);
+      warehouse_code TEXT, item_code TEXT, direction TEXT, unit_cost REAL, qty REAL);
   `)
   db.prepare("INSERT INTO scm_doc_type (id,account_set_id,code,direction) VALUES (?,?,?,?)").run(uuidv4(), AID, 'PI', 'in')
   db.prepare("INSERT INTO scm_doc_type (id,account_set_id,code,direction) VALUES (?,?,?,?)").run(uuidv4(), AID, 'SO', 'out')
@@ -159,5 +159,26 @@ describe('scmBatch 批次/保质期追溯', () => {
     addItem(db, 'A', { batch_flag: 1, batch_out_mode: 'manual', shelf_life_days: 90 })
     expect(getItemBatchCfg(db, AID, 'A')).toMatchObject({ batch_flag: 1, batch_out_mode: 'manual', shelf_life_days: 90 })
     expect(getItemBatchCfg(db, AID, 'NONE')).toBeNull()
+  })
+
+  it('FIX-206 组装单：子件按 FIFO 扣批、成品建批；反审核对称回退', () => {
+    db.prepare("INSERT INTO scm_doc_type (id,account_set_id,code,direction) VALUES (?,?,?,?)").run(uuidv4(), AID, 'AS', 'none')
+    addItem(db, 'A'); addItem(db, 'FP')
+    maintainDocBatches(db, AID, makeDoc(db, 'PI', 'P1', 'W1', [{ item_code: 'A', qty: 10, batch_no: 'B1', unit_cost: 5 }]))
+    // 组装单：行1 子件 A×4（出），行2 成品 FP×1（入）；库存移动由成本引擎写入，这里直接模拟
+    const asId = uuidv4()
+    db.prepare("INSERT INTO scm_doc (id,account_set_id,doc_type,doc_no,warehouse_code) VALUES (?,?,?,?,?)").run(asId, AID, 'AS', 'AS1', 'W1')
+    db.prepare("INSERT INTO scm_doc_line (id,doc_id,account_set_id,seq,item_code,warehouse_code,qty) VALUES (?,?,?,?,?,?,?)").run(uuidv4(), asId, AID, 1, 'A', 'W1', 4)
+    db.prepare("INSERT INTO scm_doc_line (id,doc_id,account_set_id,seq,item_code,warehouse_code,qty) VALUES (?,?,?,?,?,?,?)").run(uuidv4(), asId, AID, 2, 'FP', 'W1', 1)
+    const insMv = db.prepare("INSERT INTO scm_stock_move (id,account_set_id,doc_type,doc_no,line_seq,warehouse_code,item_code,direction,unit_cost,qty) VALUES (?,?,?,?,?,?,?,?,?,?)")
+    insMv.run(uuidv4(), AID, 'AS', 'AS1', 1, 'W1', 'A', 'out', 5, 4)
+    insMv.run(uuidv4(), AID, 'AS', 'AS1', 2, 'W1', 'FP', 'in', 20, 1)
+    maintainDocBatches(db, AID, asId)
+    expect(batches(db, 'A')).toEqual([{ batch_no: 'B1', qty: 6, expire_date: null }])
+    expect(batches(db, 'FP')).toEqual([{ batch_no: 'AS1', qty: 1, expire_date: null }])
+    expect((db.prepare("SELECT amount FROM scm_stock_batch WHERE account_set_id=? AND item_code='FP'").get(AID) as any).amount).toBe(20)
+    reverseDocBatches(db, AID, asId)
+    expect(batches(db, 'A')).toEqual([{ batch_no: 'B1', qty: 10, expire_date: null }])
+    expect(batches(db, 'FP')).toEqual([{ batch_no: 'AS1', qty: 0, expire_date: null }])
   })
 })

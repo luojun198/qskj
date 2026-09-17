@@ -7,7 +7,8 @@
  * 与批次/成本台账并行，仅做单品追溯。调拨(TR) 作「出库原仓 + 入库目标仓」处理；
  * 盘点(CK) 按本单实际产生的库存移动方向调整台账（盘盈登记、盘亏核销），
  * 差异数与录入的序列号对不上时只告警不拦截——盘点本身就是纠偏场景，
- * 硬拦会让用户无法完成盘点。其它 direction=none 单据不处理。
+ * 硬拦会让用户无法完成盘点。组装(AS)/拆卸(DS) 按本单实际库存移动逐行登记/核销；
+ * 其它 direction=none 单据不处理。
  */
 import type Database from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
@@ -118,9 +119,34 @@ export function maintainDocSerials(db: Database.Database, aid: string, docId: st
     return warnings
   }
 
+  // 组装(AS)/拆卸(DS)：同一张单既有出库（子件/成品）又有入库（成品/子件），方向以本单实际库存移动为准（FIX-206）。
+  // 原实现按单据类型 direction='none' 直接跳过，被组装消耗的序列号仍是 in_stock，可被再次销售出库。
+  if (doc.doc_type === 'AS' || doc.doc_type === 'DS') {
+    const mvs = db.prepare(`SELECT line_seq, warehouse_code, item_code, direction, qty FROM scm_stock_move
+      WHERE account_set_id=? AND doc_type=? AND doc_no=? ORDER BY rowid`).all(aid, doc.doc_type, doc.doc_no) as any[]
+    for (const mv of mvs) {
+      if (!isSerialItem(db, aid, mv.item_code)) continue
+      const qty = Number(mv.qty) || 0
+      if (qty <= 0) continue
+      // 成品行模式按行号定位；BOM 模式的成品没有明细行（拆卸的子件行号也全为 0），退化为按物料定位
+      const line = lines.find(l => l.item_code === mv.item_code && Number(l.seq) === Number(mv.line_seq))
+        || lines.find(l => l.item_code === mv.item_code)
+      if (!line) throw new Error(`序列号物料 ${mv.item_code} 在${doc.doc_type === 'AS' ? '组装' : '拆卸'}单中没有明细行可录入序列号，请改用成品行模式`)
+      const sns = parseSerials(line.serial_nos)
+      if (sns.length !== qty) throw new Error(`序列号物料 ${mv.item_code} 须录入 ${qty} 个序列号，实际 ${sns.length} 个`)
+      const dup = new Set<string>()
+      for (const sn of sns) { if (dup.has(sn)) throw new Error(`序列号 ${sn} 在同一单据内重复`); dup.add(sn) }
+      for (const sn of sns) {
+        if (mv.direction === 'in') serialIn(db, aid, ref, mv.warehouse_code, mv.item_code, sn, Number(line.seq) || 0)
+        else serialOut(db, aid, ref, mv.warehouse_code, mv.item_code, sn, Number(line.seq) || 0)
+      }
+    }
+    return warnings
+  }
+
   const dt = db.prepare('SELECT direction FROM scm_doc_type WHERE account_set_id=? AND code=?').get(aid, doc.doc_type) as any
   const dir = dt?.direction
-  if (dir !== 'in' && dir !== 'out') return warnings  // 调拨/盘点以外的 none 方向单据不处理
+  if (dir !== 'in' && dir !== 'out') return warnings  // 调拨/盘点/组装/拆卸以外的 none 方向单据不处理
 
   for (const l of lines) {
     if (!isSerialItem(db, aid, l.item_code)) continue
@@ -140,20 +166,33 @@ export function maintainDocSerials(db: Database.Database, aid: string, docId: st
   return warnings
 }
 
-/** 反审核/删单回退序列号台账（按流水还原状态后删除流水）。 */
+/**
+ * 反审核/删单回退序列号台账：删除本单流水后，按该序列号**剩余流水**还原档案现场（FIX-205）。
+ *
+ * 原实现按"本单是否为当前入库来源"决定删档案：调拨(TR) 审核时目标仓入库把 in_doc_no 覆盖成了调拨单号，
+ * 反审核时就把整条档案物理删掉——原始入库追溯永久丢失、库存台账仍有数、调拨单也再也审不过。
+ * 现在改为：剩余流水为空 → 本单即建档来源，撤销建档；否则以最后一笔流水的方向/仓库还原状态，
+ * in_doc_no 取最后一笔入库流水、out_doc_no 取最后一笔出库流水（仍在库则清空）。
+ */
 export function reverseDocSerials(db: Database.Database, aid: string, docId: string) {
-  const moves = db.prepare('SELECT * FROM scm_serial_move WHERE account_set_id=? AND doc_id=? ORDER BY rowid DESC').all(aid, docId) as any[]
-  for (const m of moves) {
-    const ex = db.prepare('SELECT id, in_doc_no FROM scm_serial WHERE account_set_id=? AND item_code=? AND serial_no=?').get(aid, m.item_code, m.serial_no) as any
-    if (!ex) continue
-    if (m.direction === 'in') {
-      // 入库回退：若本单是其当前入库来源则删除登记（撤销建档）；否则保守标记为已出库
-      if (ex.in_doc_no === m.doc_no) db.prepare('DELETE FROM scm_serial WHERE id=?').run(ex.id)
-      else db.prepare("UPDATE scm_serial SET status='out', updated_at=datetime('now') WHERE id=?").run(ex.id)
-    } else {
-      // 出库回退 → 恢复在库（回到原仓）
-      db.prepare("UPDATE scm_serial SET status='in_stock', warehouse_code=?, out_doc_no=NULL, updated_at=datetime('now') WHERE id=?").run(m.warehouse_code, ex.id)
-    }
-  }
+  const moves = db.prepare('SELECT DISTINCT item_code, serial_no FROM scm_serial_move WHERE account_set_id=? AND doc_id=?').all(aid, docId) as any[]
   db.prepare('DELETE FROM scm_serial_move WHERE account_set_id=? AND doc_id=?').run(aid, docId)
+  for (const m of moves) restoreSerialFromHistory(db, aid, m.item_code, m.serial_no)
+}
+
+/** 按剩余流水还原一个序列号的档案现场（无流水则删除档案）。 */
+function restoreSerialFromHistory(db: Database.Database, aid: string, item: string, sn: string) {
+  const ex = db.prepare('SELECT id FROM scm_serial WHERE account_set_id=? AND item_code=? AND serial_no=?').get(aid, item, sn) as any
+  if (!ex) return
+  const last = db.prepare(`SELECT direction, warehouse_code, doc_no FROM scm_serial_move
+    WHERE account_set_id=? AND item_code=? AND serial_no=? ORDER BY rowid DESC LIMIT 1`).get(aid, item, sn) as any
+  if (!last) {
+    db.prepare('DELETE FROM scm_serial WHERE id=?').run(ex.id)
+    return
+  }
+  const lastIn = db.prepare(`SELECT doc_no FROM scm_serial_move
+    WHERE account_set_id=? AND item_code=? AND serial_no=? AND direction='in' ORDER BY rowid DESC LIMIT 1`).get(aid, item, sn) as any
+  const inStock = last.direction === 'in'
+  db.prepare(`UPDATE scm_serial SET status=?, warehouse_code=?, in_doc_no=?, out_doc_no=?, updated_at=datetime('now') WHERE id=?`)
+    .run(inStock ? 'in_stock' : 'out', last.warehouse_code, lastIn?.doc_no ?? null, inStock ? null : last.doc_no, ex.id)
 }

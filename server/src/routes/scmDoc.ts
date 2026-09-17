@@ -9,7 +9,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { getDb } from '../db/index.js'
 import { authMiddleware, AuthRequest, operationLog } from '../middleware/index.js'
 import { applyMovingAvgIn, applyMovingAvgOut, reverseDocMoves, getCostingMethod } from '../services/scmCosting.js'
-import { applyPayment, applyInvoice, reverseInvoice, reversePayment, getPartnerLedger, getAllPartnerLedger, applyReceivableFromShipment, applyPayableFromReceipt, applyOutsourceFeePayable, getOpenItems, getPaymentSources, verifyArAp, cancelVerify, listVerifies, getDocVerifiedInfo, getArApAging, getDueReminder, getPartnerCredit, getPartnerOpenAr, getPartnerBalanceSummary } from '../services/scmArAp.js'
+import { applyPayment, applyInvoice, reverseInvoice, reversePayment, getPartnerLedger, getAllPartnerLedger, applyReceivableFromShipment, applyPayableFromReceipt, applyReturnAdjustment, applyOutsourceFeePayable, getOpenItems, getPaymentSources, verifyArAp, cancelVerify, listVerifies, getDocVerifiedInfo, getArApAging, getDueReminder, getPartnerCredit, getPartnerOpenAr, getPartnerBalanceSummary } from '../services/scmArAp.js'
 import { assertAccountIdsInScope, type AccountScopeContext } from '../services/accountAuthorization.js'
 import { assertGlPeriodOpen } from '../services/voucherMutationGuard.js'
 import { maintainDocBatches, reverseDocBatches } from '../services/scmBatch.js'
@@ -1693,6 +1693,9 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
       applyReceivableFromShipment(db, aid, doc, lines)
     } else if (doc.doc_type === 'PI') {
       applyPayableFromReceipt(db, aid, doc, lines)
+    } else if (doc.doc_type === 'PR' || doc.doc_type === 'SR') {
+      // 退货：冲减往来（FIX-204，读侧 AR_DOC_TYPES / isAdjustment 早已为 PR/SR 准备好分支）
+      applyReturnAdjustment(db, aid, doc, lines)
     } else if (doc.doc_type === 'RP' || doc.doc_type === 'RS') {
       const r = applyInvoice(db, aid, doc, lines)
       if (r.mode === 'adjust') {
@@ -1759,11 +1762,16 @@ export const unauditDocHandler = (req: AuthRequest, res: Response) => {
 
   const runUnaudit = db.transaction(() => {
     const docType = db.prepare('SELECT * FROM scm_doc_type WHERE account_set_id=? AND code=?').get(aid, doc.doc_type) as any
-    if (isPaymentDoc || doc.doc_type === 'RP' || doc.doc_type === 'RS') {
+    // FIX-203：发票(RP/RS) 原来与收付款单走同一分支直接 reversePayment（按单号删台账），
+    // 而下推发票审核时并没有自己的台账、只是把来源单的暂估额改成了发票额——于是反审核后
+    // 来源单的往来金额永久停在发票金额，reverseInvoice 成了死代码。发票必须走 reverseInvoice。
+    if (isPaymentDoc) {
       reversePayment(db, aid, doc)
     } else {
     // 销售发货(SO)→回滚应收、采购入库(PI)→回滚应付（reversePayment 按 doc_no 删除往来台账，无出纳流水，安全）
     if (doc.doc_type === 'SO' || doc.doc_type === 'PI') reversePayment(db, aid, doc)
+    // 退货(PR/SR)→删除审核时挂出的冲减台账（FIX-204）
+    if (doc.doc_type === 'PR' || doc.doc_type === 'SR') reversePayment(db, aid, doc)
     // 发票(RP/RS) 反审核：校正过来源单据暂估的还原回来源金额，独立发票的删除自己的台账
     if (doc.doc_type === 'RP' || doc.doc_type === 'RS') reverseInvoice(db, aid, doc)
     // 委外入库(WI) 反审核：回退委外厂应付（reversePayment 按 doc_no 删除往来台账）

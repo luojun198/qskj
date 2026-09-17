@@ -7,7 +7,8 @@
  * 仅对「启用批次管理」(scm_item.batch_flag=1) 的物料生效。按单据方向统一维护：
  *  - 入库类(direction='in')：每行建/累加批次（批次号缺省以单号命名），记生产日期/到期日。
  *  - 出库类(direction='out')：按物料扣批方式——manual 手工指定批次；fifo 按到期日→生产日期→入库序自动拆批。
- * 调拨(TR)/盘点(CK) 等 direction='none' 暂不在此维护（后续完善）。
+ * 调拨(TR) 作「源仓扣批 + 调入仓转入」、盘点(CK) 按实际库存移动方向盘盈建批/盘亏扣批、
+ * 组装(AS)/拆卸(DS) 按本单实际库存移动逐行维护；其它 direction=none 单据不处理。
  */
 import type Database from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
@@ -170,6 +171,32 @@ export function maintainDocBatches(db: Database.Database, aid: string, docId: st
         batchIn(db, aid, ref, wh, l.item_code, batchNo, adj, lineUnitCost(db, aid, doc.doc_type, doc.doc_no, l.seq, l.item_code, 'in'), produce, expire, l.seq)
       } else {
         consumeBatches(db, aid, ref, wh, l.item_code, adj, cfg.batch_out_mode || 'fifo', l.batch_no, l.seq)
+      }
+    }
+    return
+  }
+
+  // 组装(AS)/拆卸(DS)：方向以本单实际库存移动为准——出库侧扣批（手工/FIFO）、入库侧建批（FIX-206）。
+  // 原实现按单据类型 direction='none' 直接跳过，被组装消耗的批次数量永远留在批次台账里。
+  if (doc.doc_type === 'AS' || doc.doc_type === 'DS') {
+    const mvs = db.prepare(`SELECT line_seq, warehouse_code, item_code, direction, qty, unit_cost FROM scm_stock_move
+      WHERE account_set_id=? AND doc_type=? AND doc_no=? ORDER BY rowid`).all(aid, doc.doc_type, doc.doc_no) as any[]
+    for (const mv of mvs) {
+      const qty = Number(mv.qty) || 0
+      if (qty <= 0) continue
+      const cfg = getItemBatchCfg(db, aid, mv.item_code)
+      if (!cfg || !cfg.batch_flag) continue
+      // 成品行模式按行号定位；BOM 模式的成品没有明细行（拆卸子件行号也全为 0），退化为按物料定位
+      const line = lines.find(l => l.item_code === mv.item_code && Number(l.seq) === Number(mv.line_seq))
+        || lines.find(l => l.item_code === mv.item_code)
+      const seq = Number(line?.seq) || 0
+      if (mv.direction === 'in') {
+        const batchNo = (line?.batch_no && String(line.batch_no).trim()) || doc.doc_no
+        const produce = line?.produce_date || null
+        const expire = line?.expire_date || (produce ? addDays(produce, cfg.shelf_life_days) : null)
+        batchIn(db, aid, ref, mv.warehouse_code, mv.item_code, batchNo, qty, Number(mv.unit_cost) || 0, produce, expire, seq)
+      } else {
+        consumeBatches(db, aid, ref, mv.warehouse_code, mv.item_code, qty, cfg.batch_out_mode || 'fifo', line?.batch_no, seq)
       }
     }
     return

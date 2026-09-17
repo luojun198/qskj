@@ -228,6 +228,31 @@ export function applyPayableFromReceipt(db: Database.Database, accountSetId: str
   )
 }
 
+/**
+ * 审核退货单（PR 采购退货 / SR 销售退货）：按价税合计冲减往来（FIX-204）。
+ *
+ * 写 `direction='out'` 的台账行：余额、账龄、对账单都按 in/out 带符号累计，退货自然冲减；
+ * 凭证侧 PR 借应付、SR 贷应收（见 scmDoc.ts 采购/销售分支）也是同一口径，往来余额与总账 1122/2202 对得上。
+ * 该行可作为核销中的「出」方与来源发货/入库单的「入」方对冲（verifyArAp 只认 in↔out），
+ * 未对冲前在未清项里以「退货」标签列示（enrichStatementRows 的 isAdjustment）。
+ */
+export function applyReturnAdjustment(db: Database.Database, accountSetId: string, doc: any, lines: any[]) {
+  if (!doc.partner_code) return  // 无往来单位则不冲减
+  const partner = db.prepare('SELECT * FROM scm_partner WHERE account_set_id=? AND code=?').get(accountSetId, doc.partner_code) as any
+  const total = sumGrossAmount(lines)
+  if (total <= 0) return
+  const isSale = doc.doc_type === 'SR'
+  db.prepare(`INSERT INTO scm_ar_ap_log
+    (id, account_set_id, partner_code, doc_type, doc_no, doc_date, due_date, direction, amount, ar_account, ap_account, cashier_journal_id, remark)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    uuidv4(), accountSetId, doc.partner_code, doc.doc_type, doc.doc_no, doc.doc_date, doc.doc_date,
+    'out', total,
+    isSale ? (partner?.ar_account || '1131') : null,
+    isSale ? null : (partner?.ap_account || '2121'),
+    null, doc.remark
+  )
+}
+
 /** 审核委外入库(WI)：按加工费价税合计生成委外厂应付账款台账。 */
 export function applyOutsourceFeePayable(db: Database.Database, accountSetId: string, doc: any, grossAmount: number, taxAmount = 0) {
   if (!doc.partner_code || !(grossAmount > 0)) return  // 无委外厂或无加工费则不挂应付
@@ -633,8 +658,10 @@ export function getDueReminder(db: Database.Database, accountSetId: string, asOf
 /** 某客户未核销应收总额（信用占用核心）。 */
 export function getPartnerOpenAr(db: Database.Database, accountSetId: string, partnerCode: string): number {
   const ph = AR_DOC_TYPES.map(() => '?').join(',')
-  const r = db.prepare(`SELECT COALESCE(SUM(amount - verified_amount),0) v FROM scm_ar_ap_log
-    WHERE account_set_id=? AND partner_code=? AND direction='in' AND doc_type IN (${ph})`).get(accountSetId, partnerCode, ...AR_DOC_TYPES) as any
+  // 未核销的销售退货(SR, direction=out) 同样冲减客户欠款（FIX-204）；未核销收款属预收，不抵占用
+  const r = db.prepare(`SELECT COALESCE(SUM(CASE WHEN direction='in' THEN amount - verified_amount
+      WHEN doc_type='SR' THEN -(amount - verified_amount) ELSE 0 END),0) v FROM scm_ar_ap_log
+    WHERE account_set_id=? AND partner_code=? AND doc_type IN (${ph})`).get(accountSetId, partnerCode, ...AR_DOC_TYPES) as any
   return Math.round((Number(r?.v) || 0) * 100) / 100
 }
 
