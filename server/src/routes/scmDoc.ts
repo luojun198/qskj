@@ -70,7 +70,7 @@ const CODE_CATEGORY: Record<string, string> = {
   PI: 'purchase', PR: 'purchase', PQ: 'purchase', PO: 'purchase', RP: 'purchase',
   SO: 'sale', SR: 'sale', SQ: 'sale', SOa: 'sale', RS: 'sale',
   PL: 'production', PF: 'production', PS: 'production', PB: 'production', PJ: 'production', AS: 'production', DS: 'production',
-  WO: 'outsource', WI: 'outsource',
+  WO: 'outsource', WI: 'outsource', OP: 'outsource',
   PAY: 'finance', RCV: 'finance',
 }
 // 业务域 → 权限码
@@ -200,6 +200,7 @@ function seedDocTypes(db: ReturnType<typeof getDb>, accountSetId: string) {
     // outsourcing
     { code: 'WO', name: '委外发货',     dir: 'out', stock: 1, ar_ap: 0, cat: 'outsource' },
     { code: 'WI', name: '委外入库',     dir: 'in',  stock: 1, ar_ap: 0, cat: 'outsource' },
+    { code: 'OP', name: '工序委外单',   dir: 'none', stock: 0, ar_ap: 1, cat: 'outsource' },   // 自制工单的某道工序发外加工：加工费挂委外厂应付、按制费吸收进成品成本
     // assembly
     { code: 'AS', name: '组装单',       dir: 'none', stock: 1, ar_ap: 0, cat: 'production' },
     { code: 'DS', name: '拆卸单',       dir: 'none', stock: 1, ar_ap: 0, cat: 'production' },
@@ -219,6 +220,9 @@ function seedDocTypes(db: ReturnType<typeof getDb>, accountSetId: string) {
   for (const s of seeds) {
     ins.run(uuidv4(), accountSetId, s.code, s.name, s.dir, s.stock, s.ar_ap, s.cat)
   }
+  // 工序委外单：表头 委外厂/币别/备注，明细 物料/数量/加工费单价/税/工序(备注)
+  db.prepare(`UPDATE scm_doc_type SET header_fields=?, line_fields=?, required_fields=? WHERE account_set_id=? AND code='OP' AND header_fields IS NULL`).run(
+    JSON.stringify(['partner', 'currency', 'remark']), JSON.stringify(['item', 'qty', 'price', 'amount', 'tax_rate', 'tax_amount', 'remark']), JSON.stringify(['partner']), accountSetId)
   // 收付款单使用金额明细，不参与物料/库存录入。迁移负责修复既有账套，此处保证新账套配置正确。
   db.prepare(`UPDATE scm_doc_type
     SET header_fields=?, line_fields=?, required_fields=?
@@ -517,7 +521,7 @@ function validatePaymentData(
   if (!lines.some(l => Number(l?.amount) > 0)) {
     return { status: 400, message: '收付款单至少需要一笔大于零的金额' }
   }
-  const allowedTypes = doc.doc_type === 'RCV' ? ['SO'] : ['PI', 'WI']
+  const allowedTypes = doc.doc_type === 'RCV' ? ['SO'] : ['PI', 'WI', 'OP']
   const seen = new Set<string>()
   const getSource = db.prepare(`SELECT l.id, l.partner_code, l.doc_type, l.doc_no, l.direction, l.currency,
       COALESCE(l.amount_fc, l.amount) AS amount, COALESCE(l.verified_fc, l.verified_amount) AS verified_amount, d.status AS doc_status
@@ -562,7 +566,9 @@ function normalizePaymentLines(docType: string, lines: any[]): any[] {
 router.get('/scm/docs/types', (req: AuthRequest, res) => {
   const db = getDb()
   let list = db.prepare('SELECT * FROM scm_doc_type WHERE account_set_id=? ORDER BY category, code').all(asid(req))
-  if (!list.length) { seedDocTypes(db, asid(req)); list = db.prepare('SELECT * FROM scm_doc_type WHERE account_set_id=? ORDER BY category, code').all(asid(req)) }
+  // 新增的单据类型（如 CA / OP）对存量账套也要补齐：seedDocTypes 用 INSERT OR IGNORE，重复执行无副作用
+  const seeded = seedDocTypes(db, asid(req))
+  if (!list.length || seeded) list = db.prepare('SELECT * FROM scm_doc_type WHERE account_set_id=? ORDER BY category, code').all(asid(req))
   res.json({ code: 0, data: list })
 })
 
@@ -1821,6 +1827,12 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
     } else if (doc.doc_type === 'PR' || doc.doc_type === 'SR') {
       // 退货：冲减往来（FIX-204，读侧 AR_DOC_TYPES / isAdjustment 早已为 PR/SR 准备好分支）
       applyReturnAdjustment(db, aid, doc, lines)
+    } else if (doc.doc_type === 'OP') {
+      // 工序委外：加工费（价税合计）挂委外厂应付；成本侧由 getPlanLaborOverhead 按制费吸收进成品
+      if (!doc.partner_code) throw new Error('工序委外单必须指定委外厂')
+      const gross = sumGrossAmount(lines)
+      const tax = round2(lines.reduce((s: number, l: any) => s + (Number(l.tax_amount) || 0), 0))
+      if (gross > 0) applyOutsourceFeePayable(db, aid, doc, gross, tax)
     } else if (doc.doc_type === 'RP' || doc.doc_type === 'RS') {
       const r = applyInvoice(db, aid, doc, lines)
       if (r.mode === 'adjust') {
@@ -1899,8 +1911,8 @@ export const unauditDocHandler = (req: AuthRequest, res: Response) => {
     if (doc.doc_type === 'PR' || doc.doc_type === 'SR') reversePayment(db, aid, doc)
     // 发票(RP/RS) 反审核：校正过来源单据暂估的还原回来源金额，独立发票的删除自己的台账
     if (doc.doc_type === 'RP' || doc.doc_type === 'RS') reverseInvoice(db, aid, doc)
-    // 委外入库(WI) 反审核：回退委外厂应付（reversePayment 按 doc_no 删除往来台账）
-    if (doc.doc_type === 'WI') reversePayment(db, aid, doc)
+    // 委外入库(WI) / 工序委外(OP) 反审核：回退委外厂应付（reversePayment 按 doc_no 删除往来台账）
+    if (doc.doc_type === 'WI' || doc.doc_type === 'OP') reversePayment(db, aid, doc)
     if (docType?.affects_stock) reverseDocMoves(db, aid, doc.id, { allowNegativeWarehouses: getNegativeStockWarehouses(db, aid) })
     // 批次台账回退（与库存移动回退并行）
     if (docType?.affects_stock) reverseDocBatches(db, aid, doc.id)
@@ -3199,6 +3211,20 @@ export function getPlanLaborOverhead(db: ReturnType<typeof getDb>, aid: string, 
     if (r.product_id) byProduct.set(r.product_id, { labor: Number(r.labor) || 0, overhead: Number(r.overhead) || 0 })
     else { plLabor += Number(r.labor) || 0; plOverhead += Number(r.overhead) || 0 }
   }
+  // 工序委外(OP)：已审核加工费（不含税，折本位币）按成品物料计入制费，随完工入库吸收进成品成本
+  const opRows = db.prepare(`SELECT l.item_code, COALESCE(SUM(l.amount * COALESCE(NULLIF(d.exchange_rate,0),1)),0) fee
+    FROM scm_doc_line l JOIN scm_doc d ON d.id=l.doc_id
+    WHERE d.account_set_id=? AND d.plan_id=? AND d.doc_type='OP' AND d.status='audited' GROUP BY l.item_code`).all(aid, planId) as any[]
+  if (opRows.length) {
+    const prods = db.prepare('SELECT id, item_code FROM scm_production_plan_product WHERE plan_id=? AND account_set_id=?').all(planId, aid) as any[]
+    for (const r of opRows) {
+      const prod = prods.find(p => p.item_code === r.item_code) || prods[0]
+      if (!prod) continue
+      const cur = byProduct.get(prod.id) || { labor: 0, overhead: 0 }
+      cur.overhead = round2(cur.overhead + (Number(r.fee) || 0))
+      byProduct.set(prod.id, cur)
+    }
+  }
   if (plLabor || plOverhead) {
     const prods = db.prepare('SELECT id, plan_qty FROM scm_production_plan_product WHERE plan_id=? AND account_set_id=?').all(planId, aid) as any[]
     const totalQ = prods.reduce((s, p) => s + (Number(p.plan_qty) || 0), 0) || 1
@@ -3943,7 +3969,7 @@ export const genVoucherHandler = (req: AuthRequest, res: Response) => {
     // 发票行允许「只有金额、没有数量」（如运费行），不能按数量过滤掉
     const isInvoiceDoc = doc.doc_type === 'RP' || doc.doc_type === 'RS'
     // 结案结转单(CA) 行数量为 0、只有金额（P2-17），同样不能按数量过滤
-    if (!isInvoiceDoc && doc.doc_type !== 'CA' && (!l.qty || l.qty <= 0)) continue
+    if (!isInvoiceDoc && doc.doc_type !== 'CA' && doc.doc_type !== 'OP' && (!l.qty || l.qty <= 0)) continue
     if (isInvoiceDoc && !(Number(l.amount) || 0) && !(Number(l.tax_amount) || 0)) continue
     const item = getItem(db, aid, l.item_code)
     const invCode = item?.inv_account || '1405'                          // 存货科目（默认 库存商品）
@@ -4006,6 +4032,9 @@ export const genVoucherHandler = (req: AuthRequest, res: Response) => {
         if (isProductLine) { addEntry(PROD, 'debit', v, sumr); addEntry(invCode, 'credit', v, sumr) }
         else { addEntry(invCode, 'debit', v, sumr); addEntry(PROD, 'credit', v, sumr) }
       }
+    } else if (doc.doc_type === 'OP') {
+      // 工序委外：加工费 借制造费用（完工入库按制费吸收时 贷制造费用，两头相抵）+ 借进项税 / 贷应付
+      addEntry(OVERHEAD, 'debit', amt, sumr, amtFc); addEntry(TAX_IN, 'debit', tax, sumr, taxFc); addEntry(AP, 'credit', amt + tax, sumr, amtFc + taxFc)
     } else if (cat === 'outsource') {
       // 委外发货(WO,出)：料投入在制 借生产成本/贷存货；委外入库(WI,入)：成品入库 借存货(全)/贷生产成本(料)/贷应付(加工费)
       const v = cost > 0 ? cost : amt

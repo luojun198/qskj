@@ -340,7 +340,7 @@ export function reversePayment(db: Database.Database, accountSetId: string, doc:
 
 // 应收类 / 应付类单据（用于往来快速筛选）
 const AR_DOC_TYPES = ['SO', 'SR', 'RS', 'RCV']
-const AP_DOC_TYPES = ['PI', 'PR', 'RP', 'PAY', 'WI']
+const AP_DOC_TYPES = ['PI', 'PR', 'RP', 'PAY', 'WI', 'OP']
 
 /** 返回 doc_type 过滤子句；alias 为表别名（如 'l'），无别名传空串 */
 function arapDocTypeCond(arapType: string | undefined, alias = '') {
@@ -369,7 +369,7 @@ function enrichStatementRows(db: Database.Database, accountSetId: string, rows: 
     }
   }
   const labels: Record<string, string> = { SO: '销售发货', SR: '销售退货', RS: '销售发票', RCV: '客户收款',
-    PI: '采购入库', PR: '采购退货', RP: '采购发票', PAY: '供应商付款', WI: '委外加工费' }
+    PI: '采购入库', PR: '采购退货', RP: '采购发票', PAY: '供应商付款', WI: '委外加工费', OP: '工序委外费' }
   return rows.map(row => {
     const isSettlement = ['PAY', 'RCV'].includes(row.doc_type)
     const isAdjustment = ['PR', 'SR'].includes(row.doc_type)
@@ -574,7 +574,7 @@ export function getPaymentSources(
   paymentDocType: 'RCV' | 'PAY',
   currency?: string | null,
 ) {
-  const sourceTypes = paymentDocType === 'RCV' ? ['SO'] : ['PI', 'WI']
+  const sourceTypes = paymentDocType === 'RCV' ? ['SO'] : ['PI', 'WI', 'OP']
   const ph = sourceTypes.map(() => '?').join(',')
   // 多币种：只列同币别的源单（核销须同币别），金额为原币
   const cur = currency ? (isScmBaseCurrency(db, accountSetId, currency) ? getScmBaseCurrency(db, accountSetId) : normalizeScmCurrency(currency)) : ''

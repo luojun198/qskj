@@ -36,7 +36,7 @@ function createDb() {
       serial_flag INTEGER DEFAULT 0, default_warehouse_code TEXT, inv_account TEXT);
     CREATE TABLE scm_partner (id TEXT, account_set_id TEXT, code TEXT, name TEXT,
       ap_account TEXT, ar_account TEXT, credit_days INTEGER DEFAULT 0, credit_limit REAL DEFAULT 0);
-    CREATE TABLE scm_doc (id TEXT, account_set_id TEXT, doc_type TEXT, doc_no TEXT, status TEXT,
+    CREATE TABLE scm_doc (exchange_rate REAL DEFAULT 1, currency TEXT, id TEXT, account_set_id TEXT, doc_type TEXT, doc_no TEXT, status TEXT,
       doc_date TEXT, warehouse_code TEXT, partner_code TEXT, plan_id TEXT, bom_id TEXT,
       voucher_id TEXT, total_amount REAL, auditor TEXT, audited_at TEXT, updated_at TEXT,
       source_doc_id TEXT, settle_account TEXT, remark TEXT, created_at TEXT, due_date TEXT, credit_days INTEGER);

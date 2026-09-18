@@ -740,6 +740,7 @@ function getStaticNavApps(enableCashFlow: boolean, enableForeignCurrency = false
             { path: '/scm/production-plans?plan_type=outsource', title: '委外计划', permission: 'scm:outsource', icon: 'CalendarRange' },
             { path: '/scm/docs?doc_type=WO', title: '委外发货', permission: 'scm:outsource', icon: 'Truck' },
             { path: '/scm/docs?doc_type=WI', title: '委外入库', permission: 'scm:outsource', icon: 'PackageCheck' },
+            { path: '/scm/docs?doc_type=OP', title: '工序委外单', permission: 'scm:outsource', icon: 'Route' },
           ],
         },
         {

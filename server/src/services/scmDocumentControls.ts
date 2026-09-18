@@ -161,8 +161,8 @@ export function validateSourceLineQuantities(
 
 // FIX-212：退料(PJ)/不良品入库(PS) 也必须关联已审核工单——无工单的 PJ 落到通用入库按 0 成本回冲原料仓、
 // 且不扣减工单已领量；无工单的 PS 不写报废数、不冲在制。前端 DocForm.isPlanControlledDoc 同口径。
-const PLAN_DOC_TYPES = new Set(['PL', 'PB', 'PF', 'WO', 'WI', 'PJ', 'PS'])
-const PLAN_DOC_LABELS: Record<string, string> = { PL: '生产领料', PB: '补料', PF: '完工入库', WO: '委外发货', WI: '委外入库', PJ: '退料', PS: '不良品入库' }
+const PLAN_DOC_TYPES = new Set(['PL', 'PB', 'PF', 'WO', 'WI', 'PJ', 'PS', 'OP'])
+const PLAN_DOC_LABELS: Record<string, string> = { PL: '生产领料', PB: '补料', PF: '完工入库', WO: '委外发货', WI: '委外入库', PJ: '退料', PS: '不良品入库', OP: '工序委外' }
 
 export function validatePlanLink(
   db: Database.Database,
@@ -175,9 +175,10 @@ export function validatePlanLink(
   const plan = db.prepare('SELECT * FROM scm_production_plan WHERE id=? AND account_set_id=?').get(planId, accountSetId) as any
   if (!plan) return { message: '关联工单不存在或不属于当前账套' }
   if (plan.status !== 'released') return { message: `工单 ${plan.code || ''} 未审核，不能生成生产/委外单据` }
+  // 工序委外(OP)：自制工单把某道工序发给委外厂加工，只能关联自制工单
   const expectedOutsource = docType === 'WO' || docType === 'WI'
   if (expectedOutsource !== (plan.plan_type === 'outsource')) {
-    return { message: expectedOutsource ? '委外单据只能关联委外工单' : '生产单据只能关联自制工单' }
+    return { message: expectedOutsource ? '委外单据只能关联委外工单' : (docType === 'OP' ? '工序委外只能关联自制工单（整单委外请用委外工单）' : '生产单据只能关联自制工单') }
   }
   return { plan }
 }

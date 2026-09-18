@@ -546,6 +546,32 @@ async function main() {
     await api('PUT', '/api/scm/params', { params: [...others, { param_key: 'scm:qc_required_for_receipt', param_value: '0' }] }, { allowError: true })
   }
 
+  // ── 工序委外（OP）─────────────────────────────────────────
+  {
+    const types2 = (await get('/api/scm/docs/types')).data
+    assert('㉓ 存量账套补齐 OP / CA 单据类型', types2.some(t => t.code === 'OP') && types2.some(t => t.code === 'CA'), types2.map(t => t.code).join(','))
+    await ensure('/api/scm/partners', { code: 'VEN1', name: '工序委外厂', partner_type: 'supplier', ap_account: '2202', is_outsource: 1 })
+    await ensure('/api/scm/items', { code: 'FP3', name: '工序委外成品', unit: '台', source_type: 'self', default_warehouse_code: 'W1' })
+    const mo = await post('/api/scm/production-plans', { code: 'MO-OP', plan_type: 'self', yl_warehouse: 'W1', fp_warehouse: 'W1',
+      products: [{ item_code: 'FP3', plan_qty: 5, lines: [{ item_code: 'M1', qty: 1 }] }] })
+    await post(`/api/scm/production-plans/${mo.data.id}/release`, {}, { allowError: true })
+    // 关联委外工单应被拒（OP 只能挂自制工单）：用 MO-SUB（自制，已关闭）以外的委外单验证略；这里直接建单
+    const op = await post('/api/scm/docs', { doc_type: 'OP', doc_date: D, partner_code: 'VEN1', plan_id: mo.data.id,
+      lines: [{ item_code: 'FP3', qty: 5, price: 8, tax_rate: 13, tax_amount: 5.2, remark: '工序：电镀' }] }, { allowError: true })
+    assert('㉓ 工序委外单保存', op.status === 200, op.message)
+    const ra = await audit(op.data.id)
+    assert('㉓ 工序委外单审核', ra.code === 0, ra.message)
+    const lg = await ledger('VEN1')
+    assert('㉓ 加工费挂委外厂应付 45.2', r2(lg.closing) === 45.2, `closing=${lg.closing}`)
+    const plan = (await get(`/api/scm/production-plans/${mo.data.id}`)).data
+    const oh = Number(plan.cost?.overheadTotal ?? plan.cost_summary?.overheadTotal ?? plan.overhead_total ?? NaN)
+    assert('㉓ 工单成本汇总制费含加工费 40', oh === 40, JSON.stringify(plan.cost || plan.cost_summary || {}).slice(0, 200))
+    const gv = await post(`/api/scm/docs/${op.data.id}/gen-voucher`, {}, { allowError: true })
+    assert('㉓ 工序委外凭证 借制造费用/进项 贷应付', gv.code === 0, gv.message)
+    const noPlan = await post('/api/scm/docs', { doc_type: 'OP', doc_date: D, partner_code: 'VEN1', lines: [{ item_code: 'FP3', qty: 1, price: 8 }] }, { allowError: true })
+    assert('㉓ 无工单的工序委外单被拒', noPlan.status === 400 && /工序委外必须关联/.test(noPlan.message || ''), noPlan.message)
+  }
+
   // 汇总
   const fails = results.filter(r => !r.pass)
   console.log(`\n==== ${results.length} 项断言，${fails.length} 项失败 ====`)

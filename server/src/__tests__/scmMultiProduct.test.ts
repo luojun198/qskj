@@ -24,7 +24,7 @@ function createDb() {
     CREATE TABLE scm_bom_line (unit TEXT, remark TEXT, sub_group TEXT, sub_priority INTEGER, account_set_id TEXT, bom_id TEXT, item_code TEXT, qty REAL, scrap_rate REAL, seq INTEGER);
     CREATE TABLE scm_stock_move (id TEXT, account_set_id TEXT, doc_type TEXT, doc_no TEXT,
       item_code TEXT, direction TEXT, qty REAL, amount REAL);
-    CREATE TABLE scm_doc (id TEXT, account_set_id TEXT, doc_type TEXT, doc_no TEXT, plan_id TEXT, status TEXT);
+    CREATE TABLE scm_doc (exchange_rate REAL DEFAULT 1, currency TEXT, id TEXT, account_set_id TEXT, doc_type TEXT, doc_no TEXT, plan_id TEXT, status TEXT);
     CREATE TABLE scm_doc_line (id TEXT, doc_id TEXT, account_set_id TEXT, item_code TEXT, qty REAL, amount REAL DEFAULT 0, labor_cost REAL DEFAULT 0, overhead_cost REAL DEFAULT 0);
     CREATE TABLE scm_work_report (account_set_id TEXT, plan_id TEXT, product_id TEXT, status TEXT,
       labor_amount REAL DEFAULT 0, overhead_amount REAL DEFAULT 0);

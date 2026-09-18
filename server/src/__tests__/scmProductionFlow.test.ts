@@ -33,7 +33,7 @@ function createDb() {
     CREATE TABLE scm_item (id TEXT, account_set_id TEXT, code TEXT, name TEXT,
       batch_flag INTEGER DEFAULT 0, batch_out_mode TEXT, shelf_life_days INTEGER DEFAULT 0,
       serial_flag INTEGER DEFAULT 0, default_warehouse_code TEXT, inv_account TEXT, ref_cost REAL DEFAULT 0, purchase_price REAL DEFAULT 0, unit TEXT);
-    CREATE TABLE scm_doc (id TEXT, account_set_id TEXT, doc_type TEXT, doc_no TEXT, status TEXT,
+    CREATE TABLE scm_doc (exchange_rate REAL DEFAULT 1, currency TEXT, id TEXT, account_set_id TEXT, doc_type TEXT, doc_no TEXT, status TEXT,
       doc_date TEXT, warehouse_code TEXT, partner_code TEXT, plan_id TEXT, bom_id TEXT,
       voucher_id TEXT, total_amount REAL, auditor TEXT, audited_at TEXT, updated_at TEXT,
       source_doc_id TEXT, settle_account TEXT, remark TEXT, created_at TEXT);
@@ -48,8 +48,10 @@ function createDb() {
     CREATE TABLE scm_stock_move (id TEXT, account_set_id TEXT, move_date TEXT, doc_type TEXT, doc_no TEXT,
       line_seq INTEGER, warehouse_code TEXT, item_code TEXT, direction TEXT, qty REAL, unit_cost REAL,
       amount REAL, batch_no TEXT, balance_qty REAL, balance_amount REAL, balance_avg_cost REAL);
-    CREATE TABLE scm_ar_ap_log (currency TEXT, exchange_rate REAL NOT NULL DEFAULT 1, amount_fc REAL, verified_fc REAL NOT NULL DEFAULT 0, id TEXT, account_set_id TEXT, doc_no TEXT, verified_amount REAL DEFAULT 0);
-    CREATE TABLE scm_ar_ap_verify (id TEXT, account_set_id TEXT, verify_no TEXT, in_log_id TEXT, out_log_id TEXT);
+    CREATE TABLE scm_ar_ap_log (currency TEXT, exchange_rate REAL NOT NULL DEFAULT 1, amount_fc REAL, verified_fc REAL NOT NULL DEFAULT 0, id TEXT, account_set_id TEXT, partner_code TEXT, doc_type TEXT, doc_no TEXT,
+      doc_date TEXT, due_date TEXT, direction TEXT, amount REAL, ar_account TEXT, ap_account TEXT, cashier_journal_id TEXT, remark TEXT, verified_amount REAL DEFAULT 0, created_at TEXT DEFAULT (datetime('now')));
+    CREATE TABLE scm_partner (id TEXT, account_set_id TEXT, code TEXT, name TEXT, ar_account TEXT, ap_account TEXT, credit_days INTEGER DEFAULT 0);
+    CREATE TABLE scm_ar_ap_verify (id TEXT, account_set_id TEXT, verify_no TEXT, in_log_id TEXT, out_log_id TEXT, amount REAL);
     CREATE TABLE scm_production_plan (id TEXT, account_set_id TEXT, code TEXT, plan_type TEXT,
       status TEXT, plan_qty REAL DEFAULT 0, finished_qty REAL DEFAULT 0, scrap_qty REAL DEFAULT 0, bom_id TEXT,
       yl_warehouse TEXT, fp_warehouse TEXT, source_doc_id TEXT);
@@ -102,6 +104,8 @@ const ACCOUNTS: Array<[string, string]> = [
   ['2211', '应付职工薪酬'],
   ['5101', '制造费用'],
   ['1403', '原材料'],
+  ['2202', '应付账款'],
+  ['22210101', '应交税费—进项税额'],
 ]
 
 /**
@@ -323,6 +327,40 @@ describe('完工入库(PF) 审核', () => {
     const sum = costSummary()
     expect(sum.wip).toBe(0)
     expect(sum.laborWip).toBe(0)
+  })
+
+  it('工序委外(OP)：加工费挂委外厂应付、按制费吸收进成品成本，凭证 借制造费用+进项/贷应付', () => {
+    testDb.prepare("INSERT INTO scm_doc_type (account_set_id,code,category,direction,affects_stock) VALUES (?,'OP','outsource','none',0)").run(AID)
+    testDb.prepare("INSERT INTO scm_partner (id,account_set_id,code,name,ap_account) VALUES (?,?,'V1','委外厂','2202')").run(uuidv4(), AID)
+    issueMaterials()
+    // 工序委外 10 件 × 加工费 4 + 税 5.2 → 应付 45.2；制费 40 归成品
+    const op = seedDoc('OP', 'OP-001', 'WF', [{ item: 'FP', qty: 10, price: 4 }])
+    testDb.prepare('UPDATE scm_doc_line SET tax_amount=5.2 WHERE doc_id=?').run(op)
+    testDb.prepare("UPDATE scm_doc SET partner_code='V1' WHERE id=?").run(op)
+    const res = callHandler(auditDocHandler, op)
+    expect(res.body.message).toBeUndefined()
+    expect(res.body.code).toBe(0)
+    expect(testDb.prepare("SELECT direction, amount, ap_account FROM scm_ar_ap_log WHERE doc_no='OP-001'").get()).toMatchObject({ direction: 'in', amount: 45.2, ap_account: '2202' })
+    expect(costSummary().overheadTotal).toBe(40)
+    const gv = callHandler(genVoucherHandler, op)
+    expect(gv.body.message).toBeUndefined()
+    expect(gv.body.code).toBe(0)
+    const es = testDb.prepare('SELECT account_code, direction, amount FROM voucher_entries WHERE voucher_id=? ORDER BY seq').all(gv.body.data.voucher_id) as any[]
+    expect(es).toEqual(expect.arrayContaining([
+      expect.objectContaining({ account_code: '5101', direction: 'debit', amount: 40 }),
+      expect.objectContaining({ account_code: '2202', direction: 'credit', amount: 45.2 }),
+    ]))
+    // 完工：料 250 + 制费 40 → 单价 29
+    const pf = seedDoc('PF', 'PF-OP', 'WF', [{ item: 'FP', qty: 10 }])
+    expect(callHandler(auditDocHandler, pf).body.code).toBe(0)
+    expect(stock('WF', 'FP')).toMatchObject({ qty: 10, amount: 290, avg_cost: 29 })
+    expect(costSummary().laborWip).toBe(0)
+    // 反审核 OP：应付删除、制费回到 0
+    testDb.prepare('UPDATE scm_doc SET voucher_id=NULL WHERE id=?').run(op)
+    const un = callHandler(unauditDocHandler, op)
+    expect(un.body.message).toBeUndefined()
+    expect(un.body.code).toBe(0)
+    expect(testDb.prepare("SELECT COUNT(*) c FROM scm_ar_ap_log WHERE doc_no='OP-001'").get()).toMatchObject({ c: 0 })
   })
 
   it('副产品按参考价值扣减主产品料成本、联产品按权重分摊（C-1 项 3）', () => {

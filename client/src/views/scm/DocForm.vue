@@ -1157,7 +1157,8 @@ const auditing    = ref(false)
 
 const isProduction = computed(() => ['PL','PF','PB','PJ','AS','DS'].includes(form.value.doc_type))
 // FIX-212：退料(PJ)/不良品入库(PS) 同样必须关联工单——无工单的退料按 0 成本回冲原料仓、不良品不写报废数不冲在制
-const isPlanControlledDoc = computed(() => ['PL', 'PB', 'PF', 'WO', 'WI', 'PJ', 'PS'].includes(form.value.doc_type))
+const isPlanControlledDoc = computed(() => ['PL', 'PB', 'PF', 'WO', 'WI', 'PJ', 'PS', 'OP'].includes(form.value.doc_type))
+const isOpOutsource = computed(() => form.value.doc_type === 'OP')   // 工序委外：自制工单的某道工序发外加工
 const showPlanOverrunInfo = computed(() => isNew.value && isPlanControlledDoc.value && !!form.value.plan_id)
 function isProductionPlanCompleted(plan: any): boolean {
   const planQty = Number(plan.total_plan_qty ?? plan.plan_qty) || 0
@@ -2675,6 +2676,25 @@ async function onPlanChange(planId: string) {
   const isDefect = form.value.doc_type === 'PS'      // 不良品入库：候选行 = 成品，数量由用户填
   const issue = ['PL', 'PB', 'WO'].includes(form.value.doc_type) || isReturn
   const action = issue ? result.data.action_state?.issue : result.data.action_state?.finish
+  if (isOpOutsource.value) {
+    // 工序委外：每个成品一行，数量 = 计划数，备注带出工艺路线里标记「委外」的工序名，加工费单价由用户填
+    const rows: any[] = []
+    for (const product of products) {
+      let ops = ''
+      try {
+        const rt = await scmApi.getRoutings({ item_code: product.item_code })
+        const head = (rt.code === 0 ? rt.data : []).find((r: any) => r.status === 'active') || (rt.code === 0 ? rt.data[0] : null)
+        if (head) {
+          const detail = await scmApi.getRouting(head.id)
+          ops = (detail.code === 0 ? detail.data.lines : []).filter((l: any) => Number(l.is_outsource)).map((l: any) => l.process_name).filter(Boolean).join('、')
+        }
+      } catch { /* 无工艺路线则留空 */ }
+      rows.push({ ...newLine(), item_code: product.item_code, item_name: product.item_name || '', spec: product.spec || '',
+        qty: Number(product.plan_qty) || null, remark: ops ? `工序：${ops}` : '', plan_qty: Number(product.plan_qty) || 0 })
+    }
+    lines.value = rows.length ? rows : [newLine()]
+    return
+  }
   if (plan.supplier_code) {
     form.value.partner_code = plan.supplier_code
     const partner = allPartners.value.find((row: any) => row.code === plan.supplier_code)

@@ -163,7 +163,10 @@ export const groupFlowMap: Record<string, ModuleFlowConfig> = {
       { id: 'wo', path: '/scm/docs?doc_type=WO', color: 'orange', next: ['wi'] },
       { id: 'wi', path: '/scm/docs?doc_type=WI', color: 'green' },
     ],
-    auxNodes: [{ id: 'execution', path: '/scm/report/outsource/execution', color: 'cyan' }],
+    auxNodes: [
+      { id: 'execution', path: '/scm/report/outsource/execution', color: 'cyan' },
+      { id: 'op', path: '/scm/docs?doc_type=OP', color: 'orange' },
+    ],
   },
   应收应付: {
     layout: 'flow',
