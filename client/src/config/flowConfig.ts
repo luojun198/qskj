@@ -151,6 +151,7 @@ export const groupFlowMap: Record<string, ModuleFlowConfig> = {
       { id: 'qc', path: '/scm/qc-docs', color: 'green' },
       { id: 'qcStandard', path: '/scm/qc-standards', color: 'green' },
       { id: 'cost', path: '/scm/cost-variance', color: 'purple' },
+      { id: 'ohVariance', path: '/scm/costing/overhead-variance', color: 'purple' },
       { id: 'execution', path: '/scm/report/production/execution', color: 'cyan' },
       { id: 'planCost', path: '/scm/report/production/cost', color: 'purple' },
       { id: 'hours', path: '/scm/report/production/hours', color: 'cyan' },

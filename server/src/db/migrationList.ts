@@ -471,6 +471,10 @@ import {
   up as scmScheduleUp,
   down as scmScheduleDown,
 } from './migrations/20260918_scm_schedule.js'
+import {
+  up as scmOverheadVarianceUp,
+  down as scmOverheadVarianceDown,
+} from './migrations/20260918_scm_overhead_variance.js'
 
 /**
  * 迁移示例：添加新字段
@@ -2222,5 +2226,11 @@ export const migrations: Migration[] = [
     name: 'scm_schedule',
     up: scmScheduleUp,
     down: scmScheduleDown,
+  },
+  {
+    version: 139,
+    name: 'scm_overhead_variance',
+    up: scmOverheadVarianceUp,
+    down: scmOverheadVarianceDown,
   },
 ]

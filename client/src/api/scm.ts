@@ -589,6 +589,10 @@ export const scmApi = {
   deleteProductionPlan: (id: string) => request.delete(`/scm/production-plans/${id}`),
   batchProductionPlanActions: (data: { action: 'delete' | 'unrelease' | 'reopen'; ids: string[] }) =>
     request.post<{ processed: number; action: string; results: any[] }>('/scm/production-plans/batch-actions', data, { skipErrorToast: true }),
+  // 制费/人工吸收差异结转（C-6）
+  previewOverheadVariance: (params: Record<string, any>) => request.get<any>('/scm/costing/overhead-variance/preview', { params }),
+  transferOverheadVariance: (data: Record<string, any>) => request.post<any>('/scm/costing/overhead-variance/transfer', data),
+  getOverheadVarianceRuns: () => request.get<any[]>('/scm/costing/overhead-variance/runs'),
   // 自动排程
   runSchedule: (data: Record<string, any>) => request.post<any>('/scm/schedule/run', data),
   getScheduleRuns: () => request.get<any[]>('/scm/schedule/runs'),

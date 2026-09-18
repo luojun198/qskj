@@ -19,6 +19,7 @@ import { snapshotPlan, normalizeTarget, computeDiff, validateChange, applyChange
 import { ensurePlanProcesses, listPlanProcesses, resolveProcessId, validateProcessFlow, syncPlanProcessQty, estimatePlanFinish, queryProcessWip, queryCapacityLoad } from '../services/scmPlanProcess.js'
 import { planWipBook, hasWipCountTable } from '../services/scmWipCount.js'
 import { runSchedule, listScheduleRuns } from '../services/scmScheduler.js'
+import { previewOverheadVariance, type VarianceKind } from '../services/scmOverheadVariance.js'
 import { getReportedGoodQtyByProduct, validateWorkReportQty } from '../services/scmWorkReport.js'
 import { getQcDefectLines, validateFinishQc, validateQcDefectPush, validateReceiptQc } from '../services/scmQcControl.js'
 import { buildMissingAccountMessage, resolveScmAccount } from '../services/scmAccountResolver.js'
@@ -3047,6 +3048,122 @@ router.post('/scm/report/production/cost/export', async (req: AuthRequest, res) 
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`)
     res.send(buffer)
   } catch (e: any) { res.status(400).json({ code: 400, message: e?.message || '工单成本明细导出失败' }) }
+})
+
+// ── 制造费用 / 人工吸收差异结转（生产评审 C-6）──
+/** 写一张简单凭证（借贷各若干分录，金额已为正数），返回 { voucher_id, voucher_no } */
+function createSimpleVoucher(db: ReturnType<typeof getDb>, aid: string, req: AuthRequest, args: { date: string; year: number; month: number; remark: string; source: string; entries: Array<{ account: { id: string; code: string; name: string }; direction: 'debit' | 'credit'; amount: number; summary: string }> }) {
+  const voucherId = uuidv4()
+  const total = round2(args.entries.filter(e => e.direction === 'debit').reduce((s, e) => s + e.amount, 0))
+  const voucherNo = withDocNoRetry(db, () => {
+    const lastNo = (db.prepare('SELECT CAST(CASE WHEN INSTR(voucher_no,\'-\')>0 THEN SUBSTR(voucher_no,INSTR(voucher_no,\'-\')+1) ELSE voucher_no END AS INTEGER) no FROM vouchers WHERE account_set_id=? AND year=? AND period=? ORDER BY no DESC LIMIT 1').get(aid, args.year, args.month) as any)?.no ?? 0
+    const no = String(lastNo + 1).padStart(3, '0')
+    db.prepare('INSERT INTO vouchers (id,account_set_id,voucher_no,voucher_type_id,voucher_date,year,period,total_amount,maker_name,remark,source) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+      .run(voucherId, aid, no, null, args.date, args.year, args.month, total, userName(req), args.remark, args.source)
+    const insE = db.prepare('INSERT INTO voucher_entries (id,account_set_id,voucher_id,seq,account_id,account_code,account_name,direction,amount,amount_cents,summary) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+    args.entries.forEach((e, i) => insE.run(uuidv4(), aid, voucherId, i + 1, e.account.id, e.account.code, e.account.name, e.direction, e.amount, Math.round(e.amount * 100), e.summary))
+    return no
+  })
+  return { voucher_id: voucherId, voucher_no: voucherNo }
+}
+function varianceAccount(db: ReturnType<typeof getDb>, aid: string, kind: VarianceKind, override?: string): string {
+  if (override) return String(override)
+  return resolveScmAccount(db, aid, kind === 'labor' ? 'scm:acc_labor' : 'scm:acc_overhead')?.code || (kind === 'labor' ? '2211' : '5101')
+}
+router.get('/scm/costing/overhead-variance/preview', (req: AuthRequest, res) => {
+  const db = getDb(); const aid = asid(req); const q = req.query as any
+  const kind: VarianceKind = q.kind === 'labor' ? 'labor' : 'overhead'
+  try { res.json({ code: 0, data: previewOverheadVariance(db, aid, String(q.period || ''), kind, varianceAccount(db, aid, kind, q.account_code)) }) }
+  catch (e: any) { res.status(400).json({ code: 400, message: e?.message || '差异试算失败' }) }
+})
+router.get('/scm/costing/overhead-variance/runs', (req: AuthRequest, res) => {
+  const db = getDb(); const aid = asid(req)
+  res.json({ code: 0, data: db.prepare('SELECT r.*, v.voucher_no, d.doc_no FROM scm_overhead_variance_run r LEFT JOIN vouchers v ON v.id=r.voucher_id LEFT JOIN scm_doc d ON d.id=r.doc_id WHERE r.account_set_id=? ORDER BY r.period DESC, r.run_at DESC LIMIT 100').all(aid) })
+})
+/**
+ * 结转：method=cogs 凭证 借主营业务成本/贷科目（差异<0 反向）；method=allocate 生成无工单 CA 单按本期完工数分摊到成品并制证
+ */
+router.post('/scm/costing/overhead-variance/transfer', operationLog('制费/人工差异结转', '供应链'), (req: AuthRequest, res) => {
+  const db = getDb(); const aid = asid(req); const b = req.body || {}
+  const kind: VarianceKind = b.kind === 'labor' ? 'labor' : 'overhead'
+  const method = b.method === 'allocate' ? 'allocate' : 'cogs'
+  let pv: ReturnType<typeof previewOverheadVariance>
+  try { pv = previewOverheadVariance(db, aid, String(b.period || ''), kind, varianceAccount(db, aid, kind, b.account_code)) }
+  catch (e: any) { return res.status(400).json({ code: 400, message: e?.message }) }
+  const variance = round2(Number(b.amount ?? pv.variance) || 0)
+  if (Math.abs(variance) < 0.005) return res.status(400).json({ code: 400, message: '差异为 0，无需结转' })
+  if (pv.runs.some((r: any) => r.method)) {
+    if (b.force !== true) return res.status(400).json({ code: 400, message: `该期间已结转过 ${pv.runs.length} 次（最近 ${pv.runs[0].run_at}），如需再次结转请确认 force` })
+  }
+  const [year, month] = pv.period.split('-').map(Number)
+  try { assertGlPeriodOpen(db, aid, year, month) } catch (e: any) { return res.status(400).json({ code: 400, message: e.message }) }
+  const lookup = db.prepare('SELECT id, code, name FROM accounts WHERE account_set_id=? AND code=? LIMIT 1')
+  const srcAcc = lookup.get(aid, pv.account_code) as any
+  if (!srcAcc) return res.status(400).json({ code: 400, message: `科目 ${pv.account_code} 不存在` })
+  const lastDay = new Date(year, month, 0).getDate()
+  const docDate = `${pv.period}-${String(lastDay).padStart(2, '0')}`
+  const runId = uuidv4()
+  const summary = `${pv.period} ${kind === 'labor' ? '人工' : '制造费用'}吸收差异结转（${variance > 0 ? '吸收不足' : '超额吸收'} ${Math.abs(variance)}）`
+  try {
+    if (method === 'cogs') {
+      const target = String(b.target_account || resolveScmAccount(db, aid, 'scm:acc_cost')?.code || '6401')
+      const tgtAcc = lookup.get(aid, target) as any
+      if (!tgtAcc) return res.status(400).json({ code: 400, message: `科目 ${target} 不存在` })
+      const scopeErr = assertAccountIdsInScope(req.accountScope, [srcAcc.id, tgtAcc.id])
+      if (scopeErr) return res.status(403).json({ code: 403, message: scopeErr })
+      const amt = Math.abs(variance)
+      // 吸收不足（借方余额）：借 成本 / 贷 制费；超额吸收：借 制费 / 贷 成本
+      const debitAcc = variance > 0 ? tgtAcc : srcAcc, creditAcc = variance > 0 ? srcAcc : tgtAcc
+      const v = createSimpleVoucher(db, aid, req, { date: docDate, year, month, remark: summary, source: 'scm_variance', entries: [
+        { account: debitAcc, direction: 'debit', amount: amt, summary }, { account: creditAcc, direction: 'credit', amount: amt, summary }] })
+      db.prepare('INSERT INTO scm_overhead_variance_run (id,account_set_id,period,kind,account_code,absorbed,gl_debit,gl_credit,variance,method,target_account,voucher_id,run_by,remark) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+        .run(runId, aid, pv.period, kind, pv.account_code, pv.absorbed, pv.gl_debit, pv.gl_credit, variance, 'cogs', target, v.voucher_id, userName(req), b.remark ?? null)
+      return res.json({ code: 0, data: { run_id: runId, voucher_id: v.voucher_id, voucher_no: v.voucher_no, variance } })
+    }
+    // allocate：按本期完工成品数量分摊，生成无工单 CA 单（行 overhead_cost / labor_cost 承载差异）并制证
+    const fin = pv.finished.filter(f => f.qty > 0 && f.warehouse_code)
+    if (!fin.length) return res.status(400).json({ code: 400, message: '本期没有已审核的完工入库成品，无法分摊；请改用「转主营业务成本」' })
+    const totalW = fin.reduce((s, f) => s + f.qty, 0)
+    db.prepare("INSERT OR IGNORE INTO scm_doc_type (id, account_set_id, code, name, direction, affects_stock, affects_ar_ap, category) VALUES (?,?,'CA','结案结转','in',1,0,'production')").run(uuidv4(), aid)
+    const docId = uuidv4()
+    const docNo = withDocNoRetry(db, () => {
+      const no = nextDocNo(db, aid, 'CA', docDate)
+      db.prepare(`INSERT INTO scm_doc (id,account_set_id,doc_type,doc_no,doc_date,warehouse_code,operator,maker,status,total_qty,total_amount,remark,auditor,audited_at,field_values)
+        VALUES (?,?,'CA',?,?,?,?,?,'audited',0,?,?,?,datetime('now'),'{}')`).run(docId, aid, no, docDate, fin[0].warehouse_code, userName(req), userName(req), Math.abs(variance), summary, userName(req))
+      const ins = db.prepare(`INSERT INTO scm_doc_line (id,account_set_id,doc_id,seq,item_code,warehouse_code,qty,price,amount,unit_cost,labor_cost,overhead_cost,remark,field_values) VALUES (?,?,?,?,?,?,0,0,?,0,?,?,?,'{}')`)
+      let seq = 0; let acc = 0
+      fin.forEach((f, i) => {
+        const isLast = i === fin.length - 1
+        const v = isLast ? round2(variance - acc) : round2(variance * f.qty / totalW)
+        acc = round2(acc + v)
+        if (!v) return
+        seq++
+        ins.run(uuidv4(), aid, docId, seq, f.item_code, f.warehouse_code, v, kind === 'labor' ? v : 0, kind === 'overhead' ? v : 0, `${summary}：按完工数 ${f.qty} 分摊`)
+        applyCostAdjustment(db, aid, f.warehouse_code, f.item_code, v, { type: 'CA', no, seq, date: docDate })
+      })
+      db.prepare('INSERT INTO scm_overhead_variance_run (id,account_set_id,period,kind,account_code,absorbed,gl_debit,gl_credit,variance,method,doc_id,run_by,remark) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
+        .run(runId, aid, pv.period, kind, pv.account_code, pv.absorbed, pv.gl_debit, pv.gl_credit, variance, 'allocate', docId, userName(req), b.remark ?? null)
+      return no
+    })
+    // 凭证：吸收不足 借存货(按物料存货科目) / 贷制费；超额吸收反向。CA 行金额可为负，gen-voucher 只吃正数，这里手工制证
+    const invLines = db.prepare('SELECT l.item_code, l.amount, i.inv_account FROM scm_doc_line l LEFT JOIN scm_item i ON i.account_set_id=l.account_set_id AND i.code=l.item_code WHERE l.doc_id=?').all(docId) as any[]
+    const byInv = new Map<string, number>()
+    for (const l of invLines) { const code = l.inv_account || '1405'; byInv.set(code, round2((byInv.get(code) || 0) + (Number(l.amount) || 0))) }
+    const entries: Array<{ account: any; direction: 'debit' | 'credit'; amount: number; summary: string }> = []
+    for (const [code, amt] of byInv) {
+      const acc = lookup.get(aid, code) as any
+      if (!acc) return res.status(400).json({ code: 400, message: `存货科目 ${code} 不存在，结转单 ${docNo} 已生成但未制证`, data: { run_id: runId, doc_id: docId, doc_no: docNo } })
+      if (Math.abs(amt) < 0.005) continue
+      entries.push({ account: acc, direction: amt > 0 ? 'debit' : 'credit', amount: Math.abs(amt), summary })
+    }
+    entries.push({ account: srcAcc, direction: variance > 0 ? 'credit' : 'debit', amount: Math.abs(variance), summary })
+    const scopeErr = assertAccountIdsInScope(req.accountScope, entries.map(e => e.account.id))
+    if (scopeErr) return res.status(403).json({ code: 403, message: scopeErr })
+    const v = createSimpleVoucher(db, aid, req, { date: docDate, year, month, remark: summary, source: 'scm_variance', entries })
+    db.prepare('UPDATE scm_doc SET voucher_id=? WHERE id=?').run(v.voucher_id, docId)
+    db.prepare('UPDATE scm_overhead_variance_run SET voucher_id=? WHERE id=?').run(v.voucher_id, runId)
+    return res.json({ code: 0, data: { run_id: runId, doc_id: docId, doc_no: docNo, voucher_id: v.voucher_id, voucher_no: v.voucher_no, variance } })
+  } catch (e: any) { return res.status(400).json({ code: 400, message: e?.message || '结转失败' }) }
 })
 
 // ── 自动排程（有限产能顺排）──

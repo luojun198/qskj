@@ -926,6 +926,57 @@ async function main() {
     assert('㉛ 产能负荷表可按排程周分桶', capS.rows.some(r => r.week >= '2026-10-05'), JSON.stringify(capS.rows.map(r => [r.week, r.load_hours])))
   }
 
+  // ── ㉜ 制造费用吸收差异结转（C-6）─────────────────────────────────
+  {
+    for (const [code, name, direction] of [['5101', '制造费用', 'debit'], ['6401', '主营业务成本', 'debit'], ['5001', '生产成本', 'debit'], ['2211', '应付职工薪酬', 'credit']]) {
+      const r = await post('/api/base/accounts', { code, name, direction, level: 1 }, { allowError: true })
+      if (r.status !== 200 && !/已存在/.test(r.message || '')) bad('㉜ 建科目 ' + code, r.message)
+    }
+    // MO-PROC2：已审核报工 下料 3+1（1h）、焊接 3、总装 4 + 费率重算那张 → 制费累计；完工 3 件生成 PF 并制证 → 贷 5101 吸收
+    const PL = (p) => `/api/scm/production-plans${p || ''}`
+    const mo = (await get(PL('?page=1&page_size=50&keyword=MO-PROC2'))).data.list[0]
+    const det = (await get(PL(`/${mo.id}`))).data
+    const iss = await post(PL(`/${mo.id}/gen-issue`), {}, { allowError: true })
+    if (iss.code === 0) await audit(iss.data.id)
+    const pf = await post(PL(`/${mo.id}/gen-finish`), { products: [{ product_id: det.products[0].id, qty: 3 }] }, { allowError: true })
+    assert('㉜ 生成完工入库 3 件', pf.code === 0, pf.message)
+    const apf = await audit(pf.data.id)
+    assert('㉜ 完工入库审核（吸收部分制费）', apf.code === 0, apf.message)
+    const gv = await post(`/api/scm/docs/${pf.data.id}/gen-voucher`, {}, { allowError: true })
+    assert('㉜ 完工凭证生成', gv.code === 0, gv.message)
+    const ohLine = dbq('SELECT COALESCE(SUM(overhead_cost),0) o FROM scm_doc_line WHERE doc_id=?', pf.data.id)[0].o
+    const period = D.slice(0, 7)
+    const pv0 = (await get(`/api/scm/costing/overhead-variance/preview?period=${period}&kind=overhead`)).data
+    assert('㉜ 试算：SCM 吸收 = 完工行制费；总账贷方 ≥ 吸收', pv0.account_code === '5101' && Math.abs(pv0.absorbed - r2(ohLine)) < 0.01 && pv0.gl_credit >= pv0.absorbed - 0.01, JSON.stringify({ ohLine, pv: { a: pv0.absorbed, d: pv0.gl_debit, c: pv0.gl_credit, v: pv0.variance } }))
+    // 直接在总账记一笔实际制费 借 5101 100 / 贷 2211 100 → 差异 +100（吸收不足）
+    const AID = TEST_SET
+    const acc = code => dbq('SELECT id, code, name FROM accounts WHERE account_set_id=? AND code=?', AID, code)[0]
+    const vid = 'v-' + Date.now()
+    const w = new Database(TEMP_DB)
+    try {
+      w.prepare("INSERT INTO vouchers (id,account_set_id,voucher_no,voucher_date,year,period,total_amount,maker_name,remark) VALUES (?,?,?,?,?,?,?,?,?)").run(vid, AID, '900', D, Number(period.slice(0, 4)), Number(period.slice(5, 7)), 100, 'smoke', '实际制费')
+      w.prepare("INSERT INTO voucher_entries (id,account_set_id,voucher_id,seq,account_id,account_code,account_name,direction,amount,amount_cents,summary) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(vid + '-1', AID, vid, 1, acc('5101').id, '5101', acc('5101').name, 'debit', 100, 10000, '实际制费')
+      w.prepare("INSERT INTO voucher_entries (id,account_set_id,voucher_id,seq,account_id,account_code,account_name,direction,amount,amount_cents,summary) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(vid + '-2', AID, vid, 2, acc('2211').id, '2211', acc('2211').name, 'credit', 100, 10000, '实际制费')
+    } finally { w.close() }
+    const pv = (await get(`/api/scm/costing/overhead-variance/preview?period=${period}&kind=overhead`)).data
+    const expectVar = r2(pv0.variance + 100)
+    assert('㉜ 记实际制费 100 后差异 +100', Math.abs(pv.variance - expectVar) < 0.01 && pv.finished.length >= 1, JSON.stringify({ v: pv.variance, expectVar }))
+    // 转主营业务成本
+    const t1 = await post('/api/scm/costing/overhead-variance/transfer', { period, kind: 'overhead', method: 'cogs' }, { allowError: true })
+    assert('㉜ [C-6] 转主营成本：生成凭证 借 6401 / 贷 5101', t1.code === 0 && t1.data.voucher_no && dbq("SELECT account_code, direction, amount FROM voucher_entries WHERE voucher_id=? ORDER BY seq", t1.data.voucher_id).map(e => e.account_code + e.direction[0] + e.amount).join(',') === `6401d${Math.abs(pv.variance)},5101c${Math.abs(pv.variance)}`, JSON.stringify(t1.data || t1.message) + ' ' + JSON.stringify(dbq("SELECT account_code, direction, amount FROM voucher_entries WHERE voucher_id=?", t1.data?.voucher_id)))
+    const pv2 = (await get(`/api/scm/costing/overhead-variance/preview?period=${period}&kind=overhead`)).data
+    assert('㉜ [C-6] 结转后差异归零、记录 1 条', Math.abs(pv2.variance) < 0.01 && pv2.runs.length === 1 && pv2.runs[0].method === 'cogs', JSON.stringify({ v: pv2.variance, runs: pv2.runs.length }))
+    const again = await post('/api/scm/costing/overhead-variance/transfer', { period, kind: 'overhead', method: 'cogs', amount: 50 }, { allowError: true })
+    assert('㉜ [C-6] 已结转期间再结转需 force', again.status === 400 && /已结转过/.test(again.message || ''), again.message)
+    // 分摊到成品：强制指定金额 60（超额吸收 → 负）验证库存调整与凭证方向
+    const stBefore = await stock('W1', 'FP4')
+    const t2 = await post('/api/scm/costing/overhead-variance/transfer', { period, kind: 'overhead', method: 'allocate', amount: -60, force: true }, { allowError: true })
+    const stAfter = await stock('W1', 'FP4')
+    assert('㉜ [C-6] 分摊到成品：结案结转单 + 凭证，库存金额减 60', t2.code === 0 && t2.data.doc_no && t2.data.voucher_no && r2(stBefore.amount - stAfter.amount) === 60, JSON.stringify(t2.data || t2.message) + ` ${stBefore.amount}->${stAfter.amount}`)
+    const es = dbq('SELECT account_code, direction, amount FROM voucher_entries WHERE voucher_id=? ORDER BY seq', t2.data?.voucher_id)
+    assert('㉜ [C-6] 超额吸收分摊凭证：借 5101 60 / 贷 存货 60', es.some(e => e.account_code === '5101' && e.direction === 'debit' && e.amount === 60) && es.some(e => e.direction === 'credit' && e.amount === 60), JSON.stringify(es))
+  }
+
   // 汇总
   const fails = results.filter(r => !r.pass)
   console.log(`\n==== ${results.length} 项断言，${fails.length} 项失败 ====`)
