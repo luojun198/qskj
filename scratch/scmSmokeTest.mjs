@@ -683,11 +683,14 @@ async function main() {
     const prodId = detail.products[0].id
     // 多工序报工：三道各报 5（计划 5）都放行；同工序再报被拒（P1-1）
     const wr = async (process, qty, scrap = 0) => post('/api/scm/work-reports', { plan_id: mo.data.id, product_id: prodId, item_code: 'FP4', process_name: process, work_center_code: 'WC1', work_hours: 1, qty, scrap_qty: scrap }, { allowError: true })
-    const r1 = await wr('下料', 5); const r2w = await wr('焊接', 5); const r3 = await wr('总装', 4, 1)
+    // 阶段 C2 后有工艺路线的工单按工序流转：逐道审核后再报下一道
+    const r1 = await wr('下料', 5); await post(`/api/scm/work-reports/${r1.data?.id}/audit`, {}, { allowError: true })
+    const r2w = await wr('焊接', 5); await post(`/api/scm/work-reports/${r2w.data?.id}/audit`, {}, { allowError: true })
+    const r3 = await wr('总装', 4, 1)
     assert('㉖ [P1-1] 三道工序各报满计划数均放行', r1.status === 200 && r2w.status === 200 && r3.status === 200, [r1.message, r2w.message, r3.message].filter(Boolean).join(' | '))
     const over = await wr('焊接', 1)
     assert('㉖ [P1-1] 同一工序再报 1 件被拒（按成品×工序计数）', over.status === 400 && /工序「焊接」/.test(over.message || ''), over.message)
-    for (const r of [r1, r2w, r3]) await post(`/api/scm/work-reports/${r.data.id}/audit`, {}, { allowError: true })
+    await post(`/api/scm/work-reports/${r3.data.id}/audit`, {}, { allowError: true })
     // 完工默认数 = 末道工序「总装」合格数 4（不是 5+5+4）
     const draftPF = await post(PL(`/${mo.data.id}/gen-finish`), {}, { allowError: true })
     assert('㉖ [P1-1] 完工入库默认数取末道工序合格数 4', draftPF.code === 0 && Number(dbq('SELECT total_qty FROM scm_doc WHERE id=?', draftPF.data.id)[0]?.total_qty) === 4, JSON.stringify(dbq('SELECT total_qty FROM scm_doc WHERE id=?', draftPF.data?.id)))
@@ -813,6 +816,55 @@ async function main() {
     const closedPlan = (await get(PL('?page=1&page_size=50&keyword=MO-SNAP'))).data.list[0]
     const cc = await post('/api/scm/plan-changes', { plan_id: closedPlan.id, reason: 'x', products: [{ item_code: 'FP4', plan_qty: 9, lines: [{ item_code: 'M1', qty: 1 }] }] }, { allowError: true })
     assert('㉘ [C-1] 已关闭工单不可变更', cc.status === 400 && /仅已审核工单可做变更/.test(cc.message || ''), cc.message)
+  }
+
+  // ── ㉙ 生产阶段 C2：工单工序快照 / 流转校验 / 工序在制 / 产能负荷 / 交期推算 ────
+  {
+    const PL = (p) => `/api/scm/production-plans${p || ''}`
+    // 工作中心日产能
+    const wcs = (await get('/api/scm/work-centers')).data
+    const wc1 = wcs.find(w => w.code === 'WC1')
+    const upWc = await api('PUT', `/api/scm/work-centers/${wc1.id}`, { ...wc1, daily_capacity_hours: 8 }, { allowError: true })
+    assert('㉙ [C-3] 工作中心可维护日产能', upWc.code === 0 && (await get('/api/scm/work-centers')).data.find(w => w.code === 'WC1').daily_capacity_hours === 8, upWc.message)
+    // 新工单（FP4 有 3 道工序路线）下达 → 工序快照
+    const mo = await post(PL(), { code: 'MO-PROC2', plan_type: 'self', yl_warehouse: 'W1', fp_warehouse: 'W1', end_date: '2026-10-30', products: [{ item_code: 'FP4', plan_qty: 4, lines: [{ item_code: 'M1', qty: 1 }] }] })
+    await post(PL(`/${mo.data.id}/release`), {}, { allowError: true })
+    const det = (await get(PL(`/${mo.data.id}`))).data
+    assert('㉙ [C-2] 下达后按工艺路线快照 3 道工序，计划数 4', det.processes.length === 3 && det.processes.every(x => x.plan_qty === 4) && det.processes.map(x => x.process_name).join() === '下料,焊接,总装', JSON.stringify(det.processes.map(x => [x.seq, x.process_name, x.plan_qty])))
+    assert('㉙ [C-3] 交期推算：剩余 (1+1+2)×4=16h ÷ 8 = 2 天', det.schedule && det.schedule.remain_hours === 16 && det.schedule.est_days === 2, JSON.stringify(det.schedule))
+    const prodId = det.products[0].id
+    const wr = async (process, qty, scrap = 0) => post('/api/scm/work-reports', { plan_id: mo.data.id, product_id: prodId, item_code: 'FP4', process_name: process, work_center_code: 'WC1', work_hours: 1, qty, scrap_qty: scrap }, { allowError: true })
+    // 流转：前道未审核完成 → 后道被拒
+    const early = await wr('焊接', 1)
+    assert('㉙ [C-2] 前道未完成时后道报工被拒', early.status === 400 && /超过前道「下料」已审核完成数 0/.test(early.message || ''), early.message)
+    const r1 = await wr('下料', 3, 1)
+    assert('㉙ [C-2] 报工挂到工序行（process_id）', r1.status === 200 && r1.data.process_id, JSON.stringify(r1.data))
+    await post(`/api/scm/work-reports/${r1.data.id}/audit`, {}, { allowError: true })
+    const r2w = await wr('焊接', 3)
+    assert('㉙ [C-2] 前道完成 3 后后道可报 3', r2w.status === 200, r2w.message)
+    const over = await wr('焊接', 1)
+    assert('㉙ [C-2] 后道累计 4 > 前道完成 3 被拒（草稿也占用）', over.status === 400 && /累计报工 4 超过前道/.test(over.message || ''), over.message)
+    // 反审核前道：后道已报 3，前道完成回到 0 → 拒
+    const unA = await post(`/api/scm/work-reports/${r1.data.id}/unaudit`, {}, { allowError: true })
+    assert('㉙ [C-2] 后道已报工时前道不可反审核', unA.status === 400 && /后道工序「焊接」已报工 3/.test(unA.message || ''), unA.message)
+    await post(`/api/scm/work-reports/${r2w.data.id}/audit`, {}, { allowError: true })
+    const wip = (await get(`/api/scm/report/production/process-wip?plan_code=MO-PROC2`)).data
+    assert('㉙ [C-4④] 工序在制表：下料 转入4 完成3 不良1 在制0；焊接 转入3 完成3 在制0；总装 转入3 在制3', JSON.stringify(wip.map(x => [x.process_name, x.in_qty, x.done_qty, x.scrap_qty, x.wip_qty])) === JSON.stringify([['下料', 4, 3, 1, 0], ['焊接', 3, 3, 0, 0], ['总装', 3, 0, 0, 3]]), JSON.stringify(wip.map(x => [x.process_name, x.in_qty, x.done_qty, x.scrap_qty, x.wip_qty])))
+    const cap = (await get('/api/scm/report/production/capacity')).data
+    const wk = cap.rows.find(r => r.work_center_code === 'WC1' && r.plans.includes('MO-PROC2'))
+    assert('㉙ [C-3] 产能负荷表：WC1 该周含 MO-PROC2 剩余工时（总装 3×2=6h 等）', wk && wk.capacity_hours === 40 && wk.load_hours >= 6 && wk.utilization != null, JSON.stringify(cap.rows))
+    // 关闭流转校验后可超报
+    const cur = (await get('/api/scm/params')).data
+    const list = Array.isArray(cur) ? cur : (cur.list || [])
+    await api('PUT', '/api/scm/params', { params: [...list.filter(p => p.param_key !== 'scm:process_flow_strict'), { param_key: 'scm:process_flow_strict', param_value: '0' }] }, { allowError: true })
+    const loose = await wr('总装', 4)
+    assert('㉙ [决策 1] 关闭工序流转校验后仅受计划数约束', loose.status === 200, loose.message)
+    await api('PUT', '/api/scm/params', { params: [...list.filter(p => p.param_key !== 'scm:process_flow_strict'), { param_key: 'scm:process_flow_strict', param_value: '1' }] }, { allowError: true })
+    // 变更单追加计划数 → 工序行计划数同步
+    const pc = await post('/api/scm/plan-changes', { plan_id: mo.data.id, reason: '追加', products: [{ id: prodId, item_code: 'FP4', plan_qty: 6, lines: [{ item_code: 'M1', qty: 1 }] }] }, { allowError: true })
+    await post(`/api/scm/plan-changes/${pc.data.id}/audit`, {}, { allowError: true })
+    const det2 = (await get(PL(`/${mo.data.id}`))).data
+    assert('㉙ [C-2] 变更单审核后工序行计划数同步为 6', det2.processes.every(x => x.plan_qty === 6), JSON.stringify(det2.processes.map(x => x.plan_qty)))
   }
 
   // 汇总

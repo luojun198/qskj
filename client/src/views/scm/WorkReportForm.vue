@@ -65,7 +65,7 @@
         <div :class="{ 'is-warn': overQuota }">
           <span>本成品{{ form.process_name ? `「${form.process_name}」工序` : '' }}累计（含本次）</span>
           <b>{{ num(reportedWithCurrent) }}</b>
-          <i>计划 {{ num(currentPlanQty) }}，已报 {{ num(reportedForProduct) }}</i>
+          <i>计划 {{ num(currentPlanQty) }}，已报 {{ num(reportedForProduct) }}<template v-if="prevProcessDone">；前道「{{ prevProcessDone.name }}」已完成 {{ num(prevProcessDone.done) }}</template></i>
         </div>
       </div>
 
@@ -126,11 +126,25 @@ const reportedWithCurrent = computed(() =>
 const overQuota = computed(() =>
   currentPlanQty.value > 0 && reportedWithCurrent.value > currentPlanQty.value + 1e-6)
 
-/** 工序下拉来自该成品的工艺路线；选中后自动带出工作中心与标准工时 */
-const processOptions = computed(() => routingLines.value.map(l => ({
-  process_name: l.process_name,
-  label: `${l.process_name}${l.work_center_name ? ' · ' + l.work_center_name : ''}${l.std_hours ? ' · 标准 ' + l.std_hours + ' 工时' : ''}`,
-})))
+/** 工序下拉：优先取工单下达时快照的工序行（带完成进度，C-2）；无工序行时退回成品工艺路线；选中后带出工作中心与标准工时 */
+const planProcesses = ref<any[]>([])
+const productProcesses = computed(() => planProcesses.value.filter(x => x.product_id === form.product_id))
+const processOptions = computed(() => productProcesses.value.length
+  ? productProcesses.value.map(x => ({
+      process_name: x.process_name,
+      label: `${x.seq}. ${x.process_name}${x.work_center_name ? ' · ' + x.work_center_name : ''}${x.std_hours ? ' · 标准 ' + x.std_hours + ' 工时' : ''} · 完成 ${num(x.done_qty)}/${num(x.plan_qty)}${Number(x.scrap_qty) ? ' 不良 ' + num(x.scrap_qty) : ''}`,
+    }))
+  : routingLines.value.map(l => ({
+      process_name: l.process_name,
+      label: `${l.process_name}${l.work_center_name ? ' · ' + l.work_center_name : ''}${l.std_hours ? ' · 标准 ' + l.std_hours + ' 工时' : ''}`,
+    })))
+/** 前道工序已审核完成数（流转上限提示） */
+const prevProcessDone = computed(() => {
+  const cur = productProcesses.value.find(x => x.process_name === String(form.process_name || '').trim())
+  if (!cur || cur.seq <= 1) return null
+  const prev = productProcesses.value.filter(x => x.seq < cur.seq).sort((a, b) => b.seq - a.seq)[0]
+  return prev ? { name: prev.process_name, done: Number(prev.done_qty) || 0 } : null
+})
 
 function goBack() { router.push({ name: 'ScmWorkReport', query: planId.value ? { plan_id: planId.value } : {} }) }
 function onProduct() {
@@ -139,7 +153,7 @@ function onProduct() {
   loadRouting()
 }
 function onProcess(name: string) {
-  const line = routingLines.value.find(l => l.process_name === name)
+  const line = productProcesses.value.find(x => x.process_name === name) || routingLines.value.find(l => l.process_name === name)
   if (!line) return
   if (!form.work_center_code) form.work_center_code = line.work_center_code || ''
   if (!Number(form.work_hours)) form.work_hours = Number(line.std_hours) || 0
@@ -175,6 +189,7 @@ async function init() {
     if (pd.code === 0) {
       planCode.value = (pd.data as any).code || ''
       products.value = (pd.data as any).products || []
+      planProcesses.value = (pd.data as any).processes || []
       if (!form.product_id) form.product_id = products.value[0]?.id || ''
     }
     const reports = await scmApi.getWorkReports({ plan_id: planId.value })

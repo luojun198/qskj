@@ -774,6 +774,18 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '工单成本明细表', icon: 'DataAnalysis', parent: '生产制造' },
       },
       {
+        path: 'scm/report/production/process-wip',
+        name: 'ScmProcessWipReport',
+        component: () => import('@/views/scm/ProcessWipReport.vue'),
+        meta: { title: '工序在制表', icon: 'DataAnalysis', parent: '生产制造' },
+      },
+      {
+        path: 'scm/report/production/capacity',
+        name: 'ScmCapacityLoadReport',
+        component: () => import('@/views/scm/CapacityLoadReport.vue'),
+        meta: { title: '产能负荷表', icon: 'DataAnalysis', parent: '生产制造' },
+      },
+      {
         path: 'scm/report/stock-alert',
         name: 'ScmStockAlert',
         component: () => import('@/views/scm/StockAlert.vue'),

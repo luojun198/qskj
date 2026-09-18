@@ -408,6 +408,12 @@
                     全月平均：期内出库按当前均价暂估，月末在「库存报表 → 全月平均成本计算」统一重算。切换方式时已有结存自动补为「期初层」；成本层可在「库存报表 → 库存成本层」查看。
                   </span>
                 </el-form-item>
+                <el-form-item label="工序流转校验">
+                  <el-switch v-model="scmForm.process_flow_strict" inline-prompt active-text="开" inactive-text="关" />
+                  <span style="margin-left:12px;font-size:12px;color:var(--el-text-color-secondary)">
+                    开启后，有工艺路线的工单报工时后道工序累计（合格+不良）不得超过前道已审核完成数；关闭则各工序只受计划数约束
+                  </span>
+                </el-form-item>
                 <el-form-item label="采购入库须到货检验">
                   <el-switch v-model="scmForm.qc_required_for_receipt" inline-prompt active-text="开" inactive-text="关" />
                   <span style="margin-left:12px;font-size:12px;color:var(--el-text-color-secondary)">
@@ -709,6 +715,7 @@ const scmForm = ref({
   outsource_overrun_rate: 0,
   qc_required_for_finish: false,
   qc_required_for_receipt: false,
+  process_flow_strict: true,
   currencies: '',
   io_categories: '',
   transport_methods: '',
@@ -867,6 +874,8 @@ async function fetchData() {
         scmForm.value.qc_required_for_finish = p.param_value === '1'
       } else if (p.param_key === 'scm:qc_required_for_receipt') {
         scmForm.value.qc_required_for_receipt = p.param_value === '1'
+      } else if (p.param_key === 'scm:process_flow_strict') {
+        scmForm.value.process_flow_strict = p.param_value !== '0'
       } else if (p.param_key === 'scm:production_overrun_enabled') {
         scmForm.value.production_overrun_enabled = p.param_value === '1'
       } else if (p.param_key === 'scm:production_overrun_rate') {
@@ -980,6 +989,7 @@ async function handleSaveScm() {
       { param_key: 'scm:purchase_over_receipt_rate', param_value: String(Math.max(0, Number(scmForm.value.purchase_over_receipt_rate) || 0)) },
       { param_key: 'scm:qc_required_for_finish', param_value: scmForm.value.qc_required_for_finish ? '1' : '0' },
       { param_key: 'scm:qc_required_for_receipt', param_value: scmForm.value.qc_required_for_receipt ? '1' : '0' },
+      { param_key: 'scm:process_flow_strict', param_value: scmForm.value.process_flow_strict ? '1' : '0' },
       { param_key: 'scm:production_overrun_enabled', param_value: scmForm.value.production_overrun_enabled ? '1' : '0' },
       { param_key: 'scm:production_overrun_rate', param_value: String(Math.max(0, Number(scmForm.value.production_overrun_rate) || 0)) },
       { param_key: 'scm:outsource_overrun_enabled', param_value: scmForm.value.outsource_overrun_enabled ? '1' : '0' },

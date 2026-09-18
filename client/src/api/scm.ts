@@ -589,6 +589,10 @@ export const scmApi = {
   deleteProductionPlan: (id: string) => request.delete(`/scm/production-plans/${id}`),
   batchProductionPlanActions: (data: { action: 'delete' | 'unrelease' | 'reopen'; ids: string[] }) =>
     request.post<{ processed: number; action: string; results: any[] }>('/scm/production-plans/batch-actions', data, { skipErrorToast: true }),
+  // 工单工序 / 产能（C-2 / C-3）
+  genPlanProcesses: (planId: string) => request.post<{ created: number }>(`/scm/production-plans/${planId}/gen-processes`, {}),
+  getProcessWip: (params: Record<string, any>) => request.get<any[]>('/scm/report/production/process-wip', { params }),
+  getCapacityLoad: (params: Record<string, any>) => request.get<{ rows: any[]; unscheduled_hours: number }>('/scm/report/production/capacity', { params }),
   // 工单变更单（C-1）
   getPlanChanges: (params: Record<string, any>) => request.get<{ list: any[]; total: number; page: number; page_size: number }>('/scm/plan-changes', { params }),
   getPlanChange: (id: string) => request.get<any>(`/scm/plan-changes/${id}`),

@@ -63,7 +63,7 @@ const SCM_PARAM_KEYS = [
   'scm:negative_stock_warehouses',
   'scm:currencies', 'scm:io_categories', 'scm:transport_methods', 'scm:doc_no_rule',
   'scm:credit_control_enabled', 'scm:credit_control_mode',
-  'scm:qc_required_for_finish', 'scm:qc_required_for_receipt',
+  'scm:qc_required_for_finish', 'scm:qc_required_for_receipt', 'scm:process_flow_strict',
   ...SCM_OVERRUN_PARAM_KEYS,
 ]
 // ── 多币种（P2-14）：供单据表单取币种列表与记账汇率，任何已登录用户可读（不要求 base:currency 权限） ──

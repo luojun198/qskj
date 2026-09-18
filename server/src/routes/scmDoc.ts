@@ -16,6 +16,7 @@ import { maintainDocBatches, reverseDocBatches } from '../services/scmBatch.js'
 import { maintainDocSerials, reverseDocSerials } from '../services/scmSerial.js'
 import { computeIssueSuggestion, computeProductionPlanActionState, computePushedQty, isPlanFullyFinished } from '../services/scmProduction.js'
 import { snapshotPlan, normalizeTarget, computeDiff, validateChange, applyChange } from '../services/scmPlanChange.js'
+import { ensurePlanProcesses, listPlanProcesses, resolveProcessId, validateProcessFlow, syncPlanProcessQty, estimatePlanFinish, queryProcessWip, queryCapacityLoad } from '../services/scmPlanProcess.js'
 import { getReportedGoodQtyByProduct, validateWorkReportQty } from '../services/scmWorkReport.js'
 import { getQcDefectLines, validateFinishQc, validateQcDefectPush, validateReceiptQc } from '../services/scmQcControl.js'
 import { buildMissingAccountMessage, resolveScmAccount } from '../services/scmAccountResolver.js'
@@ -3046,6 +3047,26 @@ router.post('/scm/report/production/cost/export', async (req: AuthRequest, res) 
   } catch (e: any) { res.status(400).json({ code: 400, message: e?.message || '工单成本明细导出失败' }) }
 })
 
+// ── 报表：工序在制表（C-4 ④）/ 产能负荷表（C-3）──
+router.get('/scm/report/production/process-wip', (req: AuthRequest, res) => {
+  try { res.json({ code: 0, data: queryProcessWip(getDb(), asid(req), req.query as any) }) }
+  catch (e: any) { res.status(400).json({ code: 400, message: e?.message || '工序在制表查询失败' }) }
+})
+router.get('/scm/report/production/capacity', (req: AuthRequest, res) => {
+  try { res.json({ code: 0, data: queryCapacityLoad(getDb(), asid(req), req.query as any) }) }
+  catch (e: any) { res.status(400).json({ code: 400, message: e?.message || '产能负荷表查询失败' }) }
+})
+// 存量工单补生成工序行（下达后才维护工艺路线的场景）
+router.post('/scm/production-plans/:id/gen-processes', operationLog('工单生成工序', '供应链'), (req: AuthRequest, res) => {
+  const db = getDb(); const aid = asid(req)
+  const p = db.prepare('SELECT id, status FROM scm_production_plan WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
+  if (!p) return res.status(404).json({ code: 404, message: '工单不存在' })
+  if (p.status !== 'released') return res.status(400).json({ code: 400, message: '仅已审核工单可生成工序' })
+  const created = ensurePlanProcesses(db, aid, p.id)
+  syncPlanProcessQty(db, aid, p.id)
+  res.json({ code: 0, data: { created } })
+})
+
 router.get('/scm/report/cost-variance', (req: AuthRequest, res) => {
   const { start_date, end_date } = req.query as any
   res.json({ code: 0, data: getCostVariance(getDb(), asid(req), start_date, end_date) })
@@ -3174,6 +3195,7 @@ router.post('/scm/plan-changes/:id/audit', operationLog('工单变更单审核',
   try {
     db.transaction(() => {
       applyChange(db, aid, plan, after)
+      ensurePlanProcesses(db, aid, plan.id)
       db.prepare(`UPDATE scm_production_plan_change SET status='audited', before_json=?, diff_json=?, auditor=?, audited_at=datetime('now'), updated_at=datetime('now') WHERE id=?`)
         .run(JSON.stringify(before), JSON.stringify(diff), userName(req), ex.id)
       syncPlanActualDates(db, aid, plan.id)
@@ -3519,7 +3541,9 @@ router.get('/scm/production-plans/:id', (req: AuthRequest, res) => {
   const actionState = computeProductionPlanActionState(db, aid, plan, issueRows)
   const changes = db.prepare('SELECT id, change_no, change_date, reason, status, maker, auditor, audited_at, diff_json FROM scm_production_plan_change WHERE account_set_id=? AND plan_id=? ORDER BY change_date DESC, created_at DESC').all(aid, req.params.id)
     .map((c: any) => ({ ...c, diff: JSON.parse(c.diff_json || '[]'), diff_json: undefined }))
-  res.json({ code: 0, data: { plan, products, bom_lines: bomLines, docs, cost, action_state: actionState, changes } })
+  const processes = listPlanProcesses(db, aid, req.params.id).map(x => ({ ...x, work_center_name: (db.prepare('SELECT name FROM scm_work_center WHERE account_set_id=? AND code=?').get(aid, x.work_center_code || '') as any)?.name || null }))
+  const schedule = plan.status === 'released' && processes.length ? estimatePlanFinish(db, aid, req.params.id) : null
+  res.json({ code: 0, data: { plan, products, bom_lines: bomLines, docs, cost, action_state: actionState, changes, processes, schedule } })
 })
 
 // 生产/委外计划上下游关联追溯：上游=下推来源单据(source_doc_id)，下游=挂在本计划下的领料/完工/委外单(scm_doc.plan_id)。
@@ -3569,6 +3593,8 @@ router.post('/scm/production-plans/:id/release', operationLog('工单审核', '�
       }
     }
     db.prepare("UPDATE scm_production_plan SET status='released' WHERE id=? AND account_set_id=?").run(req.params.id, aid)
+    // C-2：按成品启用工艺路线快照工序行（无路线的成品不生成，报工沿用整件一道口径）
+    ensurePlanProcesses(db, aid, req.params.id)
   })()
   res.json({ code: 0, data: { ok: true, snapshot_products: snapshot.length } })
 })
@@ -4539,14 +4565,14 @@ router.post('/scm/work-centers', operationLog('工作中心新增', '供应链')
   if (!b.code || !b.name) return res.status(400).json({ code: 400, message: '编码和名称不能为空' })
   if (db.prepare('SELECT id FROM scm_work_center WHERE account_set_id=? AND code=?').get(aid, b.code)) return res.status(409).json({ code: 409, message: '编码已存在' })
   const id = uuidv4()
-  db.prepare(`INSERT INTO scm_work_center (id,account_set_id,code,name,category,labor_rate,overhead_rate,enabled,remark) VALUES (?,?,?,?,?,?,?,?,?)`)
-    .run(id, aid, b.code, b.name, b.category || 'inhouse', Number(b.labor_rate) || 0, Number(b.overhead_rate) || 0, b.enabled === 0 ? 0 : 1, b.remark ?? null)
+  db.prepare(`INSERT INTO scm_work_center (id,account_set_id,code,name,category,labor_rate,overhead_rate,enabled,remark,daily_capacity_hours) VALUES (?,?,?,?,?,?,?,?,?,?)`)
+    .run(id, aid, b.code, b.name, b.category || 'inhouse', Number(b.labor_rate) || 0, Number(b.overhead_rate) || 0, b.enabled === 0 ? 0 : 1, b.remark ?? null, Number(b.daily_capacity_hours) || 0)
   res.json({ code: 0, data: { id } })
 })
 router.put('/scm/work-centers/:id', operationLog('工作中心修改', '供应链'), (req: AuthRequest, res) => {
   const db = getDb(); const b = req.body; const aid = asid(req)
-  db.prepare(`UPDATE scm_work_center SET name=?,category=?,labor_rate=?,overhead_rate=?,enabled=?,remark=?,updated_at=datetime('now') WHERE id=? AND account_set_id=?`)
-    .run(b.name, b.category || 'inhouse', Number(b.labor_rate) || 0, Number(b.overhead_rate) || 0, b.enabled === 0 ? 0 : 1, b.remark ?? null, req.params.id, aid)
+  db.prepare(`UPDATE scm_work_center SET name=?,category=?,labor_rate=?,overhead_rate=?,enabled=?,remark=?,daily_capacity_hours=?,updated_at=datetime('now') WHERE id=? AND account_set_id=?`)
+    .run(b.name, b.category || 'inhouse', Number(b.labor_rate) || 0, Number(b.overhead_rate) || 0, b.enabled === 0 ? 0 : 1, b.remark ?? null, Number(b.daily_capacity_hours) || 0, req.params.id, aid)
   res.json({ code: 0, data: { ok: true } })
 })
 router.delete('/scm/work-centers/:id', operationLog('工作中心删除', '供应链'), (req: AuthRequest, res) => {
@@ -4669,6 +4695,12 @@ router.get('/scm/work-reports/:id', (req: AuthRequest, res) => {
   res.json({ code: 0, data: row })
 })
 router.get('/scm/work-reports/next-no', (req: AuthRequest, res) => res.json({ code: 0, data: { next_no: nextSeqNo(getDb(), 'scm_work_report', 'report_no', asid(req), 'WR') } }))
+const wrProcessColCache = new WeakMap<object, boolean>()
+function hasProcessColumnSafe(db: ReturnType<typeof getDb>): boolean {
+  let v = wrProcessColCache.get(db)
+  if (v === undefined) { v = (db.prepare("PRAGMA table_info('scm_work_report')").all() as { name: string }[]).some(c => c.name === 'process_id'); wrProcessColCache.set(db, v) }
+  return v
+}
 /** 报工只能挂在已审核（released）的工单上：草稿工单尚未确定用料，已关闭工单的人工/制费已结转（生产评审 P1-3） */
 function workReportPlanError(db: ReturnType<typeof getDb>, aid: string, planId: string): string | null {
   const plan = db.prepare('SELECT code, status FROM scm_production_plan WHERE id=? AND account_set_id=?').get(planId, aid) as any
@@ -4692,13 +4724,17 @@ router.post('/scm/work-reports', operationLog('生产报工新增', '供应链')
     planId: b.plan_id, productId: b.product_id, processName: b.process_name, qty: b.qty, scrapQty: b.scrap_qty,
   })
   if (qtyError) return res.status(400).json({ code: 400, message: qtyError })
+  const flowErr = validateProcessFlow(db, aid, { productId: b.product_id, processName: b.process_name, qty: b.qty, scrapQty: b.scrap_qty })
+  if (flowErr) return res.status(400).json({ code: 400, message: flowErr })
   const { labor, overhead } = calcReportAmounts(db, aid, b)
   const id = uuidv4(); const no = b.report_no || nextSeqNo(db, 'scm_work_report', 'report_no', aid, 'WR')
   db.prepare(`INSERT INTO scm_work_report (id,account_set_id,plan_id,product_id,report_no,report_date,item_code,process_name,work_center_code,qty,scrap_qty,work_hours,labor_amount,overhead_amount,operator,remark,status)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'draft')`).run(
     id, aid, b.plan_id, b.product_id ?? null, no, b.report_date || localToday(), b.item_code ?? null, b.process_name ?? null, b.work_center_code ?? null,
     Number(b.qty) || 0, Number(b.scrap_qty) || 0, Number(b.work_hours) || 0, labor, overhead, userName(req), b.remark ?? null)
-  res.json({ code: 0, data: { id, report_no: no } })
+  const pid = resolveProcessId(db, aid, b.product_id, b.process_name)
+  if (pid) db.prepare('UPDATE scm_work_report SET process_id=? WHERE id=?').run(pid, id)
+  res.json({ code: 0, data: { id, report_no: no, process_id: pid } })
 })
 router.put('/scm/work-reports/:id', operationLog('生产报工修改', '供应链'), (req: AuthRequest, res) => {
   const db = getDb(); const b = req.body; const aid = asid(req)
@@ -4712,9 +4748,13 @@ router.put('/scm/work-reports/:id', operationLog('生产报工修改', '供应�
     excludeReportId: req.params.id,
   })
   if (qtyError) return res.status(400).json({ code: 400, message: qtyError })
+  const flowErr = validateProcessFlow(db, aid, { productId: b.product_id, processName: b.process_name, qty: b.qty, scrapQty: b.scrap_qty, excludeReportId: req.params.id })
+  if (flowErr) return res.status(400).json({ code: 400, message: flowErr })
   const { labor, overhead } = calcReportAmounts(db, aid, b)
   db.prepare(`UPDATE scm_work_report SET product_id=?,report_date=?,item_code=?,process_name=?,work_center_code=?,qty=?,scrap_qty=?,work_hours=?,labor_amount=?,overhead_amount=?,remark=? WHERE id=? AND account_set_id=?`)
     .run(b.product_id ?? null, b.report_date, b.item_code ?? null, b.process_name ?? null, b.work_center_code ?? null, Number(b.qty) || 0, Number(b.scrap_qty) || 0, Number(b.work_hours) || 0, labor, overhead, b.remark ?? null, req.params.id, aid)
+  const pid = resolveProcessId(db, aid, b.product_id, b.process_name)
+  if (pid || hasProcessColumnSafe(db)) db.prepare('UPDATE scm_work_report SET process_id=? WHERE id=?').run(pid, req.params.id)
   res.json({ code: 0, data: { ok: true } })
 })
 router.post('/scm/work-reports/:id/audit', operationLog('生产报工审核', '供应链'), (req: AuthRequest, res) => {
@@ -4724,7 +4764,13 @@ router.post('/scm/work-reports/:id/audit', operationLog('生产报工审核', '�
   if (ex.status === 'audited') return res.status(400).json({ code: 400, message: '已审核' })
   const planErr = workReportPlanError(db, aid, ex.plan_id)
   if (planErr) return res.status(400).json({ code: 400, message: planErr })
+  // 审核时再校验一次工序流转（草稿期间前道完成数可能被反审核）
+  const wr = db.prepare('SELECT product_id, process_name, qty, scrap_qty FROM scm_work_report WHERE id=?').get(req.params.id) as any
+  const flowErr = validateProcessFlow(db, aid, { productId: wr?.product_id, processName: wr?.process_name, qty: 0, scrapQty: 0, excludeReportId: req.params.id }) ||
+    validateProcessFlow(db, aid, { productId: wr?.product_id, processName: wr?.process_name, qty: wr?.qty, scrapQty: wr?.scrap_qty, excludeReportId: req.params.id })
+  if (flowErr) return res.status(400).json({ code: 400, message: flowErr })
   db.prepare("UPDATE scm_work_report SET status='audited', auditor=?, audited_at=datetime('now') WHERE id=?").run(userName(req), req.params.id)
+  syncPlanProcessQty(db, aid, ex.plan_id)
   res.json({ code: 0, data: { ok: true } })
 })
 router.post('/scm/work-reports/:id/unaudit', operationLog('生产报工反审核', '供应链'), (req: AuthRequest, res) => {
@@ -4735,7 +4781,20 @@ router.post('/scm/work-reports/:id/unaudit', operationLog('生产报工反审核
   // 安全网：该工单已有完工入库（人工/制费已上卷）时禁止反审核报工
   const finished = db.prepare("SELECT COUNT(*) c FROM scm_doc WHERE account_set_id=? AND plan_id=? AND doc_type='PF' AND status='audited'").get(aid, ex.plan_id) as any
   if (finished?.c > 0) return res.status(400).json({ code: 400, message: '该工单已有完工入库（人工/制费已结转），请先反审核完工单再反审核报工' })
+  // 后道工序已按本报工的完成数报工时，不能反审核（否则后道累计 > 前道完成）
+  const cur = db.prepare('SELECT product_id, process_name, qty FROM scm_work_report WHERE id=?').get(req.params.id) as any
+  const curProc = cur?.product_id ? listPlanProcesses(db, aid, ex.plan_id, cur.product_id).find(x => x.process_name === String(cur.process_name || '').trim()) : undefined
+  if (curProc) {
+    const next = listPlanProcesses(db, aid, ex.plan_id, cur.product_id).find(x => x.seq > curProc.seq)
+    if (next) {
+      const nextUsed = Number((db.prepare("SELECT COALESCE(SUM(qty+scrap_qty),0) q FROM scm_work_report WHERE account_set_id=? AND product_id=? AND TRIM(COALESCE(process_name,''))=?").get(aid, cur.product_id, next.process_name) as any)?.q) || 0
+      if (nextUsed > (Number(curProc.done_qty) || 0) - (Number(cur.qty) || 0) + 1e-6) {
+        return res.status(400).json({ code: 400, message: `后道工序「${next.process_name}」已报工 ${nextUsed}，反审核本工序后前道完成数不足，请先处理后道报工` })
+      }
+    }
+  }
   db.prepare("UPDATE scm_work_report SET status='draft', auditor=NULL, audited_at=NULL WHERE id=?").run(req.params.id)
+  syncPlanProcessQty(db, aid, ex.plan_id)
   res.json({ code: 0, data: { ok: true } })
 })
 router.delete('/scm/work-reports/:id', operationLog('生产报工删除', '供应链'), (req: AuthRequest, res) => {

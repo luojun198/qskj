@@ -56,6 +56,27 @@
         </el-table>
       </section>
 
+      <!-- 工序进度（C-2）与交期推算（C-3） -->
+      <section class="wo-section" v-if="plan && !isOut">
+        <div class="wo-section__hd">
+          <h3>工序进度</h3>
+          <span v-if="schedule">剩余 {{ num(schedule.remain_hours) }} 工时，按产能约需 {{ schedule.est_days }} 天，预计 <b :class="{ 'overdue-text': plan.end_date && schedule.est_finish_date > plan.end_date }">{{ schedule.est_finish_date }}</b> 完工{{ plan.end_date && schedule.est_finish_date > plan.end_date ? '（晚于计划完工 ' + plan.end_date + '）' : '' }}</span>
+          <el-button v-else-if="plan.status === 'released'" size="small" @click="genProcesses">按工艺路线生成工序</el-button>
+        </div>
+        <el-empty v-if="!processes.length" description="无工序行（成品未维护工艺路线，报工按整件一道口径）" :image-size="50" />
+        <el-table v-else :data="processes" size="small" border stripe>
+          <el-table-column label="成品" width="130" show-overflow-tooltip><template #default="{ row }">{{ productCode(row.product_id) }}</template></el-table-column>
+          <el-table-column label="序" prop="seq" width="50" align="center" />
+          <el-table-column label="工序" prop="process_name" min-width="120" />
+          <el-table-column label="工作中心" width="120" show-overflow-tooltip><template #default="{ row }">{{ row.work_center_name || row.work_center_code || '-' }}{{ row.is_outsource ? '（委外）' : '' }}</template></el-table-column>
+          <el-table-column label="标准工时/件" width="100" align="right"><template #default="{ row }">{{ num(row.std_hours) }}</template></el-table-column>
+          <el-table-column label="计划" width="80" align="right"><template #default="{ row }">{{ num(row.plan_qty) }}</template></el-table-column>
+          <el-table-column label="完成" width="80" align="right"><template #default="{ row }">{{ num(row.done_qty) }}</template></el-table-column>
+          <el-table-column label="不良" width="70" align="right"><template #default="{ row }">{{ Number(row.scrap_qty) ? num(row.scrap_qty) : '' }}</template></el-table-column>
+          <el-table-column label="进度" width="150"><template #default="{ row }"><el-progress :percentage="procPct(row)" :stroke-width="10" :status="procPct(row) >= 100 ? 'success' : undefined" /></template></el-table-column>
+        </el-table>
+      </section>
+
       <!-- 用料汇总（全部成品） -->
       <section class="wo-section">
         <div class="wo-section__hd"><h3>用料汇总（全部成品）</h3><span>{{ materialRows.length }} 项</span></div>
@@ -174,6 +195,14 @@ const plan = ref<any>(null)
 const products = ref<any[]>([])
 const docs = ref<any[]>([])
 const changes = ref<any[]>([])
+const processes = ref<any[]>([])
+const schedule = ref<any>(null)
+const productCode = (pid: string) => products.value.find((p: any) => p.id === pid)?.item_code || ''
+const procPct = (row: any) => { const p = Number(row.plan_qty) || 0; return p > 0 ? Math.min(100, Math.round(((Number(row.done_qty) || 0) + (Number(row.scrap_qty) || 0)) / p * 100)) : 0 }
+async function genProcesses() {
+  const r: any = await scmApi.genPlanProcesses(id.value)
+  if (r.code === 0) { ElMessage.success(r.data.created ? `已生成 ${r.data.created} 道工序` : '成品未维护启用的工艺路线，未生成工序'); load() } else ElMessage.error(r.message || '生成失败')
+}
 const draftChange = computed(() => changes.value.find((c: any) => c.status === 'draft'))
 const diffText = (diff: any[]) => (diff || []).map(d => `${d.label}${d.product ? '·' + d.product : ''}${d.item ? '·' + d.item : ''}：${d.before ?? '-'} → ${d.after ?? '-'}`).join('；')
 function openChange() {
@@ -213,6 +242,8 @@ async function load() {
       products.value = r.data.products || []
       docs.value = r.data.docs || []
       changes.value = r.data.changes || []
+      processes.value = (r.data as any).processes || []
+      schedule.value = (r.data as any).schedule || null
       cost.value = r.data.cost
       actionState.value = r.data.action_state || {
         issue: { status: 'unavailable', remaining_qty: 0, remaining_lines: 0, base_remaining: 0, max_allowed_qty: 0, overrun_remaining: 0 },
@@ -337,6 +368,7 @@ onActivated(() => { if (plan.value) load() })
 .wo-card span { font-size: 12px; color: var(--el-text-color-secondary); }
 .wo-card b { font-size: 16px; }
 .wo-card--warn b { color: var(--el-color-warning); }
+.overdue-text { color: var(--el-color-danger); }
 .wo-section__hd { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
 .wo-section__hd h3 { margin: 0; font-size: var(--cw-text-base); }
 .wo-section__hd span { font-size: 12px; color: var(--el-text-color-secondary); }

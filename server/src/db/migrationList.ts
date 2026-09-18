@@ -459,6 +459,10 @@ import {
   up as scmPlanChangeUp,
   down as scmPlanChangeDown,
 } from './migrations/20260918_scm_plan_change.js'
+import {
+  up as scmPlanProcessUp,
+  down as scmPlanProcessDown,
+} from './migrations/20260918_scm_plan_process.js'
 
 /**
  * 迁移示例：添加新字段
@@ -2192,5 +2196,11 @@ export const migrations: Migration[] = [
     name: 'scm_plan_change',
     up: scmPlanChangeUp,
     down: scmPlanChangeDown,
+  },
+  {
+    version: 136,
+    name: 'scm_plan_process',
+    up: scmPlanProcessUp,
+    down: scmPlanProcessDown,
   },
 ]

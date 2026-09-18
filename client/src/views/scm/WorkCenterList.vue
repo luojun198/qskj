@@ -13,6 +13,7 @@
       </el-table-column>
       <el-table-column label="人工费率(元/工时)" width="150" align="right"><template #default="{ row }">{{ fmt(row.labor_rate) }}</template></el-table-column>
       <el-table-column label="制费费率(元/工时)" width="150" align="right"><template #default="{ row }">{{ fmt(row.overhead_rate) }}</template></el-table-column>
+      <el-table-column label="日产能(工时)" width="110" align="right"><template #default="{ row }">{{ Number(row.daily_capacity_hours) || '' }}</template></el-table-column>
       <el-table-column label="启用" width="70" align="center"><template #default="{ row }">{{ row.enabled ? '是' : '否' }}</template></el-table-column>
       <el-table-column label="被引用" width="150" align="center"><template #default="{ row }"><span class="text-muted">工序 {{ Number(row.routing_ref_count) || 0 }} · 报工 {{ Number(row.report_ref_count) || 0 }}</span></template></el-table-column>
       <el-table-column label="备注" prop="remark" min-width="140" show-overflow-tooltip />
@@ -33,6 +34,7 @@
         </el-form-item>
         <el-form-item label="人工费率"><el-input-number v-model="form.labor_rate" :min="0" :controls="false" style="width:140px" /> 元/工时</el-form-item>
         <el-form-item label="制费费率"><el-input-number v-model="form.overhead_rate" :min="0" :controls="false" style="width:140px" /> 元/工时</el-form-item>
+        <el-form-item label="日产能"><el-input-number v-model="form.daily_capacity_hours" :min="0" :controls="false" style="width:140px" /> 工时/天（产能负荷与交期推算用；0 = 不参与）</el-form-item>
         <el-form-item label="启用"><el-switch v-model="form.enabled" :active-value="1" :inactive-value="0" /></el-form-item>
         <el-form-item label="备注"><el-input v-model="form.remark" type="textarea" :rows="2" /></el-form-item>
       </el-form>
@@ -51,14 +53,14 @@ const rows = ref<any[]>([])
 const loading = ref(false)
 const dlg = ref(false)
 const saving = ref(false)
-const form = reactive<any>({ id: '', code: '', name: '', category: 'inhouse', labor_rate: 0, overhead_rate: 0, enabled: 1, remark: '' })
+const form = reactive<any>({ id: '', code: '', name: '', category: 'inhouse', labor_rate: 0, overhead_rate: 0, daily_capacity_hours: 0, enabled: 1, remark: '' })
 const fmt = (v: any) => (Number(v) || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
 async function load() {
   loading.value = true
   try { const r = await scmApi.getWorkCenters(); if (r.code === 0) rows.value = r.data } finally { loading.value = false }
 }
-function openAdd() { Object.assign(form, { id: '', code: '', name: '', category: 'inhouse', labor_rate: 0, overhead_rate: 0, enabled: 1, remark: '' }); dlg.value = true }
+function openAdd() { Object.assign(form, { id: '', code: '', name: '', category: 'inhouse', labor_rate: 0, overhead_rate: 0, daily_capacity_hours: 0, enabled: 1, remark: '' }); dlg.value = true }
 function openEdit(row: any) { Object.assign(form, { ...row }); dlg.value = true }
 async function save() {
   if (!form.code || !form.name) return ElMessage.warning('编码和名称不能为空')

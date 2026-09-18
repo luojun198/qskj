@@ -154,6 +154,8 @@ export const groupFlowMap: Record<string, ModuleFlowConfig> = {
       { id: 'planCost', path: '/scm/report/production/cost', color: 'purple' },
       { id: 'hours', path: '/scm/report/production/hours', color: 'cyan' },
       { id: 'daily', path: '/scm/report/production/daily', color: 'cyan' },
+      { id: 'processWip', path: '/scm/report/production/process-wip', color: 'cyan' },
+      { id: 'capacity', path: '/scm/report/production/capacity', color: 'cyan' },
       { id: 'workCenter', path: '/scm/work-centers', color: 'blue' },
       { id: 'routing', path: '/scm/routings', color: 'blue' },
       { id: 'as', path: '/scm/docs?doc_type=AS', color: 'orange' },
