@@ -690,6 +690,24 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '编辑生产计划', icon: 'SetUp', parent: '生产管理' },
       },
       {
+        path: 'scm/production-plans/:planId/change/new',
+        name: 'ScmPlanChangeNew',
+        component: () => import('@/views/scm/PlanChangeForm.vue'),
+        meta: { title: '新建工单变更单', icon: 'SetUp', parent: '生产管理' },
+      },
+      {
+        path: 'scm/plan-changes/:id',
+        name: 'ScmPlanChangeForm',
+        component: () => import('@/views/scm/PlanChangeForm.vue'),
+        meta: { title: '工单变更单', icon: 'SetUp', parent: '生产管理' },
+      },
+      {
+        path: 'scm/plan-changes',
+        name: 'ScmPlanChangeList',
+        component: () => import('@/views/scm/PlanChangeList.vue'),
+        meta: { title: '工单变更单', icon: 'SetUp', parent: '生产管理' },
+      },
+      {
         path: 'scm/production-plans/:id',
         name: 'ScmProductionOrder',
         component: () => import('@/views/scm/ProductionOrder.vue'),

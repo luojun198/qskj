@@ -589,8 +589,16 @@ export const scmApi = {
   deleteProductionPlan: (id: string) => request.delete(`/scm/production-plans/${id}`),
   batchProductionPlanActions: (data: { action: 'delete' | 'unrelease' | 'reopen'; ids: string[] }) =>
     request.post<{ processed: number; action: string; results: any[] }>('/scm/production-plans/batch-actions', data, { skipErrorToast: true }),
+  // 工单变更单（C-1）
+  getPlanChanges: (params: Record<string, any>) => request.get<{ list: any[]; total: number; page: number; page_size: number }>('/scm/plan-changes', { params }),
+  getPlanChange: (id: string) => request.get<any>(`/scm/plan-changes/${id}`),
+  getPlanChangeBase: (planId: string) => request.get<{ plan: any; snapshot: any; issued: Record<string, number>; draft: any }>(`/scm/production-plans/${planId}/change-base`),
+  createPlanChange: (data: any) => request.post<{ id: string; change_no: string; diff: any[] }>('/scm/plan-changes', data),
+  updatePlanChange: (id: string, data: any) => request.put<{ ok: boolean; diff: any[] }>(`/scm/plan-changes/${id}`, data),
+  auditPlanChange: (id: string) => request.post<{ ok: boolean; diff: any[] }>(`/scm/plan-changes/${id}/audit`, {}),
+  deletePlanChange: (id: string) => request.delete(`/scm/plan-changes/${id}`),
   // 工单（生产闭环）
-  getProductionPlan: (id: string) => request.get<{ plan: any; products: any[]; bom_lines: any[]; docs: any[]; action_state: ProductionPlanActionState; cost: { issuedCost: number; finishedCost: number; finishedQty: number; wip: number; unitCost: number; totalPlanQty?: number; products?: any[] } }>(`/scm/production-plans/${id}`),
+  getProductionPlan: (id: string) => request.get<{ plan: any; products: any[]; bom_lines: any[]; docs: any[]; changes?: any[]; action_state: ProductionPlanActionState; cost: { issuedCost: number; finishedCost: number; finishedQty: number; wip: number; unitCost: number; totalPlanQty?: number; products?: any[] } }>(`/scm/production-plans/${id}`),
   releaseProductionPlan: (id: string) => request.post(`/scm/production-plans/${id}/release`, {}),
   closeProductionPlan: (id: string, force = false) => request.post(`/scm/production-plans/${id}/close`, { force }, { skipErrorToast: true }),
   reopenProductionPlan: (id: string) => request.post<{ ok: boolean; status: string }>(`/scm/production-plans/${id}/reopen`, {}),

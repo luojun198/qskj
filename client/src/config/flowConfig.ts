@@ -146,6 +146,7 @@ export const groupFlowMap: Record<string, ModuleFlowConfig> = {
     ],
     auxNodes: [
       { id: 'kitting', path: '/scm/kitting', color: 'cyan' },
+      { id: 'planChange', path: '/scm/plan-changes', color: 'orange' },
       { id: 'qc', path: '/scm/qc-docs', color: 'green' },
       { id: 'qcStandard', path: '/scm/qc-standards', color: 'green' },
       { id: 'cost', path: '/scm/cost-variance', color: 'purple' },

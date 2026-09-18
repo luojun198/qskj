@@ -775,6 +775,46 @@ async function main() {
     assert('㉗ [C-4③] 工单成本明细导出 xlsx', xls.status === 200 && /spreadsheet/.test(xls.headers.get('content-type') || ''), String(xls.status))
   }
 
+  // ── ㉘ 生产阶段 C1：工单变更单 ─────────────────────────────────────
+  {
+    const PL = (p) => `/api/scm/production-plans${p || ''}`
+    // MO-LATE：计划 2、已领 M1 2（1×2）；用料 M1 qty 1
+    const late = (await get(PL('?page=1&page_size=50&keyword=MO-LATE'))).data.list[0]
+    const base = (await get(PL(`/${late.id}/change-base`))).data
+    assert('㉘ 变更单基础数据：快照 + 已领量', base.snapshot.products.length === 1 && base.issued.M1 === 2 && base.draft === null, JSON.stringify(base.issued))
+    const prod = base.snapshot.products[0]
+    // 减到 1 → M1 需求 1 < 已领 2 → 拒
+    const tooLow = await post('/api/scm/plan-changes', { plan_id: late.id, reason: '减产', products: [{ id: prod.id, item_code: prod.item_code, plan_qty: 1, lines: prod.lines }] }, { allowError: true })
+    assert('㉘ [C-1] 减到低于已领用被拒（先退料）', tooLow.status === 400 && /低于已领用 2，请先退料/.test(tooLow.message || ''), tooLow.message)
+    // 无差异 → 拒
+    const same = await post('/api/scm/plan-changes', { plan_id: late.id, reason: '无', head: base.snapshot.head, products: [{ id: prod.id, item_code: prod.item_code, plan_qty: prod.plan_qty, lines: prod.lines }] }, { allowError: true })
+    assert('㉘ [C-1] 与当前工单一致时拒绝建单', same.status === 400 && /无需变更/.test(same.message || ''), same.message)
+    // 追加到 5、交期改到年底、新增用料 M2 0.5 → 草稿
+    const pc = await post('/api/scm/plan-changes', { plan_id: late.id, reason: '客户追加', head: { end_date: '2026-12-31' },
+      products: [{ id: prod.id, item_code: prod.item_code, plan_qty: 5, lines: [...prod.lines, { item_code: 'M2', qty: 0.5 }] }] }, { allowError: true })
+    assert('㉘ [C-1] 变更单保存为草稿并返回差异', pc.status === 200 && pc.data.change_no && pc.data.diff.length === 3, JSON.stringify(pc.data?.diff))
+    const dup = await post('/api/scm/plan-changes', { plan_id: late.id, reason: 'x', products: [{ id: prod.id, item_code: prod.item_code, plan_qty: 6, lines: prod.lines }] }, { allowError: true })
+    assert('㉘ [C-1] 同一工单只允许一张草稿变更单', dup.status === 400 && /已有未审核的变更单/.test(dup.message || ''), dup.message)
+    const beforePlan = (await get(PL(`/${late.id}`))).data.plan
+    assert('㉘ [C-1] 草稿未生效：工单计划数仍为 2', Number(beforePlan.plan_qty) === 2 && beforePlan.end_date === '2026-01-31')
+    const au = await post(`/api/scm/plan-changes/${pc.data.id}/audit`, {}, { allowError: true })
+    assert('㉘ [C-1] 审核生效', au.code === 0, au.message)
+    const afterDetail = (await get(PL(`/${late.id}`))).data
+    const p0 = afterDetail.products[0]
+    assert('㉘ [C-1] 工单已更新：计划 5、交期 12-31、成品 id 保留、用料含 M2、逾期标记消失', Number(afterDetail.plan.plan_qty) === 5 && afterDetail.plan.end_date === '2026-12-31' && p0.id === prod.id && p0.bom_lines.some(l => l.item_code === 'M2') && afterDetail.changes.length === 1 && afterDetail.changes[0].status === 'audited',
+      JSON.stringify({ qty: afterDetail.plan.plan_qty, end: afterDetail.plan.end_date, lines: p0.bom_lines.map(l => l.item_code) }))
+    const sug = (await get(PL(`/${late.id}/issue-suggestion`))).data
+    assert('㉘ [C-1] 领料建议按新用料：M1 需求 5 已领 2、M2 需求 2.5', sug.lines.find(l => l.item_code === 'M1')?.suggest === 3 && sug.lines.find(l => l.item_code === 'M2')?.need === 2.5, JSON.stringify(sug.lines.map(l => [l.item_code, l.need, l.issued])))
+    const noUnaudit = await api('DELETE', `/api/scm/plan-changes/${pc.data.id}`, undefined, { allowError: true })
+    assert('㉘ [C-1] 已审核变更单不可删除', noUnaudit.status === 400, noUnaudit.message)
+    const list = (await get('/api/scm/plan-changes?page=1&page_size=20&keyword=MO-LATE')).data
+    assert('㉘ [C-1] 变更单列表带差异摘要', list.total === 1 && /计划数/.test(list.list[0].diff_summary), JSON.stringify(list.list[0]?.diff_summary))
+    // 已关闭工单不可变更
+    const closedPlan = (await get(PL('?page=1&page_size=50&keyword=MO-SNAP'))).data.list[0]
+    const cc = await post('/api/scm/plan-changes', { plan_id: closedPlan.id, reason: 'x', products: [{ item_code: 'FP4', plan_qty: 9, lines: [{ item_code: 'M1', qty: 1 }] }] }, { allowError: true })
+    assert('㉘ [C-1] 已关闭工单不可变更', cc.status === 400 && /仅已审核工单可做变更/.test(cc.message || ''), cc.message)
+  }
+
   // 汇总
   const fails = results.filter(r => !r.pass)
   console.log(`\n==== ${results.length} 项断言，${fails.length} 项失败 ====`)

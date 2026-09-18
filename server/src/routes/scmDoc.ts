@@ -15,6 +15,7 @@ import { assertGlPeriodOpen } from '../services/voucherMutationGuard.js'
 import { maintainDocBatches, reverseDocBatches } from '../services/scmBatch.js'
 import { maintainDocSerials, reverseDocSerials } from '../services/scmSerial.js'
 import { computeIssueSuggestion, computeProductionPlanActionState, computePushedQty, isPlanFullyFinished } from '../services/scmProduction.js'
+import { snapshotPlan, normalizeTarget, computeDiff, validateChange, applyChange } from '../services/scmPlanChange.js'
 import { getReportedGoodQtyByProduct, validateWorkReportQty } from '../services/scmWorkReport.js'
 import { getQcDefectLines, validateFinishQc, validateQcDefectPush, validateReceiptQc } from '../services/scmQcControl.js'
 import { buildMissingAccountMessage, resolveScmAccount } from '../services/scmAccountResolver.js'
@@ -3092,6 +3093,113 @@ router.get('/scm/production-plans/kitting', (req: AuthRequest, res) => {
   })
   res.json({ code: 0, data: result, mode: allocate ? 'allocate' : 'independent' })
 })
+// ── 工单变更单（生产评审 C-1）：已审核工单的计划数 / 交期 / 用料变更走单据，审核生效并留痕 ──
+const CHANGE_STATUS_LABEL: Record<string, string> = { draft: '草稿', audited: '已审核' }
+function readChange(db: ReturnType<typeof getDb>, aid: string, id: string) {
+  const c = db.prepare(`SELECT c.*, p.code AS plan_code, p.status AS plan_status FROM scm_production_plan_change c
+    LEFT JOIN scm_production_plan p ON p.id=c.plan_id WHERE c.id=? AND c.account_set_id=?`).get(id, aid) as any
+  if (!c) return null
+  return { ...c, before: JSON.parse(c.before_json), after: JSON.parse(c.after_json), diff: JSON.parse(c.diff_json || '[]'), before_json: undefined, after_json: undefined, diff_json: undefined }
+}
+router.get('/scm/plan-changes', (req: AuthRequest, res) => {
+  const db = getDb(); const aid = asid(req); const q = req.query as any
+  const conds = ['c.account_set_id=?']; const ps: any[] = [aid]
+  if (q.plan_id) { conds.push('c.plan_id=?'); ps.push(String(q.plan_id)) }
+  if (q.status) { conds.push('c.status=?'); ps.push(String(q.status)) }
+  if (q.keyword) { const kw = `%${String(q.keyword).trim()}%`; conds.push('(c.change_no LIKE ? OR p.code LIKE ? OR c.reason LIKE ?)'); ps.push(kw, kw, kw) }
+  if (q.start_date) { conds.push('c.change_date>=?'); ps.push(String(q.start_date)) }
+  if (q.end_date) { conds.push('c.change_date<=?'); ps.push(String(q.end_date)) }
+  const from = `FROM scm_production_plan_change c LEFT JOIN scm_production_plan p ON p.id=c.plan_id WHERE ${conds.join(' AND ')}`
+  const { page, pageSize } = normalizePaging(q.page, q.page_size, 50)
+  const total = Number((db.prepare(`SELECT COUNT(*) c ${from}`).get(...ps) as any)?.c) || 0
+  const rows = db.prepare(`SELECT c.id, c.plan_id, c.change_no, c.change_date, c.reason, c.remark, c.status, c.maker, c.auditor, c.audited_at, c.created_at, c.diff_json,
+      p.code AS plan_code, p.status AS plan_status, p.plan_type ${from} ORDER BY c.change_date DESC, c.created_at DESC LIMIT ? OFFSET ?`).all(...ps, pageSize, (page - 1) * pageSize) as any[]
+  const list = rows.map(r => { const diff = JSON.parse(r.diff_json || '[]'); return { ...r, diff_json: undefined, diff_count: diff.length, diff_summary: diff.slice(0, 4).map((d: any) => `${d.label}${d.product ? '·' + d.product : ''}${d.item ? '·' + d.item : ''}: ${d.before ?? '-'} → ${d.after ?? '-'}`).join('；') } })
+  res.json({ code: 0, data: { list, total, page, page_size: pageSize } })
+})
+router.get('/scm/plan-changes/:id', (req: AuthRequest, res) => {
+  const c = readChange(getDb(), asid(req), req.params.id)
+  if (!c) return res.status(404).json({ code: 404, message: '变更单不存在' })
+  res.json({ code: 0, data: c })
+})
+/** 建单 / 改单共用：读工单 → 归一目标 → 校验 → 快照 */
+function prepareChange(db: ReturnType<typeof getDb>, aid: string, body: any, excludeId?: string) {
+  const plan = db.prepare('SELECT * FROM scm_production_plan WHERE id=? AND account_set_id=?').get(String(body?.plan_id || ''), aid) as any
+  if (!plan) return { error: '工单不存在' }
+  const other = db.prepare(`SELECT change_no FROM scm_production_plan_change WHERE account_set_id=? AND plan_id=? AND status='draft' ${excludeId ? 'AND id<>?' : ''} LIMIT 1`).get(...(excludeId ? [aid, plan.id, excludeId] : [aid, plan.id])) as any
+  if (other) return { error: `该工单已有未审核的变更单 ${other.change_no}，请先审核或删除` }
+  const before = snapshotPlan(db, aid, plan.id)
+  const after = normalizeTarget(db, body, before)
+  const errs = validateChange(db, aid, plan, before, after)
+  if (errs.length) return { error: errs.join('；') }
+  const diff = computeDiff(before, after)
+  if (!diff.length) return { error: '变更内容与当前工单一致，无需变更' }
+  return { plan, before, after, diff }
+}
+router.post('/scm/plan-changes', operationLog('工单变更单新增', '供应链'), (req: AuthRequest, res) => {
+  const db = getDb(); const aid = asid(req); const b = req.body || {}
+  const prep = prepareChange(db, aid, b)
+  if ('error' in prep) return res.status(400).json({ code: 400, message: prep.error })
+  const id = uuidv4()
+  const no = b.change_no || nextSeqNo(db, 'scm_production_plan_change', 'change_no', aid, 'PC')
+  db.prepare(`INSERT INTO scm_production_plan_change (id,account_set_id,plan_id,change_no,change_date,reason,remark,status,before_json,after_json,diff_json,maker)
+    VALUES (?,?,?,?,?,?,?,'draft',?,?,?,?)`).run(id, aid, prep.plan.id, no, b.change_date || localToday(), b.reason ?? null, b.remark ?? null,
+    JSON.stringify(prep.before), JSON.stringify(prep.after), JSON.stringify(prep.diff), userName(req))
+  res.json({ code: 0, data: { id, change_no: no, diff: prep.diff } })
+})
+router.put('/scm/plan-changes/:id', operationLog('工单变更单修改', '供应链'), (req: AuthRequest, res) => {
+  const db = getDb(); const aid = asid(req); const b = req.body || {}
+  const ex = db.prepare('SELECT * FROM scm_production_plan_change WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
+  if (!ex) return res.status(404).json({ code: 404, message: '变更单不存在' })
+  if (ex.status !== 'draft') return res.status(400).json({ code: 400, message: '已审核变更单不可修改，请另开一张' })
+  const prep = prepareChange(db, aid, { ...b, plan_id: ex.plan_id }, ex.id)
+  if ('error' in prep) return res.status(400).json({ code: 400, message: prep.error })
+  db.prepare(`UPDATE scm_production_plan_change SET change_date=?, reason=?, remark=?, before_json=?, after_json=?, diff_json=?, updated_at=datetime('now') WHERE id=?`)
+    .run(b.change_date || ex.change_date, b.reason ?? ex.reason, b.remark ?? ex.remark, JSON.stringify(prep.before), JSON.stringify(prep.after), JSON.stringify(prep.diff), ex.id)
+  res.json({ code: 0, data: { ok: true, diff: prep.diff } })
+})
+router.post('/scm/plan-changes/:id/audit', operationLog('工单变更单审核', '供应链'), (req: AuthRequest, res) => {
+  const db = getDb(); const aid = asid(req)
+  const ex = db.prepare('SELECT * FROM scm_production_plan_change WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
+  if (!ex) return res.status(404).json({ code: 404, message: '变更单不存在' })
+  if (ex.status !== 'draft') return res.status(400).json({ code: 400, message: '变更单已审核' })
+  const plan = db.prepare('SELECT * FROM scm_production_plan WHERE id=? AND account_set_id=?').get(ex.plan_id, aid) as any
+  if (!plan) return res.status(404).json({ code: 404, message: '工单不存在' })
+  // 以当前工单为基准重算目标（建单后工单可能又领料 / 完工），再校验一次
+  const before = snapshotPlan(db, aid, plan.id)
+  const after = JSON.parse(ex.after_json)
+  const errs = validateChange(db, aid, plan, before, after)
+  if (errs.length) return res.status(400).json({ code: 400, message: errs.join('；') })
+  const diff = computeDiff(before, after)
+  try {
+    db.transaction(() => {
+      applyChange(db, aid, plan, after)
+      db.prepare(`UPDATE scm_production_plan_change SET status='audited', before_json=?, diff_json=?, auditor=?, audited_at=datetime('now'), updated_at=datetime('now') WHERE id=?`)
+        .run(JSON.stringify(before), JSON.stringify(diff), userName(req), ex.id)
+      syncPlanActualDates(db, aid, plan.id)
+    })()
+  } catch (e: any) { return res.status(400).json({ code: 400, message: e?.message || '变更单审核失败' }) }
+  res.json({ code: 0, data: { ok: true, diff } })
+})
+router.delete('/scm/plan-changes/:id', operationLog('工单变更单删除', '供应链'), (req: AuthRequest, res) => {
+  const db = getDb(); const aid = asid(req)
+  const ex = db.prepare('SELECT status FROM scm_production_plan_change WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
+  if (!ex) return res.status(404).json({ code: 404, message: '变更单不存在' })
+  if (ex.status !== 'draft') return res.status(400).json({ code: 400, message: `${CHANGE_STATUS_LABEL[ex.status] || ex.status}的变更单不可删除` })
+  db.prepare('DELETE FROM scm_production_plan_change WHERE id=? AND account_set_id=?').run(req.params.id, aid)
+  res.json({ code: 0, data: { ok: true } })
+})
+/** 变更单编辑页初始数据：工单当前快照 + 已领量 + 草稿变更（若有） */
+router.get('/scm/production-plans/:id/change-base', (req: AuthRequest, res) => {
+  const db = getDb(); const aid = asid(req)
+  const plan = db.prepare('SELECT * FROM scm_production_plan WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
+  if (!plan) return res.status(404).json({ code: 404, message: '工单不存在' })
+  const snapshot = snapshotPlan(db, aid, plan.id)
+  const issued = Object.fromEntries(getPlanIssuedQtyByItem(db, aid, plan.id))
+  const draft = db.prepare("SELECT id, change_no FROM scm_production_plan_change WHERE account_set_id=? AND plan_id=? AND status='draft' LIMIT 1").get(aid, plan.id) as any
+  res.json({ code: 0, data: { plan, snapshot, issued, draft: draft || null } })
+})
+
 // 计划号取号（须在 /:id 之前注册，避免被动态路由吞掉）：生产 PP-、委外 OUT-
 router.get('/scm/production-plans/next-no', (req: AuthRequest, res) => {
   const db = getDb(); const aid = asid(req)
@@ -3409,7 +3517,9 @@ router.get('/scm/production-plans/:id', (req: AuthRequest, res) => {
   const docs = db.prepare(`SELECT id, doc_no, doc_type, status, doc_date, total_qty, total_amount FROM scm_doc WHERE account_set_id=? AND plan_id=? ORDER BY doc_type, doc_no`).all(aid, req.params.id) as any[]
   const { issueUnitCost: _omit, ...cost } = getPlanCostSummary(db, aid, req.params.id, Number(plan.plan_qty) || 0)
   const actionState = computeProductionPlanActionState(db, aid, plan, issueRows)
-  res.json({ code: 0, data: { plan, products, bom_lines: bomLines, docs, cost, action_state: actionState } })
+  const changes = db.prepare('SELECT id, change_no, change_date, reason, status, maker, auditor, audited_at, diff_json FROM scm_production_plan_change WHERE account_set_id=? AND plan_id=? ORDER BY change_date DESC, created_at DESC').all(aid, req.params.id)
+    .map((c: any) => ({ ...c, diff: JSON.parse(c.diff_json || '[]'), diff_json: undefined }))
+  res.json({ code: 0, data: { plan, products, bom_lines: bomLines, docs, cost, action_state: actionState, changes } })
 })
 
 // 生产/委外计划上下游关联追溯：上游=下推来源单据(source_doc_id)，下游=挂在本计划下的领料/完工/委外单(scm_doc.plan_id)。

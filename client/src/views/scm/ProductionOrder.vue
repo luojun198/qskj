@@ -20,6 +20,7 @@
         <el-button v-if="plan && plan.status === 'released' && !docs.length" type="warning" plain size="small" :loading="busy"
           :disabled="!!plan.mrp_status" :title="plan.mrp_status ? `已进入 MRP 计算单 ${plan.mrp_doc_no || ''}，不能反审核` : '反审核'"
           @click="onUnrelease">反审核</el-button>
+        <el-button v-if="plan && plan.status === 'released' && !isOut" type="primary" plain size="small" @click="openChange">{{ draftChange ? `继续变更 ${draftChange.change_no}` : '变更' }}</el-button>
         <el-button v-if="plan && plan.status === 'released'" size="small" :loading="busy" @click="onClose">关闭工单</el-button>
         <el-button v-if="plan && plan.status === 'closed'" type="warning" plain size="small" :loading="busy" @click="onReopen">重开工单</el-button>
       </div>
@@ -104,6 +105,19 @@
           <el-table-column label="操作" width="70" align="center"><template #default="{ row }"><el-link type="primary" :underline="false" @click.stop="openDoc(row)">打开</el-link></template></el-table-column>
         </el-table>
       </section>
+
+      <!-- 变更历史（C-1） -->
+      <section class="wo-section" v-if="changes.length">
+        <div class="wo-section__hd"><h3>变更历史</h3><span>{{ changes.length }} 张</span></div>
+        <el-table :data="changes" size="small" border stripe>
+          <el-table-column label="变更单号" width="150"><template #default="{ row }"><el-link type="primary" :underline="false" @click="router.push({ name: 'ScmPlanChangeForm', params: { id: row.id } })">{{ row.change_no }}</el-link></template></el-table-column>
+          <el-table-column label="日期" prop="change_date" width="105" />
+          <el-table-column label="原因" prop="reason" min-width="140" show-overflow-tooltip />
+          <el-table-column label="变更内容" min-width="260" show-overflow-tooltip><template #default="{ row }">{{ diffText(row.diff) }}</template></el-table-column>
+          <el-table-column label="状态" width="80" align="center"><template #default="{ row }"><el-tag size="small" :type="row.status === 'audited' ? 'success' : 'info'" effect="plain">{{ row.status === 'audited' ? '已审核' : '草稿' }}</el-tag></template></el-table-column>
+          <el-table-column label="经办" width="140" show-overflow-tooltip><template #default="{ row }">{{ row.maker }}{{ row.auditor ? ' / ' + row.auditor : '' }}</template></el-table-column>
+        </el-table>
+      </section>
     </div>
 
     <!-- 完工入库：按成品逐行填本次完工数（一张单） -->
@@ -159,6 +173,13 @@ const busy = ref(false)
 const plan = ref<any>(null)
 const products = ref<any[]>([])
 const docs = ref<any[]>([])
+const changes = ref<any[]>([])
+const draftChange = computed(() => changes.value.find((c: any) => c.status === 'draft'))
+const diffText = (diff: any[]) => (diff || []).map(d => `${d.label}${d.product ? '·' + d.product : ''}${d.item ? '·' + d.item : ''}：${d.before ?? '-'} → ${d.after ?? '-'}`).join('；')
+function openChange() {
+  if (draftChange.value) router.push({ name: 'ScmPlanChangeForm', params: { id: draftChange.value.id } })
+  else router.push({ name: 'ScmPlanChangeNew', params: { planId: id.value } })
+}
 const cost = ref<any>({ issuedCost: 0, finishedCost: 0, finishedQty: 0, wip: 0, unitCost: 0, totalPlanQty: 0, products: [] })
 const actionState = ref<ProductionPlanActionState>({
   issue: { status: 'unavailable', remaining_qty: 0, remaining_lines: 0, base_remaining: 0, max_allowed_qty: 0, overrun_remaining: 0 },
@@ -191,6 +212,7 @@ async function load() {
       plan.value = r.data.plan
       products.value = r.data.products || []
       docs.value = r.data.docs || []
+      changes.value = r.data.changes || []
       cost.value = r.data.cost
       actionState.value = r.data.action_state || {
         issue: { status: 'unavailable', remaining_qty: 0, remaining_lines: 0, base_remaining: 0, max_allowed_qty: 0, overrun_remaining: 0 },

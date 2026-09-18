@@ -455,6 +455,10 @@ import {
   up as scmPlanActualDatesUp,
   down as scmPlanActualDatesDown,
 } from './migrations/20260918_scm_plan_actual_dates.js'
+import {
+  up as scmPlanChangeUp,
+  down as scmPlanChangeDown,
+} from './migrations/20260918_scm_plan_change.js'
 
 /**
  * 迁移示例：添加新字段
@@ -2182,5 +2186,11 @@ export const migrations: Migration[] = [
     name: 'scm_plan_actual_dates',
     up: scmPlanActualDatesUp,
     down: scmPlanActualDatesDown,
+  },
+  {
+    version: 135,
+    name: 'scm_plan_change',
+    up: scmPlanChangeUp,
+    down: scmPlanChangeDown,
   },
 ]
