@@ -17,7 +17,19 @@
         <ScmPushMenu v-if="actionState.push.enabled && selectedRow?.id" :source-kind="selectedRow.plan_type === 'outsource' ? 'outsource_plan' : 'production_plan'"
           :source-id="selectedRow.id" :auto-load="false" @changed="load" />
       </template>
-      <span style="margin-left:auto;font-size: var(--cw-text-base);color:var(--el-text-color-secondary)">共 {{ displayList.length }} 条</span>
+      <span style="margin-left:auto;font-size: var(--cw-text-base);color:var(--el-text-color-secondary)">共 {{ total }} 条<template v-if="overdueCount">，<span class="overdue-text">逾期 {{ overdueCount }}</span></template></span>
+    </div>
+    <div class="filter-row filter-row--query" style="margin-bottom: 8px;">
+      <el-input v-model="filters.keyword" clearable placeholder="计划号 / 成品编码 / 名称 / 备注" size="small" style="width:220px" @keyup.enter="query" @clear="query" />
+      <el-select v-model="filters.status" multiple collapse-tags clearable placeholder="状态" size="small" style="width:170px" @change="query">
+        <el-option label="草稿" value="draft" /><el-option label="已审核" value="released" /><el-option label="已关闭" value="closed" />
+      </el-select>
+      <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="开工从" end-placeholder="开工至" size="small" style="width:230px" @change="query" />
+      <el-select v-if="planTypeFilter === 'outsource'" v-model="filters.supplier_code" clearable filterable placeholder="委外厂" size="small" style="width:160px" @change="query">
+        <el-option v-for="p in suppliers" :key="p.code" :label="`${p.code} ${p.name}`" :value="p.code" />
+      </el-select>
+      <el-checkbox v-model="filters.overdue" size="small" @change="query">仅看逾期</el-checkbox>
+      <FilterClearButton size="small" @clear="clearFilters" />
     </div>
 
     <div class="page-body">
@@ -42,8 +54,18 @@
           <template #default="{ row }">{{ row.first_product_name || row.item_name }}{{ (row.product_count || 1) > 1 ? ' 等' : '' }}</template>
         </el-table-column>
         <el-table-column v-else-if="column.key === 'plan_qty'" label="计划数" prop="plan_qty" :width="cw('plan_qty', 80)" align="right" />
-        <el-table-column v-else-if="column.key === 'progress'" label="进度" :width="cw('progress', 90)" align="center">
-          <template #default="{ row }">{{ num(row.finished_qty) }} / {{ num(row.plan_qty) }}</template>
+        <el-table-column v-else-if="column.key === 'progress'" label="进度" :width="cw('progress', 130)" align="center">
+          <template #default="{ row }">
+            <el-progress :percentage="progressPct(row)" :stroke-width="10" :status="progressPct(row) >= 100 ? 'success' : undefined" :format="() => `${num(row.finished_qty)} / ${num(row.plan_qty)}`" />
+          </template>
+        </el-table-column>
+        <el-table-column v-else-if="column.key === 'dates'" label="计划 / 实际" :width="cw('dates', 190)">
+          <template #default="{ row }">
+            <div class="dates-cell">
+              <span>{{ row.start_date || '-' }} ~ <b :class="{ 'overdue-text': row.is_overdue }">{{ row.end_date || '-' }}</b><el-tag v-if="row.is_overdue" size="small" type="danger" effect="plain" style="margin-left:4px">逾期</el-tag></span>
+              <span v-if="row.actual_start_date || row.actual_end_date" class="text-muted">实际 {{ row.actual_start_date || '-' }} ~ {{ row.actual_end_date || '-' }}</span>
+            </div>
+          </template>
         </el-table-column>
         <el-table-column v-else-if="column.key === 'supplier_code'" label="供应商" :width="cw('supplier_code', 120)" show-overflow-tooltip>
           <template #default="{ row }">{{ row.supplier_name || row.supplier_code || '' }}</template>
@@ -66,6 +88,7 @@
         </template>
       </el-table>
     </div>
+    <el-pagination v-model:current-page="page" v-model:page-size="pageSize" :total="total" :page-sizes="[20,50,100,200]" layout="total, sizes, prev, pager, next" small style="padding:0 16px 8px" @change="load" />
     <ColumnSettingsDialog
       v-model="columnDialogVisible"
       :columns="columnSettings"
@@ -87,6 +110,7 @@ import { useListColumnWidth } from '@/composables/useColumnWidthMemory'
 import { getProductionPlanBatchActionState, MAX_SCM_BATCH_SELECTION } from '@/utils/scmBatchActions'
 import ColumnSettingsDialog from '@/components/common/ColumnSettingsDialog.vue'
 import { loadColumnSettings, saveColumnSettings, type ColumnSetting } from '@/utils/columnSettings'
+import FilterClearButton from '@/components/common/FilterClearButton.vue'
 
 const { tableRef, colWidth, onDragEnd, widths } = useListColumnWidth('scm_production_plan')
 function cw(key: string, fallback: number) { return colWidth(key, fallback) }
@@ -113,6 +137,7 @@ const planColumns: ColumnSetting[] = [
   { key: 'item_name', label: '成品名称', visible: true },
   { key: 'plan_qty', label: '计划数', visible: true },
   { key: 'progress', label: '进度', visible: true },
+  { key: 'dates', label: '计划 / 实际日期', visible: true },
   { key: 'supplier_code', label: '供应商', visible: true },
   { key: 'status', label: '状态', visible: true },
   { key: 'mrp_status', label: 'MRP', visible: true },
@@ -130,14 +155,29 @@ function updateColumns(columns: ColumnSetting[]) {
 function resetColumns() {
   updateColumns(planColumns.map(column => ({ ...column })))
 }
-const displayList = computed(() => planTypeFilter.value
-  ? list.value.filter((p: any) => (p.plan_type || 'self') === planTypeFilter.value)
-  : list.value)
+// 生产评审 P1-6：服务端筛选 + 分页（plan_type 由地址栏决定）
+const filters = ref({ keyword: '', status: [] as string[], supplier_code: '', overdue: false })
+const dateRange = ref<string[] | null>(null)
+const page = ref(1); const pageSize = ref(50); const total = ref(0)
+const suppliers = ref<any[]>([])
+const overdueCount = computed(() => list.value.filter((p: any) => p.is_overdue).length)
+const displayList = computed(() => list.value)
+const progressPct = (row: any) => { const p = Number(row.plan_qty) || 0; return p > 0 ? Math.min(100, Math.round((Number(row.finished_qty) || 0) / p * 100)) : 0 }
+function clearFilters() { filters.value = { keyword: '', status: [], supplier_code: '', overdue: false }; dateRange.value = null; query() }
+function query() { page.value = 1; load() }
 
 async function load() {
   clearSelection()
   loading.value = true
-  try { const r = await scmApi.getProductionPlans(); if (r.code === 0) list.value = r.data } finally { loading.value = false }
+  try {
+    const r = await scmApi.getProductionPlansPaged({
+      plan_type: planTypeFilter.value || undefined, keyword: filters.value.keyword || undefined,
+      status: filters.value.status.length ? filters.value.status.join(',') : undefined,
+      supplier_code: filters.value.supplier_code || undefined, overdue: filters.value.overdue ? '1' : undefined,
+      start_date: dateRange.value?.[0], end_date: dateRange.value?.[1], page: page.value, page_size: pageSize.value,
+    })
+    if (r.code === 0) { list.value = r.data.list; total.value = r.data.total }
+  } finally { loading.value = false }
 }
 
 function clearSelection() {
@@ -194,11 +234,12 @@ async function runBatchAction(action: keyof typeof ACTION_LABEL) {
   }
 }
 
-watch(planTypeFilter, clearSelection)
+watch(planTypeFilter, () => { clearSelection(); filters.value.supplier_code = ''; query() })
 
-onMounted(() => {
+onMounted(async () => {
   void import('@/views/scm/ProductionPlanForm.vue')
   load()
+  try { const p = await scmApi.getPartners({}); suppliers.value = ((p.data || []) as any[]).filter((x: any) => x.is_outsource === 1 || x.partner_type === 'supplier') } catch { /* 忽略 */ }
 })
 </script>
 
@@ -206,4 +247,8 @@ onMounted(() => {
 .scm-pp-page { display: flex; flex-direction: column; height: 100%; }
 .page-body { flex: 1; overflow: hidden; padding: 12px 16px; }
 .selection-hint { font-size: var(--cw-text-base); color: var(--el-color-primary); white-space: nowrap; }
+.filter-row--query { padding: 0 16px; }
+.overdue-text { color: var(--el-color-danger); }
+.dates-cell { display: flex; flex-direction: column; line-height: 1.4; font-size: 12px; }
+.text-muted { color: var(--el-text-color-secondary); }
 </style>

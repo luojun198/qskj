@@ -14,7 +14,7 @@ import { assertAccountIdsInScope, type AccountScopeContext } from '../services/a
 import { assertGlPeriodOpen } from '../services/voucherMutationGuard.js'
 import { maintainDocBatches, reverseDocBatches } from '../services/scmBatch.js'
 import { maintainDocSerials, reverseDocSerials } from '../services/scmSerial.js'
-import { computeIssueSuggestion, computeProductionPlanActionState, computePushedQty } from '../services/scmProduction.js'
+import { computeIssueSuggestion, computeProductionPlanActionState, computePushedQty, isPlanFullyFinished } from '../services/scmProduction.js'
 import { getReportedGoodQtyByProduct, validateWorkReportQty } from '../services/scmWorkReport.js'
 import { getQcDefectLines, validateFinishQc, validateQcDefectPush, validateReceiptQc } from '../services/scmQcControl.js'
 import { buildMissingAccountMessage, resolveScmAccount } from '../services/scmAccountResolver.js'
@@ -48,6 +48,11 @@ import { normalizePaging } from '../utils/paging.js'
 import { docExchangeRate, getScmBaseCurrency, isScmBaseCurrency, normalizeScmCurrency, resolveScmExchangeRate, toBase } from '../services/scmCurrency.js'
 import { bomComponents, pickActiveBom } from '../services/scmBom.js'
 import { previewScmFxRevaluation, runScmFxRevaluation, revokeScmFxRevaluation, listScmFxRevaluations } from '../services/scmFxRevaluation.js'
+import type { ExportColumnSpec } from '../services/styledExcelExport.js'
+async function buildStyledXlsxBuffer(options: any) {
+  const module = await import('../services/styledExcelExport.js')
+  return module.buildStyledXlsxBuffer(options)
+}
 import { listQcStandards, getQcStandard, resolveQcStandard, saveQcStandard, deleteQcStandard, sampleSize, judgeLine, judgeDoc, writeQcLineResults, readQcLineResults } from '../services/scmQcStandard.js'
 import {
   validateFinishKitting,
@@ -1191,6 +1196,27 @@ const deleteDocHandler = (req: AuthRequest, res: Response) => {
 }
 router.delete('/scm/docs/:id', operationLog('供应链单据删除', '供应链'), deleteDocHandler)
 
+/**
+ * 工单实际开工 / 完工日期（生产评审 P2-10）：由已审核单据重算，审核与反审核后各调一次即可保持一致。
+ *  实际开工 = 最早已审核 PL/PB/WO 单据日期；实际完工 = 全部完工（含报废）时最晚已审核 PF/WI 单据日期，否则空。
+ *  老库 / 单测内存库没有这两列时静默跳过。
+ */
+const planActualColsCache = new WeakMap<object, boolean>()
+function syncPlanActualDates(db: ReturnType<typeof getDb>, aid: string, planId: string | null | undefined) {
+  if (!planId) return
+  let has = planActualColsCache.get(db)
+  if (has === undefined) {
+    has = (db.prepare("PRAGMA table_info('scm_production_plan')").all() as { name: string }[]).some(c => c.name === 'actual_end_date')
+    planActualColsCache.set(db, has)
+  }
+  if (!has) return
+  const start = (db.prepare("SELECT MIN(doc_date) d FROM scm_doc WHERE account_set_id=? AND plan_id=? AND status='audited' AND doc_type IN ('PL','PB','WO')").get(aid, planId) as any)?.d || null
+  const end = isPlanFullyFinished(db, aid, planId)
+    ? ((db.prepare("SELECT MAX(doc_date) d FROM scm_doc WHERE account_set_id=? AND plan_id=? AND status='audited' AND doc_type IN ('PF','WI')").get(aid, planId) as any)?.d || null)
+    : null
+  db.prepare('UPDATE scm_production_plan SET actual_start_date=?, actual_end_date=? WHERE id=? AND account_set_id=?').run(start, end, planId, aid)
+}
+
 /** 工单头 scrap_qty = 各成品行报废数之和（与 finished_qty 的同步方式一致） */
 function syncPlanScrapQty(db: ReturnType<typeof getDb>, aid: string, planId: string) {
   const total = (db.prepare('SELECT COALESCE(SUM(scrap_qty),0) s FROM scm_production_plan_product WHERE plan_id=?').get(planId) as any)?.s || 0
@@ -1846,6 +1872,7 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
       if (w.length) serialWarning = w.join('；')
     }
     db.prepare("UPDATE scm_doc SET status='audited', auditor=?, audited_at=datetime('now'), updated_at=datetime('now') WHERE id=?").run(userName(req), doc.id)
+    syncPlanActualDates(db, aid, doc.plan_id)
   })
   try {
     runAudit()
@@ -1958,6 +1985,7 @@ export const unauditDocHandler = (req: AuthRequest, res: Response) => {
     }
     }
     db.prepare("UPDATE scm_doc SET status='draft', auditor=NULL, audited_at=NULL, updated_at=datetime('now') WHERE id=?").run(doc.id)
+    syncPlanActualDates(db, aid, doc.plan_id)
   })
   try {
     runUnaudit()
@@ -2724,8 +2752,27 @@ router.delete('/scm/boms/:id', operationLog('BOM删除', '供应链'), (req: Aut
 
 // ── 生产计划 CRUD ──────────────────────────────────────────────────
 router.get('/scm/production-plans', (req: AuthRequest, res) => {
-  // 成品摘要：product_count + 首成品名称/编号（多成品列表显示「成品A 等 N 项」）
-  const list = getDb().prepare(`SELECT p.*, i.name AS item_name, i.spec AS spec, sp.name AS supplier_name,
+  const db = getDb(); const aid = asid(req)
+  const q = req.query as any
+  // 生产评审 P1-6：服务端筛选 + 分页。带 page 参数返回 { list, total, page, page_size }，否则保持数组（工单选择器等旧调用方）
+  const conds = ['p.account_set_id=?']; const ps: any[] = [aid]
+  if (q.plan_type) { conds.push("COALESCE(p.plan_type,'self')=?"); ps.push(String(q.plan_type)) }
+  if (q.status) { const st = String(q.status).split(',').filter(Boolean); if (st.length) { conds.push(`COALESCE(p.status,'draft') IN (${st.map(() => '?').join(',')})`); ps.push(...st) } }
+  if (q.dept_code) { conds.push('p.dept_code=?'); ps.push(String(q.dept_code)) }
+  if (q.supplier_code) { conds.push('p.supplier_code=?'); ps.push(String(q.supplier_code)) }
+  if (q.start_date) { conds.push('COALESCE(p.start_date, substr(p.created_at,1,10))>=?'); ps.push(String(q.start_date)) }
+  if (q.end_date) { conds.push('COALESCE(p.start_date, substr(p.created_at,1,10))<=?'); ps.push(String(q.end_date)) }
+  if (q.keyword) {
+    const kw = `%${String(q.keyword).trim()}%`
+    conds.push(`(p.code LIKE ? OR p.remark LIKE ? OR EXISTS (SELECT 1 FROM scm_production_plan_product pk LEFT JOIN scm_item ik ON ik.account_set_id=pk.account_set_id AND ik.code=pk.item_code
+      WHERE pk.plan_id=p.id AND (pk.item_code LIKE ? OR ik.name LIKE ?)))`)
+    ps.push(kw, kw, kw, kw)
+  }
+  if (q.overdue === '1') { conds.push("COALESCE(p.status,'draft')='released' AND p.end_date IS NOT NULL AND p.end_date < ?"); ps.push(localToday()) }
+  const where = conds.join(' AND ')
+  const today = localToday()
+  const selectSql = `SELECT p.*, i.name AS item_name, i.spec AS spec, sp.name AS supplier_name,
+      CASE WHEN COALESCE(p.status,'draft')='released' AND p.end_date IS NOT NULL AND p.end_date < '${today}' THEN 1 ELSE 0 END AS is_overdue,
       (SELECT COUNT(*) FROM scm_production_plan_product pp WHERE pp.plan_id=p.id) AS product_count,
       (SELECT COUNT(*) FROM scm_doc d WHERE d.account_set_id=p.account_set_id AND d.plan_id=p.id) AS doc_count,
       (SELECT s.mrp_doc_id FROM scm_mrp_source s JOIN scm_doc md ON md.id=s.mrp_doc_id
@@ -2742,8 +2789,14 @@ router.get('/scm/production-plans', (req: AuthRequest, res) => {
     FROM scm_production_plan p
     LEFT JOIN scm_item i ON i.account_set_id=p.account_set_id AND i.code=p.item_code
     LEFT JOIN scm_partner sp ON sp.account_set_id=p.account_set_id AND sp.code=p.supplier_code
-    WHERE p.account_set_id=? ORDER BY p.code DESC`).all(asid(req))
-  res.json({ code: 0, data: list })
+    WHERE ${where} ORDER BY p.code DESC`
+  if (q.page === undefined && q.page_size === undefined) {
+    return res.json({ code: 0, data: db.prepare(selectSql).all(...ps) })
+  }
+  const { page, pageSize } = normalizePaging(q.page, q.page_size, 50)
+  const total = Number((db.prepare(`SELECT COUNT(*) c FROM scm_production_plan p WHERE ${where}`).get(...ps) as any)?.c) || 0
+  const list = db.prepare(`${selectSql} LIMIT ? OFFSET ?`).all(...ps, pageSize, (page - 1) * pageSize)
+  res.json({ code: 0, data: { list, total, page, page_size: pageSize } })
 })
 // ── MRP 计算单 ────────────────────────────────────────────────
 // 旧即时全账套运算已退出业务流程，保留明确响应避免旧客户端静默得到错误口径。
@@ -2921,6 +2974,77 @@ router.delete('/scm/mrp-docs/:id', operationLog('MRP计算单删除', '供应链
   res.json({ code: 0, data: { ok: true } })
 })
 // 标准成本差异分析：区间内完工成品 标准(BOM+工艺卷算) vs 实际(完工入库料/人工/制费) 差异
+// ── 报表：工单成本明细表（生产评审 C-4 ③）——逐张自制工单的料 / 人工 / 制费 / 完工 / 报废 / 结转 / 在制 / 单位成本 ──
+function queryPlanCostDetail(db: ReturnType<typeof getDb>, aid: string, q: any, exportAll = false) {
+  const conds = ["p.account_set_id=?", "COALESCE(p.plan_type,'self')='self'", "COALESCE(p.status,'draft') IN ('released','closed')"]; const ps: any[] = [aid]
+  if (q.plan_code) { conds.push('p.code LIKE ?'); ps.push(`%${q.plan_code}%`) }
+  if (q.status) { conds.push('p.status=?'); ps.push(String(q.status)) }
+  if (q.dept_code) { conds.push('p.dept_code=?'); ps.push(String(q.dept_code)) }
+  if (q.start_date) { conds.push('COALESCE(p.start_date, substr(p.created_at,1,10))>=?'); ps.push(String(q.start_date)) }
+  if (q.end_date) { conds.push('COALESCE(p.start_date, substr(p.created_at,1,10))<=?'); ps.push(String(q.end_date)) }
+  if (q.item_code) { conds.push('EXISTS (SELECT 1 FROM scm_production_plan_product pk LEFT JOIN scm_item ik ON ik.account_set_id=pk.account_set_id AND ik.code=pk.item_code WHERE pk.plan_id=p.id AND (pk.item_code LIKE ? OR ik.name LIKE ?))'); ps.push(`%${q.item_code}%`, `%${q.item_code}%`) }
+  const where = conds.join(' AND ')
+  const total = Number((db.prepare(`SELECT COUNT(*) c FROM scm_production_plan p WHERE ${where}`).get(...ps) as any)?.c) || 0
+  const { page, pageSize } = normalizePaging(q.page, q.page_size, 50)
+  const limit = exportAll ? '' : ' LIMIT ? OFFSET ?'
+  const plans = db.prepare(`SELECT p.*, (SELECT COUNT(*) FROM scm_production_plan_product pp WHERE pp.plan_id=p.id) product_count,
+      (SELECT pp2.item_code FROM scm_production_plan_product pp2 WHERE pp2.plan_id=p.id ORDER BY pp2.seq LIMIT 1) first_product_code,
+      (SELECT i2.name FROM scm_production_plan_product pp3 LEFT JOIN scm_item i2 ON i2.account_set_id=pp3.account_set_id AND i2.code=pp3.item_code WHERE pp3.plan_id=p.id ORDER BY pp3.seq LIMIT 1) first_product_name
+    FROM scm_production_plan p WHERE ${where} ORDER BY p.code DESC${limit}`).all(...ps, ...(exportAll ? [] : [pageSize, (page - 1) * pageSize])) as any[]
+  const rows = plans.map(p => {
+    const c = getPlanCostSummary(db, aid, p.id, Number(p.plan_qty) || 0)
+    const finishedQty = c.products.reduce((s, x) => s + (Number(x.finished_qty) || 0), 0)
+    const scrapQty = c.products.reduce((s, x) => s + (Number(x.scrap_qty) || 0), 0)
+    const scrapCost = round2(c.products.reduce((s, x) => s + (Number(x.scrap_qty) || 0) * (Number(x.mat_unit_cost) || 0), 0))
+    const closeout = round2(Number((db.prepare("SELECT COALESCE(SUM(l.amount),0) a FROM scm_doc_line l JOIN scm_doc d ON d.id=l.doc_id WHERE d.account_set_id=? AND d.plan_id=? AND d.doc_type='CA' AND d.status='audited'").get(aid, p.id) as any)?.a) || 0)
+    const totalCost = round2(c.issuedCost + c.laborTotal + c.overheadTotal)
+    const outputCost = round2(c.finishedCost + c.laborAbsorbed + c.overheadAbsorbed)   // 已结转到成品（含结案结转）
+    return {
+      plan_id: p.id, plan_code: p.code, status: p.status, start_date: p.start_date, end_date: p.end_date,
+      actual_start_date: p.actual_start_date ?? null, actual_end_date: p.actual_end_date ?? null, dept_code: p.dept_code,
+      item_code: p.first_product_code || p.item_code, item_name: (p.first_product_name || '') + (Number(p.product_count) > 1 ? ` 等${p.product_count}项` : ''),
+      plan_qty: c.totalPlanQty, finished_qty: r6(finishedQty), scrap_qty: r6(scrapQty),
+      material_cost: c.issuedCost, labor_cost: c.laborTotal, overhead_cost: c.overheadTotal, total_cost: totalCost,
+      scrap_cost: scrapCost, closeout_amount: closeout, output_cost: outputCost,
+      material_wip: c.wip, labor_wip: c.laborWip, total_wip: round2(c.wip + c.laborWip),
+      unit_cost: finishedQty > 0 ? round2(outputCost / finishedQty) : 0,
+      unit_material: finishedQty > 0 ? round2(c.finishedCost / finishedQty) : 0,
+      unit_labor: finishedQty > 0 ? round2(c.laborAbsorbed / finishedQty) : 0,
+      unit_overhead: finishedQty > 0 ? round2(c.overheadAbsorbed / finishedQty) : 0,
+    }
+  })
+  const sumKeys = ['plan_qty', 'finished_qty', 'scrap_qty', 'material_cost', 'labor_cost', 'overhead_cost', 'total_cost', 'scrap_cost', 'closeout_amount', 'output_cost', 'material_wip', 'labor_wip', 'total_wip']
+  const summary: Record<string, number> = {}
+  for (const k of sumKeys) summary[k] = round2(rows.reduce((s, r: any) => s + (Number(r[k]) || 0), 0))
+  return { rows, total, page, page_size: pageSize, summary }
+}
+router.get('/scm/report/production/cost', (req: AuthRequest, res) => {
+  try { res.json({ code: 0, data: queryPlanCostDetail(getDb(), asid(req), req.query as any) }) }
+  catch (e: any) { res.status(400).json({ code: 400, message: e?.message || '工单成本明细查询失败' }) }
+})
+router.post('/scm/report/production/cost/export', async (req: AuthRequest, res) => {
+  try {
+    const result = queryPlanCostDetail(getDb(), asid(req), req.body || {}, true)
+    const defs: Array<[string, string, 'text' | 'number']> = [
+      ['plan_code', '工单号', 'text'], ['status', '状态', 'text'], ['item_code', '成品编码', 'text'], ['item_name', '成品名称', 'text'],
+      ['start_date', '计划开工', 'text'], ['end_date', '计划完工', 'text'], ['actual_start_date', '实际开工', 'text'], ['actual_end_date', '实际完工', 'text'],
+      ['plan_qty', '计划数', 'number'], ['finished_qty', '完工数', 'number'], ['scrap_qty', '报废数', 'number'],
+      ['material_cost', '料成本(净领)', 'number'], ['labor_cost', '人工', 'number'], ['overhead_cost', '制费', 'number'], ['total_cost', '投入合计', 'number'],
+      ['scrap_cost', '报废料成本', 'number'], ['closeout_amount', '结案结转', 'number'], ['output_cost', '已结转成品成本', 'number'],
+      ['material_wip', '料在制', 'number'], ['labor_wip', '人工制费在制', 'number'], ['total_wip', '在制合计', 'number'],
+      ['unit_cost', '单位成本', 'number'], ['unit_material', '单位料', 'number'], ['unit_labor', '单位人工', 'number'], ['unit_overhead', '单位制费', 'number'],
+    ]
+    const columns: ExportColumnSpec[] = defs.map(([, label, type]) => ({ label, width: type === 'text' ? 16 : 13, align: type === 'number' ? 'right' : 'left', type }))
+    const rows = result.rows.map((row: any) => defs.map(([key]) => row[key] ?? null))
+    const buffer = await buildStyledXlsxBuffer({ sheetName: '工单成本明细', title: '工单成本明细表',
+      subtitle: '料成本 = Σ(领料+补料−退料)；人工/制费 = 已审核报工 + 工序委外加工费；已结转成品成本 = 完工/不良品/结案结转 + 已吸收人工制费', columns, rows, stripe: true })
+    const fileName = `工单成本明细表_${new Date().toISOString().slice(0, 10)}.xlsx`
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`)
+    res.send(buffer)
+  } catch (e: any) { res.status(400).json({ code: 400, message: e?.message || '工单成本明细导出失败' }) }
+})
+
 router.get('/scm/report/cost-variance', (req: AuthRequest, res) => {
   const { start_date, end_date } = req.query as any
   res.json({ code: 0, data: getCostVariance(getDb(), asid(req), start_date, end_date) })
@@ -2933,13 +3057,26 @@ router.get('/scm/production-plans/kitting', (req: AuthRequest, res) => {
   const conds = ["account_set_id=?", "status='released'"]; const ps: any[] = [aid]
   if (plan_type) { conds.push('plan_type=?'); ps.push(plan_type) }
   const plans = db.prepare(`SELECT * FROM scm_production_plan WHERE ${conds.join(' AND ')} ORDER BY priority DESC, code`).all(...ps) as any[]
-  const stockOf = (code: string) => (db.prepare('SELECT COALESCE(SUM(qty),0) q FROM scm_stock WHERE account_set_id=? AND item_code=?').get(aid, code) as any)?.q || 0
+  // 生产评审 P2-5：mode=allocate 时按 优先级 DESC、计划号 顺序把库存**分配**给各工单，后序工单只看分配后余量；
+  // 默认 independent（各工单独立按全量库存，用于单工单可投产判断）
+  const allocate = String((req.query as any).mode || '') === 'allocate'
+  const stockCache = new Map<string, number>()
+  const stockOf = (code: string) => {
+    if (!stockCache.has(code)) stockCache.set(code, Number((db.prepare('SELECT COALESCE(SUM(qty),0) q FROM scm_stock WHERE account_set_id=? AND item_code=?').get(aid, code) as any)?.q) || 0)
+    return stockCache.get(code)!
+  }
+  const remaining = new Map<string, number>()
   const result = plans.map(plan => {
     const mats = computeIssueSuggestion(db, aid, plan)
       .filter((m: any) => (Number(m.suggest) || 0) > 0.0001)   // 待领(未领足)才纳入齐套判断
       .map((m: any) => {
         const need = round2(Number(m.suggest) || 0)             // 尚需领料量
-        const available = round2(Number(stockOf(m.item_code)) || 0)
+        let available = round2(Number(stockOf(m.item_code)) || 0)
+        if (allocate) {
+          const left = remaining.has(m.item_code) ? remaining.get(m.item_code)! : available
+          available = round2(Math.max(0, left))
+          remaining.set(m.item_code, round2(left - Math.min(left, need)))
+        }
         const shortage = round2(Math.max(0, need - available))
         const rate = need > 0 ? Math.min(1, available / need) : 1
         return { item_code: m.item_code, item_name: m.item_name, unit: m.unit, need, available, shortage, rate: Math.round(rate * 10000) / 100 }
@@ -2953,7 +3090,7 @@ router.get('/scm/production-plans/kitting', (req: AuthRequest, res) => {
       kitting_rate: kittingRate, is_kitted: shortageKinds === 0, materials: mats,
     }
   })
-  res.json({ code: 0, data: result })
+  res.json({ code: 0, data: result, mode: allocate ? 'allocate' : 'independent' })
 })
 // 计划号取号（须在 /:id 之前注册，避免被动态路由吞掉）：生产 PP-、委外 OUT-
 router.get('/scm/production-plans/next-no', (req: AuthRequest, res) => {
@@ -4282,7 +4419,10 @@ function nextSeqNo(db: ReturnType<typeof getDb>, table: string, col: string, aid
 
 // ── 工作中心 ──
 router.get('/scm/work-centers', (req: AuthRequest, res) => {
-  res.json({ code: 0, data: getDb().prepare('SELECT * FROM scm_work_center WHERE account_set_id=? ORDER BY code').all(asid(req)) })
+  res.json({ code: 0, data: getDb().prepare(`SELECT w.*,
+      (SELECT COUNT(*) FROM scm_routing_line l WHERE l.account_set_id=w.account_set_id AND l.work_center_code=w.code) AS routing_ref_count,
+      (SELECT COUNT(*) FROM scm_work_report r WHERE r.account_set_id=w.account_set_id AND r.work_center_code=w.code) AS report_ref_count
+    FROM scm_work_center w WHERE w.account_set_id=? ORDER BY w.code`).all(asid(req)) })
 })
 router.post('/scm/work-centers', operationLog('工作中心新增', '供应链'), (req: AuthRequest, res) => {
   const db = getDb(); const b = req.body; const aid = asid(req)
@@ -4319,7 +4459,10 @@ router.get('/scm/routings', (req: AuthRequest, res) => {
   const db = getDb(); const { item_code } = req.query as any
   const conds = ['r.account_set_id=?']; const ps: any[] = [asid(req)]
   if (item_code) { conds.push('r.item_code=?'); ps.push(item_code) }
-  res.json({ code: 0, data: db.prepare(`SELECT r.*, i.name AS item_name FROM scm_routing r LEFT JOIN scm_item i ON i.account_set_id=r.account_set_id AND i.code=r.item_code WHERE ${conds.join(' AND ')} ORDER BY r.code`).all(...ps) })
+  res.json({ code: 0, data: db.prepare(`SELECT r.*, i.name AS item_name,
+      (SELECT COUNT(*) FROM scm_routing_line l WHERE l.routing_id=r.id) AS process_count,
+      (SELECT COALESCE(SUM(l.std_hours),0) FROM scm_routing_line l WHERE l.routing_id=r.id) AS std_hours_total
+    FROM scm_routing r LEFT JOIN scm_item i ON i.account_set_id=r.account_set_id AND i.code=r.item_code WHERE ${conds.join(' AND ')} ORDER BY r.code`).all(...ps) })
 })
 router.get('/scm/routings/next-no', (req: AuthRequest, res) => res.json({ code: 0, data: { next_no: nextSeqNo(getDb(), 'scm_routing', 'code', asid(req), 'RT') } }))
 router.get('/scm/routings/:id', (req: AuthRequest, res) => {
@@ -4339,10 +4482,19 @@ function writeRoutingLines(db: ReturnType<typeof getDb>, aid: string, routingId:
     ins.run(uuidv4(), aid, routingId, seq, l.process_name, l.work_center_code ?? null, Number(l.std_hours) || 0, l.is_outsource ? 1 : 0, l.remark ?? null)
   }
 }
+/** 生产评审 P2-1：同一成品只允许一条启用的工艺路线（标准成本 / 报工默认 / 末道工序都取「启用的那条」，多条会各取各的） */
+function activeRoutingConflict(db: ReturnType<typeof getDb>, aid: string, itemCode: string, status: string, excludeId?: string): string | null {
+  if ((status || 'active') !== 'active') return null
+  const other = db.prepare(`SELECT code FROM scm_routing WHERE account_set_id=? AND item_code=? AND status='active' ${excludeId ? 'AND id<>?' : ''} LIMIT 1`)
+    .get(...(excludeId ? [aid, itemCode, excludeId] : [aid, itemCode])) as any
+  return other ? `成品 ${itemCode} 已有启用的工艺路线 ${other.code}，请先将其停用再启用本条` : null
+}
 router.post('/scm/routings', operationLog('工艺路线新增', '供应链'), (req: AuthRequest, res) => {
   const db = getDb(); const b = req.body; const aid = asid(req)
   if (!b.code || !b.item_code) return res.status(400).json({ code: 400, message: '编码和成品不能为空' })
   if (db.prepare('SELECT id FROM scm_routing WHERE account_set_id=? AND code=?').get(aid, b.code)) return res.status(409).json({ code: 409, message: '编码已存在' })
+  const conflict = activeRoutingConflict(db, aid, b.item_code, b.status)
+  if (conflict) return res.status(400).json({ code: 400, message: conflict })
   const id = uuidv4()
   db.transaction(() => {
     db.prepare('INSERT INTO scm_routing (id,account_set_id,code,name,item_code,status,remark) VALUES (?,?,?,?,?,?,?)').run(id, aid, b.code, b.name ?? null, b.item_code, b.status || 'active', b.remark ?? null)
@@ -4353,6 +4505,8 @@ router.post('/scm/routings', operationLog('工艺路线新增', '供应链'), (r
 router.put('/scm/routings/:id', operationLog('工艺路线修改', '供应链'), (req: AuthRequest, res) => {
   const db = getDb(); const b = req.body; const aid = asid(req)
   if (!db.prepare('SELECT id FROM scm_routing WHERE id=? AND account_set_id=?').get(req.params.id, aid)) return res.status(404).json({ code: 404, message: '工艺路线不存在' })
+  const conflict = activeRoutingConflict(db, aid, b.item_code, b.status, req.params.id)
+  if (conflict) return res.status(400).json({ code: 400, message: conflict })
   db.transaction(() => {
     db.prepare(`UPDATE scm_routing SET name=?,item_code=?,status=?,remark=?,updated_at=datetime('now') WHERE id=? AND account_set_id=?`).run(b.name ?? null, b.item_code, b.status || 'active', b.remark ?? null, req.params.id, aid)
     writeRoutingLines(db, aid, req.params.id, b.lines)
@@ -4370,13 +4524,39 @@ router.delete('/scm/routings/:id', operationLog('工艺路线删除', '供应链
 
 // ── 生产报工 ──
 router.get('/scm/work-reports', (req: AuthRequest, res) => {
-  const db = getDb(); const { plan_id } = req.query as any
+  const db = getDb(); const q = req.query as any
+  // 生产评审 P1-7：跨工单视图 + 筛选 + 分页（带 page 参数返回分页结构，否则保持数组兼容）
   const conds = ['wr.account_set_id=?']; const ps: any[] = [asid(req)]
-  if (plan_id) { conds.push('wr.plan_id=?'); ps.push(plan_id) }
-  res.json({ code: 0, data: db.prepare(`SELECT wr.*, pp.code AS plan_code, w.name AS work_center_name
-    FROM scm_work_report wr LEFT JOIN scm_production_plan pp ON pp.id=wr.plan_id
+  if (q.plan_id) { conds.push('wr.plan_id=?'); ps.push(String(q.plan_id)) }
+  if (q.status) { conds.push('wr.status=?'); ps.push(String(q.status)) }
+  if (q.work_center_code) { conds.push('wr.work_center_code=?'); ps.push(String(q.work_center_code)) }
+  if (q.process_name) { conds.push('wr.process_name=?'); ps.push(String(q.process_name)) }
+  if (q.operator) { conds.push('wr.operator LIKE ?'); ps.push(`%${String(q.operator)}%`) }
+  if (q.start_date) { conds.push('wr.report_date>=?'); ps.push(String(q.start_date)) }
+  if (q.end_date) { conds.push('wr.report_date<=?'); ps.push(String(q.end_date)) }
+  if (q.keyword) { const kw = `%${String(q.keyword).trim()}%`; conds.push('(wr.report_no LIKE ? OR pp.code LIKE ? OR wr.item_code LIKE ? OR i.name LIKE ?)'); ps.push(kw, kw, kw, kw) }
+  const fromSql = `FROM scm_work_report wr LEFT JOIN scm_production_plan pp ON pp.id=wr.plan_id
     LEFT JOIN scm_work_center w ON w.account_set_id=wr.account_set_id AND w.code=wr.work_center_code
-    WHERE ${conds.join(' AND ')} ORDER BY wr.report_date DESC, wr.created_at DESC`).all(...ps) })
+    LEFT JOIN scm_item i ON i.account_set_id=wr.account_set_id AND i.code=wr.item_code
+    WHERE ${conds.join(' AND ')}`
+  const selectSql = `SELECT wr.*, pp.code AS plan_code, w.name AS work_center_name, i.name AS item_name ${fromSql} ORDER BY wr.report_date DESC, wr.created_at DESC`
+  if (q.page === undefined && q.page_size === undefined) return res.json({ code: 0, data: db.prepare(selectSql).all(...ps) })
+  const { page, pageSize } = normalizePaging(q.page, q.page_size, 50)
+  const total = Number((db.prepare(`SELECT COUNT(*) c ${fromSql}`).get(...ps) as any)?.c) || 0
+  const sum = db.prepare(`SELECT COALESCE(SUM(wr.qty),0) qty, COALESCE(SUM(wr.scrap_qty),0) scrap_qty, COALESCE(SUM(wr.work_hours),0) work_hours,
+    COALESCE(SUM(wr.labor_amount),0) labor_amount, COALESCE(SUM(wr.overhead_amount),0) overhead_amount ${fromSql}`).get(...ps)
+  const list = db.prepare(`${selectSql} LIMIT ? OFFSET ?`).all(...ps, pageSize, (page - 1) * pageSize)
+  res.json({ code: 0, data: { list, total, page, page_size: pageSize, summary: sum } })
+})
+router.get('/scm/work-reports/:id', (req: AuthRequest, res) => {
+  const db = getDb(); const aid = asid(req)
+  if (req.params.id === 'next-no') return res.json({ code: 0, data: { next_no: nextSeqNo(db, 'scm_work_report', 'report_no', aid, 'WR') } })
+  const row = db.prepare(`SELECT wr.*, pp.code AS plan_code, w.name AS work_center_name FROM scm_work_report wr
+    LEFT JOIN scm_production_plan pp ON pp.id=wr.plan_id
+    LEFT JOIN scm_work_center w ON w.account_set_id=wr.account_set_id AND w.code=wr.work_center_code
+    WHERE wr.id=? AND wr.account_set_id=?`).get(req.params.id, aid)
+  if (!row) return res.status(404).json({ code: 404, message: '报工单不存在' })
+  res.json({ code: 0, data: row })
 })
 router.get('/scm/work-reports/next-no', (req: AuthRequest, res) => res.json({ code: 0, data: { next_no: nextSeqNo(getDb(), 'scm_work_report', 'report_no', asid(req), 'WR') } }))
 /** 报工只能挂在已审核（released）的工单上：草稿工单尚未确定用料，已关闭工单的人工/制费已结转（生产评审 P1-3） */

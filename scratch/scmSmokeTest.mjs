@@ -719,6 +719,62 @@ async function main() {
     assert('㉖ [P1-3] 已关闭工单不能报工', wrClosed.status === 400 && /已关闭/.test(wrClosed.message || ''), wrClosed.message)
   }
 
+  // ── ㉗ 生产阶段 B：列表分页筛选 / 路线唯一 / 齐套分配 / 工时差异 / 三张报表 / 实际日期 ────
+  {
+    const PL = (p) => `/api/scm/production-plans${p || ''}`
+    // 工单列表：不带 page 仍返回数组；带 page 返回分页结构；筛选生效
+    const arr = await get(PL())
+    const paged = await get(PL('?page=1&page_size=2&plan_type=self'))
+    assert('㉗ [P1-6] 工单列表兼容数组 / 分页双形态', Array.isArray(arr.data) && Array.isArray(paged.data.list) && paged.data.list.length <= 2 && paged.data.total >= paged.data.list.length && paged.data.list.every(p => (p.plan_type || 'self') === 'self'), JSON.stringify({ arr: arr.data.length, total: paged.data.total }))
+    const kw = await get(PL('?page=1&page_size=50&keyword=MO-PROC'))
+    assert('㉗ [P1-6] 关键字筛选命中工单号', kw.data.total === 1 && kw.data.list[0].code === 'MO-PROC', JSON.stringify(kw.data.list.map(p => p.code)))
+    const late = await post(PL(), { code: 'MO-LATE', plan_type: 'self', yl_warehouse: 'W1', fp_warehouse: 'W1', start_date: '2026-01-01', end_date: '2026-01-31', products: [{ item_code: 'FP4', plan_qty: 2, lines: [{ item_code: 'M1', qty: 1 }] }] })
+    await post(PL(`/${late.data.id}/release`), {}, { allowError: true })
+    const overdue = await get(PL('?page=1&page_size=50&overdue=1'))
+    assert('㉗ [P2-10] 逾期筛选命中已审核且交期已过的工单', overdue.data.list.some(p => p.code === 'MO-LATE' && p.is_overdue === 1), JSON.stringify(overdue.data.list.map(p => p.code)))
+    // 实际开工：审核领料单后回写
+    const issue = await post(PL(`/${late.data.id}/gen-issue`), {}, { allowError: true })
+    const ai = await audit(issue.data.id)
+    const lateDetail = (await get(PL(`/${late.data.id}`))).data.plan
+    assert('㉗ [P2-10] 审核领料后实际开工日期 = 领料单日期', ai.code === 0 && lateDetail.actual_start_date === dbq('SELECT doc_date FROM scm_doc WHERE id=?', issue.data.id)[0].doc_date && !lateDetail.actual_end_date, JSON.stringify({ s: lateDetail.actual_start_date, e: lateDetail.actual_end_date }))
+    // 报工分页 + 详情
+    const wrp = await get('/api/scm/work-reports?page=1&page_size=2&status=audited')
+    assert('㉗ [P1-7] 报工分页视图带合计', Array.isArray(wrp.data.list) && wrp.data.total >= 3 && wrp.data.summary && Number(wrp.data.summary.qty) >= 14, JSON.stringify({ total: wrp.data.total, sum: wrp.data.summary }))
+    const one = await get(`/api/scm/work-reports/${wrp.data.list[0].id}`)
+    assert('㉗ [P3] GET /work-reports/:id', one.code === 0 && one.data.id === wrp.data.list[0].id && one.data.plan_code, one.message)
+    // 工艺路线：同成品第二条启用被拒
+    const rt2 = await post('/api/scm/routings', { code: 'RT-FP4-2', item_code: 'FP4', status: 'active', lines: [{ process_name: 'X', std_hours: 1 }] }, { allowError: true })
+    assert('㉗ [P2-1] 同成品第二条启用路线被拒', rt2.status === 400 && /已有启用的工艺路线/.test(rt2.message || ''), rt2.message)
+    const rt2ok = await post('/api/scm/routings', { code: 'RT-FP4-2', item_code: 'FP4', status: 'inactive', lines: [{ process_name: 'X', std_hours: 1 }] }, { allowError: true })
+    assert('㉗ [P2-1] 停用状态可保存', rt2ok.status === 200, rt2ok.message)
+    const rts = (await get('/api/scm/routings?item_code=FP4')).data
+    assert('㉗ [P3] 路线列表带工序数 / 标准总工时', rts.some(r => r.code === 'RT-FP4' && r.process_count === 3 && Number(r.std_hours_total) === 4), JSON.stringify(rts.map(r => [r.code, r.process_count, r.std_hours_total])))
+    // 齐套分配：两张工单同缺一料，分配模式下后序缺口更大
+    await ensure('/api/scm/items', { code: 'MK', name: '齐套料', unit: '个', purchase_price: 1, default_warehouse_code: 'W1' })
+    const piK = await createDoc({ doc_type: 'PI', doc_date: D, partner_code: 'SUP1', warehouse_code: 'W1', lines: [{ item_code: 'MK', qty: 10, price: 1, tax_rate: 0, tax_amount: 0 }] }); await audit(piK.id)
+    const k1 = await post(PL(), { code: 'MO-K1', plan_type: 'self', priority: 9, yl_warehouse: 'W1', fp_warehouse: 'W1', products: [{ item_code: 'FP4', plan_qty: 8, lines: [{ item_code: 'MK', qty: 1 }] }] })
+    const k2 = await post(PL(), { code: 'MO-K2', plan_type: 'self', priority: 1, yl_warehouse: 'W1', fp_warehouse: 'W1', products: [{ item_code: 'FP4', plan_qty: 8, lines: [{ item_code: 'MK', qty: 1 }] }] })
+    await post(PL(`/${k1.data.id}/release`), {}, { allowError: true }); await post(PL(`/${k2.data.id}/release`), {}, { allowError: true })
+    const indep = (await get('/api/scm/production-plans/kitting?plan_type=self')).data
+    const alloc = (await get('/api/scm/production-plans/kitting?plan_type=self&mode=allocate')).data
+    const iK2 = indep.find(p => p.plan_code === 'MO-K2'); const aK1 = alloc.find(p => p.plan_code === 'MO-K1'); const aK2 = alloc.find(p => p.plan_code === 'MO-K2')
+    assert('㉗ [P2-5] 独立模式两张都齐套；分配模式高优先级齐套、低优先级缺 6', iK2?.is_kitted && aK1?.is_kitted && !aK2?.is_kitted && aK2?.materials.find(m => m.item_code === 'MK')?.shortage === 6,
+      JSON.stringify({ iK2: iK2?.is_kitted, aK1: aK1?.is_kitted, aK2: aK2?.materials }))
+    // 工时差异 / 三张报表
+    const cv = (await get(`/api/scm/report/cost-variance?start_date=2026-01-01&end_date=2026-12-31`)).data
+    assert('㉗ [P2-8] 标准成本差异带工时字段', Array.isArray(cv) && (cv.length === 0 || ('std_hours' in cv[0] && 'act_hours' in cv[0] && 'hours_efficiency' in cv[0])), JSON.stringify(cv[0] || {}).slice(0, 200))
+    const hrs = (await get(`/api/scm/report/production/hours?group_by=work_center&start_date=2026-01-01&end_date=2026-12-31`)).data
+    const wc1 = hrs.rows.find(r => r.group_key === 'WC1')
+    // MO-PROC 三道各 1 工时：下料 5 件×1h + 焊接 5×1h + 总装 5(4+1)×2h = 20 标准工时 vs 3 实际
+    assert('㉗ [C-4①] 工时统计按工作中心：实际 3h、标准 20h', wc1 && wc1.work_hours === 3 && wc1.std_hours === 20 && wc1.report_count === 3, JSON.stringify(wc1))
+    const daily = (await get(`/api/scm/report/production/daily?start_date=2026-01-01&end_date=2026-12-31`)).data
+    assert('㉗ [C-4②] 生产日报有行且报工合格合计 ≥ 14', daily.rows.length > 0 && Number(daily.summary.report_qty) >= 14 && Number(daily.summary.issue_qty) > 0, JSON.stringify(daily.summary))
+    const cost = (await get('/api/scm/report/production/cost?page=1&page_size=50&plan_code=MO-LATE')).data
+    assert('㉗ [C-4③] 工单成本明细：MO-LATE 料成本 = 领料 2 件成本、在制 = 料成本', cost.rows.length === 1 && cost.rows[0].material_cost > 0 && cost.rows[0].material_wip === cost.rows[0].material_cost && cost.rows[0].finished_qty === 0, JSON.stringify(cost.rows[0]))
+    const xls = await fetch(`${BASE}/api/scm/report/production/cost/export`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: '{}' })
+    assert('㉗ [C-4③] 工单成本明细导出 xlsx', xls.status === 200 && /spreadsheet/.test(xls.headers.get('content-type') || ''), String(xls.status))
+  }
+
   // 汇总
   const fails = results.filter(r => !r.pass)
   console.log(`\n==== ${results.length} 项断言，${fails.length} 项失败 ====`)

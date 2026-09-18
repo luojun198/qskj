@@ -3,7 +3,7 @@
     <div class="filter-row">
       <span class="title">工艺路线</span>
       <el-button type="primary" size="small" @click="openAdd"><el-icon><Plus /></el-icon>新增</el-button>
-      <span class="hint">定义成品的工序/工作中心/标准工时，供报工时选择工序</span>
+      <span class="hint">定义成品的工序/工作中心/标准工时，供报工时选择工序、完工默认数取末道工序、标准成本与工时统计取标准工时；同一成品只允许一条「启用」路线</span>
     </div>
     <el-table :data="rows" v-loading="loading" border stripe size="small" height="100%">
       <el-table-column label="编码" prop="code" width="140" />
@@ -11,7 +11,9 @@
       <el-table-column label="成品" min-width="160" show-overflow-tooltip>
         <template #default="{ row }">{{ row.item_code }} {{ row.item_name || '' }}</template>
       </el-table-column>
-      <el-table-column label="状态" width="80" align="center"><template #default="{ row }">{{ row.status === 'active' ? '启用' : '停用' }}</template></el-table-column>
+      <el-table-column label="工序数" width="80" align="right"><template #default="{ row }">{{ row.process_count ?? '' }}</template></el-table-column>
+      <el-table-column label="标准总工时" width="100" align="right"><template #default="{ row }">{{ Number(row.std_hours_total) || 0 }}</template></el-table-column>
+      <el-table-column label="状态" width="80" align="center"><template #default="{ row }"><el-tag size="small" :type="row.status === 'active' ? 'success' : 'info'" effect="plain">{{ row.status === 'active' ? '启用' : '停用' }}</el-tag></template></el-table-column>
       <el-table-column label="操作" width="120" align="center">
         <template #default="{ row }">
           <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>

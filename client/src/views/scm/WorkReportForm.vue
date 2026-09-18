@@ -162,8 +162,8 @@ async function init() {
     if (wc.code === 0) workCenters.value = wc.data.filter((w: any) => w.enabled !== 0)
 
     if (editId.value) {
-      const list = await scmApi.getWorkReports({})
-      const row = (list.data || []).find((r: any) => r.id === editId.value)
+      const one = await scmApi.getWorkReport(editId.value)
+      const row = one.code === 0 ? one.data : null
       if (!row) { ElMessage.error('报工单不存在'); return goBack() }
       if (row.status === 'audited') { ElMessage.warning('已审核报工不可修改'); return goBack() }
       planId.value = row.plan_id

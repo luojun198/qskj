@@ -7,8 +7,12 @@
         <el-radio-button value="self">自制</el-radio-button>
         <el-radio-button value="outsource">委外</el-radio-button>
       </el-radio-group>
+      <el-radio-group v-model="mode" size="small" @change="load">
+        <el-radio-button value="allocate">按优先级分配</el-radio-button>
+        <el-radio-button value="independent">独立核算</el-radio-button>
+      </el-radio-group>
       <el-button type="primary" plain size="small" @click="load"><el-icon><Search /></el-icon>刷新</el-button>
-      <span class="hint">已审核工单按 BOM 需求 vs 现有库存核算齐套率（各工单独立核算，不做跨工单库存竞争）</span>
+      <span class="hint">{{ mode === 'allocate' ? '按 优先级 → 计划号 顺序把现有库存依次分配给各工单，后序工单只看分配后余量（多张工单同缺一料时能看出谁真正缺）' : '各工单独立按全量现有库存核算齐套率（单工单可投产判断，不做跨工单库存竞争）' }}</span>
     </div>
     <el-empty v-if="!rows.length && !loading" description="暂无已审核工单" />
     <el-table v-else :data="rows" v-loading="loading" border stripe size="small" height="100%" row-key="plan_id"
@@ -18,7 +22,7 @@
           <el-table :data="row.materials" size="small" border class="mat-table">
             <el-table-column label="物料" min-width="150"><template #default="{ row: m }">{{ m.item_code }} {{ m.item_name || '' }}</template></el-table-column>
             <el-table-column label="尚需" width="110" align="right"><template #default="{ row: m }">{{ fmt(m.need) }}</template></el-table-column>
-            <el-table-column label="现有库存" width="110" align="right"><template #default="{ row: m }">{{ fmt(m.available) }}</template></el-table-column>
+            <el-table-column :label="mode === 'allocate' ? '可分配库存' : '现有库存'" width="110" align="right"><template #default="{ row: m }">{{ fmt(m.available) }}</template></el-table-column>
             <el-table-column label="缺口" width="110" align="right">
               <template #default="{ row: m }"><span :class="{ short: m.shortage > 0 }">{{ fmt(m.shortage) }}</span></template>
             </el-table-column>
@@ -57,6 +61,7 @@ import { scmApi } from '@/api/scm'
 
 const router = useRouter()
 const planType = ref('')
+const mode = ref<'independent' | 'allocate'>('allocate')
 const rows = ref<any[]>([])
 const loading = ref(false)
 const expanded = ref<string[]>([])
@@ -64,7 +69,7 @@ const fmt = (v: any) => (Number(v) || 0).toLocaleString('zh-CN', { minimumFracti
 
 async function load() {
   loading.value = true
-  try { const r = await scmApi.getKitting({ plan_type: planType.value || undefined }); if (r.code === 0) rows.value = r.data } finally { loading.value = false }
+  try { const r = await scmApi.getKitting({ plan_type: planType.value || undefined, mode: mode.value }); if (r.code === 0) rows.value = r.data } finally { loading.value = false }
 }
 function onExpand(_row: any, rowsExp: any[]) { expanded.value = rowsExp.map(r => r.plan_id) }
 function goPlan(row: any) { router.push({ name: 'ScmProductionOrder', params: { id: row.plan_id } }) }

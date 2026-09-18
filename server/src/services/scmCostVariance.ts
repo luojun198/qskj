@@ -14,7 +14,7 @@ import { bomComponents, pickActiveBom } from './scmBom.js'
 
 const r2 = (n: number) => Math.round((Number(n) || 0) * 100) / 100
 
-export interface StdCost { material: number; labor: number; overhead: number; total: number }
+export interface StdCost { material: number; labor: number; overhead: number; total: number; hours: number }
 export interface VarianceRow {
   item_code: string; item_name: string
   finished_qty: number
@@ -23,6 +23,8 @@ export interface VarianceRow {
   act_mat: number; act_labor: number; act_oh: number; act_total: number
   var_mat: number; var_labor: number; var_oh: number; var_total: number
   var_rate: number   // 合计差异率 = 差异/标准合计
+  // 生产评审 P2-8：工时差异——标准工时 = 工艺路线 Σ标准工时 × 完工数；实际工时 = 区间内该成品已审核报工工时
+  std_hours_unit: number; std_hours: number; act_hours: number; var_hours: number; hours_efficiency: number
 }
 
 /** 采购/参考成本兜底（叶子件标准料单价） */
@@ -43,12 +45,13 @@ function calcStdCost(db: Database.Database, aid: string, code: string, cache: Ma
   // 环：本件已在祖先链中 → 以采购/参考成本当叶子截断（人工/制费按 0 计），结果标记 unclean 不入缓存
   if (stack.has(code)) {
     const m = leafCost(db, aid, code)
-    return { cost: { material: m, labor: 0, overhead: 0, total: m }, clean: false }
+    return { cost: { material: m, labor: 0, overhead: 0, total: m, hours: 0 }, clean: false }
   }
   // 本级工艺路线人工/制费（启用路线第一条）
   const lo = db.prepare(`
     SELECT COALESCE(SUM(l.std_hours * COALESCE(w.labor_rate,0)),0) AS labor,
-           COALESCE(SUM(l.std_hours * COALESCE(w.overhead_rate,0)),0) AS overhead
+           COALESCE(SUM(l.std_hours * COALESCE(w.overhead_rate,0)),0) AS overhead,
+           COALESCE(SUM(l.std_hours),0) AS hours
     FROM scm_routing r JOIN scm_routing_line l ON l.routing_id=r.id
     LEFT JOIN scm_work_center w ON w.account_set_id=r.account_set_id AND w.code=l.work_center_code
     WHERE r.account_set_id=? AND r.item_code=? AND r.status='active'
@@ -56,6 +59,7 @@ function calcStdCost(db: Database.Database, aid: string, code: string, cache: Ma
   `).get(aid, code) as any
   const labor = r2(Number(lo?.labor) || 0)
   const overhead = r2(Number(lo?.overhead) || 0)
+  const hours = Math.round((Number(lo?.hours) || 0) * 10000) / 10000
   // BOM 主件（C-1：按当日生效版本；替代料组按主料计标准成本）
   const bomHead = pickActiveBom(db, aid, code)
   const comps = bomHead ? bomComponents(db, bomHead.id).map(l => ({ comp: l.item_code, qty: l.qty, scrap: l.scrap_rate })) : []
@@ -74,7 +78,7 @@ function calcStdCost(db: Database.Database, aid: string, code: string, cache: Ma
     // 叶子/采购件：标准料单价 = 采购价 → 参考成本 兜底
     material = leafCost(db, aid, code)
   }
-  const cost: StdCost = { material, labor, overhead, total: r2(material + labor + overhead) }
+  const cost: StdCost = { material, labor, overhead, total: r2(material + labor + overhead), hours }
   if (clean) cache.set(code, cost)
   return { cost, clean }
 }
@@ -102,6 +106,14 @@ export function getCostVariance(db: Database.Database, aid: string, startDate?: 
       AND (l.line_role IS NULL OR l.line_role='product')
     GROUP BY l.item_code
   `).all(...ps) as any[]
+  // 实际工时：区间内已审核报工（按成品物料）；报工挂成品行时取行物料，否则取报工头 item_code
+  const hConds = ["wr.account_set_id=?", "wr.status='audited'"]; const hps: any[] = [aid]
+  if (startDate) { hConds.push('wr.report_date>=?'); hps.push(startDate) }
+  if (endDate) { hConds.push('wr.report_date<=?'); hps.push(endDate) }
+  const hoursRows = db.prepare(`SELECT COALESCE(pp.item_code, wr.item_code) AS item_code, COALESCE(SUM(wr.work_hours),0) AS hours
+    FROM scm_work_report wr LEFT JOIN scm_production_plan_product pp ON pp.id=wr.product_id
+    WHERE ${hConds.join(' AND ')} GROUP BY COALESCE(pp.item_code, wr.item_code)`).all(...hps) as any[]
+  const actHours = new Map<string, number>(hoursRows.map(h => [String(h.item_code || ''), Number(h.hours) || 0]))
   const cache = new Map<string, StdCost>()
   const out: VarianceRow[] = []
   for (const r of rows) {
@@ -120,6 +132,9 @@ export function getCostVariance(db: Database.Database, aid: string, startDate?: 
       act_mat: actMat, act_labor: actLabor, act_oh: actOh, act_total: actTotal,
       var_mat: r2(actMat - stdMat), var_labor: r2(actLabor - stdLabor), var_oh: r2(actOh - stdOh), var_total: r2(actTotal - stdTotal),
       var_rate: stdTotal !== 0 ? r2((actTotal - stdTotal) / stdTotal * 100) : 0,
+      std_hours_unit: std.hours, std_hours: r2(std.hours * qty), act_hours: r2(actHours.get(r.item_code) || 0),
+      var_hours: r2((actHours.get(r.item_code) || 0) - std.hours * qty),
+      hours_efficiency: (actHours.get(r.item_code) || 0) > 0 ? r2(std.hours * qty / (actHours.get(r.item_code) || 0) * 100) : 0,
     })
   }
   out.sort((a, b) => Math.abs(b.var_total) - Math.abs(a.var_total))

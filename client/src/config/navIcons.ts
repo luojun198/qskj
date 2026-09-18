@@ -8,6 +8,8 @@ import type { Component } from 'vue'
 import {
   AlertTriangle,
   ArrowDownToLine,
+  CalendarDays,
+  Timer,
   ArrowLeft,
   ArrowLeftRight,
   ArrowRightLeft,
@@ -126,6 +128,8 @@ import {
 export const NAV_ICONS = {
   AlertTriangle,
   ArrowDownToLine,
+  CalendarDays,
+  Timer,
   ArrowLeft,
   ArrowLeftRight,
   ArrowRightLeft,

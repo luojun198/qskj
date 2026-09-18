@@ -14,6 +14,7 @@ import type { ExportColumnSpec } from '../services/styledExcelExport.js'
 import { normalizePaging } from '../utils/paging.js'
 import { listStockLayers, getCostingMethod } from '../services/scmCosting.js'
 import { calcMonthAvg, listCostingPeriods } from '../services/scmMonthAvg.js'
+import { queryWorkHoursStat, queryProductionDaily, type WorkHoursFilters, type DailyFilters } from '../services/scmProductionReports.js'
 import { getScmBaseCurrency, isScmBaseCurrency, normalizeScmCurrency, resolveScmExchangeRate } from '../services/scmCurrency.js'
 
 async function buildStyledXlsxBuffer(options: any) {
@@ -1026,6 +1027,52 @@ router.post('/scm/report/production/execution/export', async (req: AuthRequest, 
   } catch (error: any) {
     res.status(400).json({ code: 400, message: error?.message || '生产执行表导出失败' })
   }
+})
+
+// ── 报表：工时统计 / 生产日报（生产评审 C-4 ①②） ──────────────────
+async function sendXlsx(res: any, opts: { sheetName: string; title: string; subtitle?: string; defs: Array<[string, string, 'text' | 'number']>; rows: any[]; fileBase: string }) {
+  const columns: ExportColumnSpec[] = opts.defs.map(([, label, type]) => ({ label, width: type === 'text' ? 18 : 14, align: type === 'number' ? 'right' : 'left', type }))
+  const rows = opts.rows.map((row: any) => opts.defs.map(([key]) => row[key] ?? null))
+  const buffer = await buildStyledXlsxBuffer({ sheetName: opts.sheetName, title: opts.title, subtitle: opts.subtitle, columns, rows, stripe: true })
+  const fileName = `${opts.fileBase}_${new Date().toISOString().slice(0, 10)}.xlsx`
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`)
+  res.send(buffer)
+}
+const HOURS_DEFS: Array<[string, string, 'text' | 'number']> = [
+  ['group_label', '分组', 'text'], ['report_count', '报工单数', 'number'], ['qty', '合格数', 'number'], ['scrap_qty', '不良数', 'number'],
+  ['work_hours', '实际工时', 'number'], ['std_hours', '标准工时', 'number'], ['var_hours', '工时差异', 'number'], ['efficiency', '效率%', 'number'],
+  ['labor_amount', '人工金额', 'number'], ['overhead_amount', '制造费用', 'number'],
+]
+const DAILY_DEFS: Array<[string, string, 'text' | 'number']> = [
+  ['date', '日期', 'text'], ['plans_active', '活动工单数', 'number'], ['issue_qty', '净领料数量', 'number'], ['issue_amount', '净领料金额', 'number'],
+  ['report_count', '报工单数', 'number'], ['report_qty', '报工合格', 'number'], ['report_scrap', '报工不良', 'number'], ['work_hours', '报工工时', 'number'],
+  ['labor_amount', '人工金额', 'number'], ['overhead_amount', '制造费用', 'number'],
+  ['finish_qty', '完工入库数量', 'number'], ['finish_amount', '完工入库金额', 'number'], ['defect_qty', '不良品入库数量', 'number'], ['defect_amount', '不良品入库金额', 'number'],
+]
+router.get('/scm/report/production/hours', (req: AuthRequest, res) => {
+  try { res.json({ code: 0, data: queryWorkHoursStat(getDb(), asid(req), req.query as unknown as WorkHoursFilters) }) }
+  catch (error: any) { res.status(400).json({ code: 400, message: error?.message || '工时统计查询失败' }) }
+})
+router.post('/scm/report/production/hours/export', async (req: AuthRequest, res) => {
+  try {
+    const f = (req.body || {}) as WorkHoursFilters
+    const result = queryWorkHoursStat(getDb(), asid(req), f)
+    const labels: Record<string, string> = { work_center: '工作中心', operator: '操作工', date: '日期', plan: '工单', process: '工序', item: '成品' }
+    await sendXlsx(res, { sheetName: '工时统计', title: `工时统计（按${labels[f.group_by || 'work_center'] || '工作中心'}）`,
+      subtitle: `${f.start_date || ''} ~ ${f.end_date || ''}；标准工时 = 工艺路线工序标准工时 × (合格+不良)；效率 = 标准 ÷ 实际`, defs: HOURS_DEFS, rows: result.rows, fileBase: '工时统计' })
+  } catch (error: any) { res.status(400).json({ code: 400, message: error?.message || '工时统计导出失败' }) }
+})
+router.get('/scm/report/production/daily', (req: AuthRequest, res) => {
+  try { res.json({ code: 0, data: queryProductionDaily(getDb(), asid(req), req.query as unknown as DailyFilters) }) }
+  catch (error: any) { res.status(400).json({ code: 400, message: error?.message || '生产日报查询失败' }) }
+})
+router.post('/scm/report/production/daily/export', async (req: AuthRequest, res) => {
+  try {
+    const f = (req.body || {}) as DailyFilters
+    const result = queryProductionDaily(getDb(), asid(req), f)
+    await sendXlsx(res, { sheetName: '生产日报', title: '生产日报', subtitle: `${f.start_date || ''} ~ ${f.end_date || ''}；自制工单已审核单据与报工`, defs: DAILY_DEFS, rows: result.rows, fileBase: '生产日报' })
+  } catch (error: any) { res.status(400).json({ code: 400, message: error?.message || '生产日报导出失败' }) }
 })
 
 // ── 报表：库存预警（现存 < 安全库存） ──────────────────────────────

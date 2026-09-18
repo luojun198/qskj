@@ -440,6 +440,13 @@ export const scmApi = {
   getProductionExecution: (params: Record<string, any>) =>
     request.get<{ rows: any[]; total: number; page: number; page_size: number; summary: Record<string, number> }>('/scm/report/production/execution', { params }),
   exportProductionExecution: (data: Record<string, any>) => request.downloadPost('/scm/report/production/execution/export', data, { timeout: 600_000 }),
+  // 生产执行侧报表（C-4）：工时统计 / 生产日报 / 工单成本明细
+  getWorkHoursStat: (params: Record<string, any>) => request.get<{ rows: any[]; summary: Record<string, any> }>('/scm/report/production/hours', { params }),
+  exportWorkHoursStat: (data: Record<string, any>) => request.downloadPost('/scm/report/production/hours/export', data, { timeout: 600_000 }),
+  getProductionDaily: (params: Record<string, any>) => request.get<{ rows: any[]; summary: Record<string, any> }>('/scm/report/production/daily', { params }),
+  exportProductionDaily: (data: Record<string, any>) => request.downloadPost('/scm/report/production/daily/export', data, { timeout: 600_000 }),
+  getPlanCostDetail: (params: Record<string, any>) => request.get<{ rows: any[]; total: number; page: number; page_size: number; summary: Record<string, number> }>('/scm/report/production/cost', { params }),
+  exportPlanCostDetail: (data: Record<string, any>) => request.downloadPost('/scm/report/production/cost/export', data, { timeout: 600_000 }),
 
   // 分类
   getCategories: () => request.get<any[]>('/scm/categories'),
@@ -527,7 +534,7 @@ export const scmApi = {
   updateRouting: (id: string, data: any) => request.put(`/scm/routings/${id}`, data),
   deleteRouting: (id: string) => request.delete(`/scm/routings/${id}`),
   // 齐套分析
-  getKitting: (params?: { plan_type?: string }) => request.get<any[]>('/scm/production-plans/kitting', { params }),
+  getKitting: (params?: { plan_type?: string; mode?: 'independent' | 'allocate' }) => request.get<any[]>('/scm/production-plans/kitting', { params }),
   // MRP 计算单
   getMrpDocs: (params?: { status?: string; keyword?: string; start_date?: string; end_date?: string }) => request.get<any[]>('/scm/mrp-docs', { params }),
   getPushOptions: (params: { source_kind: MrpSourceKind; source_id: string }) =>
@@ -562,6 +569,9 @@ export const scmApi = {
     request.post<{ id: string; doc_no: string }>(`/scm/qc-docs/${id}/gen-defect`, data),
   // 生产报工
   getWorkReports: (params?: { plan_id?: string }) => request.get<any[]>('/scm/work-reports', { params }),
+  /** 报工分页视图（P1-7）：带 page 参数返回 { list, total, page, page_size, summary } */
+  getWorkReportsPaged: (params: Record<string, any>) => request.get<{ list: any[]; total: number; page: number; page_size: number; summary: Record<string, number> }>('/scm/work-reports', { params }),
+  getWorkReport: (id: string) => request.get<any>(`/scm/work-reports/${id}`),
   createWorkReport: (data: any) => request.post<{ id: string; report_no: string }>('/scm/work-reports', data),
   updateWorkReport: (id: string, data: any) => request.put(`/scm/work-reports/${id}`, data),
   auditWorkReport: (id: string) => request.post(`/scm/work-reports/${id}/audit`, {}),
@@ -569,7 +579,9 @@ export const scmApi = {
   deleteWorkReport: (id: string) => request.delete(`/scm/work-reports/${id}`),
 
   // 生产计划
-  getProductionPlans: () => request.get<any[]>('/scm/production-plans'),
+  /** 不带 page 参数返回数组（工单选择器）；带 page 返回 { list, total, page, page_size }（P1-6） */
+  getProductionPlans: (params?: Record<string, any>) => request.get<any[]>('/scm/production-plans', { params }),
+  getProductionPlansPaged: (params: Record<string, any>) => request.get<{ list: any[]; total: number; page: number; page_size: number }>('/scm/production-plans', { params }),
   getProductionPlanNextNo: (plan_type?: 'self' | 'outsource') =>
     request.get<{ next_no: string }>('/scm/production-plans/next-no', { params: { plan_type } }),
   createProductionPlan: (data: any) => request.post<{ id: string }>('/scm/production-plans', data),

@@ -738,6 +738,24 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '生产执行及在制结存表', icon: 'DataAnalysis', parent: '生产制造' },
       },
       {
+        path: 'scm/report/production/hours',
+        name: 'ScmWorkHoursReport',
+        component: () => import('@/views/scm/WorkHoursReport.vue'),
+        meta: { title: '工时统计', icon: 'DataAnalysis', parent: '生产制造' },
+      },
+      {
+        path: 'scm/report/production/daily',
+        name: 'ScmProductionDailyReport',
+        component: () => import('@/views/scm/ProductionDailyReport.vue'),
+        meta: { title: '生产日报', icon: 'DataAnalysis', parent: '生产制造' },
+      },
+      {
+        path: 'scm/report/production/cost',
+        name: 'ScmPlanCostReport',
+        component: () => import('@/views/scm/PlanCostReport.vue'),
+        meta: { title: '工单成本明细表', icon: 'DataAnalysis', parent: '生产制造' },
+      },
+      {
         path: 'scm/report/stock-alert',
         name: 'ScmStockAlert',
         component: () => import('@/views/scm/StockAlert.vue'),

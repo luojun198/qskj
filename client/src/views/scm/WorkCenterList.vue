@@ -14,6 +14,7 @@
       <el-table-column label="人工费率(元/工时)" width="150" align="right"><template #default="{ row }">{{ fmt(row.labor_rate) }}</template></el-table-column>
       <el-table-column label="制费费率(元/工时)" width="150" align="right"><template #default="{ row }">{{ fmt(row.overhead_rate) }}</template></el-table-column>
       <el-table-column label="启用" width="70" align="center"><template #default="{ row }">{{ row.enabled ? '是' : '否' }}</template></el-table-column>
+      <el-table-column label="被引用" width="150" align="center"><template #default="{ row }"><span class="text-muted">工序 {{ Number(row.routing_ref_count) || 0 }} · 报工 {{ Number(row.report_ref_count) || 0 }}</span></template></el-table-column>
       <el-table-column label="备注" prop="remark" min-width="140" show-overflow-tooltip />
       <el-table-column label="操作" width="120" align="center">
         <template #default="{ row }">

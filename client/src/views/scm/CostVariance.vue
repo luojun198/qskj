@@ -53,6 +53,12 @@
           <template #default="{ row }"><span :class="txtCls(row.var_total)">{{ rateDisp(row) }}</span></template>
         </el-table-column>
       </el-table-column>
+      <el-table-column label="工时（标准 vs 实际报工）" align="center">
+        <el-table-column label="标准工时" width="95" align="right"><template #default="{ row }">{{ row.std_hours }}</template></el-table-column>
+        <el-table-column label="实际工时" width="95" align="right"><template #default="{ row }">{{ row.act_hours }}</template></el-table-column>
+        <el-table-column label="工时差异" width="95" align="right"><template #default="{ row }"><span :class="txtCls(row.var_hours)">{{ fmtSigned(row.var_hours) }}</span></template></el-table-column>
+        <el-table-column label="效率" width="80" align="right"><template #default="{ row }">{{ row.hours_efficiency ? row.hours_efficiency + '%' : '-' }}</template></el-table-column>
+      </el-table-column>
     </el-table>
   </div>
 </template>
