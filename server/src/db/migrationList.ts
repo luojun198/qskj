@@ -447,6 +447,10 @@ import {
   up as scmStockLayerUp,
   down as scmStockLayerDown,
 } from './migrations/20260918_scm_stock_layer.js'
+import {
+  up as scmCostingPeriodUp,
+  down as scmCostingPeriodDown,
+} from './migrations/20260918_scm_costing_period.js'
 
 /**
  * 迁移示例：添加新字段
@@ -2162,5 +2166,11 @@ export const migrations: Migration[] = [
     name: 'scm_stock_layer',
     up: scmStockLayerUp,
     down: scmStockLayerDown,
+  },
+  {
+    version: 133,
+    name: 'scm_costing_period',
+    up: scmCostingPeriodUp,
+    down: scmCostingPeriodDown,
   },
 ]

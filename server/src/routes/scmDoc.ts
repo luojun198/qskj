@@ -1536,7 +1536,7 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
       const srcWh = doc.warehouse_code
       for (const l of lines) {
         if (!l.qty || l.qty <= 0) continue
-        const docRef = { type: doc.doc_type, no: doc.doc_no, seq: l.seq, date: doc.doc_date }
+        const docRef = { type: doc.doc_type, no: doc.doc_no, seq: l.seq, date: doc.doc_date, batchNo: l.batch_no }
         const { unitCost } = applyMovingAvgOut(db, aid, srcWh, l.item_code, l.qty, docRef, { allowNegative: negWh.has(srcWh) })
         applyMovingAvgIn(db, aid, l.warehouse_code, l.item_code, l.qty, unitCost, docRef)
         db.prepare('UPDATE scm_doc_line SET unit_cost=? WHERE id=?').run(unitCost, l.id)
@@ -1549,7 +1549,7 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
         const bookQty = s?.qty || 0
         const cost = s?.avg_cost || l.unit_cost || l.price || 0
         const diff = Math.round((Number(l.qty) - bookQty) * 10000) / 10000
-        const docRef = { type: doc.doc_type, no: doc.doc_no, seq: l.seq, date: doc.doc_date }
+        const docRef = { type: doc.doc_type, no: doc.doc_no, seq: l.seq, date: doc.doc_date, batchNo: l.batch_no }
         if (diff > 0) applyMovingAvgIn(db, aid, wh, l.item_code, diff, cost, docRef)
         else if (diff < 0) applyMovingAvgOut(db, aid, wh, l.item_code, -diff, docRef, { allowNegative: negWh.has(wh) })
         db.prepare('UPDATE scm_doc_line SET unit_cost=? WHERE id=?').run(cost, l.id)
@@ -1563,7 +1563,7 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
       for (const l of lines) {
         if (l.line_role === 'product' || !l.qty || l.qty <= 0) continue
         const wh = l.warehouse_code || doc.warehouse_code
-        const { unitCost } = applyMovingAvgOut(db, aid, wh, l.item_code, l.qty, { type: doc.doc_type, no: doc.doc_no, seq: l.seq, date: doc.doc_date }, { allowNegative: negWh.has(wh) })
+        const { unitCost } = applyMovingAvgOut(db, aid, wh, l.item_code, l.qty, { type: doc.doc_type, no: doc.doc_no, seq: l.seq, date: doc.doc_date, batchNo: l.batch_no }, { allowNegative: negWh.has(wh) })
         db.prepare('UPDATE scm_doc_line SET unit_cost=? WHERE id=?').run(unitCost, l.id)
         compCosts.push({ product_group: l.product_group, qty: Number(l.qty) || 0, unitCost })
       }
@@ -1597,7 +1597,7 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
       for (const l of lines) {
         if (!l.qty || l.qty <= 0) continue
         const wh = l.warehouse_code || doc.warehouse_code
-        const docRef = { type: doc.doc_type, no: doc.doc_no, seq: l.seq, date: doc.doc_date }
+        const docRef = { type: doc.doc_type, no: doc.doc_no, seq: l.seq, date: doc.doc_date, batchNo: l.batch_no }
         const { unitCost } = applyMovingAvgOut(db, aid, wh, l.item_code, l.qty, docRef, { allowNegative: negWh.has(wh) })
         db.prepare('UPDATE scm_doc_line SET unit_cost=? WHERE id=?').run(unitCost, l.id)
         totalCost += unitCost * l.qty
@@ -1733,7 +1733,7 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
         feeTotal = round2(feeTotal + feeUnit * q)
         feeTaxTotal = round2(feeTaxTotal + feeTax)
         inTotal = round2(inTotal + inCostUnit * q)
-        applyMovingAvgIn(db, aid, wh, l.item_code, l.qty, inCostUnit, { type: doc.doc_type, no: doc.doc_no, seq: l.seq, date: doc.doc_date })
+        applyMovingAvgIn(db, aid, wh, l.item_code, l.qty, inCostUnit, { type: doc.doc_type, no: doc.doc_no, seq: l.seq, date: doc.doc_date, batchNo: l.batch_no })
         db.prepare('UPDATE scm_doc_line SET unit_cost=?, labor_cost=?, overhead_cost=? WHERE id=?').run(inCostUnit, lineLabor, lineOverhead, l.id)
         i++
       }
@@ -1781,7 +1781,7 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
         const q = Number(l.qty)
         const unit = round2(round2(lineRollup[i] * f) / q)
         const wh = l.warehouse_code || doc.warehouse_code
-        applyMovingAvgIn(db, aid, wh, l.item_code, q, unit, { type: doc.doc_type, no: doc.doc_no, seq: l.seq, date: doc.doc_date })
+        applyMovingAvgIn(db, aid, wh, l.item_code, q, unit, { type: doc.doc_type, no: doc.doc_no, seq: l.seq, date: doc.doc_date, batchNo: l.batch_no })
         db.prepare('UPDATE scm_doc_line SET unit_cost=? WHERE id=?').run(unit, l.id)
         i++
       }
@@ -1798,7 +1798,7 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
         if (!l.qty || l.qty <= 0) continue
         const wh = l.warehouse_code || doc.warehouse_code
         const cost = issueUnitCost.get(l.item_code) ?? (Number(l.unit_cost) || Number(l.price) || 0)
-        applyMovingAvgIn(db, aid, wh, l.item_code, l.qty, cost, { type: doc.doc_type, no: doc.doc_no, seq: l.seq, date: doc.doc_date })
+        applyMovingAvgIn(db, aid, wh, l.item_code, l.qty, cost, { type: doc.doc_type, no: doc.doc_no, seq: l.seq, date: doc.doc_date, batchNo: l.batch_no })
         db.prepare('UPDATE scm_doc_line SET unit_cost=? WHERE id=?').run(cost, l.id)
       }
     } else {
@@ -1807,11 +1807,11 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
         if (!docType.affects_stock) continue
         if (docType.direction === 'in') {
           const cost = resolveInboundUnitCost(db, aid, doc, l)
-          applyMovingAvgIn(db, aid, l.warehouse_code, l.item_code, l.qty, cost, { type: doc.doc_type, no: doc.doc_no, seq: l.seq, date: doc.doc_date })
+          applyMovingAvgIn(db, aid, l.warehouse_code, l.item_code, l.qty, cost, { type: doc.doc_type, no: doc.doc_no, seq: l.seq, date: doc.doc_date, batchNo: l.batch_no })
           // 销售退货的凭证按 unit_cost×qty 冲回主营业务成本，成本口径须回写到行
           if (doc.doc_type === 'SR') db.prepare('UPDATE scm_doc_line SET unit_cost=? WHERE id=?').run(cost, l.id)
         } else if (docType.direction === 'out') {
-          const { unitCost } = applyMovingAvgOut(db, aid, l.warehouse_code, l.item_code, l.qty, { type: doc.doc_type, no: doc.doc_no, seq: l.seq, date: doc.doc_date }, { allowNegative: negWh.has(l.warehouse_code) })
+          const { unitCost } = applyMovingAvgOut(db, aid, l.warehouse_code, l.item_code, l.qty, { type: doc.doc_type, no: doc.doc_no, seq: l.seq, date: doc.doc_date, batchNo: l.batch_no }, { allowNegative: negWh.has(l.warehouse_code) })
           db.prepare('UPDATE scm_doc_line SET unit_cost=? WHERE id=?').run(unitCost, l.id)
         }
       }

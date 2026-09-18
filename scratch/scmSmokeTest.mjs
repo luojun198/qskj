@@ -605,6 +605,59 @@ async function main() {
     await setCosting('moving_avg')
   }
 
+  // ── ㉕ 指定成本（个别计价）/ 全月平均 ─────────────────────────
+  {
+    async function setCosting(v) {
+      const cur = (await get('/api/scm/params')).data
+      const list = Array.isArray(cur) ? cur : (cur.list || [])
+      const others = list.filter(p => p.param_key !== 'scm:costing_method')
+      return api('PUT', '/api/scm/params', { params: [...others, { param_key: 'scm:costing_method', param_value: v }] }, { allowError: true })
+    }
+    // 指定成本：按批次识别入库层
+    await ensure('/api/scm/items', { code: 'MS', name: '指定成本物料', unit: '个', purchase_price: 10, sale_price: 30, default_warehouse_code: 'W1', batch_flag: 1 })
+    assert('㉕ 计价方式可切换为指定成本', (await setCosting('specified')).status === 200)
+    const p1 = await createDoc({ doc_type: 'PI', doc_date: D, partner_code: 'SUP1', warehouse_code: 'W1', lines: [{ item_code: 'MS', qty: 10, price: 10, tax_rate: 0, tax_amount: 0, batch_no: 'BA' }] })
+    const p2 = await createDoc({ doc_type: 'PI', doc_date: D, partner_code: 'SUP1', warehouse_code: 'W1', lines: [{ item_code: 'MS', qty: 10, price: 14, tax_rate: 0, tax_amount: 0, batch_no: 'BB' }] })
+    const a1 = await audit(p1.id); const a2 = await audit(p2.id)
+    assert('㉕ 指定成本下入库审核通过', a1.code === 0 && a2.code === 0, a1.message || a2.message)
+    const so = await createDoc({ doc_type: 'SO', doc_date: D, partner_code: 'CUS1', warehouse_code: 'W1', lines: [{ item_code: 'MS', qty: 3, price: 30, tax_rate: 0, tax_amount: 0, warehouse_code: 'W1', batch_no: 'BB' }] })
+    const rs = await audit(so.id)
+    assert('㉕ 指定批次 BB 出库审核', rs.code === 0, rs.message)
+    const mv = dbq("SELECT unit_cost, amount FROM scm_stock_move WHERE doc_no=? AND direction='out'", so.doc_no)[0]
+    assert('㉕ 出库成本取 BB 批次 3×14 = 42（非先进先出 30）', mv && r2(mv.amount) === 42, JSON.stringify(mv))
+    const ls = (await get('/api/scm/stock/layers?item_code=MS')).data
+    assert('㉕ 成本层带批次且 BB 层余 7', ls.some(l => l.batch_no === 'BB' && l.qty_left === 7) && ls.some(l => l.batch_no === 'BA' && l.qty_left === 10), JSON.stringify(ls.map(l => [l.batch_no, l.qty_left])))
+    // 全月平均：暂估 → 月末重算
+    await ensure('/api/scm/items', { code: 'MM', name: '全月平均物料', unit: '个', purchase_price: 10, sale_price: 30, default_warehouse_code: 'W1' })
+    assert('㉕ 计价方式可切换为全月平均', (await setCosting('month_avg')).status === 200)
+    const m1 = await createDoc({ doc_type: 'PI', doc_date: D, partner_code: 'SUP1', warehouse_code: 'W1', lines: [{ item_code: 'MM', qty: 10, price: 10, tax_rate: 0, tax_amount: 0 }] })
+    assert('㉕ 全月平均下入库审核通过', (await audit(m1.id)).code === 0)
+    const mso = await createDoc({ doc_type: 'SO', doc_date: D, partner_code: 'CUS1', warehouse_code: 'W1', lines: [{ item_code: 'MM', qty: 4, price: 30, tax_rate: 0, tax_amount: 0, warehouse_code: 'W1' }] })
+    assert('㉕ 暂估出库审核', (await audit(mso.id)).code === 0)
+    const m2 = await createDoc({ doc_type: 'PI', doc_date: D, partner_code: 'SUP1', warehouse_code: 'W1', lines: [{ item_code: 'MM', qty: 10, price: 20, tax_rate: 0, tax_amount: 0 }] })
+    await audit(m2.id)
+    const period = D.slice(0, 7)
+    const pv = await get(`/api/scm/costing/month-avg/preview?period=${period}`)
+    const row = pv.data?.rows?.find(r => r.item_code === 'MM')
+    assert('㉕ 试算：全月平均 = 300/20 = 15，出库 4 由 40 调为 60', row && row.avg_cost === 15 && row.old_out_amount === 40 && row.new_out_amount === 60 && row.delta === 20, JSON.stringify(row))
+    const mvBefore = dbq("SELECT amount FROM scm_stock_move WHERE doc_no=? AND direction='out'", mso.doc_no)[0]
+    assert('㉕ 试算不写库', r2(mvBefore.amount) === 40, JSON.stringify(mvBefore))
+    const calc = await post('/api/scm/costing/month-avg/calc', { period }, { allowError: true })
+    assert('㉕ 计算并写入成功', calc.code === 0, calc.message)
+    const mvAfter = dbq("SELECT unit_cost, amount FROM scm_stock_move WHERE doc_no=? AND direction='out'", mso.doc_no)[0]
+    const stMM = await stock('W1', 'MM')
+    assert('㉕ 出库流水改为 15×4=60，结存 16×15=240', r2(mvAfter.amount) === 60 && Number(stMM.qty) === 16 && r2(stMM.amount) === 240, `mv=${JSON.stringify(mvAfter)} stock=${stMM.qty}/${stMM.amount}`)
+    const periods = (await get('/api/scm/costing/periods')).data
+    assert('㉕ 期间记录为已计算', periods.some(p => p.period === period && p.status === 'calculated'), JSON.stringify(periods.map(p => [p.period, p.status])))
+    const mso2 = await createDoc({ doc_type: 'SO', doc_date: D, partner_code: 'CUS1', warehouse_code: 'W1', lines: [{ item_code: 'MM', qty: 1, price: 30, tax_rate: 0, tax_amount: 0, warehouse_code: 'W1' }] })
+    await audit(mso2.id)
+    const periods2 = (await get('/api/scm/costing/periods')).data
+    assert('㉕ 期内再出库后期间标为需重算', periods2.some(p => p.period === period && p.status === 'stale'), JSON.stringify(periods2.map(p => [p.period, p.status])))
+    await setCosting('moving_avg')
+    const noCalc = await post('/api/scm/costing/month-avg/calc', { period }, { allowError: true })
+    assert('㉕ 非全月平均账套拒绝写入计算', noCalc.status === 400, noCalc.message)
+  }
+
   // 汇总
   const fails = results.filter(r => !r.pass)
   console.log(`\n==== ${results.length} 项断言，${fails.length} 项失败 ====`)

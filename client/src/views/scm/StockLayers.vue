@@ -4,7 +4,7 @@
       <div class="report-header__left"><el-button link @click="router.back()"><el-icon><ArrowLeft /></el-icon>返回</el-button><span>/</span><b>库存成本层</b></div>
       <span class="report-header__note">
         当前计价方式：{{ methodLabel }}。
-        <template v-if="isLayerMethod">出库按{{ costingMethod === 'fifo' ? '最早' : '最新' }}入库层逐层扣减；期初层为切换计价方式前的存量结存。</template>
+        <template v-if="isLayerMethod">{{ costingMethod === 'specified' ? '出库行指定批次即耗该批次的层（个别计价），未指定批次按先进先出' : `出库按${costingMethod === 'fifo' ? '最早' : '最新'}入库层逐层扣减` }}；期初层为切换计价方式前的存量结存。</template>
         <template v-else>移动加权平均不产生成本层，切换为先进先出 / 后进先出后此处显示各入库层的剩余数量与单价。</template>
       </span>
     </div>
@@ -29,6 +29,7 @@
         <el-table-column prop="item_name" label="物料名称" min-width="150" show-overflow-tooltip />
         <el-table-column label="入库日期" width="110"><template #default="{ row }">{{ row.doc_type === 'INIT' ? '期初层' : row.layer_date }}</template></el-table-column>
         <el-table-column label="来源单据" min-width="170"><template #default="{ row }">{{ row.doc_type === 'INIT' ? '切换计价方式前结存' : `${docTitle(row.doc_type)} ${row.doc_no || ''}` }}</template></el-table-column>
+        <el-table-column prop="batch_no" label="批次" width="120" show-overflow-tooltip />
         <el-table-column label="入库数量" width="110" align="right"><template #default="{ row }">{{ num(row.qty_in) }}</template></el-table-column>
         <el-table-column label="剩余数量" width="110" align="right"><template #default="{ row }"><span :class="{ exhausted: !Number(row.qty_left) }">{{ num(row.qty_left) }}</span></template></el-table-column>
         <el-table-column label="层单价" width="110" align="right"><template #default="{ row }">{{ price(row.unit_cost) }}</template></el-table-column>
@@ -56,7 +57,7 @@ const showExhausted = ref(false)
 const costingMethod = ref('moving_avg')
 const LABELS: Record<string, string> = { moving_avg: '移动加权平均', month_avg: '全月平均', fifo: '先进先出', lifo: '后进先出', specified: '指定成本' }
 const methodLabel = computed(() => LABELS[costingMethod.value] || costingMethod.value)
-const isLayerMethod = computed(() => costingMethod.value === 'fifo' || costingMethod.value === 'lifo')
+const isLayerMethod = computed(() => ['fifo', 'lifo', 'specified'].includes(costingMethod.value))
 const totalQty = computed(() => rows.value.reduce((s, r) => s + (Number(r.qty_left) || 0), 0))
 const totalAmount = computed(() => rows.value.reduce((s, r) => s + (Number(r.amount_left) || 0), 0))
 const { clearFilters } = useFilterClear([filters])

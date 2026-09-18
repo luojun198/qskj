@@ -13,6 +13,7 @@ import { queryStockLedger, type StockLedgerFilters } from '../services/scmStockL
 import type { ExportColumnSpec } from '../services/styledExcelExport.js'
 import { normalizePaging } from '../utils/paging.js'
 import { listStockLayers, getCostingMethod } from '../services/scmCosting.js'
+import { calcMonthAvg, listCostingPeriods } from '../services/scmMonthAvg.js'
 import { getScmBaseCurrency, isScmBaseCurrency, normalizeScmCurrency, resolveScmExchangeRate } from '../services/scmCurrency.js'
 
 async function buildStyledXlsxBuffer(options: any) {
@@ -160,7 +161,7 @@ router.post('/scm/reset', operationLog('供应链初始化', '供应链'), async
     'scm_qc_line', 'scm_qc_doc', 'scm_work_report', 'scm_mrp_source',
     'scm_serial_move', 'scm_serial', 'scm_batch_move', 'scm_stock_batch',
     'scm_ar_ap_verify', 'scm_ar_ap_log',
-    'scm_doc_line', 'scm_doc', 'scm_stock_layer_use', 'scm_stock_layer', 'scm_stock_move', 'scm_stock',
+    'scm_doc_line', 'scm_doc', 'scm_stock_layer_use', 'scm_stock_layer', 'scm_costing_period', 'scm_stock_move', 'scm_stock',
     'scm_production_plan_line', 'scm_production_plan_product', 'scm_production_plan',
   ]
   const masterTables = [
@@ -741,6 +742,26 @@ router.get('/scm/stock/layers', (req: AuthRequest, res) => {
   const { warehouse_code, item_code, only_left } = req.query as any
   const rows = listStockLayers(db, aid, { warehouse_code, item_code, only_left: only_left !== '0' })
   res.json({ code: 0, data: rows, costing_method: getCostingMethod(db, aid) })
+})
+
+// 全月平均：试算 / 计算并写入 / 已计算期间
+router.get('/scm/costing/month-avg/preview', (req: AuthRequest, res) => {
+  const db = getDb(); const aid = asid(req)
+  try {
+    res.json({ code: 0, data: calcMonthAvg(db, aid, String((req.query as any).period || ''), { dryRun: true }) })
+  } catch (e: any) { res.status(400).json({ code: 400, message: e.message }) }
+})
+router.post('/scm/costing/month-avg/calc', (req: AuthRequest, res) => {
+  const db = getDb(); const aid = asid(req)
+  if (getCostingMethod(db, aid) !== 'month_avg') return res.status(400).json({ code: 400, message: '当前计价方式不是「全月平均」，无需执行月末成本计算' })
+  try {
+    const data = calcMonthAvg(db, aid, String(req.body?.period || ''), { user: req.userId })
+    res.json({ code: 0, data })
+  } catch (e: any) { res.status(400).json({ code: 400, message: e.message }) }
+})
+router.get('/scm/costing/periods', (req: AuthRequest, res) => {
+  const db = getDb(); const aid = asid(req)
+  res.json({ code: 0, data: listCostingPeriods(db, aid), costing_method: getCostingMethod(db, aid) })
 })
 
 // 收发存汇总（按仓库+物料，含期初/本期入/本期出/期末）

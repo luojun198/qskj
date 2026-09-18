@@ -430,6 +430,10 @@ export const scmApi = {
   exportStockLedger: (data: Record<string, any>) => request.downloadPost('/scm/stock/ledger/export', data, { timeout: 600_000 }),
   /** 库存成本层（FIFO/LIFO）：响应附带 costing_method */
   getStockLayers: (params: Record<string, any>) => request.get<any[]>('/scm/stock/layers', { params }),
+  /** 全月平均：试算 / 计算写入 / 已计算期间（响应附带 costing_method） */
+  previewMonthAvg: (period: string) => request.get<any>('/scm/costing/month-avg/preview', { params: { period } }),
+  calcMonthAvg: (period: string) => request.post<any>('/scm/costing/month-avg/calc', { period }),
+  getCostingPeriods: () => request.get<any[]>('/scm/costing/periods'),
   getOutsourceExecution: (params: Record<string, any>) =>
     request.get<{ rows: any[]; total: number; page: number; page_size: number; summary: Record<string, number> }>('/scm/report/outsource/execution', { params }),
   exportOutsourceExecution: (data: Record<string, any>) => request.downloadPost('/scm/report/outsource/execution/export', data, { timeout: 600_000 }),

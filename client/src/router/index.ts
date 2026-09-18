@@ -720,6 +720,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '库存成本层', icon: 'Tickets', parent: '库存' },
       },
       {
+        path: 'scm/report/month-avg-costing',
+        name: 'ScmMonthAvgCosting',
+        component: () => import('@/views/scm/MonthAvgCosting.vue'),
+        meta: { title: '全月平均成本计算', icon: 'Tickets', parent: '库存' },
+      },
+      {
         path: 'scm/report/outsource/execution',
         name: 'ScmOutsourceExecutionReport',
         component: () => import('@/views/scm/OutsourceExecutionReport.vue'),

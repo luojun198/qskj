@@ -2,15 +2,17 @@
  * 供应链库存计价引擎
  * 按系统参数 scm:costing_method 计算出入库单位成本，写入 scm_stock_move 并更新 scm_stock。
  *
- * 已实现：moving_avg（移动加权平均）、fifo / lifo（成本层，见 scm_stock_layer）；month_avg / specified 预留。
- * 三种方式共用 scm_stock（qty / amount / avg_cost）与 scm_stock_move；差别只在出库单价的取法：
+ * 五种方式共用 scm_stock（qty / amount / avg_cost）与 scm_stock_move；差别只在出库单价的取法：
  *  - moving_avg：出库取当前均价
  *  - fifo / lifo：出库逐层扣减成本层（最早层 / 最新层先耗），单价 = Σ(层耗用量×层单价) / 出库量；avg_cost 仅作展示
+ *  - specified：指定成本（个别计价）——成本层带批次号，出库行指定批次即耗该批次的层；未指定批次退化为先进先出
+ *  - month_avg：全月平均——期内出库先按当前均价暂估，月末由 scmMonthAvg.calcMonthAvg 按
+ *              (期初金额 + 本期入库金额) / (期初数量 + 本期入库数量) 统一重算本期全部出库成本
  */
 import type Database from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
 
-export const IMPLEMENTED_COSTING_METHODS = ['moving_avg', 'fifo', 'lifo'] as const
+export const IMPLEMENTED_COSTING_METHODS = ['moving_avg', 'fifo', 'lifo', 'specified', 'month_avg'] as const
 export const COSTING_METHOD_LABELS: Record<string, string> = { moving_avg: '移动加权平均', month_avg: '全月平均', fifo: '先进先出', lifo: '后进先出', specified: '指定成本' }
 
 export function getCostingMethod(db: Database.Database, accountSetId: string): string {
@@ -20,7 +22,7 @@ export function getCostingMethod(db: Database.Database, accountSetId: string): s
   return (row?.param_value as string) || 'moving_avg'
 }
 
-type LayerMode = 'fifo' | 'lifo'
+type LayerMode = 'fifo' | 'lifo' | 'specified'
 
 /** 成本层表是否存在（单元测试的内存库 / 未迁移的库不写层） */
 const layerTableCache = new WeakMap<Database.Database, boolean>()
@@ -33,24 +35,45 @@ function hasLayerTable(db: Database.Database): boolean {
   return v
 }
 
-/** 当前账套是否按成本层计价（fifo / lifo），否则返回 null */
+/** 当前账套是否按成本层计价（fifo / lifo / specified），否则返回 null */
 function layerMode(db: Database.Database, accountSetId: string): LayerMode | null {
   if (!hasLayerTable(db)) return null
   const m = getCostingMethod(db, accountSetId)
-  return m === 'fifo' || m === 'lifo' ? m : null
+  return m === 'fifo' || m === 'lifo' || m === 'specified' ? m : null
 }
 
-interface LayerRow { id: string; qty_in: number; qty_left: number; unit_cost: number; layer_date: string; seq: number; doc_type: string | null }
+/** 全月平均：期内出入库变动后把该期的计算记录置为 stale（需重算）；无期间表（旧库 / 单测）时跳过 */
+const periodTableCache = new WeakMap<Database.Database, boolean>()
+function markCostingPeriodStale(db: Database.Database, accountSetId: string, dates: string[]): void {
+  let has = periodTableCache.get(db)
+  if (has === undefined) {
+    has = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='scm_costing_period'").get()
+    periodTableCache.set(db, has)
+  }
+  if (!has) return
+  const periods = [...new Set(dates.map(d => String(d || '').slice(0, 7)).filter(p => p.length === 7))]
+  if (!periods.length) return
+  const upd = db.prepare("UPDATE scm_costing_period SET status='stale' WHERE account_set_id=? AND period=? AND status='calculated'")
+  for (const p of periods) upd.run(accountSetId, p)
+}
+
+interface LayerRow { id: string; qty_in: number; qty_left: number; unit_cost: number; layer_date: string; seq: number; doc_type: string | null; batch_no?: string | null }
+
+/** 层的批次号：指定成本下按行批次识别，行未填批次时与批次台账口径一致取单据号 */
+function layerBatchNo(mode: LayerMode | null, doc: { no: string; batchNo?: string | null }): string | null {
+  if (mode !== 'specified') return (doc.batchNo && String(doc.batchNo).trim()) || null
+  return (doc.batchNo && String(doc.batchNo).trim()) || doc.no || null
+}
 
 function insertLayer(
   db: Database.Database, accountSetId: string, warehouse: string, itemCode: string,
-  qty: number, unitCost: number, doc: { type: string; no: string; seq: number; date: string }, moveId: string | null,
+  qty: number, unitCost: number, doc: { type: string; no: string; seq: number; date: string }, moveId: string | null, batchNo: string | null = null,
 ): string {
   const next = db.prepare('SELECT COALESCE(MAX(seq),0)+1 s FROM scm_stock_layer WHERE account_set_id=? AND warehouse_code=? AND item_code=?')
     .get(accountSetId, warehouse, itemCode) as { s: number }
   const id = uuidv4()
-  db.prepare(`INSERT INTO scm_stock_layer (id,account_set_id,warehouse_code,item_code,layer_date,seq,doc_type,doc_no,line_seq,move_id,qty_in,qty_left,unit_cost)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, accountSetId, warehouse, itemCode, doc.date, next.s, doc.type, doc.no, doc.seq, moveId, qty, qty, unitCost)
+  db.prepare(`INSERT INTO scm_stock_layer (id,account_set_id,warehouse_code,item_code,layer_date,seq,doc_type,doc_no,line_seq,move_id,qty_in,qty_left,unit_cost,batch_no)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, accountSetId, warehouse, itemCode, doc.date, next.s, doc.type, doc.no, doc.seq, moveId, qty, qty, unitCost, batchNo)
   return id
 }
 
@@ -72,14 +95,21 @@ function ensureLayersCoverStock(db: Database.Database, accountSetId: string, war
   insertLayer(db, accountSetId, warehouse, itemCode, diff, cost, { type: 'INIT', no: '', seq: 0, date: '' }, null)
 }
 
-/** 逐层扣减：返回耗用明细与未被层覆盖的数量（负库存出库） */
+/**
+ * 逐层扣减：返回耗用明细与未被层覆盖的数量（负库存出库）。
+ * specified（指定成本）：先耗与出库行批次号相同的层（同批次内先进先出），不足部分再按先进先出耗其余层。
+ */
 function consumeLayers(
-  db: Database.Database, accountSetId: string, warehouse: string, itemCode: string, outQty: number, mode: LayerMode,
+  db: Database.Database, accountSetId: string, warehouse: string, itemCode: string, outQty: number, mode: LayerMode, batchNo: string | null = null,
 ): { uses: { layer_id: string; qty: number; unit_cost: number; amount: number }[]; short: number; lastCost: number } {
-  const order = mode === 'fifo' ? 'ASC' : 'DESC'
-  const layers = db.prepare(`SELECT id, qty_in, qty_left, unit_cost, layer_date, seq, doc_type FROM scm_stock_layer
+  const order = mode === 'lifo' ? 'DESC' : 'ASC'
+  let layers = db.prepare(`SELECT id, qty_in, qty_left, unit_cost, layer_date, seq, doc_type, batch_no FROM scm_stock_layer
     WHERE account_set_id=? AND warehouse_code=? AND item_code=? AND qty_left>0.000001 ORDER BY layer_date ${order}, seq ${order}`)
     .all(accountSetId, warehouse, itemCode) as LayerRow[]
+  if (mode === 'specified' && batchNo) {
+    const bn = String(batchNo).trim()
+    layers = [...layers.filter(l => (l.batch_no || '') === bn), ...layers.filter(l => (l.batch_no || '') !== bn)]
+  }
   const uses: { layer_id: string; qty: number; unit_cost: number; amount: number }[] = []
   let remain = outQty
   let lastCost = 0
@@ -122,7 +152,7 @@ export function applyMovingAvgIn(
   db: Database.Database, accountSetId: string,
   warehouse: string, itemCode: string,
   inQty: number, inCost: number,
-  doc: { type: string; no: string; seq: number; date: string }
+  doc: { type: string; no: string; seq: number; date: string; batchNo?: string | null }
 ): StockMoveRow {
   const stock = db.prepare(
     'SELECT qty, amount FROM scm_stock WHERE account_set_id=? AND warehouse_code=? AND item_code=?'
@@ -151,11 +181,13 @@ export function applyMovingAvgIn(
     warehouse, itemCode, 'in', inQty, inCost, inAmt, null,
     newQty, newAmt, avg
   )
-  // FIFO/LIFO：每笔入库形成一层；先把切换前的存量结存补成期初层，保证层合计 = 结存
-  if (inQty > 0 && layerMode(db, accountSetId)) {
+  // FIFO/LIFO/指定成本：每笔入库形成一层；先把切换前的存量结存补成期初层，保证层合计 = 结存
+  const inMode = inQty > 0 ? layerMode(db, accountSetId) : null
+  if (inMode) {
     ensureLayersCoverStock(db, accountSetId, warehouse, itemCode, stock)
-    insertLayer(db, accountSetId, warehouse, itemCode, inQty, inCost, doc, moveId)
+    insertLayer(db, accountSetId, warehouse, itemCode, inQty, inCost, doc, moveId, layerBatchNo(inMode, doc))
   }
+  markCostingPeriodStale(db, accountSetId, [doc.date])
   return { id: moveId, account_set_id: accountSetId, move_date: doc.date, doc_type: doc.type, doc_no: doc.no, line_seq: doc.seq, warehouse_code: warehouse, item_code: itemCode, direction: 'in', qty: inQty, unit_cost: inCost, amount: inAmt, balance_qty: newQty, balance_amount: newAmt, balance_avg_cost: avg }
 }
 
@@ -194,7 +226,7 @@ export function applyMovingAvgOut(
   db: Database.Database, accountSetId: string,
   warehouse: string, itemCode: string,
   outQty: number,
-  doc: { type: string; no: string; seq: number; date: string },
+  doc: { type: string; no: string; seq: number; date: string; batchNo?: string | null },
   options: { allowNegative?: boolean } = {}
 ): { move: StockMoveRow; unitCost: number } {
   const stock = db.prepare(
@@ -217,7 +249,7 @@ export function applyMovingAvgOut(
   let layerUses: { layer_id: string; qty: number; unit_cost: number; amount: number }[] = []
   if (mode && outQty > 0) {
     ensureLayersCoverStock(db, accountSetId, warehouse, itemCode, stock)
-    const c = consumeLayers(db, accountSetId, warehouse, itemCode, outQty, mode)
+    const c = consumeLayers(db, accountSetId, warehouse, itemCode, outQty, mode, doc.batchNo ? String(doc.batchNo) : null)
     layerUses = c.uses
     let amt = c.uses.reduce((s, u) => s + u.amount, 0)
     if (c.short > 0) {
@@ -250,6 +282,7 @@ export function applyMovingAvgOut(
     const ins = db.prepare('INSERT INTO scm_stock_layer_use (id,account_set_id,move_id,layer_id,qty,unit_cost,amount) VALUES (?,?,?,?,?,?,?)')
     for (const u of layerUses) ins.run(uuidv4(), accountSetId, moveId, u.layer_id, u.qty, u.unit_cost, u.amount)
   }
+  markCostingPeriodStale(db, accountSetId, [doc.date])
   return { move: { id: moveId, account_set_id: accountSetId, move_date: doc.date, doc_type: doc.type, doc_no: doc.no, line_seq: doc.seq, warehouse_code: warehouse, item_code: itemCode, direction: 'out', qty: outQty, unit_cost: unitCost, amount: outAmt, balance_qty: newQty, balance_amount: newAmt, balance_avg_cost: avg }, unitCost }
 }
 
@@ -340,7 +373,7 @@ export function listStockLayers(db: Database.Database, accountSetId: string, fil
   if (filter.item_code) { conds.push('l.item_code=?'); params.push(filter.item_code) }
   if (filter.only_left !== false) conds.push('l.qty_left>0.000001')
   return db.prepare(`SELECT l.id, l.warehouse_code, w.name warehouse_name, l.item_code, i.name item_name, i.unit,
-      l.layer_date, l.seq, l.doc_type, l.doc_no, l.line_seq, l.qty_in, l.qty_left, l.unit_cost, ROUND(l.qty_left*l.unit_cost,2) amount_left
+      l.layer_date, l.seq, l.doc_type, l.doc_no, l.line_seq, l.batch_no, l.qty_in, l.qty_left, l.unit_cost, ROUND(l.qty_left*l.unit_cost,2) amount_left
     FROM scm_stock_layer l
     LEFT JOIN scm_warehouse w ON w.account_set_id=l.account_set_id AND w.code=l.warehouse_code
     LEFT JOIN scm_item i ON i.account_set_id=l.account_set_id AND i.code=l.item_code
@@ -364,6 +397,7 @@ export function reverseDocMoves(
   ).all(accountSetId, docRef.doc_type, docRef.doc_no) as StockMoveRow[]
   if (!moves.length) return
   reverseLayerMoves(db, accountSetId, moves)
+  markCostingPeriodStale(db, accountSetId, moves.map(m => m.move_date))
 
   // 同一单据可能包含同仓同料的多行，或调拨/组装产生同仓同料双向移动；
   // 先按仓库+物料汇总净回滚量，再统一校验和更新，避免逐条回退产生中间负数或遗漏数量。
