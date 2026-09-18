@@ -27,7 +27,9 @@ function createDb() {
     CREATE TABLE scm_production_plan_product (id TEXT, account_set_id TEXT, plan_id TEXT, seq INTEGER,
       item_code TEXT, plan_qty REAL DEFAULT 0, finished_qty REAL DEFAULT 0, scrap_qty REAL DEFAULT 0);
     CREATE TABLE scm_work_report (id TEXT, account_set_id TEXT, plan_id TEXT, product_id TEXT,
-      qty REAL DEFAULT 0, scrap_qty REAL DEFAULT 0, status TEXT);
+      qty REAL DEFAULT 0, scrap_qty REAL DEFAULT 0, status TEXT, process_name TEXT);
+    CREATE TABLE scm_routing (id TEXT, account_set_id TEXT, code TEXT, item_code TEXT, status TEXT);
+    CREATE TABLE scm_routing_line (id TEXT, account_set_id TEXT, routing_id TEXT, seq INTEGER, process_name TEXT);
   `)
   return d
 }
@@ -40,13 +42,17 @@ function seed(planType = 'self') {
     .run(P2, AID, PLAN, 'FP2', 5)
 }
 
-function report(id: string, productId: string | null, qty: number, scrap = 0, status = 'audited') {
-  db.prepare('INSERT INTO scm_work_report (id,account_set_id,plan_id,product_id,qty,scrap_qty,status) VALUES (?,?,?,?,?,?,?)')
-    .run(id, AID, PLAN, productId, qty, scrap, status)
+function report(id: string, productId: string | null, qty: number, scrap = 0, status = 'audited', process: string | null = null) {
+  db.prepare('INSERT INTO scm_work_report (id,account_set_id,plan_id,product_id,qty,scrap_qty,status,process_name) VALUES (?,?,?,?,?,?,?,?)')
+    .run(id, AID, PLAN, productId, qty, scrap, status, process)
+}
+function routing(item: string, processes: string[]) {
+  db.prepare("INSERT INTO scm_routing (id,account_set_id,code,item_code,status) VALUES (?,?,?,?,'active')").run('RT-' + item, AID, 'RT-' + item, item)
+  processes.forEach((p, i) => db.prepare('INSERT INTO scm_routing_line (id,account_set_id,routing_id,seq,process_name) VALUES (?,?,?,?,?)').run('RL-' + item + i, AID, 'RT-' + item, i + 1, p))
 }
 
-const check = (productId: string | null, qty: number, scrap = 0, excludeReportId?: string) =>
-  validateWorkReportQty(db, AID, { planId: PLAN, productId, qty, scrapQty: scrap, excludeReportId })
+const check = (productId: string | null, qty: number, scrap = 0, excludeReportId?: string, processName?: string) =>
+  validateWorkReportQty(db, AID, { planId: PLAN, productId, qty, scrapQty: scrap, excludeReportId, processName })
 
 describe('validateWorkReportQty', () => {
   beforeEach(() => { db = createDb(); seed() })
@@ -132,8 +138,8 @@ describe('已报工数量汇总', () => {
   it('getReportedQtyByProduct 默认含草稿，onlyAudited 只数已审核', () => {
     report('R1', P1, 4, 1)
     report('R2', P1, 3, 0, 'draft')
-    expect(getReportedQtyByProduct(db, AID, PLAN).get(P1)).toEqual({ qty: 7, scrap: 1 })
-    expect(getReportedQtyByProduct(db, AID, PLAN, { onlyAudited: true }).get(P1)).toEqual({ qty: 4, scrap: 1 })
+    expect(getReportedQtyByProduct(db, AID, PLAN).get(P1)).toMatchObject({ qty: 7, scrap: 1 })
+    expect(getReportedQtyByProduct(db, AID, PLAN, { onlyAudited: true }).get(P1)).toMatchObject({ qty: 4, scrap: 1 })
   })
 
   it('getReportedGoodQtyByProduct 只返回已审核的合格数', () => {
@@ -148,5 +154,46 @@ describe('已报工数量汇总', () => {
   it('计划级报工（product_id 为空）不进入按成品的合格数表', () => {
     report('R1', null, 8)
     expect(getReportedGoodQtyByProduct(db, AID, PLAN).size).toBe(0)
+  })
+})
+
+describe('按工序维度计数（生产评审 P1-1）', () => {
+  beforeEach(() => { db = createDb(); seed() })
+
+  it('同一成品不同工序各报满计划数都放行；同一工序再报才算超报', () => {
+    report('R1', P1, 10, 0, 'audited', '下料')
+    report('R2', P1, 10, 0, 'audited', '焊接')
+    expect(check(P1, 10, 0, undefined, '喷涂')).toBeNull()
+    expect(check(P1, 1, 0, undefined, '焊接')).toMatch(/工序「焊接」.*禁止超报/)
+    // 未指定工序视为独立的一道（键 ''）
+    expect(check(P1, 10)).toBeNull()
+    report('R3', P1, 10)
+    expect(check(P1, 1)).toMatch(/禁止超报/)
+  })
+
+  it('有工艺路线时合格数取路线最后一道有报工的工序', () => {
+    routing('FP1', ['下料', '焊接', '喷涂'])
+    report('R1', P1, 10, 0, 'audited', '下料')
+    report('R2', P1, 8, 2, 'audited', '焊接')
+    expect(getReportedGoodQtyByProduct(db, AID, PLAN).get(P1)).toBe(8)   // 喷涂未报 → 取焊接
+    report('R3', P1, 7, 1, 'audited', '喷涂')
+    expect(getReportedGoodQtyByProduct(db, AID, PLAN).get(P1)).toBe(7)
+    // 路线外的「返修」工序不影响末道口径
+    report('R4', P1, 3, 0, 'audited', '返修')
+    expect(getReportedGoodQtyByProduct(db, AID, PLAN).get(P1)).toBe(7)
+  })
+
+  it('无工艺路线且多工序时取各工序合格数的最小值；单一工序退化为原口径', () => {
+    report('R1', P1, 10, 0, 'audited', 'A')
+    report('R2', P1, 6, 0, 'audited', 'B')
+    expect(getReportedGoodQtyByProduct(db, AID, PLAN).get(P1)).toBe(6)
+    report('R3', P2, 5)
+    expect(getReportedGoodQtyByProduct(db, AID, PLAN).get(P2)).toBe(5)
+  })
+
+  it('计划级报工按工序独立计数', () => {
+    report('R1', null, 15, 0, 'audited', '总装')
+    expect(check(null, 15, 0, undefined, '包装')).toBeNull()
+    expect(check(null, 1, 0, undefined, '总装')).toMatch(/禁止超报/)
   })
 })

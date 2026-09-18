@@ -658,6 +658,67 @@ async function main() {
     assert('㉕ 非全月平均账套拒绝写入计算', noCalc.status === 400, noCalc.message)
   }
 
+  // ── ㉖ 生产回归（生产评审 阶段 0 + 阶段 A）────────────────────────
+  {
+    const PL = (p) => `/api/scm/production-plans${p || ''}`
+    await ensure('/api/scm/items', { code: 'FP4', name: '多工序成品', unit: '台', source_type: 'self', default_warehouse_code: 'W1' })
+    await ensure('/api/scm/work-centers', { code: 'WC1', name: '装配线', labor_rate: 20, overhead_rate: 10 })
+    await ensure('/api/scm/work-centers', { code: 'WC9', name: '闲置中心', labor_rate: 1, overhead_rate: 1 })
+    const rt = await post('/api/scm/routings', { code: 'RT-FP4', item_code: 'FP4', status: 'active',
+      lines: [{ process_name: '下料', work_center_code: 'WC1', std_hours: 1 }, { process_name: '焊接', work_center_code: 'WC1', std_hours: 1 }, { process_name: '总装', work_center_code: 'WC1', std_hours: 2 }] }, { allowError: true })
+    assert('㉖ 工艺路线保存（3 道工序）', rt.status === 200 || /已存在/.test(rt.message || ''), rt.message)
+    // 日期校验（P2-4）
+    const badDate = await post(PL(), { code: 'MO-BAD', plan_type: 'self', yl_warehouse: 'W1', fp_warehouse: 'W1', start_date: '2026-09-20', end_date: '2026-09-10',
+      products: [{ item_code: 'FP4', plan_qty: 5, lines: [{ item_code: 'M1', qty: 1 }] }] }, { allowError: true })
+    assert('㉖ [P2-4] 开工晚于完工被拒', badDate.status === 400 && /开工日期/.test(badDate.message || ''), badDate.message)
+    // 草稿工单不能关闭（P1-4）、草稿不能报工（P1-3）
+    const mo = await post(PL(), { code: 'MO-PROC', plan_type: 'self', yl_warehouse: 'W1', fp_warehouse: 'W1',
+      products: [{ item_code: 'FP4', plan_qty: 5, lines: [{ item_code: 'M1', qty: 1 }] }] })
+    const closeDraft = await post(PL(`/${mo.data.id}/close`), {}, { allowError: true })
+    assert('㉖ [P1-4] 草稿工单不能关闭', closeDraft.status === 400 && /仅已审核工单可关闭/.test(closeDraft.message || ''), closeDraft.message)
+    const wrDraft = await post('/api/scm/work-reports', { plan_id: mo.data.id, qty: 1, work_center_code: 'WC1', work_hours: 1 }, { allowError: true })
+    assert('㉖ [P1-3] 草稿工单不能报工', wrDraft.status === 400 && /未审核/.test(wrDraft.message || ''), wrDraft.message)
+    assert('㉖ 工单审核', (await post(PL(`/${mo.data.id}/release`), {}, { allowError: true })).code === 0)
+    const detail = (await get(PL(`/${mo.data.id}`))).data
+    const prodId = detail.products[0].id
+    // 多工序报工：三道各报 5（计划 5）都放行；同工序再报被拒（P1-1）
+    const wr = async (process, qty, scrap = 0) => post('/api/scm/work-reports', { plan_id: mo.data.id, product_id: prodId, item_code: 'FP4', process_name: process, work_center_code: 'WC1', work_hours: 1, qty, scrap_qty: scrap }, { allowError: true })
+    const r1 = await wr('下料', 5); const r2w = await wr('焊接', 5); const r3 = await wr('总装', 4, 1)
+    assert('㉖ [P1-1] 三道工序各报满计划数均放行', r1.status === 200 && r2w.status === 200 && r3.status === 200, [r1.message, r2w.message, r3.message].filter(Boolean).join(' | '))
+    const over = await wr('焊接', 1)
+    assert('㉖ [P1-1] 同一工序再报 1 件被拒（按成品×工序计数）', over.status === 400 && /工序「焊接」/.test(over.message || ''), over.message)
+    for (const r of [r1, r2w, r3]) await post(`/api/scm/work-reports/${r.data.id}/audit`, {}, { allowError: true })
+    // 完工默认数 = 末道工序「总装」合格数 4（不是 5+5+4）
+    const draftPF = await post(PL(`/${mo.data.id}/gen-finish`), {}, { allowError: true })
+    assert('㉖ [P1-1] 完工入库默认数取末道工序合格数 4', draftPF.code === 0 && Number(dbq('SELECT total_qty FROM scm_doc WHERE id=?', draftPF.data.id)[0]?.total_qty) === 4, JSON.stringify(dbq('SELECT total_qty FROM scm_doc WHERE id=?', draftPF.data?.id)))
+    // 关闭前有草稿完工单 → 拒绝（P1-2）
+    const closeDraftDoc = await post(PL(`/${mo.data.id}/close`), { force: true }, { allowError: true })
+    assert('㉖ [P1-2] 存在未审核单据时拒绝关闭并列出单号', closeDraftDoc.status === 400 && /未审核单据/.test(closeDraftDoc.message || '') && (closeDraftDoc.data?.draft_docs || []).length === 1, closeDraftDoc.message)
+    await api('DELETE', `/api/scm/docs/${draftPF.data.id}`, undefined, { allowError: true })
+    const wrOpen = await wr('返修', 1)
+    const closeDraftWr = await post(PL(`/${mo.data.id}/close`), { force: true }, { allowError: true })
+    assert('㉖ [P2-6] 存在未审核报工时拒绝关闭', closeDraftWr.status === 400 && /未审核报工/.test(closeDraftWr.message || ''), closeDraftWr.message)
+    await api('DELETE', `/api/scm/work-reports/${wrOpen.data.id}`, undefined, { allowError: true })
+    // 工作中心引用检查（P1-5）
+    const wcs = (await get('/api/scm/work-centers')).data
+    const delUsed = await api('DELETE', `/api/scm/work-centers/${wcs.find(w => w.code === 'WC1').id}`, undefined, { allowError: true })
+    assert('㉖ [P1-5] 被工艺路线/报工引用的工作中心不能删', delUsed.status === 400 && /引用/.test(delUsed.message || ''), delUsed.message)
+    const delFree = await api('DELETE', `/api/scm/work-centers/${wcs.find(w => w.code === 'WC9').id}`, undefined, { allowError: true })
+    assert('㉖ 未引用的工作中心可删', delFree.code === 0, delFree.message)
+    // 只带 bom_id 无用料行的成品 → 下达时快照（P1-8）
+    const bomFp4 = await post('/api/scm/boms', { code: 'BOM-FP4', name: 'FP4', item_code: 'FP4', version: '1.0', is_default: 1, lines: [{ item_code: 'M1', qty: 2, scrap_rate: 0 }] }, { allowError: true })
+    const bomId = bomFp4.data?.id || (await get('/api/scm/boms')).data.find(b => b.code === 'BOM-FP4')?.id
+    const moSnap = await post(PL(), { code: 'MO-SNAP', plan_type: 'self', yl_warehouse: 'W1', fp_warehouse: 'W1', products: [{ item_code: 'FP4', plan_qty: 3, bom_id: bomId }] }, { allowError: true })
+    const relSnap = await post(PL(`/${moSnap.data.id}/release`), {}, { allowError: true })
+    const sug = (await get(PL(`/${moSnap.data.id}/issue-suggestion`))).data
+    assert('㉖ [P1-8] 只带 BOM 的成品下达后自动快照用料，领料建议需求 = 2×3 = 6', relSnap.code === 0 && relSnap.data.snapshot_products === 1 && sug.lines.length === 1 && sug.lines[0].need === 6, JSON.stringify({ rel: relSnap.data, lines: sug.lines }))
+    // 关闭已审核工单后报工被拒（P1-3）
+    const closedOk = await post(PL(`/${moSnap.data.id}/close`), { force: true }, { allowError: true })
+    assert('㉖ 无在制、无草稿的工单可直接关闭', closedOk.code === 0, closedOk.message)
+    const wrClosed = await post('/api/scm/work-reports', { plan_id: moSnap.data.id, qty: 1, work_center_code: 'WC1', work_hours: 1 }, { allowError: true })
+    assert('㉖ [P1-3] 已关闭工单不能报工', wrClosed.status === 400 && /已关闭/.test(wrClosed.message || ''), wrClosed.message)
+  }
+
   // 汇总
   const fails = results.filter(r => !r.pass)
   console.log(`\n==== ${results.length} 项断言，${fails.length} 项失败 ====`)

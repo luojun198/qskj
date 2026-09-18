@@ -3049,6 +3049,7 @@ router.post('/scm/production-plans', operationLog('生产计划新增', '供应�
   if (!b.code) return res.status(400).json({ code: 400, message: '计划号不能为空' })
   if (!products.length) return res.status(400).json({ code: 400, message: '请至少添加一个成品（成品与计划数必填）' })
   if ((b.plan_type || 'self') === 'outsource' && !b.supplier_code) return res.status(400).json({ code: 400, message: '委外计划必须选择委外厂' })
+  if (b.start_date && b.end_date && String(b.start_date) > String(b.end_date)) return res.status(400).json({ code: 400, message: '开工日期不能晚于完工日期' })
   const dupErr = duplicateProductError(products)
   if (dupErr) return res.status(400).json({ code: 400, message: dupErr })
   // 头级 legacy 列取「首成品」做代表 + plan_qty 汇总，供旧读取路径兜底；权威数据在成品明细表
@@ -3077,6 +3078,7 @@ router.put('/scm/production-plans/:id', operationLog('生产计划修改', '供�
   const products = normalizePlanProducts(b)
   if (!products.length) return res.status(400).json({ code: 400, message: '请至少添加一个成品（成品与计划数必填）' })
   if ((b.plan_type || 'self') === 'outsource' && !b.supplier_code) return res.status(400).json({ code: 400, message: '委外计划必须选择委外厂' })
+  if (b.start_date && b.end_date && String(b.start_date) > String(b.end_date)) return res.status(400).json({ code: 400, message: '开工日期不能晚于完工日期' })
   const dupErr = duplicateProductError(products)
   if (dupErr) return res.status(400).json({ code: 400, message: dupErr })
   const existingProducts = db.prepare(
@@ -3299,13 +3301,29 @@ router.post('/scm/production-plans/:id/release', operationLog('工单审核', '�
   // 逐成品校验：每个成品须 plan_qty>0，且有 BOM 或用料明细
   const products = db.prepare('SELECT id, item_code, plan_qty, bom_id FROM scm_production_plan_product WHERE plan_id=? AND account_set_id=? ORDER BY seq').all(req.params.id, aid) as any[]
   if (!products.length) return res.status(400).json({ code: 400, message: '工单无成品，请先添加成品明细' })
+  if (p.start_date && p.end_date && String(p.start_date) > String(p.end_date)) return res.status(400).json({ code: 400, message: '开工日期不能晚于完工日期' })
+  const snapshot: Array<{ productId: string; bomId: string }> = []
   for (const pr of products) {
     if (!(Number(pr.plan_qty) > 0)) return res.status(400).json({ code: 400, message: `成品 ${pr.item_code} 计划数量需大于 0` })
     const lc = (db.prepare('SELECT COUNT(*) c FROM scm_production_plan_line WHERE product_id=?').get(pr.id) as any).c
     if (!pr.bom_id && !lc) return res.status(400).json({ code: 400, message: `成品 ${pr.item_code} 缺 BOM 或用料明细，无法审核` })
+    if (pr.bom_id && !lc) snapshot.push({ productId: pr.id, bomId: String(pr.bom_id) })
   }
-  db.prepare("UPDATE scm_production_plan SET status='released' WHERE id=? AND account_set_id=?").run(req.params.id, aid)
-  res.json({ code: 0, data: { ok: true } })
+  db.transaction(() => {
+    // 生产评审 P1-8：成品只带 bom_id 没有用料行（API / 导入路径）时，下达即按 BOM 主件快照成用料行，
+    // 否则领料建议该成品需求为 0、每件料成本为 0，领不了料且在制到末批才清
+    const insL = db.prepare(`INSERT INTO scm_production_plan_line (id,account_set_id,plan_id,product_id,seq,item_code,qty,unit,scrap_rate,remark,warehouse_code)
+      VALUES (?,?,?,?,?,?,?,?,?,?,NULL)`)
+    for (const s of snapshot) {
+      let seq = 0
+      for (const c of bomComponents(db, s.bomId)) {
+        seq++
+        insL.run(uuidv4(), aid, req.params.id, s.productId, seq, c.item_code, Number(c.qty) || 0, c.unit ?? null, Number(c.scrap_rate) || 0, c.remark ?? null)
+      }
+    }
+    db.prepare("UPDATE scm_production_plan SET status='released' WHERE id=? AND account_set_id=?").run(req.params.id, aid)
+  })()
+  res.json({ code: 0, data: { ok: true, snapshot_products: snapshot.length } })
 })
 
 // 关闭：released → closed（结清在制；有未结清余额时提示）
@@ -3314,6 +3332,18 @@ router.post('/scm/production-plans/:id/close', operationLog('工单关闭', '供
   const p = db.prepare('SELECT * FROM scm_production_plan WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
   if (!p) return res.status(404).json({ code: 404, message: '工单不存在' })
   if (p.status === 'closed') return res.json({ code: 0, data: { ok: true } })
+  // 生产评审 P1-4：草稿工单没有下达过，直接删除即可；「关闭」只对已审核工单有意义
+  if (p.status !== 'released') return res.status(400).json({ code: 400, message: '仅已审核工单可关闭，草稿工单请直接删除' })
+  // 生产评审 P1-2 / P2-6：挂在工单上的草稿单据 / 草稿报工在关闭后再也审核不了（工单未审核），
+  // 未审核报工的人工/制费也进不了结案；关闭前必须先审核或删除
+  const draftDocs = db.prepare("SELECT doc_type, doc_no FROM scm_doc WHERE account_set_id=? AND plan_id=? AND status='draft' ORDER BY doc_no").all(aid, req.params.id) as any[]
+  const draftReports = db.prepare("SELECT report_no FROM scm_work_report WHERE account_set_id=? AND plan_id=? AND status<>'audited' ORDER BY report_no").all(aid, req.params.id) as any[]
+  if (draftDocs.length || draftReports.length) {
+    const parts: string[] = []
+    if (draftDocs.length) parts.push(`未审核单据 ${draftDocs.map(d => d.doc_no).join('、')}`)
+    if (draftReports.length) parts.push(`未审核报工 ${draftReports.map(r => r.report_no).join('、')}`)
+    return res.status(400).json({ code: 400, message: `工单存在${parts.join('；')}，请先审核或删除后再关闭`, data: { draft_docs: draftDocs, draft_reports: draftReports } })
+  }
   const cost = getPlanCostSummary(db, aid, req.params.id, Number(p.plan_qty) || 0)
   const residual = round2(cost.wip + cost.laborWip)
   if (Math.abs(residual) > 0.01 && req.body?.force !== true) {
@@ -3455,12 +3485,13 @@ router.post('/scm/production-plans/:id/gen-issue', operationLog('工单生成领
     return res.status(400).json({ code: 400, message: `该工单${isOut ? '已发料齐' : '已领齐'}，无需重复生成` })
   }
   const wh = plan.yl_warehouse || null
-  const docNo = nextDocNo(db, aid, dt)
   const docId = uuidv4()
-  db.transaction(() => {
+  // 生产评审 P2-3：取号与插入同一事务并带撞号重试（与 CA 单同口径）
+  const docNo = withDocNoRetry(db, () => {
+    const no = nextDocNo(db, aid, dt)
     db.prepare(`INSERT INTO scm_doc (id,account_set_id,doc_type,doc_no,doc_date,partner_code,warehouse_code,operator,maker,status,bom_id,plan_id,total_qty,total_amount,remark,field_values)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, '{}')`).run(
-      docId, aid, dt, docNo, localToday(), isOut ? (plan.supplier_code ?? null) : null, wh, userName(req), userName(req), 'draft', plan.bom_id ?? null, plan.id,
+      docId, aid, dt, no, localToday(), isOut ? (plan.supplier_code ?? null) : null, wh, userName(req), userName(req), 'draft', plan.bom_id ?? null, plan.id,
       r6(rows.reduce((s, r) => s + r.suggest, 0)), 0, `工单 ${plan.code} ${isOut ? '委外发货' : '领料'}`
     )
     const ins = prepareDocLineInsert(db)
@@ -3470,7 +3501,8 @@ router.post('/scm/production-plans/:id/gen-issue', operationLog('工单生成领
       // 行仓库优先（建议已解析为 行仓库||原料仓），表头 wh 兜底
       ins.run(...buildDocLineRow(aid, docId, seq, { item_code: r.item_code, warehouse_code: r.warehouse_code || wh, qty: r.suggest, price: 0 }, wh).values)
     }
-  })()
+    return no
+  })
   res.json({ code: 0, data: { id: docId, doc_no: docNo } })
 })
 
@@ -3536,18 +3568,19 @@ router.post('/scm/production-plans/:id/gen-finish', operationLog('工单生成�
   if (!docLines.length) return res.status(400).json({ code: 400, message: '完工数量需大于 0' })
   const totalQty = r6(docLines.reduce((s, l) => s + l.qty, 0))
   const headWhFinal = headWh || plan.fp_warehouse || docLines[0].warehouse_code || null
-  const docNo = nextDocNo(db, aid, dt)
   const docId = uuidv4()
-  db.transaction(() => {
+  const docNo = withDocNoRetry(db, () => {
+    const no = nextDocNo(db, aid, dt)
     db.prepare(`INSERT INTO scm_doc (id,account_set_id,doc_type,doc_no,doc_date,partner_code,warehouse_code,operator,maker,status,bom_id,plan_id,total_qty,total_amount,remark,field_values)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, '{}')`).run(
-      docId, aid, dt, docNo, localToday(), isOut ? (plan.supplier_code ?? null) : null, headWhFinal, userName(req), userName(req), 'draft', plan.bom_id ?? null, plan.id,
+      docId, aid, dt, no, localToday(), isOut ? (plan.supplier_code ?? null) : null, headWhFinal, userName(req), userName(req), 'draft', plan.bom_id ?? null, plan.id,
       totalQty, 0, `工单 ${plan.code} ${isOut ? '委外入库' : '完工入库'}`
     )
     const ins = prepareDocLineInsert(db)
     let seq = 0
     for (const l of docLines) { seq++; ins.run(...buildDocLineRow(aid, docId, seq, l, headWhFinal).values) }
-  })()
+    return no
+  })
   res.json({ code: 0, data: { id: docId, doc_no: docNo } })
 })
 router.post('/scm/production-plans/batch-actions', operationLog('生产计划批量操作', '供应链'), (req: AuthRequest, res) => {
@@ -4267,7 +4300,17 @@ router.put('/scm/work-centers/:id', operationLog('工作中心修改', '供应�
   res.json({ code: 0, data: { ok: true } })
 })
 router.delete('/scm/work-centers/:id', operationLog('工作中心删除', '供应链'), (req: AuthRequest, res) => {
-  getDb().prepare('DELETE FROM scm_work_center WHERE id=? AND account_set_id=?').run(req.params.id, asid(req))
+  const db = getDb(); const aid = asid(req)
+  const wc = db.prepare('SELECT code, name FROM scm_work_center WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
+  if (!wc) return res.status(404).json({ code: 404, message: '工作中心不存在' })
+  // 生产评审 P1-5：被工艺路线 / 报工引用的工作中心不可删（与物料/仓库的 masterRefError 同口径），可改为停用
+  const reasons: string[] = []
+  const rl = Number((db.prepare('SELECT COUNT(*) c FROM scm_routing_line WHERE account_set_id=? AND work_center_code=?').get(aid, wc.code) as any)?.c) || 0
+  if (rl) reasons.push(`被 ${rl} 条工艺路线工序引用`)
+  const wr = Number((db.prepare('SELECT COUNT(*) c FROM scm_work_report WHERE account_set_id=? AND work_center_code=?').get(aid, wc.code) as any)?.c) || 0
+  if (wr) reasons.push(`被 ${wr} 张报工单引用`)
+  if (reasons.length) return res.status(400).json({ code: 400, message: `工作中心 ${wc.code} ${wc.name || ''} ${reasons.join('、')}，不能删除；如不再使用请改为停用` })
+  db.prepare('DELETE FROM scm_work_center WHERE id=? AND account_set_id=?').run(req.params.id, aid)
   res.json({ code: 0, data: { ok: true } })
 })
 
@@ -4336,6 +4379,14 @@ router.get('/scm/work-reports', (req: AuthRequest, res) => {
     WHERE ${conds.join(' AND ')} ORDER BY wr.report_date DESC, wr.created_at DESC`).all(...ps) })
 })
 router.get('/scm/work-reports/next-no', (req: AuthRequest, res) => res.json({ code: 0, data: { next_no: nextSeqNo(getDb(), 'scm_work_report', 'report_no', asid(req), 'WR') } }))
+/** 报工只能挂在已审核（released）的工单上：草稿工单尚未确定用料，已关闭工单的人工/制费已结转（生产评审 P1-3） */
+function workReportPlanError(db: ReturnType<typeof getDb>, aid: string, planId: string): string | null {
+  const plan = db.prepare('SELECT code, status FROM scm_production_plan WHERE id=? AND account_set_id=?').get(planId, aid) as any
+  if (!plan) return '关联工单不存在'
+  if (plan.status === 'closed') return `工单 ${plan.code} 已关闭，不能报工`
+  if (plan.status !== 'released') return `工单 ${plan.code} 未审核，请先审核工单再报工`
+  return null
+}
 // 报工人工/制费金额 = 工时 × 工作中心费率（建单/改单时算好存库）
 function calcReportAmounts(db: ReturnType<typeof getDb>, aid: string, b: any) {
   const wc = b.work_center_code ? db.prepare('SELECT labor_rate, overhead_rate FROM scm_work_center WHERE account_set_id=? AND code=?').get(aid, b.work_center_code) as any : null
@@ -4345,8 +4396,10 @@ function calcReportAmounts(db: ReturnType<typeof getDb>, aid: string, b: any) {
 router.post('/scm/work-reports', operationLog('生产报工新增', '供应链'), (req: AuthRequest, res) => {
   const db = getDb(); const b = req.body; const aid = asid(req)
   if (!b.plan_id) return res.status(400).json({ code: 400, message: '请选择工单' })
+  const planErr = workReportPlanError(db, aid, b.plan_id)
+  if (planErr) return res.status(400).json({ code: 400, message: planErr })
   const qtyError = validateWorkReportQty(db, aid, {
-    planId: b.plan_id, productId: b.product_id, qty: b.qty, scrapQty: b.scrap_qty,
+    planId: b.plan_id, productId: b.product_id, processName: b.process_name, qty: b.qty, scrapQty: b.scrap_qty,
   })
   if (qtyError) return res.status(400).json({ code: 400, message: qtyError })
   const { labor, overhead } = calcReportAmounts(db, aid, b)
@@ -4362,8 +4415,10 @@ router.put('/scm/work-reports/:id', operationLog('生产报工修改', '供应�
   const ex = db.prepare('SELECT status, plan_id FROM scm_work_report WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
   if (!ex) return res.status(404).json({ code: 404, message: '报工单不存在' })
   if (ex.status === 'audited') return res.status(400).json({ code: 400, message: '已审核报工不可修改' })
+  const planErr = workReportPlanError(db, aid, b.plan_id || ex.plan_id)
+  if (planErr) return res.status(400).json({ code: 400, message: planErr })
   const qtyError = validateWorkReportQty(db, aid, {
-    planId: b.plan_id || ex.plan_id, productId: b.product_id, qty: b.qty, scrapQty: b.scrap_qty,
+    planId: b.plan_id || ex.plan_id, productId: b.product_id, processName: b.process_name, qty: b.qty, scrapQty: b.scrap_qty,
     excludeReportId: req.params.id,
   })
   if (qtyError) return res.status(400).json({ code: 400, message: qtyError })
@@ -4374,9 +4429,11 @@ router.put('/scm/work-reports/:id', operationLog('生产报工修改', '供应�
 })
 router.post('/scm/work-reports/:id/audit', operationLog('生产报工审核', '供应链'), (req: AuthRequest, res) => {
   const db = getDb(); const aid = asid(req)
-  const ex = db.prepare('SELECT status FROM scm_work_report WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
+  const ex = db.prepare('SELECT status, plan_id FROM scm_work_report WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
   if (!ex) return res.status(404).json({ code: 404, message: '报工单不存在' })
   if (ex.status === 'audited') return res.status(400).json({ code: 400, message: '已审核' })
+  const planErr = workReportPlanError(db, aid, ex.plan_id)
+  if (planErr) return res.status(400).json({ code: 400, message: planErr })
   db.prepare("UPDATE scm_work_report SET status='audited', auditor=?, audited_at=datetime('now') WHERE id=?").run(userName(req), req.params.id)
   res.json({ code: 0, data: { ok: true } })
 })

@@ -63,17 +63,18 @@
         <div><span>人工金额</span><b>{{ fmt(preview.labor) }}</b><i>工时 × 人工费率</i></div>
         <div><span>制造费用</span><b>{{ fmt(preview.overhead) }}</b><i>工时 × 制费费率</i></div>
         <div :class="{ 'is-warn': overQuota }">
-          <span>本成品累计（含本次）</span>
+          <span>本成品{{ form.process_name ? `「${form.process_name}」工序` : '' }}累计（含本次）</span>
           <b>{{ num(reportedWithCurrent) }}</b>
           <i>计划 {{ num(currentPlanQty) }}，已报 {{ num(reportedForProduct) }}</i>
         </div>
       </div>
 
       <el-alert v-if="overQuota" type="warning" show-icon :closable="false"
-        title="合格数 + 不良数已超过该成品的计划数，保存时会被后端拦截（可在 系统参数 → 供应链 打开生产超额策略放宽）" />
+        title="该工序 合格数 + 不良数 已超过该成品的计划数，保存时会被后端拦截（可在 系统参数 → 供应链 打开生产超额策略放宽）" />
 
       <div class="wr-hint">
-        人工与制费在保存时按「工时 × 工作中心费率」算好存库；完工入库审核时按各成品报工进度分批结转进成品成本。
+        人工与制费在保存时按「工时 × 工作中心费率」算好存库；完工入库审核时按各成品报工进度分批结转进成品成本。<br>
+        报工数量按「成品 × 工序」分别与计划数比对（多道工序各报一次不算超报）；完工入库默认数取末道工序的已审核合格数。
       </div>
     </div>
   </div>
@@ -115,9 +116,10 @@ const preview = computed(() => {
   }
 })
 const currentPlanQty = computed(() => Number(products.value.find(p => p.id === form.product_id)?.plan_qty) || 0)
-/** 该成品已报工（含草稿占用）合计，编辑时排除自己——与后端 validateWorkReportQty 同口径 */
+/** 该成品**同一工序**已报工（含草稿占用）合计，编辑时排除自己——与后端 validateWorkReportQty 同口径（P1-1） */
+const procKey = (v: any) => String(v ?? '').trim()
 const reportedForProduct = computed(() => existingReports.value
-  .filter(r => r.product_id === form.product_id && r.id !== editId.value)
+  .filter(r => r.product_id === form.product_id && r.id !== editId.value && procKey(r.process_name) === procKey(form.process_name))
   .reduce((sum, r) => sum + (Number(r.qty) || 0) + (Number(r.scrap_qty) || 0), 0))
 const reportedWithCurrent = computed(() =>
   reportedForProduct.value + (Number(form.qty) || 0) + (Number(form.scrap_qty) || 0))
