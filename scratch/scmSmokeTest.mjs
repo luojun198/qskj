@@ -572,6 +572,39 @@ async function main() {
     assert('㉓ 无工单的工序委外单被拒', noPlan.status === 400 && /工序委外必须关联/.test(noPlan.message || ''), noPlan.message)
   }
 
+  // ── ㉔ FIFO / LIFO 计价（成本层）────────────────────────────────
+  {
+    async function setCosting(v) {
+      const cur = (await get('/api/scm/params')).data
+      const list = Array.isArray(cur) ? cur : (cur.list || [])
+      const others = list.filter(p => p.param_key !== 'scm:costing_method')
+      return api('PUT', '/api/scm/params', { params: [...others, { param_key: 'scm:costing_method', param_value: v }] }, { allowError: true })
+    }
+    await ensure('/api/scm/items', { code: 'MF', name: 'FIFO 物料', unit: '个', purchase_price: 10, sale_price: 30, default_warehouse_code: 'W1' })
+    const sv = await setCosting('fifo')
+    assert('㉔ 计价方式可切换为先进先出', sv.status === 200, sv.message)
+    const pi1 = await createDoc({ doc_type: 'PI', doc_date: D, partner_code: 'SUP1', warehouse_code: 'W1', lines: [{ item_code: 'MF', qty: 10, price: 10, tax_rate: 0, tax_amount: 0 }] })
+    const pi2 = await createDoc({ doc_type: 'PI', doc_date: D, partner_code: 'SUP1', warehouse_code: 'W1', lines: [{ item_code: 'MF', qty: 10, price: 12, tax_rate: 0, tax_amount: 0 }] })
+    const a1 = await audit(pi1.id); const a2 = await audit(pi2.id)
+    assert('㉔ FIFO 下采购入库审核通过（不再被计价守卫拦截）', a1.code === 0 && a2.code === 0, a1.message || a2.message)
+    const ls = await get('/api/scm/stock/layers?item_code=MF&warehouse_code=W1')
+    assert('㉔ 两笔入库形成两层（10@10、10@12）', ls.costing_method === 'fifo' && ls.data.length === 2 && ls.data[0].unit_cost === 10 && ls.data[1].unit_cost === 12, JSON.stringify(ls.data).slice(0, 200))
+    const so = await createDoc({ doc_type: 'SO', doc_date: D, partner_code: 'CUS1', warehouse_code: 'W1', lines: [{ item_code: 'MF', qty: 15, price: 30, tax_rate: 0, tax_amount: 0, warehouse_code: 'W1' }] })
+    const rs = await audit(so.id)
+    assert('㉔ FIFO 销售出库审核', rs.code === 0, rs.message)
+    const mv = dbq("SELECT unit_cost, amount FROM scm_stock_move WHERE doc_no=? AND direction='out'", so.doc_no)[0]
+    assert('㉔ 出库成本按先进先出 = 10×10 + 5×12 = 160', mv && r2(mv.amount) === 160, JSON.stringify(mv))
+    const st = await stock('W1', 'MF')
+    assert('㉔ 结存 = 5 × 12 = 60（非移动平均 55）', Number(st.qty) === 5 && r2(st.amount) === 60, `qty=${st.qty} amount=${st.amount}`)
+    const ls2 = (await get('/api/scm/stock/layers?item_code=MF&warehouse_code=W1')).data
+    assert('㉔ 第一层耗尽后仅剩第二层 5 件', ls2.length === 1 && ls2[0].qty_left === 5 && ls2[0].unit_cost === 12, JSON.stringify(ls2))
+    const ru = await unaudit(pi1.id)
+    assert('㉔ 反审核已被消耗的入库单被拒', ru.code !== 0 && /已被后续出库消耗/.test(ru.message || ''), ru.message)
+    const ru2 = await unaudit(so.id)
+    assert('㉔ 反审核出库单恢复层', ru2.code === 0 && (await get('/api/scm/stock/layers?item_code=MF&warehouse_code=W1')).data.length === 2, ru2.message)
+    await setCosting('moving_avg')
+  }
+
   // 汇总
   const fails = results.filter(r => !r.pass)
   console.log(`\n==== ${results.length} 项断言，${fails.length} 项失败 ====`)

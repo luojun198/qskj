@@ -404,7 +404,8 @@
                 </el-form-item>
                 <el-form-item label=" ">
                   <span style="font-size:12px;color:var(--el-text-color-secondary);line-height:1.7">
-                    目前仅「移动加权平均」已实现；全月平均/先进先出/后进先出/指定成本开发中（选用未实现方式将无法过账）。
+                    已实现「移动加权平均 / 先进先出 / 后进先出」；全月平均、指定成本开发中（选用未实现方式将无法过账）。<br>
+                    先进先出 / 后进先出按入库批次形成成本层逐层扣减，切换时已有结存自动补为「期初层」；成本层可在「库存报表 → 库存成本层」查看。
                   </span>
                 </el-form-item>
                 <el-form-item label="采购入库须到货检验">
@@ -716,7 +717,7 @@ const scmForm = ref({
 const scmWarehouses = ref<ScmWarehouse[]>([])
 const SCM_COSTING: Record<string, string> = { moving_avg: '移动加权平均', month_avg: '全月平均', fifo: '先进先出', lifo: '后进先出', specified: '指定成本' }
 // 已实现的计价方式（其余在参数页禁选、过账时拦截）
-const COSTING_IMPLEMENTED = ['moving_avg']
+const COSTING_IMPLEMENTED = ['moving_avg', 'fifo', 'lifo']
 const SCM_ACC_KEYS = ['acc_ap','acc_ar','acc_revenue','acc_cost','acc_production','acc_other','acc_tax_input','acc_tax_output','acc_labor','acc_overhead'] as const
 
 async function fetchVoucherTypes() {

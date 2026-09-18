@@ -443,6 +443,10 @@ import {
   up as scmQcStandardUp,
   down as scmQcStandardDown,
 } from './migrations/20260917_scm_qc_standard.js'
+import {
+  up as scmStockLayerUp,
+  down as scmStockLayerDown,
+} from './migrations/20260918_scm_stock_layer.js'
 
 /**
  * 迁移示例：添加新字段
@@ -2152,5 +2156,11 @@ export const migrations: Migration[] = [
     name: 'scm_qc_standard',
     up: scmQcStandardUp,
     down: scmQcStandardDown,
+  },
+  {
+    version: 132,
+    name: 'scm_stock_layer',
+    up: scmStockLayerUp,
+    down: scmStockLayerDown,
   },
 ]

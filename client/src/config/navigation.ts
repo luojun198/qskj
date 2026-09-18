@@ -180,6 +180,7 @@ const ROUTE_PERMISSION_MAP: Record<string, string | string[]> = {
   '/scm/report/purchase/cost': 'scm:report',
   '/scm/report/purchase/trend': 'scm:report',
   '/scm/report/stock-ledger': 'scm:report',
+  '/scm/report/stock-layers': 'scm:report',
   '/scm/report/outsource/execution': 'scm:report',
   '/scm/report/production/execution': 'scm:report',
   '/scm/boms': ['scm:production', 'scm:outsource'],
@@ -631,6 +632,7 @@ function getStaticNavApps(enableCashFlow: boolean, enableForeignCurrency = false
           items: [
             { path: '/scm/report', title: '收发存汇总', permission: 'scm:report', icon: 'Table2' },
             { path: '/scm/report/stock-ledger', title: '物料收发明细账', permission: 'scm:report', icon: 'ListOrdered' },
+            { path: '/scm/report/stock-layers', title: '库存成本层', permission: 'scm:report', icon: 'Layers' },
             { path: '/scm/report/stock-alert', title: '库存预警', permission: 'scm:report', icon: 'AlertTriangle' },
             { path: '/scm/report/batch-alert', title: '批次临期预警', permission: 'scm:report', icon: 'Hourglass' },
           ],

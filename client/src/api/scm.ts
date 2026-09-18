@@ -428,6 +428,8 @@ export const scmApi = {
   getStockLedger: (params: Record<string, any>) =>
     request.get<{ rows: any[]; total: number; page: number; page_size: number; summary: Record<string, number> }>('/scm/stock/ledger', { params }),
   exportStockLedger: (data: Record<string, any>) => request.downloadPost('/scm/stock/ledger/export', data, { timeout: 600_000 }),
+  /** 库存成本层（FIFO/LIFO）：响应附带 costing_method */
+  getStockLayers: (params: Record<string, any>) => request.get<any[]>('/scm/stock/layers', { params }),
   getOutsourceExecution: (params: Record<string, any>) =>
     request.get<{ rows: any[]; total: number; page: number; page_size: number; summary: Record<string, number> }>('/scm/report/outsource/execution', { params }),
   exportOutsourceExecution: (data: Record<string, any>) => request.downloadPost('/scm/report/outsource/execution/export', data, { timeout: 600_000 }),

@@ -291,7 +291,7 @@ describe('navigation permissions', () => {
       expect(inventory?.sections.flatMap(s => s.items.map(i => i.path))).toEqual([
         '/scm/docs?doc_type=IS',
         '/scm/stock', '/scm/batch-stock', '/scm/serials',
-        '/scm/report', '/scm/report/stock-ledger',
+        '/scm/report', '/scm/report/stock-ledger', '/scm/report/stock-layers',
         '/scm/report/stock-alert', '/scm/report/batch-alert',
       ])
     })

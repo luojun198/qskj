@@ -12,6 +12,7 @@ import { resolveScmAccount, SCM_ACCOUNT_SPECS, suggestScmAccounts } from '../ser
 import { queryStockLedger, type StockLedgerFilters } from '../services/scmStockLedger.js'
 import type { ExportColumnSpec } from '../services/styledExcelExport.js'
 import { normalizePaging } from '../utils/paging.js'
+import { listStockLayers, getCostingMethod } from '../services/scmCosting.js'
 import { getScmBaseCurrency, isScmBaseCurrency, normalizeScmCurrency, resolveScmExchangeRate } from '../services/scmCurrency.js'
 
 async function buildStyledXlsxBuffer(options: any) {
@@ -159,7 +160,7 @@ router.post('/scm/reset', operationLog('供应链初始化', '供应链'), async
     'scm_qc_line', 'scm_qc_doc', 'scm_work_report', 'scm_mrp_source',
     'scm_serial_move', 'scm_serial', 'scm_batch_move', 'scm_stock_batch',
     'scm_ar_ap_verify', 'scm_ar_ap_log',
-    'scm_doc_line', 'scm_doc', 'scm_stock_move', 'scm_stock',
+    'scm_doc_line', 'scm_doc', 'scm_stock_layer_use', 'scm_stock_layer', 'scm_stock_move', 'scm_stock',
     'scm_production_plan_line', 'scm_production_plan_product', 'scm_production_plan',
   ]
   const masterTables = [
@@ -734,6 +735,14 @@ router.delete('/scm/categories/:id', operationLog('物料分类删除', '供应�
 })
 
 // ── 库存报表 ────────────────────────────────────────────────────────────
+// 库存成本层（FIFO/LIFO）：按仓库/物料列出各入库层的剩余数量与单价；only_left=0 时含已耗尽层
+router.get('/scm/stock/layers', (req: AuthRequest, res) => {
+  const db = getDb(); const aid = asid(req)
+  const { warehouse_code, item_code, only_left } = req.query as any
+  const rows = listStockLayers(db, aid, { warehouse_code, item_code, only_left: only_left !== '0' })
+  res.json({ code: 0, data: rows, costing_method: getCostingMethod(db, aid) })
+})
+
 // 收发存汇总（按仓库+物料，含期初/本期入/本期出/期末）
 router.get('/scm/stock/summary', (req: AuthRequest, res) => {
   const db = getDb(); const aid = asid(req)

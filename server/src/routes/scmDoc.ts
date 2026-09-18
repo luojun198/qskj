@@ -8,7 +8,7 @@ import { Router, type Response } from 'express'
 import { v4 as uuidv4 } from 'uuid'
 import { getDb } from '../db/index.js'
 import { authMiddleware, AuthRequest, operationLog } from '../middleware/index.js'
-import { applyMovingAvgIn, applyMovingAvgOut, reverseDocMoves, getCostingMethod, currentUnitCost, getNegativeStockWarehouses, applyCostAdjustment } from '../services/scmCosting.js'
+import { applyMovingAvgIn, applyMovingAvgOut, reverseDocMoves, getCostingMethod, currentUnitCost, getNegativeStockWarehouses, applyCostAdjustment, IMPLEMENTED_COSTING_METHODS, COSTING_METHOD_LABELS } from '../services/scmCosting.js'
 import { applyPayment, applyInvoice, reverseInvoice, reversePayment, sumGrossAmount, getPartnerLedger, getAllPartnerLedger, applyReceivableFromShipment, applyPayableFromReceipt, applyReturnAdjustment, applyOutsourceFeePayable, getOpenItems, getPaymentSources, verifyArAp, cancelVerify, listVerifies, getDocVerifiedInfo, getArApAging, getDueReminder, getPartnerCredit, getPartnerOpenAr, getPartnerBalanceSummary } from '../services/scmArAp.js'
 import { assertAccountIdsInScope, type AccountScopeContext } from '../services/accountAuthorization.js'
 import { assertGlPeriodOpen } from '../services/voucherMutationGuard.js'
@@ -1309,12 +1309,11 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
   const docType = db.prepare('SELECT * FROM scm_doc_type WHERE account_set_id=? AND code=?').get(aid, doc.doc_type) as any
   if (!docType) return res.status(400).json({ code: 400, message: '未知单据类型' })
 
-  // 计价方式守卫：当前仅「移动加权平均」已实现，其余方式禁止过账，避免按错误口径计算成本
+  // 计价方式守卫：已实现 移动加权平均 / 先进先出 / 后进先出，其余方式禁止过账，避免按错误口径计算成本
   if (docType.affects_stock) {
     const costing = getCostingMethod(db, aid)
-    if (costing !== 'moving_avg') {
-      const labels: Record<string, string> = { month_avg: '全月平均', fifo: '先进先出', lifo: '后进先出', specified: '指定成本' }
-      return res.status(400).json({ code: 400, message: `当前计价方式『${labels[costing] || costing}』尚未实现，请在 系统参数→供应链 改为『移动加权平均』后再审核` })
+    if (!(IMPLEMENTED_COSTING_METHODS as readonly string[]).includes(costing)) {
+      return res.status(400).json({ code: 400, message: `当前计价方式『${COSTING_METHOD_LABELS[costing] || costing}』尚未实现，请在 系统参数→供应链 改为『移动加权平均 / 先进先出 / 后进先出』后再审核` })
     }
   }
 

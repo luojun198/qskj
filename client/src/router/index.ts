@@ -714,6 +714,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '物料收发明细账', icon: 'Tickets', parent: '库存' },
       },
       {
+        path: 'scm/report/stock-layers',
+        name: 'ScmStockLayers',
+        component: () => import('@/views/scm/StockLayers.vue'),
+        meta: { title: '库存成本层', icon: 'Tickets', parent: '库存' },
+      },
+      {
         path: 'scm/report/outsource/execution',
         name: 'ScmOutsourceExecutionReport',
         component: () => import('@/views/scm/OutsourceExecutionReport.vue'),
