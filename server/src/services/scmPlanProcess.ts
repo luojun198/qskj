@@ -204,11 +204,14 @@ export function estimatePlanFinish(db: Database.Database, aid: string, planId: s
 export interface CapacityRow { work_center_code: string; work_center_name: string; daily_capacity_hours: number; week: string; capacity_hours: number; load_hours: number; utilization: number | null; plans: string[] }
 
 /** 产能负荷表：已审核工单未完成工序的剩余工时，按工作中心 × 交期所在周（周一为起点）分桶；周产能 = 日产能 × 5 */
-export function queryCapacityLoad(db: Database.Database, aid: string, f: { start_date?: string; end_date?: string; work_center_code?: string } = {}): { rows: CapacityRow[]; unscheduled_hours: number } {
+export function queryCapacityLoad(db: Database.Database, aid: string, f: { start_date?: string; end_date?: string; work_center_code?: string; basis?: string } = {}): { rows: CapacityRow[]; unscheduled_hours: number } {
+  // basis=schedule：按自动排程结果的工序开始日分桶（未排程的工序退回交期）
+  const bySchedule = String(f.basis || '') === 'schedule'
+  const hasSched = (db.prepare("PRAGMA table_info('scm_production_plan_process')").all() as { name: string }[]).some(c => c.name === 'sched_start')
   if (!hasProcessTable(db)) return { rows: [], unscheduled_hours: 0 }
   const conds = ["x.account_set_id=?", "p.status='released'", "COALESCE(p.plan_type,'self')='self'"]; const ps: any[] = [aid]
   if (f.work_center_code) { conds.push('x.work_center_code=?'); ps.push(f.work_center_code) }
-  const rows = db.prepare(`SELECT x.work_center_code, x.std_hours, x.plan_qty, x.done_qty, x.scrap_qty, p.code AS plan_code, p.end_date, p.start_date
+  const rows = db.prepare(`SELECT x.work_center_code, x.std_hours, x.plan_qty, x.done_qty, x.scrap_qty, ${hasSched ? 'x.sched_start' : 'NULL AS sched_start'}, p.code AS plan_code, p.end_date, p.start_date
     FROM scm_production_plan_process x JOIN scm_production_plan p ON p.id=x.plan_id WHERE ${conds.join(' AND ')}`).all(...ps) as any[]
   const centers = new Map<string, { name: string; cap: number }>((db.prepare('SELECT code, name, COALESCE(daily_capacity_hours,0) h FROM scm_work_center WHERE account_set_id=?').all(aid) as any[]).map(w => [String(w.code), { name: w.name, cap: Number(w.h) || 0 }]))
   const weekOf = (dateStr: string | null) => {
@@ -225,7 +228,7 @@ export function queryCapacityLoad(db: Database.Database, aid: string, f: { start
     const hours = r4(remain * (Number(r.std_hours) || 0))
     if (hours <= EPS) continue
     if (!r.work_center_code) { unscheduled = r4(unscheduled + hours); continue }
-    const week = weekOf(r.end_date || r.start_date)
+    const week = weekOf(bySchedule && r.sched_start ? r.sched_start : (r.end_date || r.start_date))
     if (!week) { unscheduled = r4(unscheduled + hours); continue }
     if (f.start_date && week < String(f.start_date).slice(0, 10)) continue
     if (f.end_date && week > String(f.end_date).slice(0, 10)) continue

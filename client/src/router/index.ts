@@ -720,6 +720,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '工单变更单', icon: 'SetUp', parent: '生产管理' },
       },
       {
+        path: 'scm/schedule',
+        name: 'ScmAutoSchedule',
+        component: () => import('@/views/scm/AutoSchedule.vue'),
+        meta: { title: '自动排程', icon: 'SetUp', parent: '生产管理' },
+      },
+      {
         path: 'scm/plan-changes',
         name: 'ScmPlanChangeList',
         component: () => import('@/views/scm/PlanChangeList.vue'),

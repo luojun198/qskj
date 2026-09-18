@@ -9,8 +9,13 @@
       <el-select v-model="workCenter" clearable placeholder="工作中心" size="small" style="width:140px" @change="load">
         <el-option v-for="w in workCenters" :key="w.code" :label="w.name || w.code" :value="w.code" />
       </el-select>
+      <el-radio-group v-model="basis" size="small" @change="load">
+        <el-radio-button value="due">按交期周</el-radio-button>
+        <el-radio-button value="schedule">按排程周</el-radio-button>
+      </el-radio-group>
       <el-button type="primary" size="small" :loading="loading" @click="load">查询</el-button>
       <FilterClearButton size="small" @clear="clear" />
+      <el-button size="small" @click="router.push({ name: 'ScmAutoSchedule' })">去自动排程</el-button>
     </div>
     <div class="summary-grid">
       <div><span>负荷合计（工时）</span><b>{{ num(sum('load_hours')) }}</b></div>
@@ -46,6 +51,7 @@ import FilterClearButton from '@/components/common/FilterClearButton.vue'
 const router = useRouter()
 const dateRange = ref<string[] | null>(null)
 const workCenter = ref('')
+const basis = ref<'due' | 'schedule'>('due')
 const rows = ref<any[]>([]); const unscheduled = ref(0); const workCenters = ref<any[]>([])
 const loading = ref(false)
 const num = (v: any) => (Number(v) || 0).toLocaleString('zh-CN', { maximumFractionDigits: 2 })
@@ -54,7 +60,7 @@ const overCount = computed(() => rows.value.filter(r => r.utilization != null &&
 async function load() {
   loading.value = true
   try {
-    const r = await scmApi.getCapacityLoad({ start_date: dateRange.value?.[0], end_date: dateRange.value?.[1], work_center_code: workCenter.value || undefined })
+    const r = await scmApi.getCapacityLoad({ start_date: dateRange.value?.[0], end_date: dateRange.value?.[1], work_center_code: workCenter.value || undefined, basis: basis.value })
     if (r.code === 0) { rows.value = r.data.rows; unscheduled.value = r.data.unscheduled_hours }
   } finally { loading.value = false }
 }

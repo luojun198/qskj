@@ -906,6 +906,26 @@ async function main() {
     await api('PUT', `/api/scm/work-centers/${w1.id}`, { ...w1, labor_rate: 20 }, { allowError: true })
   }
 
+  // ── ㉛ 自动排程（有限产能顺排）────────────────────────────────────
+  {
+    // 已审核带工序的工单：MO-PROC2（计划 6，下料/焊接/总装 WC1 各 1/1/2h，已完成部分）
+    const dry = await post('/api/scm/schedule/run', { from_date: '2026-10-05', dry_run: true, workdays: [1, 2, 3, 4, 5] }, { allowError: true })   // 周一
+    assert('㉛ 试算返回工单与工序排程、日负荷，不写库', dry.code === 0 && dry.data.run_id === null && dry.data.plan_count >= 1 && dry.data.day_loads.length > 0, JSON.stringify({ n: dry.data?.plan_count, late: dry.data?.late_count }))
+    const p2 = dry.data.plans.find(p => p.plan_code === 'MO-PROC2')
+    assert('㉛ MO-PROC2 工序顺排且后道不早于前道', p2 && p2.processes.every((x, i, a) => !x.sched_start || i === 0 || !a[i - 1].sched_end || x.sched_start >= a[i - 1].sched_end) && p2.sched_start_date >= '2026-10-05', JSON.stringify(p2?.processes.map(x => [x.process_name, x.hours, x.sched_start, x.sched_end])))
+    const before = dbq("SELECT sched_end_date FROM scm_production_plan WHERE code='MO-PROC2'")[0]
+    assert('㉛ 试算后工单无排程日期', before.sched_end_date === null || before.sched_end_date === undefined, JSON.stringify(before))
+    const w = await post('/api/scm/schedule/run', { from_date: '2026-10-05', workdays: [1, 2, 3, 4, 5] }, { allowError: true })
+    const after = dbq("SELECT sched_start_date, sched_end_date, sched_run_id FROM scm_production_plan WHERE code='MO-PROC2'")[0]
+    assert('㉛ 写入后工单与工序带排程日期、运行记录', w.code === 0 && w.data.run_id && after.sched_run_id === w.data.run_id && after.sched_end_date === p2.sched_end_date && dbq("SELECT COUNT(*) c FROM scm_production_plan_process WHERE sched_start IS NOT NULL")[0].c > 0, JSON.stringify(after))
+    const runs = (await get('/api/scm/schedule/runs')).data
+    assert('㉛ 历史运行记录', runs.length >= 1 && runs[0].id === w.data.run_id && Array.isArray(runs[0].summary))
+    const det = (await get(`/api/scm/production-plans/${p2.plan_id}`)).data
+    assert('㉛ 工单详情工序行带排程', det.processes.some(x => x.sched_start), JSON.stringify(det.processes.map(x => [x.process_name, x.sched_start])))
+    const capS = (await get('/api/scm/report/production/capacity?basis=schedule')).data
+    assert('㉛ 产能负荷表可按排程周分桶', capS.rows.some(r => r.week >= '2026-10-05'), JSON.stringify(capS.rows.map(r => [r.week, r.load_hours])))
+  }
+
   // 汇总
   const fails = results.filter(r => !r.pass)
   console.log(`\n==== ${results.length} 项断言，${fails.length} 项失败 ====`)

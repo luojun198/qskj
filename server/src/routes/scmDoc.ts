@@ -18,6 +18,7 @@ import { computeIssueSuggestion, computeProductionPlanActionState, computePushed
 import { snapshotPlan, normalizeTarget, computeDiff, validateChange, applyChange } from '../services/scmPlanChange.js'
 import { ensurePlanProcesses, listPlanProcesses, resolveProcessId, validateProcessFlow, syncPlanProcessQty, estimatePlanFinish, queryProcessWip, queryCapacityLoad } from '../services/scmPlanProcess.js'
 import { planWipBook, hasWipCountTable } from '../services/scmWipCount.js'
+import { runSchedule, listScheduleRuns } from '../services/scmScheduler.js'
 import { getReportedGoodQtyByProduct, validateWorkReportQty } from '../services/scmWorkReport.js'
 import { getQcDefectLines, validateFinishQc, validateQcDefectPush, validateReceiptQc } from '../services/scmQcControl.js'
 import { buildMissingAccountMessage, resolveScmAccount } from '../services/scmAccountResolver.js'
@@ -3046,6 +3047,18 @@ router.post('/scm/report/production/cost/export', async (req: AuthRequest, res) 
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`)
     res.send(buffer)
   } catch (e: any) { res.status(400).json({ code: 400, message: e?.message || '工单成本明细导出失败' }) }
+})
+
+// ── 自动排程（有限产能顺排）──
+router.post('/scm/schedule/run', operationLog('自动排程', '供应链'), (req: AuthRequest, res) => {
+  const b = req.body || {}
+  try {
+    const workdays = Array.isArray(b.workdays) ? b.workdays.map(Number) : (typeof b.workdays === 'string' ? b.workdays.split(',').map(Number) : undefined)
+    res.json({ code: 0, data: runSchedule(getDb(), asid(req), { from_date: b.from_date, workdays, order_by: b.order_by, plan_ids: Array.isArray(b.plan_ids) ? b.plan_ids : undefined, dry_run: b.dry_run === true || b.dry_run === 1 || b.dry_run === '1', user: userName(req) }) })
+  } catch (e: any) { res.status(400).json({ code: 400, message: e?.message || '排程失败' }) }
+})
+router.get('/scm/schedule/runs', (req: AuthRequest, res) => {
+  res.json({ code: 0, data: listScheduleRuns(getDb(), asid(req)) })
 })
 
 // ── 报表：工序在制表（C-4 ④）/ 产能负荷表（C-3）──

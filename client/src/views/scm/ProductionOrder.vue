@@ -62,7 +62,7 @@
       <section class="wo-section" v-if="plan && !isOut">
         <div class="wo-section__hd">
           <h3>工序进度</h3>
-          <span v-if="schedule">剩余 {{ num(schedule.remain_hours) }} 工时，按产能约需 {{ schedule.est_days }} 天，预计 <b :class="{ 'overdue-text': plan.end_date && schedule.est_finish_date > plan.end_date }">{{ schedule.est_finish_date }}</b> 完工{{ plan.end_date && schedule.est_finish_date > plan.end_date ? '（晚于计划完工 ' + plan.end_date + '）' : '' }}</span>
+          <span v-if="schedule">剩余 {{ num(schedule.remain_hours) }} 工时，按产能约需 {{ schedule.est_days }} 天，预计 <b :class="{ 'overdue-text': plan.end_date && schedule.est_finish_date > plan.end_date }">{{ schedule.est_finish_date }}</b> 完工{{ plan.end_date && schedule.est_finish_date > plan.end_date ? '（晚于计划完工 ' + plan.end_date + '）' : '' }}<template v-if="plan.sched_end_date">；自动排程 {{ plan.sched_start_date }} ~ <b :class="{ 'overdue-text': plan.end_date && plan.sched_end_date > plan.end_date }">{{ plan.sched_end_date }}</b></template></span>
           <el-button v-else-if="plan.status === 'released'" size="small" @click="genProcesses">按工艺路线生成工序</el-button>
         </div>
         <el-empty v-if="!processes.length" description="无工序行（成品未维护工艺路线，报工按整件一道口径）" :image-size="50" />
@@ -76,6 +76,7 @@
           <el-table-column label="完成" width="80" align="right"><template #default="{ row }">{{ num(row.done_qty) }}</template></el-table-column>
           <el-table-column label="不良" width="70" align="right"><template #default="{ row }">{{ Number(row.scrap_qty) ? num(row.scrap_qty) : '' }}</template></el-table-column>
           <el-table-column label="进度" width="150"><template #default="{ row }"><el-progress :percentage="procPct(row)" :stroke-width="10" :status="procPct(row) >= 100 ? 'success' : undefined" /></template></el-table-column>
+          <el-table-column label="排程" width="190"><template #default="{ row }"><span class="text-muted">{{ row.sched_start ? `${row.sched_start} ~ ${row.sched_end}` : '' }}</span></template></el-table-column>
         </el-table>
       </section>
 

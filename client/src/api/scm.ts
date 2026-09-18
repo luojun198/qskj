@@ -589,6 +589,9 @@ export const scmApi = {
   deleteProductionPlan: (id: string) => request.delete(`/scm/production-plans/${id}`),
   batchProductionPlanActions: (data: { action: 'delete' | 'unrelease' | 'reopen'; ids: string[] }) =>
     request.post<{ processed: number; action: string; results: any[] }>('/scm/production-plans/batch-actions', data, { skipErrorToast: true }),
+  // 自动排程
+  runSchedule: (data: Record<string, any>) => request.post<any>('/scm/schedule/run', data),
+  getScheduleRuns: () => request.get<any[]>('/scm/schedule/runs'),
   // 在制盘点（C-5）
   getWipBook: (planId: string) => request.get<{ plan: any; rows: any[]; counts: any[] }>(`/scm/production-plans/${planId}/wip-book`),
   getWipCount: (id: string) => request.get<any>(`/scm/wip-counts/${id}`),

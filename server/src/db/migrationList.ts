@@ -467,6 +467,10 @@ import {
   up as scmWipCountUp,
   down as scmWipCountDown,
 } from './migrations/20260918_scm_wip_count.js'
+import {
+  up as scmScheduleUp,
+  down as scmScheduleDown,
+} from './migrations/20260918_scm_schedule.js'
 
 /**
  * 迁移示例：添加新字段
@@ -2212,5 +2216,11 @@ export const migrations: Migration[] = [
     name: 'scm_wip_count',
     up: scmWipCountUp,
     down: scmWipCountDown,
+  },
+  {
+    version: 138,
+    name: 'scm_schedule',
+    up: scmScheduleUp,
+    down: scmScheduleDown,
   },
 ]
