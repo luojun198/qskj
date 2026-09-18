@@ -83,6 +83,7 @@ export const groupFlowMap: Record<string, ModuleFlowConfig> = {
       { id: 'detail', path: '/scm/report/sales/detail', color: 'blue' },
       { id: 'ranking', path: '/scm/report/sales/ranking', color: 'orange' },
       { id: 'profit', path: '/scm/report/sales/profit', color: 'green' },
+      { id: 'salesExec', path: '/scm/report/sales/execution', color: 'cyan' },
       { id: 'trend', path: '/scm/report/sales/trend', color: 'purple' },
       { id: 'custom', path: '/scm/report/buysell?kind=sales', color: 'cyan' },
     ],

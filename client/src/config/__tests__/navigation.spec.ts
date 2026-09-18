@@ -128,7 +128,7 @@ describe('navigation permissions', () => {
       const apps = buildNavApps(['scm:sale', 'scm:purchase', 'scm:report'], false, [])
       const sales = apps.find(a => a.key === 'sales')
       expect(sales?.sections.find(s => s.label === '销售报表')?.items.map(i => i.title)).toEqual([
-        '销售汇总表', '销售明细表', '销售排行榜', '销售毛利分析', '销售趋势分析', '自定义查询',
+        '销售汇总表', '销售明细表', '销售排行榜', '销售毛利分析', '销售订单执行表', '销售趋势分析', '自定义查询',
       ])
       const purchase = apps.find(a => a.key === 'purchase')
       expect(purchase?.sections.find(s => s.label === '采购报表')?.items.map(i => i.title)).toEqual([

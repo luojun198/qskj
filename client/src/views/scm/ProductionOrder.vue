@@ -22,7 +22,7 @@
         <el-button v-if="plan && plan.status === 'released' && !docs.length" type="warning" plain size="small" :loading="busy"
           :disabled="!!plan.mrp_status" :title="plan.mrp_status ? `已进入 MRP 计算单 ${plan.mrp_doc_no || ''}，不能反审核` : '反审核'"
           @click="onUnrelease">反审核</el-button>
-        <el-button v-if="plan && plan.status === 'released' && !isOut" type="primary" plain size="small" @click="openChange">{{ draftChange ? `继续变更 ${draftChange.change_no}` : '变更' }}</el-button>
+        <el-button v-if="plan && plan.status === 'released'" type="primary" plain size="small" @click="openChange">{{ draftChange ? `继续变更 ${draftChange.change_no}` : '变更' }}</el-button>
         <el-button v-if="plan && plan.status === 'released'" size="small" :loading="busy" @click="onClose">关闭工单</el-button>
         <el-button v-if="plan && plan.status === 'closed'" type="warning" plain size="small" :loading="busy" @click="onReopen">重开工单</el-button>
       </div>
@@ -36,6 +36,7 @@
         <div class="wo-card"><span>已领成本</span><b>{{ fmt(cost.issuedCost) }}</b></div>
         <div class="wo-card" :class="{ 'wo-card--warn': Math.abs(cost.wip) > 0.01 }"><span>在制(WIP)</span><b>{{ fmt(cost.wip) }}</b></div>
         <div class="wo-card"><span>{{ isOut ? '委外厂' : '原料仓' }}</span><b>{{ isOut ? (plan.supplier_name || plan.supplier_code || '-') : (plan.yl_warehouse_name || plan.yl_warehouse || '-') }}</b></div>
+        <div class="wo-card" v-if="customerOrders.length"><span>客户订单</span><b><el-link v-for="o in customerOrders" :key="o.doc_id" type="primary" style="margin-right:8px" :title="o.via" @click="router.push(scmDownstreamDocRoute(o.doc_id, 'audited', undefined, 'SOa'))">{{ o.doc_no }}</el-link></b><i class="text-muted">{{ customerOrders.map(o => o.partner_name || o.partner_code).filter(Boolean).join('、') }}</i></div>
       </div>
 
       <!-- 成品明细 -->
@@ -198,6 +199,7 @@ const plan = ref<any>(null)
 const products = ref<any[]>([])
 const docs = ref<any[]>([])
 const changes = ref<any[]>([])
+const customerOrders = ref<any[]>([])
 const processes = ref<any[]>([])
 const schedule = ref<any>(null)
 const productCode = (pid: string) => products.value.find((p: any) => p.id === pid)?.item_code || ''
@@ -245,6 +247,7 @@ async function load() {
       products.value = r.data.products || []
       docs.value = r.data.docs || []
       changes.value = r.data.changes || []
+      customerOrders.value = (r.data as any).customer_orders || []
       processes.value = (r.data as any).processes || []
       schedule.value = (r.data as any).schedule || null
       cost.value = r.data.cost

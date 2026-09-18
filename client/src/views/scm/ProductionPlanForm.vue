@@ -324,6 +324,8 @@ async function onPickProduct(item: any, row: any) {
   row.item_code = nextCode
   row.item_name = item.name
   row._resolved_item_code = nextCode
+  // 委外计划：加工费单价 / 税率按物料档案默认带出（未填过时）
+  if (form.value.plan_type === 'outsource' && !Number(row.process_fee)) { row.process_fee = Number(item.outsource_fee) || 0; if (!Number(row.process_tax_rate)) row.process_tax_rate = Number(item.outsource_tax_rate) || 0 }
   if (row.bom_id || hasSelectedMaterialLines(row.lines)) return
   // 选定成品后自动带出 BOM：唯一匹配直接带；多张时带默认那张（启用/版本新/编码小），并提示可改选
   const matched = matchProductBoms(await ensureBomsLoaded(), nextCode)

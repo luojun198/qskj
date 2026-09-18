@@ -977,6 +977,114 @@ async function main() {
     assert('㉜ [C-6] 超额吸收分摊凭证：借 5101 60 / 贷 存货 60', es.some(e => e.account_code === '5101' && e.direction === 'debit' && e.amount === 60) && es.some(e => e.direction === 'credit' && e.amount === 60), JSON.stringify(es))
   }
 
+  // ── ㉝ 端到端：销售订单 → MRP → 采购 / 委外 / 自制 → 完工 → 发货 → 收付款（生产·委外·进销存联动）──
+  {
+    const E = (name, cond, detail) => assert('㉝ ' + name, cond, detail)
+    await ensure('/api/scm/partners', { code: 'VEN2', name: '半成品委外厂', partner_type: 'supplier', ap_account: '2202', is_outsource: 1 })
+    await ensure('/api/scm/items', { code: 'RAWX', name: 'E2E 原料', unit: '个', source_type: 'purchase', supplier_code: 'SUP1', purchase_price: 10, default_warehouse_code: 'W1' })
+    await ensure('/api/scm/items', { code: 'SEMI', name: 'E2E 半成品(委外)', unit: '个', source_type: 'outsource', supplier_code: 'VEN2', default_warehouse_code: 'W1', outsource_fee: 20, outsource_tax_rate: 13 })
+    await ensure('/api/scm/items', { code: 'FPX', name: 'E2E 成品', unit: '台', source_type: 'self', sale_price: 300, default_warehouse_code: 'W1' })
+    const bomS = await post('/api/scm/boms', { code: 'BOM-SEMI', name: 'SEMI', item_code: 'SEMI', version: '1.0', is_default: 1, lines: [{ item_code: 'RAWX', qty: 2 }] }, { allowError: true })
+    const bomF = await post('/api/scm/boms', { code: 'BOM-FPX', name: 'FPX', item_code: 'FPX', version: '1.0', is_default: 1, lines: [{ item_code: 'SEMI', qty: 1 }, { item_code: 'RAWX', qty: 1 }] }, { allowError: true })
+    E('BOM 两层建立', (bomS.code === 0 || /已存在/.test(bomS.message || '')) && (bomF.code === 0 || /已存在/.test(bomF.message || '')), (bomS.message || '') + (bomF.message || ''))
+    // 1. 销售订单
+    const soa = await createDoc({ doc_type: 'SOa', doc_date: D, partner_code: 'CUS1', warehouse_code: 'W1', lines: [{ item_code: 'FPX', qty: 5, price: 300, tax_rate: 13, tax_amount: 195 }] })
+    E('销售订单审核', (await audit(soa.id)).code === 0)
+    // 2. MRP：三层需求 FPX(自制 5) → SEMI(委外 5) + RAWX(采购 5+10=15)
+    const mrp = await post('/api/scm/mrp-docs', { doc_date: D, include_safety_stock: false, sources: [{ kind: 'sales_order', id: soa.id }] }, { allowError: true })
+    E('MRP 计算单生成', mrp.code === 0, mrp.message)
+    const mrpLines = dbq('SELECT item_code, qty, source_type FROM scm_doc_line WHERE doc_id=? ORDER BY item_code', mrp.data.id)
+    E('MRP 展开三层：FPX 自制 5、SEMI 委外 5、RAWX 采购 15', JSON.stringify(mrpLines.map(l => [l.item_code, l.qty, l.source_type])) === JSON.stringify([['FPX', 5, 'self'], ['RAWX', 15, 'purchase'], ['SEMI', 5, 'outsource']]), JSON.stringify(mrpLines))
+    E('MRP 审核', (await post(`/api/scm/mrp-docs/${mrp.data.id}/audit`, {}, { allowError: true })).code === 0)
+    const pv = (await get(`/api/scm/docs/${mrp.data.id}/downstream-preview`)).data
+    const nodes = pv.nodes || pv.tree || pv.levels?.flatMap(l => l.nodes) || []
+    const nodeKey = code => (nodes.find(n => n.item_code === code) || {}).key
+    E('分层下推预览含三种来源节点', nodeKey('FPX') && nodeKey('SEMI') && nodeKey('RAWX'), JSON.stringify(Object.keys(pv)) + ' ' + JSON.stringify(nodes.map(n => [n.key, n.item_code, n.source_type, n.remaining_qty ?? n.qty])).slice(0, 300))
+    const gen = await post(`/api/scm/docs/${mrp.data.id}/gen-downstream`, { selected_nodes: [
+      { key: nodeKey('FPX'), qty: 5 }, { key: nodeKey('SEMI'), qty: 5, supplier_code: 'VEN2' }, { key: nodeKey('RAWX'), qty: 15, supplier_code: 'SUP1' }] }, { allowError: true })
+    E('一键下推：生产工单 + 委外工单 + 采购订单', gen.code === 0, gen.message || JSON.stringify(gen.data))
+    const plans = dbq("SELECT id, code, plan_type, plan_qty, status FROM scm_production_plan WHERE source_doc_id=? ORDER BY plan_type", mrp.data.id)
+    const pos = dbq("SELECT id, doc_no, doc_type, status FROM scm_doc WHERE source_doc_id=? AND doc_type='PO'", mrp.data.id)
+    E('下推结果：自制工单 5、委外工单 5、采购订单 1 张', plans.length === 2 && plans.some(p => p.plan_type === 'self' && p.plan_qty === 5) && plans.some(p => p.plan_type === 'outsource' && p.plan_qty === 5) && pos.length === 1, JSON.stringify({ plans, pos }))
+    const selfPlan = plans.find(p => p.plan_type === 'self'), outPlan = plans.find(p => p.plan_type === 'outsource')
+    const outProd = dbq('SELECT process_fee, process_tax_rate FROM scm_production_plan_product WHERE plan_id=?', outPlan.id)[0]
+    E('[联动] MRP 下推的委外工单按物料档案带出加工费 20 / 税率 13', outProd.process_fee === 20 && outProd.process_tax_rate === 13, JSON.stringify(outProd))
+    const selfDet0 = (await get(`/api/scm/production-plans/${selfPlan.id}`)).data
+    E('[联动] 工单详情带客户订单（经 MRP 反查）', Array.isArray(selfDet0.customer_orders) && selfDet0.customer_orders.some(o => o.doc_no === soa.doc_no && /MRP/.test(o.via)), JSON.stringify(selfDet0.customer_orders))
+    // 3. 采购：PO → PI 入库 15 RAWX
+    const poLines = dbq('SELECT id, item_code, qty, price FROM scm_doc_line WHERE doc_id=?', pos[0].id)
+    E('采购订单行 RAWX 15', poLines.length === 1 && poLines[0].qty === 15, JSON.stringify(poLines))
+    await audit(pos[0].id)
+    const pi = await post('/api/scm/docs', { doc_type: 'PI', doc_date: D, partner_code: 'SUP1', warehouse_code: 'W1', source_doc_id: pos[0].id,
+      lines: [{ item_code: 'RAWX', qty: 15, price: 10, tax_rate: 13, tax_amount: 19.5, source_line_id: poLines[0].id }] }, { allowError: true })
+    E('采购入库（来源采购订单）审核', pi.status === 200 && (await audit(pi.data.id)).code === 0, pi.message)
+    E('RAWX 入库 15', Number((await stock('W1', 'RAWX')).qty) >= 15)
+    // 4. 委外：下达 → 委外发货 WO（RAWX 10）→ 委外入库 WI（SEMI 5，加工费 20/件）
+    E('委外工单审核', (await post(`/api/scm/production-plans/${outPlan.id}/release`, {}, { allowError: true })).code === 0)
+    const wo = await post(`/api/scm/production-plans/${outPlan.id}/gen-issue`, {}, { allowError: true })
+    E('生成委外发货单', wo.code === 0, wo.message)
+    E('委外发货审核（RAWX −10）', (await audit(wo.data.id)).code === 0)
+    const outDet = (await get(`/api/scm/production-plans/${outPlan.id}`)).data
+    const wi = await post(`/api/scm/production-plans/${outPlan.id}/gen-finish`, { products: [{ product_id: outDet.products[0].id, qty: 5 }] }, { allowError: true })
+    E('[联动] 委外入库默认带工单加工费 20', wi.code === 0 && dbq('SELECT process_fee FROM scm_doc_line WHERE doc_id=?', wi.data.id)[0].process_fee === 20, JSON.stringify(dbq('SELECT process_fee, tax_amount FROM scm_doc_line WHERE doc_id=?', wi.data?.id)))
+    // IQC 闸对委外入库生效
+    {
+      const cur = (await get('/api/scm/params')).data; const list = Array.isArray(cur) ? cur : (cur.list || [])
+      await api('PUT', '/api/scm/params', { params: [...list.filter(p => p.param_key !== 'scm:qc_required_for_receipt'), { param_key: 'scm:qc_required_for_receipt', param_value: '1' }] }, { allowError: true })
+      const blocked = await audit(wi.data.id)
+      E('[联动] 开启到货检验后委外入库无 IQC 被拦', blocked.code !== 0 && /委外入库单.*到货检验单/.test(blocked.message || ''), blocked.message)
+      await api('PUT', '/api/scm/params', { params: [...list.filter(p => p.param_key !== 'scm:qc_required_for_receipt'), { param_key: 'scm:qc_required_for_receipt', param_value: '0' }] }, { allowError: true })
+    }
+    E('生成委外入库单', wi.code === 0, wi.message)
+    const awi = await audit(wi.data.id)
+    E('委外入库审核：SEMI +5、加工费挂 VEN2 应付 113', awi.code === 0 && Number((await stock('W1', 'SEMI')).qty) === 5 && r2((await ledger('VEN2')).closing) === 113, awi.message + ' ' + JSON.stringify(await ledger('VEN2')).slice(0, 120))
+    const wiCost = dbq('SELECT unit_cost FROM scm_doc_line WHERE doc_id=?', wi.data.id)[0]
+    E('半成品单价 = 料(2×10) + 加工费 20 = 40', r2(wiCost.unit_cost) === 40, JSON.stringify(wiCost))
+    // 委外加工费发票 + 付款
+    const rp = await post('/api/scm/docs', { doc_type: 'RP', doc_date: D, partner_code: 'VEN2', source_doc_id: wi.data.id, lines: [{ item_code: 'SEMI', qty: 5, price: 20, tax_rate: 13, tax_amount: 13 }] }, { allowError: true })
+    E('委外加工费可下推采购发票', rp.status === 200 && (await audit(rp.data.id)).code === 0, rp.message)
+    const paySrc = (await get('/api/scm/arap/payment-sources?partner_code=VEN2&payment_doc_type=PAY')).data
+    E('付款源单列出委外入库', Array.isArray(paySrc) && paySrc.some(s => s.source_doc_type === 'WI'), JSON.stringify(paySrc).slice(0, 200))
+    const paySrcDoc = paySrc.find(s => s.source_doc_type === 'WI')
+    const pay = await post('/api/scm/docs', { doc_type: 'PAY', doc_date: D, partner_code: 'VEN2', settle_account: '1001', payment_type: 'cash', lines: [{ item_code: '', qty: 1, price: 113, amount: 113, arap_source_log_id: paySrcDoc?.arap_source_log_id, remark: '付委外加工费' }] }, { allowError: true })
+    E('付款单核销委外加工费（应付归零）', pay.status === 200 && (await audit(pay.data.id)).code === 0 && r2((await ledger('VEN2')).closing) === 0, pay.message + ' ' + JSON.stringify(await ledger('VEN2')).slice(0, 160))
+    // 5. 自制：下达 → 领料 PL（SEMI 5 + RAWX 5）→ 完工 PF 5
+    E('自制工单审核', (await post(`/api/scm/production-plans/${selfPlan.id}/release`, {}, { allowError: true })).code === 0)
+    const pl = await post(`/api/scm/production-plans/${selfPlan.id}/gen-issue`, {}, { allowError: true })
+    E('生成领料单', pl.code === 0, pl.message)
+    E('领料审核（SEMI −5、RAWX −5）', (await audit(pl.data.id)).code === 0 && Number((await stock('W1', 'SEMI')).qty) === 0)
+    const pf = await post(`/api/scm/production-plans/${selfPlan.id}/gen-finish`, {}, { allowError: true })
+    E('生成完工入库单（默认计划数）', pf.code === 0 && Number(dbq('SELECT total_qty FROM scm_doc WHERE id=?', pf.data.id)[0].total_qty) === 5, pf.message)
+    E('完工审核：FPX +5', (await audit(pf.data.id)).code === 0 && Number((await stock('W1', 'FPX')).qty) === 5)
+    const pfCost = dbq('SELECT unit_cost FROM scm_doc_line WHERE doc_id=?', pf.data.id)[0]
+    E('成品单价 = SEMI 40 + RAWX 10 = 50', r2(pfCost.unit_cost) === 50, JSON.stringify(pfCost))
+    // 6. 销售发货（来源销售订单）→ 应收 → 收款
+    const soaLines = dbq('SELECT id FROM scm_doc_line WHERE doc_id=?', soa.id)
+    const so = await post('/api/scm/docs', { doc_type: 'SO', doc_date: D, partner_code: 'CUS1', warehouse_code: 'W1', source_doc_id: soa.id,
+      lines: [{ item_code: 'FPX', qty: 5, price: 300, tax_rate: 13, tax_amount: 195, warehouse_code: 'W1', source_line_id: soaLines[0].id }] }, { allowError: true })
+    E('销售发货（来源订单）审核：FPX −5、应收 1695', so.status === 200 && (await audit(so.data.id)).code === 0 && Number((await stock('W1', 'FPX')).qty) === 0, so.message)
+    const soCost = dbq("SELECT unit_cost FROM scm_doc_line WHERE doc_id=?", so.data.id)[0]
+    E('销售成本 = 成品成本 50', r2(soCost.unit_cost) === 50, JSON.stringify(soCost))
+    // 7. 关联关系树 & 订单状态
+    const rel = (await get('/api/scm/sales-order-relations?keyword=' + encodeURIComponent(soa.doc_no))).data
+    const tree = rel.roots || []
+    const root = tree.find(n => n.doc_no === soa.doc_no)
+    const flat = []; const walk = n => { flat.push(n); (n.children || []).forEach(walk) }; if (root) walk(root)
+    E('销售订单关联树含 MRP / 采购订单 / 采购入库 / 委外工单 / 委外发货入库 / 自制工单 / 领料完工 / 发货 / 付款', root && ['MRP', 'PO', 'PI', 'WO', 'WI', 'PL', 'PF', 'SO', 'PAY', 'RP'].every(t => flat.some(n => n.doc_type === t)) && flat.filter(n => n.node_kind === 'production_plan').length === 2, JSON.stringify(flat.map(n => [n.doc_type, n.node_kind])).slice(0, 500))
+    const avail = (await get(`/api/scm/push-options?source_kind=sales_order&source_id=${soa.id}`)).data
+    const dispatch = (avail.actions || []).find(a => a.action === 'sales_dispatch')
+    E('销售订单下推状态 = 已全部发货', dispatch && dispatch.status === 'completed', JSON.stringify(avail.actions))
+    const exec = (await get(`/api/scm/report/sales/execution?status=all&keyword=${encodeURIComponent(soa.doc_no)}`)).data
+    E('[联动] 销售订单执行表：订单 5 / 已发 5 / 未发 0，关联两张工单', exec.rows.length === 1 && exec.rows[0].order_qty === 5 && exec.rows[0].shipped_qty === 5 && exec.rows[0].open_qty === 0, JSON.stringify(exec.rows[0]))
+    // 再下一张未生产的订单：执行表应显示待生产 + 在产为 0、库存 0
+    const soa2 = await createDoc({ doc_type: 'SOa', doc_date: D, partner_code: 'CUS1', warehouse_code: 'W1', expect_date: '2026-01-01', lines: [{ item_code: 'FPX', qty: 2, price: 300 }] })
+    await audit(soa2.id)
+    const exec2 = (await get(`/api/scm/report/sales/execution?status=open&overdue=1`)).data
+    E('[联动] 执行表逾期筛选命中未发货且交期已过的订单', exec2.rows.some(r => r.doc_no === soa2.doc_no && r.open_qty === 2 && r.overdue && !r.ready), JSON.stringify(exec2.rows.map(r => [r.doc_no, r.open_qty, r.overdue])))
+    const xls2 = await fetch(`${BASE}/api/scm/report/sales/execution/export`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: '{"status":"all"}' })
+    E('[联动] 执行表导出 xlsx', xls2.status === 200 && /spreadsheet/.test(xls2.headers.get('content-type') || ''), String(xls2.status))
+  }
+
   // 汇总
   const fails = results.filter(r => !r.pass)
   console.log(`\n==== ${results.length} 项断言，${fails.length} 项失败 ====`)

@@ -414,10 +414,10 @@
                     开启后，有工艺路线的工单报工时后道工序累计（合格+不良）不得超过前道已审核完成数；关闭则各工序只受计划数约束
                   </span>
                 </el-form-item>
-                <el-form-item label="采购入库须到货检验">
+                <el-form-item label="采购/委外入库须到货检验">
                   <el-switch v-model="scmForm.qc_required_for_receipt" inline-prompt active-text="开" inactive-text="关" />
                   <span style="margin-left:12px;font-size:12px;color:var(--el-text-color-secondary)">
-                    开启后，采购入库(PI) 审核前必须有挂本入库单号、判定合格且合格数覆盖入库数的已审核到货检验单(IQC)
+                    开启后，采购入库(PI) 与委外入库(WI) 审核前必须有挂本入库单号、判定合格且合格数覆盖入库数的已审核到货检验单(IQC)
                   </span>
                 </el-form-item>
                 <el-form-item label="完工入库须质检">

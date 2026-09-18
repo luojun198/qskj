@@ -94,6 +94,12 @@
                 </el-select>
               </el-form-item>
             </el-col>
+            <el-col v-if="form.source_type === 'outsource'" :span="8">
+              <el-form-item label="委外加工费">
+                <el-input-number v-model="form.outsource_fee" :min="0" :precision="4" :controls="false" style="width:60%" />
+                <el-input-number v-model="form.outsource_tax_rate" :min="0" :max="100" :precision="2" :controls="false" style="width:38%;margin-left:2%" placeholder="税率%" />
+              </el-form-item>
+            </el-col>
             <el-col :span="8">
               <el-form-item label="默认仓库">
                 <el-select v-model="form.default_warehouse_code" clearable filterable style="width:100%">
@@ -436,7 +442,7 @@ function removeSecondaryUnit(i: number) { form.value.secondary_units?.splice(i, 
 // ── 表单初始化 ────────────────────────────────────────────────────────────
 function newForm(parent?: ScmItem | null) {
   form.value = {
-    purchase_price: 0, sale_price: 0, fixed_cost: 0,
+    purchase_price: 0, sale_price: 0, fixed_cost: 0, outsource_fee: 0, outsource_tax_rate: 0,
     batch_flag: 0, batch_out_mode: 'fifo', serial_flag: 0, is_asset: 0, is_leaf: 1,
     source_type: 'purchase', primary_unit_code: '', secondary_units: [],
     parent_id: parent?.id || '', field_values: {},

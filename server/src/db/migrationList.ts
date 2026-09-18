@@ -475,6 +475,10 @@ import {
   up as scmOverheadVarianceUp,
   down as scmOverheadVarianceDown,
 } from './migrations/20260918_scm_overhead_variance.js'
+import {
+  up as scmItemOutsourceFeeUp,
+  down as scmItemOutsourceFeeDown,
+} from './migrations/20260918_scm_item_outsource_fee.js'
 
 /**
  * 迁移示例：添加新字段
@@ -2232,5 +2236,11 @@ export const migrations: Migration[] = [
     name: 'scm_overhead_variance',
     up: scmOverheadVarianceUp,
     down: scmOverheadVarianceDown,
+  },
+  {
+    version: 140,
+    name: 'scm_item_outsource_fee',
+    up: scmItemOutsourceFeeUp,
+    down: scmItemOutsourceFeeDown,
   },
 ]

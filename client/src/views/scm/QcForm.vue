@@ -50,8 +50,8 @@
             </el-select>
           </el-form-item></el-col>
           <el-col v-else :span="12"><el-form-item label="来源单号">
-            <el-input v-model="form.source_doc_no" :placeholder="form.qc_type === 'IQC' ? '采购入库单号（参数开启「采购入库须到货检验」时，入库单按此单号找合格 IQC）' : '来源单号，仅作记录'" />
-            <div class="qc-type-hint">{{ form.qc_type === 'IQC' ? '到货检验：系统参数「采购入库须先到货检验」开启后，采购入库单审核须有挂本单号、判定合格且合格数覆盖入库数的已审核 IQC。' : '过程检验：仅作质量记录，不拦截工序。' }}</div>
+            <el-input v-model="form.source_doc_no" :placeholder="form.qc_type === 'IQC' ? '采购/委外入库单号（参数开启「入库须到货检验」时，入库单按此单号找合格 IQC）' : '来源单号，仅作记录'" />
+            <div class="qc-type-hint">{{ form.qc_type === 'IQC' ? '到货检验：系统参数「入库须先到货检验」开启后，采购入库 / 委外入库单审核须有挂本单号、判定合格且合格数覆盖入库数的已审核 IQC。' : '过程检验：仅作质量记录，不拦截工序。' }}</div>
           </el-form-item></el-col>
           <el-col :span="12"><el-form-item label="备注"><el-input v-model="form.remark" placeholder="可留空" /></el-form-item></el-col>
         </el-row>

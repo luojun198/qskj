@@ -15,6 +15,7 @@ import { normalizePaging } from '../utils/paging.js'
 import { listStockLayers, getCostingMethod } from '../services/scmCosting.js'
 import { calcMonthAvg, listCostingPeriods } from '../services/scmMonthAvg.js'
 import { queryWorkHoursStat, queryProductionDaily, type WorkHoursFilters, type DailyFilters } from '../services/scmProductionReports.js'
+import { querySalesOrderExecution, type SalesExecFilters } from '../services/scmSalesOrderExecution.js'
 import { getScmBaseCurrency, isScmBaseCurrency, normalizeScmCurrency, resolveScmExchangeRate } from '../services/scmCurrency.js'
 
 async function buildStyledXlsxBuffer(options: any) {
@@ -444,6 +445,7 @@ router.post('/scm/items', operationLog('物料新增', '供应链'), (req: AuthR
     b.buyer ?? null, b.work_station ?? null, Number(b.transfer_price) || 0, Number(b.sale_price2) || 0, Number(b.sale_price3) || 0, Number(b.safety_stock) || 0,
     b.source_type || 'purchase', b.batch_out_mode === 'manual' ? 'manual' : 'fifo', b.serial_flag ? 1 : 0, b.default_warehouse_code || null
   )
+  if (b.outsource_fee !== undefined || b.outsource_tax_rate !== undefined) db.prepare('UPDATE scm_item SET outsource_fee=?, outsource_tax_rate=? WHERE id=?').run(Number(b.outsource_fee) || 0, Number(b.outsource_tax_rate) || 0, id)
   // 同步主/副单位关联
   if (primaryUnitCode) syncItemUnits(db, aid, b.code, primaryUnitCode, b.secondary_units)
   res.json({ code: 0, data: { id } })
@@ -499,6 +501,7 @@ router.put('/scm/items/:id', operationLog('物料修改', '供应链'), (req: Au
   } else {
     db.prepare(`UPDATE scm_item SET ${fields} WHERE id=?`).run(...vals, req.params.id)
   }
+  if (b.outsource_fee !== undefined || b.outsource_tax_rate !== undefined) db.prepare('UPDATE scm_item SET outsource_fee=?, outsource_tax_rate=? WHERE id=?').run(Number(b.outsource_fee) || 0, Number(b.outsource_tax_rate) || 0, req.params.id)
   if (primaryUnitCode) syncItemUnits(db, aid, ex.code, primaryUnitCode, b.secondary_units)
   res.json({ code: 0, data: { ok: true } })
 })
@@ -1027,6 +1030,25 @@ router.post('/scm/report/production/execution/export', async (req: AuthRequest, 
   } catch (error: any) {
     res.status(400).json({ code: 400, message: error?.message || '生产执行表导出失败' })
   }
+})
+
+// ── 报表：销售订单执行表（订单 → 库存 / 在产 / 委外 / 采购在途 → 发货，联动收口） ──
+router.get('/scm/report/sales/execution', (req: AuthRequest, res) => {
+  try { res.json({ code: 0, data: querySalesOrderExecution(getDb(), asid(req), req.query as unknown as SalesExecFilters) }) }
+  catch (e: any) { res.status(400).json({ code: 400, message: e?.message || '销售订单执行表查询失败' }) }
+})
+router.post('/scm/report/sales/execution/export', async (req: AuthRequest, res) => {
+  try {
+    const result = querySalesOrderExecution(getDb(), asid(req), { ...(req.body || {}), page: 1, page_size: 500 })
+    const defs: Array<[string, string, 'text' | 'number']> = [
+      ['doc_no', '订单号', 'text'], ['doc_date', '订单日期', 'text'], ['expect_date', '交货日期', 'text'], ['partner_name', '客户', 'text'],
+      ['item_code', '物料编码', 'text'], ['item_name', '物料名称', 'text'], ['order_qty', '订单量', 'number'], ['shipped_qty', '已发货', 'number'], ['open_qty', '未发', 'number'],
+      ['on_hand', '现有库存', 'number'], ['wip_qty', '自制在产', 'number'], ['outsource_wip_qty', '委外在产', 'number'], ['po_open_qty', '采购在途', 'number'],
+      ['est_ready_date', '预计可交', 'text'], ['wip_plans_text', '关联工单', 'text'], ['overdue_text', '状态', 'text'],
+    ]
+    const rows = result.rows.map((r: any) => ({ ...r, wip_plans_text: (r.wip_plans || []).join('、'), overdue_text: r.overdue ? '逾期' : r.ready ? '可发货' : r.open_qty > 0 ? '待生产/采购' : '已完成' }))
+    await sendXlsx(res, { sheetName: '销售订单执行', title: '销售订单执行表', subtitle: '未发 = 订单量 − 已发货（扣退货）；在产 = 关联工单计划 − 完工 − 报废；采购在途 = 已审核采购订单未入库', defs, rows, fileBase: '销售订单执行表' })
+  } catch (e: any) { res.status(400).json({ code: 400, message: e?.message || '销售订单执行表导出失败' }) }
 })
 
 // ── 报表：工时统计 / 生产日报（生产评审 C-4 ①②） ──────────────────

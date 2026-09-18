@@ -28,13 +28,14 @@ export function validateReceiptQc(
   doc: { id: string; doc_no: string; doc_type: string },
   lines: Array<{ item_code?: string | null; qty?: number | null }>,
 ): string | null {
-  if (doc.doc_type !== 'PI') return null
+  // 采购入库 PI 与委外入库 WI 同受「入库须到货检验」参数约束（委外回厂半成品同样要检）
+  if (doc.doc_type !== 'PI' && doc.doc_type !== 'WI') return null
   if (!isQcRequiredForReceipt(db, accountSetId)) return null
   const hits = db.prepare(`SELECT id, qc_no FROM scm_qc_doc
      WHERE account_set_id=? AND qc_type='IQC' AND status='audited' AND result IN ('pass','concession')
        AND (source_doc_id=? OR source_doc_no=?)`).all(accountSetId, doc.id, doc.doc_no) as Array<{ id: string; qc_no: string }>
   if (!hits.length) {
-    return `系统参数已开启「采购入库须先到货检验」，入库单 ${doc.doc_no} 没有判定合格的已审核到货检验单(IQC)。`
+    return `系统参数已开启「入库须先到货检验」，${doc.doc_type === 'WI' ? '委外入库单' : '采购入库单'} ${doc.doc_no} 没有判定合格的已审核到货检验单(IQC)。`
       + '请先在「质检管理」新建 IQC 质检单（来源选本入库单）、判定合格并审核。'
   }
   const qcPh = hits.map(() => '?').join(',')

@@ -828,6 +828,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '购销报表', icon: 'DataAnalysis', parent: '供应链' },
       },
       {
+        path: 'scm/report/sales/execution',
+        name: 'ScmSalesOrderExecution',
+        component: () => import('@/views/scm/SalesOrderExecution.vue'),
+        meta: { title: '销售订单执行表', icon: 'DataAnalysis', parent: '销售报表' },
+      },
+      {
         path: 'scm/report/sales/summary',
         name: 'ScmSalesSummaryReport',
         component: () => import('@/views/scm/SalesFixedReport.vue'),

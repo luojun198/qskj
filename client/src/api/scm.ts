@@ -42,6 +42,8 @@ export interface ScmItem {
   sale_price?: number
   ref_cost?: number
   fixed_cost?: number
+  outsource_fee?: number        // 委外加工费单价（委外件默认带出）
+  outsource_tax_rate?: number
   inv_account?: string
   sale_account?: string
   batch_flag?: number
@@ -589,6 +591,9 @@ export const scmApi = {
   deleteProductionPlan: (id: string) => request.delete(`/scm/production-plans/${id}`),
   batchProductionPlanActions: (data: { action: 'delete' | 'unrelease' | 'reopen'; ids: string[] }) =>
     request.post<{ processed: number; action: string; results: any[] }>('/scm/production-plans/batch-actions', data, { skipErrorToast: true }),
+  // 销售订单执行表（联动收口）
+  getSalesOrderExecution: (params: Record<string, any>) => request.get<{ rows: any[]; total: number; page: number; page_size: number; summary: Record<string, number> }>('/scm/report/sales/execution', { params }),
+  exportSalesOrderExecution: (data: Record<string, any>) => request.downloadPost('/scm/report/sales/execution/export', data, { timeout: 600_000 }),
   // 制费/人工吸收差异结转（C-6）
   previewOverheadVariance: (params: Record<string, any>) => request.get<any>('/scm/costing/overhead-variance/preview', { params }),
   transferOverheadVariance: (data: Record<string, any>) => request.post<any>('/scm/costing/overhead-variance/transfer', data),

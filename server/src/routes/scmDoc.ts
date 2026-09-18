@@ -1222,6 +1222,29 @@ function syncPlanActualDates(db: ReturnType<typeof getDb>, aid: string, planId: 
   db.prepare('UPDATE scm_production_plan SET actual_start_date=?, actual_end_date=? WHERE id=? AND account_set_id=?').run(start, end, planId, aid)
 }
 
+/**
+ * 工单对应的客户订单（联动收口）：
+ *  - 直接由销售订单下推：成品行 source_line_id → SOa 行
+ *  - 经 MRP / 缺料单下推：工单 source_doc_id → MRP/MR → scm_mrp_source(kind=sales_order) / MR.source_doc_id → SOa
+ */
+export function planCustomerOrders(db: ReturnType<typeof getDb>, aid: string, plan: any): Array<{ doc_id: string; doc_no: string; doc_date: string | null; partner_code: string | null; partner_name: string | null; via: string }> {
+  const out = new Map<string, any>()
+  const push = (row: any, via: string) => { if (row && !out.has(row.id)) out.set(row.id, { doc_id: row.id, doc_no: row.doc_no, doc_date: row.doc_date, partner_code: row.partner_code, partner_name: row.partner_name, via }) }
+  const soaById = db.prepare(`SELECT d.id, d.doc_no, d.doc_date, d.partner_code, p.name AS partner_name FROM scm_doc d LEFT JOIN scm_partner p ON p.account_set_id=d.account_set_id AND p.code=d.partner_code WHERE d.id=? AND d.account_set_id=? AND d.doc_type='SOa'`)
+  // 直推：成品行 source_line_id 落在销售订单行上
+  for (const r of db.prepare(`SELECT DISTINCT l.doc_id FROM scm_production_plan_product pp JOIN scm_doc_line l ON l.id=pp.source_line_id WHERE pp.plan_id=? AND pp.account_set_id=?`).all(plan.id, aid) as any[]) push(soaById.get(r.doc_id, aid), '销售订单下推')
+  // 经 MRP / 缺料单
+  if (plan.source_doc_id) {
+    const src = db.prepare('SELECT id, doc_type, doc_no, source_doc_id FROM scm_doc WHERE id=? AND account_set_id=?').get(plan.source_doc_id, aid) as any
+    if (src?.doc_type === 'MRP' || src?.doc_type === 'MR') {
+      const mrpId = src.doc_type === 'MR' && src.source_doc_id ? src.source_doc_id : src.id
+      for (const s of db.prepare("SELECT DISTINCT source_id FROM scm_mrp_source WHERE account_set_id=? AND mrp_doc_id=? AND source_kind='sales_order'").all(aid, mrpId) as any[]) push(soaById.get(s.source_id, aid), `${src.doc_type === 'MR' ? '缺料单' : 'MRP'} ${src.doc_no}`)
+      if (src.doc_type === 'MR' && src.source_doc_id) push(soaById.get(src.source_doc_id, aid), `缺料单 ${src.doc_no}`)
+    } else if (src?.doc_type === 'SOa') push(soaById.get(src.id, aid), '销售订单下推')
+  }
+  return [...out.values()]
+}
+
 /** 工单头 scrap_qty = 各成品行报废数之和（与 finished_qty 的同步方式一致） */
 function syncPlanScrapQty(db: ReturnType<typeof getDb>, aid: string, planId: string) {
   const total = (db.prepare('SELECT COALESCE(SUM(scrap_qty),0) s FROM scm_production_plan_product WHERE plan_id=?').get(planId) as any)?.s || 0
@@ -1403,8 +1426,8 @@ export const auditDocHandler = (req: AuthRequest, res: Response) => {
     }
   }
 
-  // 采购入库：参数开启时须先过到货检验（IQC）
-  if (doc.doc_type === 'PI') {
+  // 采购入库 / 委外入库：参数开启时须先过到货检验（IQC）
+  if (doc.doc_type === 'PI' || doc.doc_type === 'WI') {
     const iqcErr = validateReceiptQc(db, aid, doc, lines)
     if (iqcErr) return res.status(400).json({ code: 400, message: iqcErr })
   }
@@ -2299,15 +2322,18 @@ router.post('/scm/docs/:id/gen-downstream', operationLog('MRP/缺料单生成下
     }
     const cols = Object.keys(data).filter(key => planCols.has(key))
     db.prepare(`INSERT INTO scm_production_plan (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`).run(...cols.map(key => data[key]))
-    const insP = db.prepare(`INSERT INTO scm_production_plan_product (id,account_set_id,plan_id,seq,item_code,plan_qty,bom_id,fp_warehouse,finished_qty,scrap_qty,source_line_id,source_doc_id)
-      VALUES (?,?,?,?,?,?,?,?,0,0,?,?)`)
+    const insP = db.prepare(`INSERT INTO scm_production_plan_product (id,account_set_id,plan_id,seq,item_code,plan_qty,bom_id,fp_warehouse,finished_qty,scrap_qty,source_line_id,source_doc_id,process_fee,process_tax_rate)
+      VALUES (?,?,?,?,?,?,?,?,0,0,?,?,?,?)`)
+    // 委外工单：加工费单价 / 税率按物料档案默认带出（联动收口：委外入库不再每次手填）
+    const feeOf = db.prepare('SELECT COALESCE(outsource_fee,0) fee, COALESCE(outsource_tax_rate,0) tax FROM scm_item WHERE account_set_id=? AND code=?')
     const insL = db.prepare('INSERT INTO scm_production_plan_line (id,account_set_id,plan_id,product_id,seq,item_code,qty,unit,scrap_rate,remark) VALUES (?,?,?,?,?,?,?,?,?,?)')
     let seq = 0
     for (const p of productsMeta) {
       seq++
       const productId = uuidv4()
       // 行级来源落成品行，用于该缺料行「已下推」防重
-      insP.run(productId, aid, planId, seq, p.item_code, p.plan_qty, p.bom_id ?? null, null, sourceLineOf(p.line), mr.id)
+      const fee = planType === 'outsource' ? (feeOf.get(aid, p.item_code) as any) : null
+      insP.run(productId, aid, planId, seq, p.item_code, p.plan_qty, p.bom_id ?? null, null, sourceLineOf(p.line), mr.id, Number(fee?.fee) || 0, Number(fee?.tax) || 0)
       if (p.bom_id) {
         const bomLines = db.prepare("SELECT item_code, qty, unit, scrap_rate, remark FROM scm_bom_line WHERE bom_id=? AND line_type='component' ORDER BY seq").all(p.bom_id) as any[]
         let s = 0
@@ -3326,7 +3352,7 @@ router.post('/scm/plan-changes/:id/audit', operationLog('工单变更单审核',
   try {
     db.transaction(() => {
       applyChange(db, aid, plan, after)
-      ensurePlanProcesses(db, aid, plan.id)
+      if ((plan.plan_type || 'self') === 'self') ensurePlanProcesses(db, aid, plan.id)
       db.prepare(`UPDATE scm_production_plan_change SET status='audited', before_json=?, diff_json=?, auditor=?, audited_at=datetime('now'), updated_at=datetime('now') WHERE id=?`)
         .run(JSON.stringify(before), JSON.stringify(diff), userName(req), ex.id)
       syncPlanActualDates(db, aid, plan.id)
@@ -3788,8 +3814,9 @@ router.get('/scm/production-plans/:id', (req: AuthRequest, res) => {
   const changes = db.prepare('SELECT id, change_no, change_date, reason, status, maker, auditor, audited_at, diff_json FROM scm_production_plan_change WHERE account_set_id=? AND plan_id=? ORDER BY change_date DESC, created_at DESC').all(aid, req.params.id)
     .map((c: any) => ({ ...c, diff: JSON.parse(c.diff_json || '[]'), diff_json: undefined }))
   const processes = listPlanProcesses(db, aid, req.params.id).map(x => ({ ...x, work_center_name: (db.prepare('SELECT name FROM scm_work_center WHERE account_set_id=? AND code=?').get(aid, x.work_center_code || '') as any)?.name || null }))
+  const customer_orders = planCustomerOrders(db, aid, plan)
   const schedule = plan.status === 'released' && processes.length ? estimatePlanFinish(db, aid, req.params.id) : null
-  res.json({ code: 0, data: { plan, products, bom_lines: bomLines, docs, cost, action_state: actionState, changes, processes, schedule } })
+  res.json({ code: 0, data: { plan, products, bom_lines: bomLines, docs, cost, action_state: actionState, changes, processes, schedule, customer_orders } })
 })
 
 // 生产/委外计划上下游关联追溯：上游=下推来源单据(source_doc_id)，下游=挂在本计划下的领料/完工/委外单(scm_doc.plan_id)。
@@ -3839,8 +3866,8 @@ router.post('/scm/production-plans/:id/release', operationLog('工单审核', '�
       }
     }
     db.prepare("UPDATE scm_production_plan SET status='released' WHERE id=? AND account_set_id=?").run(req.params.id, aid)
-    // C-2：按成品启用工艺路线快照工序行（无路线的成品不生成，报工沿用整件一道口径）
-    ensurePlanProcesses(db, aid, req.params.id)
+    // C-2：按成品启用工艺路线快照工序行（无路线的成品不生成，报工沿用整件一道口径）；委外工单不做工序
+    if ((p.plan_type || 'self') === 'self') ensurePlanProcesses(db, aid, req.params.id)
   })()
   res.json({ code: 0, data: { ok: true, snapshot_products: snapshot.length } })
 })
