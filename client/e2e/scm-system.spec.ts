@@ -10,14 +10,14 @@ import { test, expect, navTo, waitForTable } from './fixtures'
 
 test.describe('供应链冒烟', () => {
   test('物料档案页可渲染', async ({ loggedInPage: page }) => {
-    await navTo(page, '供应链', '物料档案')
+    await navTo(page, '基础资料', '物料档案')
     await expect(page.locator('.apple-breadcrumb')).toContainText('物料档案')
     await waitForTable(page)
     await expect(page.locator('.el-table')).toBeVisible()
   })
 
   test('库存查询页可渲染', async ({ loggedInPage: page }) => {
-    await navTo(page, '供应链', '库存查询')
+    await navTo(page, '库存管理', '库存查询')
     await waitForTable(page)
     await expect(page.locator('.el-table')).toBeVisible()
   })

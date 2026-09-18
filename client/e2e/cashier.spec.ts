@@ -11,7 +11,8 @@ test.describe('出纳管理', () => {
   // ── 日记账页面 ─────────────────────────────────────────
 
   test('出纳日记账页面能正常渲染', async ({ loggedInPage: page }) => {
-    await navTo(page, '出纳管理', '出纳录单')
+    // 出纳工作台的入口叫「单据录入」；先经应用栏进入出纳工作台再点入口
+    await navTo(page, '出纳管理', '单据录入')
     // 页面标题由布局层的面包屑承载（导航改版后各页面不再自带 h3）
     await expect(page.locator('.apple-breadcrumb')).toContainText('出纳录单')
     await expect(page.locator('.el-table')).toBeVisible()
@@ -20,7 +21,7 @@ test.describe('出纳管理', () => {
   })
 
   test('科目下拉包含现金和银行科目分组', async ({ loggedInPage: page }) => {
-    await navTo(page, '出纳管理', '出纳录单')
+    await page.goto('/cashier/journal')
     await page.locator('.el-select').first().click()
     await page.waitForSelector('.el-select-dropdown', { timeout: 5000 })
     // 期望有「现金科目」或「银行存款」分组标题
@@ -158,8 +159,8 @@ test.describe('出纳管理', () => {
   // ── 期初余额页面 ───────────────────────────────────────
 
   test('出纳期初余额页面能正常渲染', async ({ loggedInPage: page }) => {
-    await navTo(page, '出纳管理', '出纳期初')
-    await expect(page.locator('h3')).toContainText('出纳期初余额')
+    await page.goto('/cashier/init-balance')
+    await expect(page.locator('.apple-breadcrumb')).toContainText('出纳期初')
     await waitForTable(page)
     await expect(page.locator('.el-table')).toBeVisible()
   })

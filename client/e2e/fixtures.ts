@@ -92,14 +92,17 @@ export async function waitForTable(page: Page) {
 export async function navTo(page: Page, group: string, item: string) {
   await page.waitForSelector('.app-rail', { timeout: 8000 })
 
+  // 应用栏标签是 shortLabel（≤4 字，去「管理」后缀），按前两字前缀匹配
   const railItem = page
     .locator('.app-rail__item', { hasText: group.slice(0, 2) })
     .first()
   await railItem.click()
 
-  const panel = page.locator('.app-nav-panel')
-  await panel.waitFor({ state: 'visible', timeout: 5000 })
-
-  await panel.locator('.app-nav-panel__item', { hasText: item }).first().click()
+  // 二级导航面板已取消：点应用进入模块主页（/group/<模块>），页内流程卡 / 链接列 / 宫格全是 router-link
+  const home = page.locator('.module-home')
+  await home.waitFor({ state: 'visible', timeout: 8000 })
+  const link = home.locator('a', { hasText: item }).first()
+  await link.waitFor({ state: 'visible', timeout: 5000 })
+  await link.click()
   await page.waitForTimeout(300)
 }
