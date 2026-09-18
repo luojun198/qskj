@@ -14,6 +14,8 @@
       </div>
       <div class="wo-header__right">
         <el-button size="small" :loading="loading" @click="load">刷新</el-button>
+        <el-button v-if="plan" size="small" @click="router.push({ name: 'ScmProductionOrderPrint', params: { id } })">打印</el-button>
+        <el-button v-if="plan && plan.status === 'released' && !isOut" size="small" @click="router.push({ name: 'ScmWipCountNew', params: { planId: id } })">在制盘点</el-button>
         <ScmPushMenu v-if="plan && plan.status === 'released'" :source-kind="isOut ? 'outsource_plan' : 'production_plan'"
           :source-id="id" :local-actions="['issue', 'finish']" @action="handlePushAction" />
         <el-button v-if="plan && plan.status === 'draft'" type="primary" size="small" :loading="busy" @click="onRelease">审核</el-button>

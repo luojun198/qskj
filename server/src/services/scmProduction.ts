@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3'
 import { getScmMaxAllowedQty, getScmOverrunPolicy } from './scmOverrunPolicy.js'
 import { bomComponents, substituteStock } from './scmBom.js'
+import { planWipLossByItem } from './scmWipCount.js'
 
 /**
  * 工单用料的替代料映射（C-1 替代料）：替代料 → 主料。
@@ -81,6 +82,8 @@ export function computeIssueSuggestion(
     GROUP BY m.item_code
   `).all(aid, plan.id, ...issueDocTypes) as any[]
   const issuedMap = new Map<string, number>(issuedRows.map(r => [r.item_code, Number(r.issued) || 0]))
+  // C-5 在制盘点：已审核盘亏视同未领（现场少了要补领）；盘盈走退料单，退料审核后自然从已领扣减
+  for (const [code, loss] of planWipLossByItem(db, aid, plan.id)) issuedMap.set(code, (issuedMap.get(code) || 0) - loss)
   // 已领（二）：未审核草稿尚无库存移动，按明细行数量计入「占用」，方向取单据类型配置——
   //   否则同一工单可反复「生成领料单」生成多张全量草稿（重复领料）。
   const draftRows = db.prepare(`

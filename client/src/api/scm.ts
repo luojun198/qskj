@@ -589,6 +589,13 @@ export const scmApi = {
   deleteProductionPlan: (id: string) => request.delete(`/scm/production-plans/${id}`),
   batchProductionPlanActions: (data: { action: 'delete' | 'unrelease' | 'reopen'; ids: string[] }) =>
     request.post<{ processed: number; action: string; results: any[] }>('/scm/production-plans/batch-actions', data, { skipErrorToast: true }),
+  // 在制盘点（C-5）
+  getWipBook: (planId: string) => request.get<{ plan: any; rows: any[]; counts: any[] }>(`/scm/production-plans/${planId}/wip-book`),
+  getWipCount: (id: string) => request.get<any>(`/scm/wip-counts/${id}`),
+  createWipCount: (data: any) => request.post<{ id: string; count_no: string }>('/scm/wip-counts', data),
+  updateWipCount: (id: string, data: any) => request.put(`/scm/wip-counts/${id}`, data),
+  auditWipCount: (id: string) => request.post<{ ok: boolean; return_doc: { id: string; doc_no: string } | null }>(`/scm/wip-counts/${id}/audit`, {}),
+  deleteWipCount: (id: string) => request.delete(`/scm/wip-counts/${id}`),
   // 工单工序 / 产能（C-2 / C-3）
   genPlanProcesses: (planId: string) => request.post<{ created: number }>(`/scm/production-plans/${planId}/gen-processes`, {}),
   getProcessWip: (params: Record<string, any>) => request.get<any[]>('/scm/report/production/process-wip', { params }),

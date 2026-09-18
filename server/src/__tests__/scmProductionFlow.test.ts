@@ -20,6 +20,7 @@ import {
   unauditDocHandler,
   genVoucherHandler,
   getPlanCostSummary,
+  getPlanLaborOverhead,
 } from '../routes/scmDoc.js'
 
 const AID = 'AS-PROD'
@@ -327,6 +328,22 @@ describe('完工入库(PF) 审核', () => {
     const sum = costSummary()
     expect(sum.wip).toBe(0)
     expect(sum.laborWip).toBe(0)
+  })
+
+  it('计划级报工（product_id 为空）按各成品计划数分摊人工/制费，与成品级报工累加（生产评审 P2-7）', () => {
+    // 第二个成品 FP2 计划 30：合计 40，FP 占 25%、FP2 占 75%
+    testDb.prepare("INSERT INTO scm_production_plan_product (id,account_set_id,plan_id,seq,item_code,plan_qty,fp_warehouse) VALUES ('PROD-FP2',?,?,2,'FP2',30,'WF')").run(AID, PLAN)
+    const ins = testDb.prepare("INSERT INTO scm_work_report (id,account_set_id,plan_id,product_id,report_no,qty,work_hours,labor_amount,overhead_amount,status) VALUES (?,?,?,?,?,?,?,?,?,?)")
+    ins.run(uuidv4(), AID, PLAN, null, 'WR-1', 0, 4, 100, 40, 'audited')        // 计划级：人工 100 / 制费 40
+    ins.run(uuidv4(), AID, PLAN, PRODUCT, 'WR-2', 5, 2, 60, 20, 'audited')     // FP 成品级
+    ins.run(uuidv4(), AID, PLAN, 'PROD-FP2', 'WR-3', 5, 2, 0, 0, 'draft')      // 草稿不计
+    const lo = getPlanLaborOverhead(testDb as any, AID, PLAN)
+    expect(lo.get(PRODUCT)).toEqual({ labor: 85, overhead: 30 })      // 60 + 100×25%，20 + 40×25%
+    expect(lo.get('PROD-FP2')).toEqual({ labor: 75, overhead: 30 })   // 100×75%，40×75%
+    const sum = costSummary()
+    expect(sum.laborTotal).toBe(160)
+    expect(sum.overheadTotal).toBe(60)
+    expect(sum.laborWip).toBe(220)
   })
 
   it('工序委外(OP)：加工费挂委外厂应付、按制费吸收进成品成本，凭证 借制造费用+进项/贷应付', () => {

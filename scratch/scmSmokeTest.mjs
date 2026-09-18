@@ -867,6 +867,45 @@ async function main() {
     assert('㉙ [C-2] 变更单审核后工序行计划数同步为 6', det2.processes.every(x => x.plan_qty === 6), JSON.stringify(det2.processes.map(x => x.plan_qty)))
   }
 
+  // ── ㉚ 生产阶段 D：在制盘点 / 报工审核费率重算 ────────────────────────
+  {
+    const PL = (p) => `/api/scm/production-plans${p || ''}`
+    // MO-LATE：计划 5（变更后），用料 M1 1/件、M2 0.5/件；已领 M1 2；未完工 → 账面在制 M1 2、M2 0
+    const late = (await get(PL('?page=1&page_size=50&keyword=MO-LATE'))).data.list[0]
+    const book = (await get(PL(`/${late.id}/wip-book`))).data
+    const m1 = book.rows.find(r => r.item_code === 'M1')
+    assert('㉚ [C-5] 账面在制 = 净领 2 − 消耗 0', m1 && m1.issued_qty === 2 && m1.consumed_qty === 0 && m1.book_qty === 2, JSON.stringify(book.rows))
+    // 实盘 M1 1（盘亏 1）
+    const wc = await post('/api/scm/wip-counts', { plan_id: late.id, lines: [{ item_code: 'M1', counted_qty: 1 }] }, { allowError: true })
+    assert('㉚ [C-5] 盘点单保存并算出差异 −1', wc.status === 200 && wc.data.lines[0].diff_qty === -1, JSON.stringify(wc.data))
+    const dup = await post('/api/scm/wip-counts', { plan_id: late.id, lines: [{ item_code: 'M1', counted_qty: 2 }] }, { allowError: true })
+    assert('㉚ [C-5] 同工单只允许一张草稿盘点单', dup.status === 400, dup.message)
+    const au = await post(`/api/scm/wip-counts/${wc.data.id}/audit`, {}, { allowError: true })
+    assert('㉚ [C-5] 盘亏审核：不生成退料单', au.code === 0 && au.data.return_doc === null, JSON.stringify(au.data))
+    const sug = (await get(PL(`/${late.id}/issue-suggestion`))).data.lines.find(l => l.item_code === 'M1')
+    assert('㉚ [C-5] 盘亏 1 视同未领：M1 已领 1、待领 4', sug && sug.issued === 1 && sug.suggest === 4, JSON.stringify(sug))
+    const book2 = (await get(PL(`/${late.id}/wip-book`))).data.rows.find(r => r.item_code === 'M1')
+    assert('㉚ [C-5] 审核后账面在制扣除盘亏 = 1', book2.loss_qty === 1 && book2.book_qty === 1, JSON.stringify(book2))
+    // 盘盈：实盘 3 → 生成退料单草稿 2
+    const wc2 = await post('/api/scm/wip-counts', { plan_id: late.id, lines: [{ item_code: 'M1', counted_qty: 3 }] })
+    const au2 = await post(`/api/scm/wip-counts/${wc2.data.id}/audit`, {}, { allowError: true })
+    assert('㉚ [C-5] 盘盈审核生成退料单草稿', au2.code === 0 && au2.data.return_doc?.doc_no, JSON.stringify(au2.data))
+    const pj = dbq('SELECT d.status, l.item_code, l.qty FROM scm_doc d JOIN scm_doc_line l ON l.doc_id=d.id WHERE d.id=?', au2.data.return_doc.id)
+    assert('㉚ [C-5] 退料单为草稿、M1 数量 2', pj.length === 1 && pj[0].status === 'draft' && pj[0].item_code === 'M1' && Number(pj[0].qty) === 2, JSON.stringify(pj))
+    const detail = (await get(`/api/scm/wip-counts/${wc2.data.id}`)).data
+    assert('㉚ [C-5] 盘点单详情带退料单', detail.return_doc?.doc_no === au2.data.return_doc.doc_no && detail.lines.length === 1)
+    // P2-2：报工草稿后调费率，审核时按当前费率重算
+    const mo = (await get(PL('?page=1&page_size=50&keyword=MO-PROC2'))).data.list[0]
+    const det = (await get(PL(`/${mo.id}`))).data
+    const r = await post('/api/scm/work-reports', { plan_id: mo.id, product_id: det.products[0].id, item_code: 'FP4', process_name: '下料', work_center_code: 'WC1', work_hours: 2, qty: 1 }, { allowError: true })
+    assert('㉚ 报工草稿（人工 20×2=40）', r.status === 200 && dbq('SELECT labor_amount FROM scm_work_report WHERE id=?', r.data.id)[0].labor_amount === 40, r.message)
+    const wcs = (await get('/api/scm/work-centers')).data; const w1 = wcs.find(w => w.code === 'WC1')
+    await api('PUT', `/api/scm/work-centers/${w1.id}`, { ...w1, labor_rate: 25 }, { allowError: true })
+    const ar = await post(`/api/scm/work-reports/${r.data.id}/audit`, {}, { allowError: true })
+    assert('㉚ [P2-2] 审核按当前费率重算：人工 25×2=50 并标记 rate_adjusted', ar.code === 0 && ar.data.rate_adjusted === true && ar.data.labor_amount === 50, JSON.stringify(ar.data))
+    await api('PUT', `/api/scm/work-centers/${w1.id}`, { ...w1, labor_rate: 20 }, { allowError: true })
+  }
+
   // 汇总
   const fails = results.filter(r => !r.pass)
   console.log(`\n==== ${results.length} 项断言，${fails.length} 项失败 ====`)

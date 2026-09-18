@@ -17,6 +17,7 @@ import { maintainDocSerials, reverseDocSerials } from '../services/scmSerial.js'
 import { computeIssueSuggestion, computeProductionPlanActionState, computePushedQty, isPlanFullyFinished } from '../services/scmProduction.js'
 import { snapshotPlan, normalizeTarget, computeDiff, validateChange, applyChange } from '../services/scmPlanChange.js'
 import { ensurePlanProcesses, listPlanProcesses, resolveProcessId, validateProcessFlow, syncPlanProcessQty, estimatePlanFinish, queryProcessWip, queryCapacityLoad } from '../services/scmPlanProcess.js'
+import { planWipBook, hasWipCountTable } from '../services/scmWipCount.js'
 import { getReportedGoodQtyByProduct, validateWorkReportQty } from '../services/scmWorkReport.js'
 import { getQcDefectLines, validateFinishQc, validateQcDefectPush, validateReceiptQc } from '../services/scmQcControl.js'
 import { buildMissingAccountMessage, resolveScmAccount } from '../services/scmAccountResolver.js'
@@ -3222,6 +3223,121 @@ router.get('/scm/production-plans/:id/change-base', (req: AuthRequest, res) => {
   res.json({ code: 0, data: { plan, snapshot, issued, draft: draft || null } })
 })
 
+// ── 在制品盘点（生产评审 C-5）──
+router.get('/scm/production-plans/:id/wip-book', (req: AuthRequest, res) => {
+  const db = getDb(); const aid = asid(req)
+  const plan = db.prepare('SELECT id, code, status, yl_warehouse FROM scm_production_plan WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
+  if (!plan) return res.status(404).json({ code: 404, message: '工单不存在' })
+  const counts = hasWipCountTable(db) ? db.prepare(`SELECT c.*, (SELECT COUNT(*) FROM scm_plan_wip_count_line l WHERE l.count_id=c.id AND ABS(l.diff_qty)>0.000001) diff_lines
+    FROM scm_plan_wip_count c WHERE c.account_set_id=? AND c.plan_id=? ORDER BY c.count_date DESC, c.created_at DESC`).all(aid, plan.id) : []
+  res.json({ code: 0, data: { plan, rows: planWipBook(db, aid, plan.id), counts } })
+})
+router.get('/scm/wip-counts/:id', (req: AuthRequest, res) => {
+  const db = getDb(); const aid = asid(req)
+  const c = db.prepare(`SELECT c.*, p.code AS plan_code, p.status AS plan_status FROM scm_plan_wip_count c LEFT JOIN scm_production_plan p ON p.id=c.plan_id WHERE c.id=? AND c.account_set_id=?`).get(req.params.id, aid) as any
+  if (!c) return res.status(404).json({ code: 404, message: '盘点单不存在' })
+  c.lines = db.prepare(`SELECT l.*, i.name AS item_name, i.unit FROM scm_plan_wip_count_line l LEFT JOIN scm_item i ON i.account_set_id=l.account_set_id AND i.code=l.item_code WHERE l.count_id=? ORDER BY l.seq`).all(c.id)
+  if (c.return_doc_id) c.return_doc = db.prepare('SELECT id, doc_no, status FROM scm_doc WHERE id=?').get(c.return_doc_id) || null
+  res.json({ code: 0, data: c })
+})
+/** 建单 / 改单共用：按当前账面重算差异 */
+function buildWipCountLines(db: ReturnType<typeof getDb>, aid: string, planId: string, lines: any[]) {
+  const book = new Map(planWipBook(db, aid, planId).map(r => [r.item_code, r]))
+  const out: Array<{ item_code: string; book_qty: number; counted_qty: number; diff_qty: number; remark: string | null }> = []
+  for (const l of (Array.isArray(lines) ? lines : [])) {
+    if (!l?.item_code) continue
+    const b = book.get(String(l.item_code))
+    const bookQty = r6(Number(b?.book_qty) || 0)
+    const counted = r6(Number(l.counted_qty) || 0)
+    if (counted < 0) throw new Error(`物料 ${l.item_code} 实盘数不能为负`)
+    out.push({ item_code: String(l.item_code), book_qty: bookQty, counted_qty: counted, diff_qty: r6(counted - bookQty), remark: l.remark ?? null })
+  }
+  if (!out.length) throw new Error('请至少录入一行实盘数')
+  return out
+}
+function writeWipCountLines(db: ReturnType<typeof getDb>, aid: string, countId: string, lines: ReturnType<typeof buildWipCountLines>) {
+  db.prepare('DELETE FROM scm_plan_wip_count_line WHERE count_id=?').run(countId)
+  const ins = db.prepare('INSERT INTO scm_plan_wip_count_line (id,account_set_id,count_id,seq,item_code,book_qty,counted_qty,diff_qty,remark) VALUES (?,?,?,?,?,?,?,?,?)')
+  lines.forEach((l, i) => ins.run(uuidv4(), aid, countId, i + 1, l.item_code, l.book_qty, l.counted_qty, l.diff_qty, l.remark))
+}
+router.post('/scm/wip-counts', operationLog('在制盘点新增', '供应链'), (req: AuthRequest, res) => {
+  const db = getDb(); const aid = asid(req); const b = req.body || {}
+  const plan = db.prepare('SELECT * FROM scm_production_plan WHERE id=? AND account_set_id=?').get(String(b.plan_id || ''), aid) as any
+  if (!plan) return res.status(404).json({ code: 404, message: '工单不存在' })
+  if (plan.status !== 'released') return res.status(400).json({ code: 400, message: '仅已审核工单可做在制盘点' })
+  const other = db.prepare("SELECT count_no FROM scm_plan_wip_count WHERE account_set_id=? AND plan_id=? AND status='draft' LIMIT 1").get(aid, plan.id) as any
+  if (other) return res.status(400).json({ code: 400, message: `该工单已有未审核的盘点单 ${other.count_no}` })
+  try {
+    const lines = buildWipCountLines(db, aid, plan.id, b.lines)
+    const id = uuidv4(); const no = nextSeqNo(db, 'scm_plan_wip_count', 'count_no', aid, 'WC')
+    db.transaction(() => {
+      db.prepare("INSERT INTO scm_plan_wip_count (id,account_set_id,plan_id,count_no,count_date,status,remark,maker) VALUES (?,?,?,?,?,'draft',?,?)")
+        .run(id, aid, plan.id, no, b.count_date || localToday(), b.remark ?? null, userName(req))
+      writeWipCountLines(db, aid, id, lines)
+    })()
+    res.json({ code: 0, data: { id, count_no: no, lines } })
+  } catch (e: any) { res.status(400).json({ code: 400, message: e?.message || '保存失败' }) }
+})
+router.put('/scm/wip-counts/:id', operationLog('在制盘点修改', '供应链'), (req: AuthRequest, res) => {
+  const db = getDb(); const aid = asid(req); const b = req.body || {}
+  const ex = db.prepare('SELECT * FROM scm_plan_wip_count WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
+  if (!ex) return res.status(404).json({ code: 404, message: '盘点单不存在' })
+  if (ex.status !== 'draft') return res.status(400).json({ code: 400, message: '已审核盘点单不可修改' })
+  try {
+    const lines = buildWipCountLines(db, aid, ex.plan_id, b.lines)
+    db.transaction(() => {
+      db.prepare("UPDATE scm_plan_wip_count SET count_date=?, remark=?, updated_at=datetime('now') WHERE id=?").run(b.count_date || ex.count_date, b.remark ?? ex.remark, ex.id)
+      writeWipCountLines(db, aid, ex.id, lines)
+    })()
+    res.json({ code: 0, data: { ok: true, lines } })
+  } catch (e: any) { res.status(400).json({ code: 400, message: e?.message || '保存失败' }) }
+})
+router.post('/scm/wip-counts/:id/audit', operationLog('在制盘点审核', '供应链'), (req: AuthRequest, res) => {
+  const db = getDb(); const aid = asid(req)
+  const ex = db.prepare('SELECT * FROM scm_plan_wip_count WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
+  if (!ex) return res.status(404).json({ code: 404, message: '盘点单不存在' })
+  if (ex.status !== 'draft') return res.status(400).json({ code: 400, message: '盘点单已审核' })
+  const plan = db.prepare('SELECT * FROM scm_production_plan WHERE id=? AND account_set_id=?').get(ex.plan_id, aid) as any
+  if (!plan || plan.status !== 'released') return res.status(400).json({ code: 400, message: '工单不是已审核状态，不能审核盘点' })
+  const oldLines = db.prepare('SELECT item_code, counted_qty, remark FROM scm_plan_wip_count_line WHERE count_id=? ORDER BY seq').all(ex.id) as any[]
+  let returnDoc: { id: string; doc_no: string } | null = null
+  try {
+    db.transaction(() => {
+      // 以当前账面重算差异后再生效（建单后工单可能又领料 / 完工）
+      const lines = buildWipCountLines(db, aid, plan.id, oldLines)
+      writeWipCountLines(db, aid, ex.id, lines)
+      const excess = lines.filter(l => l.diff_qty > 1e-6)
+      if (excess.length) {
+        const docId = uuidv4()
+        const docNo = withDocNoRetry(db, () => {
+          const no = nextDocNo(db, aid, 'PJ')
+          db.prepare(`INSERT INTO scm_doc (id,account_set_id,doc_type,doc_no,doc_date,warehouse_code,operator,maker,status,plan_id,total_qty,total_amount,remark,field_values)
+            VALUES (?,?,'PJ',?,?,?,?,?,'draft',?,?,0,?,'{}')`).run(docId, aid, no, localToday(), plan.yl_warehouse ?? null, userName(req), userName(req), plan.id,
+            r6(excess.reduce((s, l) => s + l.diff_qty, 0)), `在制盘点 ${ex.count_no} 盘盈退料`)
+          const ins = prepareDocLineInsert(db)
+          let seq = 0
+          for (const l of excess) { seq++; ins.run(...buildDocLineRow(aid, docId, seq, { item_code: l.item_code, warehouse_code: plan.yl_warehouse ?? null, qty: l.diff_qty, price: 0 }, plan.yl_warehouse ?? null).values) }
+          return no
+        })
+        returnDoc = { id: docId, doc_no: docNo }
+      }
+      db.prepare("UPDATE scm_plan_wip_count SET status='audited', return_doc_id=?, auditor=?, audited_at=datetime('now'), updated_at=datetime('now') WHERE id=?").run(returnDoc?.id ?? null, userName(req), ex.id)
+    })()
+  } catch (e: any) { return res.status(400).json({ code: 400, message: e?.message || '审核失败' }) }
+  res.json({ code: 0, data: { ok: true, return_doc: returnDoc } })
+})
+router.delete('/scm/wip-counts/:id', operationLog('在制盘点删除', '供应链'), (req: AuthRequest, res) => {
+  const db = getDb(); const aid = asid(req)
+  const ex = db.prepare('SELECT status FROM scm_plan_wip_count WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
+  if (!ex) return res.status(404).json({ code: 404, message: '盘点单不存在' })
+  if (ex.status !== 'draft') return res.status(400).json({ code: 400, message: '已审核盘点单不可删除' })
+  db.transaction(() => {
+    db.prepare('DELETE FROM scm_plan_wip_count_line WHERE count_id=?').run(req.params.id)
+    db.prepare('DELETE FROM scm_plan_wip_count WHERE id=? AND account_set_id=?').run(req.params.id, aid)
+  })()
+  res.json({ code: 0, data: { ok: true } })
+})
+
 // 计划号取号（须在 /:id 之前注册，避免被动态路由吞掉）：生产 PP-、委外 OUT-
 router.get('/scm/production-plans/next-no', (req: AuthRequest, res) => {
   const db = getDb(); const aid = asid(req)
@@ -4769,9 +4885,14 @@ router.post('/scm/work-reports/:id/audit', operationLog('生产报工审核', '�
   const flowErr = validateProcessFlow(db, aid, { productId: wr?.product_id, processName: wr?.process_name, qty: 0, scrapQty: 0, excludeReportId: req.params.id }) ||
     validateProcessFlow(db, aid, { productId: wr?.product_id, processName: wr?.process_name, qty: wr?.qty, scrapQty: wr?.scrap_qty, excludeReportId: req.params.id })
   if (flowErr) return res.status(400).json({ code: 400, message: flowErr })
+  // 生产评审 P2-2：审核时按当前工作中心费率重算人工 / 制费（草稿期间费率可能已调整），差异回给前端提示
+  const full = db.prepare('SELECT work_center_code, work_hours, labor_amount, overhead_amount FROM scm_work_report WHERE id=?').get(req.params.id) as any
+  const recalc = calcReportAmounts(db, aid, full || {})
+  const rateAdjusted = full && (Math.abs(recalc.labor - (Number(full.labor_amount) || 0)) > 0.005 || Math.abs(recalc.overhead - (Number(full.overhead_amount) || 0)) > 0.005)
+  if (rateAdjusted) db.prepare('UPDATE scm_work_report SET labor_amount=?, overhead_amount=? WHERE id=?').run(recalc.labor, recalc.overhead, req.params.id)
   db.prepare("UPDATE scm_work_report SET status='audited', auditor=?, audited_at=datetime('now') WHERE id=?").run(userName(req), req.params.id)
   syncPlanProcessQty(db, aid, ex.plan_id)
-  res.json({ code: 0, data: { ok: true } })
+  res.json({ code: 0, data: { ok: true, rate_adjusted: !!rateAdjusted, labor_amount: recalc.labor, overhead_amount: recalc.overhead } })
 })
 router.post('/scm/work-reports/:id/unaudit', operationLog('生产报工反审核', '供应链'), (req: AuthRequest, res) => {
   const db = getDb(); const aid = asid(req)

@@ -463,6 +463,10 @@ import {
   up as scmPlanProcessUp,
   down as scmPlanProcessDown,
 } from './migrations/20260918_scm_plan_process.js'
+import {
+  up as scmWipCountUp,
+  down as scmWipCountDown,
+} from './migrations/20260918_scm_wip_count.js'
 
 /**
  * 迁移示例：添加新字段
@@ -2202,5 +2206,11 @@ export const migrations: Migration[] = [
     name: 'scm_plan_process',
     up: scmPlanProcessUp,
     down: scmPlanProcessDown,
+  },
+  {
+    version: 137,
+    name: 'scm_wip_count',
+    up: scmWipCountUp,
+    down: scmWipCountDown,
   },
 ]
