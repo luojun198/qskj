@@ -27,7 +27,9 @@ import {
 import {
   BACKUP_ATTACHMENT_TABLE,
   detectBackupScope,
+  extraTableRowsSql,
   formatAccountSetRestoreSummary,
+  listExtraBackupTables,
   restoreSingleAccountSetFromBackup,
 } from '../services/accountSetBackupRestore.js'
 import {
@@ -1176,6 +1178,9 @@ export type AccountSetBackupStats = {
   voucherAttachments: number
   /** 实际写入备份库内嵌表的附件文件数 */
   attachmentFilesEmbedded: number
+  /** FIX-329：总账之外纳入的表数 / 行数（出纳、固定资产、进销存、标准报表等） */
+  extraTables?: number
+  extraRows?: number
 }
 
 export function formatAccountSetBackupStatsSummary(stats: AccountSetBackupStats): string {
@@ -1186,6 +1191,7 @@ export function formatAccountSetBackupStatsSummary(stats: AccountSetBackupStats)
   }
   if (stats.initBalances > 0) parts.push(`期初 ${stats.initBalances} 条`)
   if (stats.reportDefinitions > 0) parts.push(`动态报表 ${stats.reportDefinitions} 个`)
+  if (stats.extraRows) parts.push(`出纳 / 固定资产 / 供应链等 ${stats.extraTables} 张表 ${stats.extraRows} 条`)
   if (stats.voucherAttachments > 0) {
     const embedded = stats.attachmentFilesEmbedded
     const missing = stats.voucherAttachments - embedded
@@ -1207,9 +1213,10 @@ function countAccountSetBackupRows(db: Database.Database, accountSetId: string):
   const reportDefinitions = tableExistsInDb(db, 'report_definitions')
     ? count('SELECT COUNT(*) as c FROM report_definitions WHERE account_set_id = ?', accountSetId)
     : 0
-  const voucherAttachments = tableExistsInDb(db, 'voucher_attachments')
-    ? count('SELECT COUNT(*) as c FROM voucher_attachments WHERE account_set_id = ?', accountSetId)
-    : 0
+  // FIX-329：凭证 / 出纳 / 固定资产附件都会打包，条数一并统计（与已打包文件数同口径）
+  const voucherAttachments = ['voucher_attachments', 'cashier_attachments', 'fixed_asset_attachments']
+    .filter(t => tableExistsInDb(db, t))
+    .reduce((sum, t) => sum + count(`SELECT COUNT(*) as c FROM ${t} WHERE account_set_id = ?`, accountSetId), 0)
 
   return {
     auxCategories: count('SELECT COUNT(*) as c FROM aux_categories WHERE account_set_id = ?', accountSetId),
@@ -1243,9 +1250,15 @@ function embedAttachmentFilesInBackupDb(
       )`
     )
 
-    const attachments = sourceDb
-      .prepare('SELECT filename FROM voucher_attachments WHERE account_set_id = ?')
-      .all(accountSetId) as Array<{ filename: string }>
+    // FIX-329：出纳 / 固定资产附件与凭证附件同在 uploads/attachments，一并打包
+    const attachments = ['voucher_attachments', 'cashier_attachments', 'fixed_asset_attachments']
+      .filter(t => tableExistsInDb(sourceDb, t))
+      .flatMap(
+        t =>
+          sourceDb.prepare(`SELECT filename FROM ${t} WHERE account_set_id = ?`).all(accountSetId) as Array<{
+            filename: string
+          }>
+      )
 
     if (attachments.length === 0) return 0
 
@@ -1351,6 +1364,9 @@ async function doAccountSetBackup(
   try {
     // 创建新的数据库文件
     const newDb = new Database(filepath)
+    // 额外表之间按表名顺序写入，不保证父表在前；备份是源库的同账套副本，外键一致性由源库保证
+    newDb.pragma('foreign_keys = OFF')
+    const extraTables = listExtraBackupTables(db)
 
     // 复制表结构（只复制必要的表）
     const tables = [
@@ -1391,8 +1407,8 @@ async function doAccountSetBackup(
       'operation_logs',
     ]
 
-    // 获取表结构并创建
-    for (const table of tables) {
+    // 获取表结构并创建（FIX-329：含出纳 / 固定资产 / 进销存等额外表）
+    for (const table of [...tables, ...extraTables.map(t => t.table)]) {
       try {
         const createSql = db
           .prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name=?`)
@@ -1421,6 +1437,7 @@ async function doAccountSetBackup(
 
     // 复制数据（只复制当前账套的数据，顺序需满足外键依赖）
     let attachmentFilesEmbedded = 0
+    let extraRows = 0
     const transaction = newDb.transaction(() => {
       // 1. 账套信息
       const accountSetData = db.prepare('SELECT * FROM account_sets WHERE id = ?').get(accountSetId)
@@ -1495,12 +1512,31 @@ async function doAccountSetBackup(
         copyRowsByAccountSetId(db, newDb, table, accountSetId)
       }
 
+      // 12. FIX-329：总账之外的全部账套表（出纳、固定资产、进销存、币种汇率、结算方式、标准报表……），逐行迭代
+      for (const t of extraTables) {
+        const cols = (newDb.prepare(`PRAGMA table_info("${t.table}")`).all() as Array<{ name: string }>).map(
+          c => c.name
+        )
+        if (cols.length === 0) continue
+        const insert = newDb.prepare(
+          `INSERT INTO "${t.table}" (${cols.map(c => `"${c}"`).join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`
+        )
+        for (const row of db.prepare(extraTableRowsSql(t)).iterate(accountSetId) as IterableIterator<
+          Record<string, unknown>
+        >) {
+          insert.run(...cols.map(c => row[c]))
+          extraRows++
+        }
+      }
+
       attachmentFilesEmbedded = embedAttachmentFilesInBackupDb(db, newDb, accountSetId)
     })
 
     transaction()
     const backupStats = countAccountSetBackupRows(db, accountSetId)
     backupStats.attachmentFilesEmbedded = attachmentFilesEmbedded
+    backupStats.extraTables = extraTables.length
+    backupStats.extraRows = extraRows
     newDb.close()
 
     const fileStats = statSync(filepath)

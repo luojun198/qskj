@@ -501,6 +501,8 @@ async function handleAccountSetBackup() {
           reportDefinitions?: number
           voucherAttachments?: number
           attachmentFilesEmbedded?: number
+          extraTables?: number
+          extraRows?: number
         }
         const parts = [`科目 ${stats.accounts ?? 0} 个`]
         if ((stats.vouchers ?? 0) > 0) parts.push(`凭证 ${stats.vouchers} 张`)
@@ -512,6 +514,10 @@ async function handleAccountSetBackup() {
         if ((stats.initBalances ?? 0) > 0) parts.push(`期初 ${stats.initBalances} 条`)
         if ((stats.reportDefinitions ?? 0) > 0) {
           parts.push(`动态报表 ${stats.reportDefinitions} 个`)
+        }
+        // FIX-329：出纳、固定资产、进销存、标准报表等总账之外的数据
+        if ((stats.extraRows ?? 0) > 0) {
+          parts.push(`出纳 / 固定资产 / 供应链等 ${stats.extraTables ?? 0} 张表 ${stats.extraRows} 条`)
         }
         const attRecords = stats.voucherAttachments ?? 0
         const attEmbedded = stats.attachmentFilesEmbedded ?? 0

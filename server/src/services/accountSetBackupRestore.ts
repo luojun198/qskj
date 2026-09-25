@@ -28,6 +28,9 @@ export type AccountSetRestoreStats = {
   auxItems: number
   sourceAccountSetName: string | null
   users?: number
+  /** FIX-329：总账之外恢复的表数 / 行数（出纳、固定资产、进销存、标准报表等） */
+  extraTables?: number
+  extraRows?: number
 }
 
 /** 期初/余额表 aux_item_id 为「类目编码:项目ID」，恢复时需重映射项目 ID */
@@ -213,6 +216,179 @@ function syncAuxCategoryDefaultItems(params: {
     if (!newCategoryId) continue
     const newDefault = row.default_item_id ? itemIdMap.get(row.default_item_id) ?? null : null
     update.run(newDefault, newCategoryId)
+  }
+}
+
+// ── FIX-329：单账套备份 / 恢复覆盖全部业务模块 ─────────────────────────────
+/**
+ * 单账套备份原先只按固定清单导出总账相关表（下列 CORE），出纳、固定资产、进销存、币种汇率、结算方式、
+ * 标准报表等 75 张带 account_set_id 的表全部缺失，用单账套备份恢复 / 导入为新账套会静默丢掉这些模块的数据。
+ * 现在 CORE 之外的表按「带 account_set_id」自动纳入，另把通过声明外键挂在这些表下的子表一并纳入。
+ */
+export const SINGLE_BACKUP_CORE_TABLES = [
+  'account_sets', 'users', 'roles', 'user_roles', 'role_account_scopes', 'user_account_scopes',
+  'user_login_sessions', 'accounts', 'voucher_types', 'aux_categories', 'aux_category_fields', 'aux_items',
+  'init_balances', 'vouchers', 'voucher_entries', 'transfer_types', 'transfer_items', 'report_templates',
+  'report_template_items', 'report_definitions', 'report_sheets', 'report_cells', 'report_template_sources',
+  'report_formula_functions', 'print_templates', 'voucher_templates', 'voucher_attachments', 'account_balances',
+  'period_closing', 'budget_surplus_adjustments', 'cash_flow_items', 'auto_transfer_runs', 'ai_config',
+  'system_params', 'operation_logs',
+] as const
+
+/** 运行时 / 日志 / 全局表：不进单账套备份（backups、license_activation 存在会被识别成完整备份） */
+const SINGLE_BACKUP_EXCLUDED_TABLES = new Set([
+  'backups', 'license_activation', 'schema_migrations', 'keyboard_shortcuts', 'async_tasks', 'ai_logs',
+  'user_login_sessions', 'operation_logs',
+])
+
+export type ExtraBackupTable = {
+  table: string
+  /** 无 account_set_id 的子表：经此外键挂到父表 */
+  parent?: { column: string; table: string }
+}
+
+function isDerivedOrVirtualTable(db: Database.Database, table: string): boolean {
+  if (/_fts(_|$)/.test(table)) return true // 全文索引及其影子表 / 对照表，由触发器从凭证派生
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get(table) as
+    | { sql?: string }
+    | undefined
+  return /^CREATE VIRTUAL/i.test(row?.sql || '')
+}
+
+/** CORE 之外需要随单账套备份 / 恢复的表（先带 account_set_id 的表，再子表） */
+export function listExtraBackupTables(db: Database.Database): ExtraBackupTable[] {
+  const core = new Set<string>(SINGLE_BACKUP_CORE_TABLES)
+  const tables = (
+    db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+      .all() as Array<{ name: string }>
+  )
+    .map(r => r.name)
+    .filter(t => !core.has(t) && !SINGLE_BACKUP_EXCLUDED_TABLES.has(t) && !t.startsWith('_backup_'))
+    .filter(t => !isDerivedOrVirtualTable(db, t))
+
+  const withAs = tables.filter(t => getTableColumns(db, t).includes('account_set_id'))
+  const withAsSet = new Set(withAs)
+  const result: ExtraBackupTable[] = withAs.map(table => ({ table }))
+  for (const t of tables) {
+    if (withAsSet.has(t)) continue
+    const fk = (db.prepare(`PRAGMA foreign_key_list("${t}")`).all() as Array<{ from: string; table: string }>)
+      .find(f => withAsSet.has(f.table))
+    if (fk) result.push({ table: t, parent: { column: fk.from, table: fk.table } })
+  }
+  return result
+}
+
+/** 取某张额外表属于该账套的行（子表经父表过滤） */
+export function extraTableRowsSql(t: ExtraBackupTable): string {
+  return t.parent
+    ? `SELECT c.* FROM "${t.table}" c WHERE c."${t.parent.column}" IN (SELECT id FROM "${t.parent.table}" WHERE account_set_id = ?)`
+    : `SELECT * FROM "${t.table}" WHERE account_set_id = ?`
+}
+
+const UUID_TOKEN_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi
+
+/**
+ * 通用恢复 CORE 之外的表：每行生成新 id；其余列凡等于某个旧 id（本批额外表 + 总账部分已映射的科目 / 凭证 /
+ * 辅助项目 / 用户等）即换成新 id，文本里嵌着的 UUID（JSON、「类目:项目」串）同样替换。
+ * 仅处理备份里确实存在的表：旧版备份不含出纳等表时，目标账套这些模块的现有数据保持不动（不清空）。
+ */
+function restoreExtraAccountSetTables(params: {
+  sourceDb: Database.Database
+  targetDb: Database.Database
+  sourceAccountSetId: string
+  targetAccountSetId: string
+  knownMaps: Array<Map<string, string>>
+  userIdMap: Map<string, string | null>
+}): { tables: number; rows: number } {
+  const { sourceDb, targetDb, sourceAccountSetId, targetAccountSetId, knownMaps, userIdMap } = params
+  const tables = listExtraBackupTables(sourceDb).filter(t => tableExists(targetDb, t.table))
+  if (tables.length === 0) return { tables: 0, rows: 0 }
+
+  // 1. 清空目标账套这些表（先子表再主表）
+  for (const t of [...tables].reverse()) {
+    if (t.parent) {
+      targetDb
+        .prepare(
+          `DELETE FROM "${t.table}" WHERE "${t.parent.column}" IN (SELECT id FROM "${t.parent.table}" WHERE account_set_id = ?)`
+        )
+        .run(targetAccountSetId)
+    } else {
+      targetDb.prepare(`DELETE FROM "${t.table}" WHERE account_set_id = ?`).run(targetAccountSetId)
+    }
+  }
+
+  // 2. 先为全部额外表的旧 id 分配新 id（表之间互相引用，插入前映射须完整）
+  const idMap = new Map<string, string>()
+  for (const t of tables) {
+    if (!getTableColumns(sourceDb, t.table).includes('id')) continue
+    const sql = extraTableRowsSql(t).replace(/^SELECT (c\.)?\*/, 'SELECT $1id')
+    for (const row of sourceDb.prepare(sql).iterate(sourceAccountSetId) as IterableIterator<{ id: unknown }>) {
+      if (typeof row.id === 'string' && row.id) idMap.set(row.id, uuidv4())
+    }
+  }
+  const lookup = new Map<string, string>(idMap)
+  for (const m of knownMaps) for (const [k, v] of m) if (!lookup.has(k)) lookup.set(k, v)
+  for (const [k, v] of userIdMap) if (v && !lookup.has(k)) lookup.set(k, v)
+  lookup.set(sourceAccountSetId, targetAccountSetId)
+
+  const mapValue = (v: unknown): unknown => {
+    if (typeof v !== 'string' || v.length < 36) return v
+    const exact = lookup.get(v)
+    if (exact) return exact
+    return v.replace(UUID_TOKEN_RE, tok => lookup.get(tok) ?? tok)
+  }
+
+  // 3. 插入
+  let rows = 0
+  for (const t of tables) {
+    const sourceCols = new Set(getTableColumns(sourceDb, t.table))
+    const cols = getTableColumns(targetDb, t.table).filter(c => sourceCols.has(c))
+    if (cols.length === 0) continue
+    // 声明了外键指向 users 的列：用户在目标库对不上时整行跳过（多为个人列方案等偏好数据）
+    const userFkCols = (
+      sourceDb.prepare(`PRAGMA foreign_key_list("${t.table}")`).all() as Array<{ from: string; table: string }>
+    )
+      .filter(f => f.table === 'users')
+      .map(f => f.from)
+    const insert = targetDb.prepare(
+      `INSERT INTO "${t.table}" (${cols.map(c => `"${c}"`).join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`
+    )
+    for (const row of sourceDb.prepare(extraTableRowsSql(t)).iterate(sourceAccountSetId) as IterableIterator<
+      Record<string, unknown>
+    >) {
+      if (userFkCols.some(c => typeof row[c] === 'string' && row[c] && !userIdMap.get(row[c] as string))) continue
+      insert.run(
+        ...cols.map(c => {
+          if (c === 'account_set_id') return targetAccountSetId
+          if (c === 'id' && typeof row.id === 'string') return idMap.get(row.id) ?? row.id
+          return mapValue(row[c])
+        })
+      )
+      rows++
+    }
+  }
+  return { tables: tables.length, rows }
+}
+
+/** 凭证冲销互指、自动结转生成的凭证：原先恢复时未重映射，仍指向备份库里的旧凭证 id */
+function remapVoucherSelfReferences(
+  targetDb: Database.Database,
+  targetAccountSetId: string,
+  voucherMap: Map<string, string>
+) {
+  const refs: Array<[string, string]> = [
+    ['vouchers', 'reversal_of_voucher_id'],
+    ['vouchers', 'reversed_by_voucher_id'],
+    ['auto_transfer_runs', 'voucher_id'],
+  ]
+  for (const [table, column] of refs) {
+    if (!getTableColumns(targetDb, table).includes(column)) continue
+    const rows = targetDb
+      .prepare(`SELECT id, ${column} AS ref FROM ${table} WHERE account_set_id = ? AND ${column} IS NOT NULL AND ${column} <> ''`)
+      .all(targetAccountSetId) as Array<{ id: string; ref: string }>
+    const update = targetDb.prepare(`UPDATE ${table} SET ${column} = ? WHERE id = ?`)
+    for (const r of rows) update.run(voucherMap.get(r.ref) ?? null, r.id)
   }
 }
 
@@ -879,6 +1055,8 @@ export function restoreSingleAccountSetFromBackup(params: {
   const transferTypeMap = new Map<string, string>()
   const voucherMap = new Map<string, string>()
   const reportTemplateMap = new Map<string, string>()
+  /** FIX-329：其余总账表（分录、期初、附件等）的旧 → 新 id，供出纳对账批次等额外表引用 */
+  const miscIdMap = new Map<string, string>()
   const userIdMap = buildUserIdMap(
     sourceDb,
     targetDb,
@@ -933,7 +1111,7 @@ export function restoreSingleAccountSetFromBackup(params: {
         table: 'aux_category_fields',
         sourceAccountSetId: scope.sourceAccountSetId!,
         targetAccountSetId,
-        idMap: new Map<string, string>(),
+        idMap: miscIdMap,
         foreignKeyMaps: { category_id: auxCategoryMap },
         customQuery:
           'SELECT acf.* FROM aux_category_fields acf INNER JOIN aux_categories ac ON acf.category_id = ac.id WHERE ac.account_set_id = ?',
@@ -988,7 +1166,7 @@ export function restoreSingleAccountSetFromBackup(params: {
         table: 'init_balances',
         sourceAccountSetId: scope.sourceAccountSetId!,
         targetAccountSetId,
-        idMap: new Map<string, string>(),
+        idMap: miscIdMap,
         foreignKeyMaps: { account_id: accountMap },
         valueTransforms: { aux_item_id: auxItemIdTransform },
       })
@@ -1020,7 +1198,7 @@ export function restoreSingleAccountSetFromBackup(params: {
         table: 'voucher_entries',
         sourceAccountSetId: scope.sourceAccountSetId!,
         targetAccountSetId,
-        idMap: new Map<string, string>(),
+        idMap: miscIdMap,
         foreignKeyMaps: {
           voucher_id: voucherMap,
           account_id: accountMap,
@@ -1039,7 +1217,7 @@ export function restoreSingleAccountSetFromBackup(params: {
         table: 'transfer_items',
         sourceAccountSetId: scope.sourceAccountSetId!,
         targetAccountSetId,
-        idMap: new Map<string, string>(),
+        idMap: miscIdMap,
       })
 
       insertMappedRows({
@@ -1057,7 +1235,7 @@ export function restoreSingleAccountSetFromBackup(params: {
         table: 'report_template_items',
         sourceAccountSetId: scope.sourceAccountSetId!,
         targetAccountSetId,
-        idMap: new Map<string, string>(),
+        idMap: miscIdMap,
         foreignKeyMaps: { template_id: reportTemplateMap },
         customQuery:
           'SELECT rti.* FROM report_template_items rti INNER JOIN report_templates rt ON rti.template_id = rt.id WHERE rt.account_set_id = ?',
@@ -1070,7 +1248,7 @@ export function restoreSingleAccountSetFromBackup(params: {
         table: 'print_templates',
         sourceAccountSetId: scope.sourceAccountSetId!,
         targetAccountSetId,
-        idMap: new Map<string, string>(),
+        idMap: miscIdMap,
       })
 
       insertMappedRows({
@@ -1079,7 +1257,7 @@ export function restoreSingleAccountSetFromBackup(params: {
         table: 'voucher_templates',
         sourceAccountSetId: scope.sourceAccountSetId!,
         targetAccountSetId,
-        idMap: new Map<string, string>(),
+        idMap: miscIdMap,
         foreignKeyMaps: { voucher_type_id: voucherTypeMap },
         userIdMap,
         userColumns: ['created_by'],
@@ -1092,7 +1270,7 @@ export function restoreSingleAccountSetFromBackup(params: {
         table: 'voucher_attachments',
         sourceAccountSetId: scope.sourceAccountSetId!,
         targetAccountSetId,
-        idMap: new Map<string, string>(),
+        idMap: miscIdMap,
         foreignKeyMaps: { voucher_id: voucherMap },
         userIdMap,
         userColumns: ['created_by'],
@@ -1104,7 +1282,7 @@ export function restoreSingleAccountSetFromBackup(params: {
         table: 'account_balances',
         sourceAccountSetId: scope.sourceAccountSetId!,
         targetAccountSetId,
-        idMap: new Map<string, string>(),
+        idMap: miscIdMap,
         foreignKeyMaps: { account_id: accountMap },
         valueTransforms: { aux_item_id: auxItemIdTransform },
       })
@@ -1115,7 +1293,7 @@ export function restoreSingleAccountSetFromBackup(params: {
         table: 'period_closing',
         sourceAccountSetId: scope.sourceAccountSetId!,
         targetAccountSetId,
-        idMap: new Map<string, string>(),
+        idMap: miscIdMap,
       })
 
       insertMappedRows({
@@ -1124,7 +1302,7 @@ export function restoreSingleAccountSetFromBackup(params: {
         table: 'budget_surplus_adjustments',
         sourceAccountSetId: scope.sourceAccountSetId!,
         targetAccountSetId,
-        idMap: new Map<string, string>(),
+        idMap: miscIdMap,
       })
 
       insertMappedRows({
@@ -1133,7 +1311,7 @@ export function restoreSingleAccountSetFromBackup(params: {
         table: 'cash_flow_items',
         sourceAccountSetId: scope.sourceAccountSetId!,
         targetAccountSetId,
-        idMap: new Map<string, string>(),
+        idMap: miscIdMap,
       })
 
       insertMappedRows({
@@ -1142,7 +1320,7 @@ export function restoreSingleAccountSetFromBackup(params: {
         table: 'auto_transfer_runs',
         sourceAccountSetId: scope.sourceAccountSetId!,
         targetAccountSetId,
-        idMap: new Map<string, string>(),
+        idMap: miscIdMap,
       })
 
       insertMappedRows({
@@ -1151,7 +1329,7 @@ export function restoreSingleAccountSetFromBackup(params: {
         table: 'system_params',
         sourceAccountSetId: scope.sourceAccountSetId!,
         targetAccountSetId,
-        idMap: new Map<string, string>(),
+        idMap: miscIdMap,
         customQuery:
           "SELECT * FROM system_params WHERE account_set_id = ? AND param_key NOT LIKE 'backup:%'",
         customParams: [scope.sourceAccountSetId],
@@ -1163,7 +1341,7 @@ export function restoreSingleAccountSetFromBackup(params: {
         table: 'ai_config',
         sourceAccountSetId: scope.sourceAccountSetId!,
         targetAccountSetId,
-        idMap: new Map<string, string>(),
+        idMap: miscIdMap,
       })
 
       restoreReportDefinitionTables({
@@ -1182,6 +1360,19 @@ export function restoreSingleAccountSetFromBackup(params: {
         userIdMap,
         accountMap,
       })
+
+      remapVoucherSelfReferences(targetDb, targetAccountSetId, voucherMap)
+
+      const extra = restoreExtraAccountSetTables({
+        sourceDb,
+        targetDb,
+        sourceAccountSetId: scope.sourceAccountSetId!,
+        targetAccountSetId,
+        knownMaps: [voucherMap, accountMap, auxItemMap, auxCategoryMap, voucherTypeMap, transferTypeMap, reportTemplateMap, roleMap, miscIdMap],
+        userIdMap,
+      })
+      stats.extraTables = extra.tables
+      stats.extraRows = extra.rows
     })
 
     run()
@@ -1209,6 +1400,9 @@ export function formatAccountSetRestoreSummary(stats: AccountSetRestoreStats): s
   }
   if (stats.initBalances > 0) {
     parts.push(`期初 ${stats.initBalances} 条`)
+  }
+  if (stats.extraRows) {
+    parts.push(`出纳 / 固定资产 / 供应链等 ${stats.extraTables} 张表 ${stats.extraRows} 条`)
   }
   if (stats.sourceAccountSetName) {
     parts.unshift(`来源账套「${stats.sourceAccountSetName}」`)
