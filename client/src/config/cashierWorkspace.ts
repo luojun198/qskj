@@ -3,7 +3,7 @@ import type { GlFlowNode, GlSidebarSection, GlLinkItem } from './glWorkspace'
 /**
  * 出纳工作页面配置（严格参照经典出纳软件布局）。
  *
- * - CASHIER_SIDEBAR_SECTIONS：左侧边栏「出纳工作」卡片，内含「日常业务」标签与单列功能。
+ * - CASHIER_SIDEBAR_SECTIONS：左侧边栏「出纳工作」卡片（「日常业务」标签与单列功能）+「基础资料」卡片。
  * - CASHIER_FLOW_NODES：主流程图节点（单据录入 → 凭证生成 → 对账 → 结账，结账上方挂反结账）。
  */
 
@@ -18,6 +18,17 @@ export const CASHIER_SIDEBAR_SECTIONS: GlSidebarSection[] = [
       { title: '对账', path: '/cashier/reconcile' },
       { title: '结账', path: '/cashier/period-close' },
       { title: '反结账', path: '/cashier/period-close' },
+    ],
+    rightItems: [],
+  },
+  {
+    // 出纳基础资料快捷导航（与菜单「出纳设置」一致，出纳结账已在日常业务里）
+    key: 'cashier-base',
+    title: '基础资料',
+    leftItems: [
+      { title: '结算方式', path: '/cashier/settle-type' },
+      { title: '出纳期初', path: '/cashier/init-balance' },
+      { title: '出纳初始化', path: '/cashier/reset' },
     ],
     rightItems: [],
   },

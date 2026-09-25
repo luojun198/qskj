@@ -393,6 +393,17 @@ describe('固定资产折旧引擎', () => {
       ).toThrow(/更晚期间/)
     })
 
+    it('该期折旧涉及的资产已处置时拒绝反折旧，且不回退任何数据', () => {
+      seedAndExecute(2026, 2)
+      db.prepare("UPDATE fixed_asset SET scrap_date='2026-02-20' WHERE asset_no='A1'").run()
+      expect(() =>
+        reverseDepreciation({ db, accountSetId: SET_ID, year: 2026, month: 2 })
+      ).toThrow(/已处置/)
+      const a = db.prepare("SELECT accum_depr FROM fixed_asset WHERE asset_no='A1'").get() as any
+      expect(a.accum_depr).toBe(900)
+      expect(db.prepare('SELECT COUNT(*) c FROM fixed_asset_depr').get()).toEqual({ c: 1 })
+    })
+
     it('该期无折旧记录时报错', () => {
       expect(() =>
         reverseDepreciation({ db, accountSetId: SET_ID, year: 2026, month: 5 })

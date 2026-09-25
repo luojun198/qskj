@@ -338,7 +338,7 @@ export function ensureDefaultAssetDicts(db: Database.Database, accountSetId: str
       insStatus.run(uuidv4(), accountSetId, '01', '在用', 1)
       insStatus.run(uuidv4(), accountSetId, '02', '未使用', 0)
       insStatus.run(uuidv4(), accountSetId, '03', '不需用', 0)
-      insStatus.run(uuidv4(), accountSetId, '04', '已报废', 0)
+      insStatus.run(uuidv4(), accountSetId, '04', '已处置', 0)
     }
   }
 

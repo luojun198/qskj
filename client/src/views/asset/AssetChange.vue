@@ -302,7 +302,6 @@
                 <el-input-number
                   v-model="form.amount"
                   :min="0"
-                  :max="asset.net_value"
                   :precision="2"
                   :step="1000"
                   :controls="false"
@@ -643,6 +642,11 @@ function buildPayload(): Record<string, unknown> | null {
     case 'impairment':
       if (!form.amount || form.amount <= 0) {
         ElMessage.warning('减值金额必须大于 0')
+        return null
+      }
+      // 不用 el-input-number 的 :max 硬截断——超额输入会被静默改成净值并直接提交
+      if (asset.value && form.amount > Number(asset.value.net_value || 0)) {
+        ElMessage.warning(`减值金额不得超过当前净值 ¥${fmtAmt(asset.value.net_value)}`)
         return null
       }
       return { amount: form.amount }

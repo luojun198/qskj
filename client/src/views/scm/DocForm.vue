@@ -3296,15 +3296,16 @@ function goCost() {
 .sub-hint { color: var(--el-color-warning-dark-2); font-size: 12px; }
 .doc-form-page { display: flex; flex-direction: column; height: 100%; padding: 0; }
 .doc-form-header {
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px;
   padding: 10px 16px; border-bottom: 1px solid var(--el-border-color-light);
   background: var(--el-bg-color); flex-shrink: 0;
 }
-.doc-form-header__left { display: flex; align-items: center; gap: 6px; font-size: var(--cw-text-base); }
+/* 窄屏（≤1280）时右侧按钮组会把标题挤成竖排、下推等按钮被推出视口：标题不换行、左右两组允许各自折行 */
+.doc-form-header__left { display: flex; align-items: center; gap: 6px; font-size: var(--cw-text-base); flex-wrap: wrap; min-width: 0; }
 .doc-form-header__sep { color: var(--el-text-color-placeholder); }
-.doc-form-header__title { font-weight: 600; color: var(--el-text-color-primary); }
-.doc-form-header__meta { margin-left: 10px; font-size: 12px; color: var(--el-text-color-secondary); }
-.doc-form-header__right { display: flex; gap: 8px; }
+.doc-form-header__title { font-weight: 600; color: var(--el-text-color-primary); white-space: nowrap; }
+.doc-form-header__meta { margin-left: 10px; font-size: 12px; color: var(--el-text-color-secondary); white-space: nowrap; }
+.doc-form-header__right { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
 .doc-form-body { flex: 1; overflow: auto; padding: 14px 16px; }
 .doc-lines-toolbar {
   display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 10px 0 10px;

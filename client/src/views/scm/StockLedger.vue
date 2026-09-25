@@ -53,6 +53,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { useReloadOnActivated } from '@/composables/useReloadOnActivated'
 import { useRoute, useRouter } from 'vue-router'
 import { scmApi } from '@/api/scm'
 import { ArrowLeft } from '@element-plus/icons-vue'
@@ -119,6 +120,8 @@ watch(
     load()
   },
 )
+// 从单据页返回时刷新
+useReloadOnActivated(() => { load() })
 onMounted(async () => { const [w, c, p, d] = await Promise.all([scmApi.getWarehouses(), scmApi.getCategories(), scmApi.getPartners({}), scmApi.getDocTypes()]); warehouses.value = w.data || []; categories.value = c.data || []; partners.value = p.data || []; docTypes.value = d.data || []; load() })
 </script>
 

@@ -34,6 +34,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { useReloadOnActivated } from '@/composables/useReloadOnActivated'
 import { useRouter } from 'vue-router'
 import { Refresh } from '@element-plus/icons-vue'
 import { scmApi } from '@/api/scm'
@@ -47,6 +48,8 @@ function createPO(row?: any) {
   if (row?.item_code) { query.prefill_item = String(row.item_code); if (Number(row.advice_qty) > 0) query.prefill_qty = String(row.advice_qty); if (row.supplier_code) query.prefill_supplier = String(row.supplier_code) }
   router.push({ name: 'ScmDocNew', query })
 }
+// 从新建采购单返回时重算建议
+useReloadOnActivated(() => { load() })
 onMounted(load)
 </script>
 

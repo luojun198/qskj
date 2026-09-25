@@ -116,44 +116,6 @@
       </template>
     </el-dialog>
 
-    <!-- 引入新增对话框 -->
-    <el-dialog v-model="importDialogVisible" title="引入新增" width="500px">
-      <el-form label-width="100px">
-        <el-form-item label="凭证类型" required>
-          <el-select
-            v-model="importForm.voucher_type_id"
-            placeholder="请选择凭证类型"
-            style="width: 100%"
-          >
-            <el-option
-              v-for="type in voucherTypes"
-              :key="type.id"
-              :label="type.name"
-              :value="type.id"
-            />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="年份" required>
-          <el-input-number v-model="importForm.year" :min="2000" :max="2100" style="width: 100%" />
-        </el-form-item>
-        <el-form-item label="期间" required>
-          <el-input-number v-model="importForm.period" :min="1" :max="12" style="width: 100%" />
-        </el-form-item>
-        <el-form-item label="凭证号" required>
-          <el-input v-model="importForm.voucher_no" placeholder="请输入凭证号" />
-        </el-form-item>
-        <el-alert title="提示" type="info" :closable="false" show-icon style="margin-top: 12px">
-          <div style="font-size: var(--cw-text-base); line-height: 1.6">
-            <p style="margin: 0">根据凭证类型、年月、凭证号定位历史凭证，复制其内容作为新凭证</p>
-          </div>
-        </el-alert>
-      </el-form>
-      <template #footer>
-        <el-button @click="importDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleImportConfirm">确定</el-button>
-      </template>
-    </el-dialog>
-
     <!-- 引模版对话框 -->
     <el-dialog v-model="selectTemplateDialogVisible" title="选择凭证模版" width="900px">
       <div style="margin-bottom: 12px">
@@ -293,7 +255,7 @@ import {
   Copy,
   Undo2,
   Trash2,
-  ExternalLink,
+  FileOutput,
   FileInput,
   Eye,
   CheckCheck,
@@ -337,6 +299,8 @@ import { useKeyboardShortcuts, commonShortcuts } from '@/composables/useKeyboard
 import { useOperationHistory } from '@/composables/useOperationHistory'
 import { performanceMonitor } from '@/utils/performanceMonitor'
 import { exportVouchersToExcel, fetchAllVouchers } from '@/utils/voucherExport'
+import { voucherExcelApi } from '@/api/voucherExcel'
+import { exportVouchersForImport } from '@/utils/voucherExcelFormat'
 import { buildVoucherFlatRows } from '@/utils/voucherFlatList'
 import { VOUCHER_LIST_SOFT_CAP } from '@/utils/voucherListPerf'
 import { useSystemParamsStore } from '@/stores/systemParams'
@@ -454,6 +418,31 @@ async function exportDraftData() {
     showSuccess(`已导出 ${vouchers.length} 张凭证`)
   } catch (error) {
     showOperationError('导出', error)
+  } finally {
+    exporting.value = false
+  }
+}
+
+/** 转出：当前列表全部凭证 → 可回导的 Excel（列定义与「转入」共用） */
+async function handleExcelExport() {
+  exporting.value = true
+  try {
+    const [vouchers, colRes] = await Promise.all([
+      fetchAllVouchers({
+        status: draftFilters.value.status || undefined,
+        sortField: sortConfig.value.field,
+        sortOrder: sortConfig.value.order,
+      }),
+      voucherExcelApi.getColumns(),
+    ])
+    if (!vouchers.length) {
+      showWarning('当前列表没有可转出的凭证')
+      return
+    }
+    const rowCount = await exportVouchersForImport(vouchers, colRes.data)
+    showSuccess(`已转出 ${vouchers.length} 张凭证（${rowCount} 行分录）`)
+  } catch (error) {
+    showOperationError('转出', error)
   } finally {
     exporting.value = false
   }
@@ -626,19 +615,18 @@ const glToolbarButtons = computed(() => [
     action: handleDeleteDraftSelected,
   },
   {
-    key: 'turn-template',
+    key: 'excel-export',
     name: '转出',
-    icon: ExternalLink,
-    tooltip: '保存为凭证模版',
-    disabled: !selectedDraftId.value,
-    action: handleTurnTemplate,
+    icon: FileOutput,
+    tooltip: '转出为 Excel（可在「转入」回导生成凭证）',
+    action: handleExcelExport,
   },
   {
-    key: 'import-template',
+    key: 'excel-import',
     name: '转入',
     icon: FileInput,
-    tooltip: '引入历史凭证或凭证模版',
-    action: handleImportDraft,
+    tooltip: '从 Excel 转入生成凭证',
+    action: () => router.push('/voucher/excel-import'),
   },
   {
     key: 'view',
@@ -836,119 +824,6 @@ function handleCopyDraft() {
   ElMessage.success('已复制凭证，请修改后保存')
 }
 
-function handleImportDraft() {
-  // 打开引入新增对话框
-  importForm.value = {
-    voucher_type_id: '',
-    year: new Date().getFullYear(),
-    period: new Date().getMonth() + 1,
-    voucher_no: '',
-  }
-  importDialogVisible.value = true
-}
-
-async function handleImportConfirm() {
-  // 验证表单
-  if (!importForm.value.voucher_type_id) {
-    ElMessage.warning('请选择凭证类型')
-    return
-  }
-  if (!importForm.value.year || !importForm.value.period) {
-    ElMessage.warning('请选择年份和期间')
-    return
-  }
-  if (!importForm.value.voucher_no) {
-    ElMessage.warning('请输入凭证号')
-    return
-  }
-
-  try {
-    // 根据条件查询凭证
-    const res = await request.get<any[]>('/voucher/vouchers', {
-      params: {
-        voucher_type_id: importForm.value.voucher_type_id,
-        year: importForm.value.year,
-        period: importForm.value.period,
-        voucher_no: importForm.value.voucher_no,
-        status: 'all', // 查询所有状态的凭证
-      },
-    })
-
-    if (!res.data || res.data.length === 0) {
-      ElMessage.warning('未找到符合条件的凭证')
-      return
-    }
-
-    // 找到第一个匹配的凭证
-    const sourceVoucher = res.data[0]
-
-    // 关闭引入对话框
-    importDialogVisible.value = false
-
-    // 加载凭证数据到表单（包含所有分录和辅助核算）
-    loadVoucherData(sourceVoucher)
-
-    // 清除 ID，表示这是新增凭证
-    form.value.id = ''
-
-    // 保持原凭证的类型，但使用当前日期
-    form.value.voucher_type_id = sourceVoucher.voucher_type_id || ''
-    form.value.voucher_date = dayjs().format('YYYY-MM-DD') // 使用当前日期
-
-    // 智能编号：取同类型草稿凭证的最大号+1
-    const typeId = form.value.voucher_type_id
-    const sameTypeDrafts = sortedVouchers.value.filter(
-      (v: any) => v.voucher_type_id === typeId && v.status === 'draft'
-    )
-
-    if (sameTypeDrafts.length > 0) {
-      const maxNo = Math.max(
-        ...sameTypeDrafts.map((v: any) => {
-          const no = parseInt(v.voucher_no || '0')
-          return isNaN(no) ? 0 : no
-        })
-      )
-      form.value.voucher_no = String(maxNo + 1)
-    } else {
-      form.value.voucher_no = '1'
-    }
-
-    // 清空附件（引入凭证不复制附件）
-    attachments.value = []
-    queuedUploads.value = {}
-
-    // 设置对话框模式为新增
-    dialogMode.value = 'add'
-    currentVoucherIndex.value = -1
-
-    // 打开对话框
-    dialogVisible.value = true
-
-    ElMessage.success('已引入凭证，请修改后保存')
-  } catch (error: any) {
-    ElMessage.error(error.message || '查询凭证失败')
-  }
-}
-
-function handleTurnTemplate() {
-  if (!selectedDraftId.value) return
-
-  const sourceVoucher = sortedVouchers.value.find((v: any) => v.id === selectedDraftId.value)
-  if (!sourceVoucher) {
-    showWarning('未找到选中的凭证')
-    return
-  }
-
-  // 重置表单
-  templateForm.value = {
-    template_no: '',
-    template_name: '',
-  }
-
-  // 打开对话框
-  templateDialogVisible.value = true
-}
-
 async function handleTemplateConfirm() {
   // 验证表单
   if (!templateForm.value.template_no || !templateForm.value.template_name) {
@@ -1113,15 +988,6 @@ const renumberForm = ref({
   period: new Date().getMonth() + 1,
   start_no: 1,
   voucher_type_id: null as string | null,
-})
-
-// 引入新增对话框
-const importDialogVisible = ref(false)
-const importForm = ref({
-  voucher_type_id: '',
-  year: new Date().getFullYear(),
-  period: new Date().getMonth() + 1,
-  voucher_no: '',
 })
 
 // 转模版对话框

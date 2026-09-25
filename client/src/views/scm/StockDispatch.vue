@@ -126,6 +126,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useReloadOnActivated } from '@/composables/useReloadOnActivated'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowLeft } from '@element-plus/icons-vue'
@@ -277,6 +278,8 @@ function goProcessMr(row: { id: string; status: string }) {
   else router.push(scmDownstreamDocRoute(row.id, row.status))
 }
 
+// 从下推生成的单据页返回时刷新分析
+useReloadOnActivated(() => { load() })
 onMounted(load)
 </script>
 

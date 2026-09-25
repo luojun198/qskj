@@ -107,6 +107,7 @@ import { computed, ref, shallowRef, watch } from 'vue'
 import { Plus } from '@element-plus/icons-vue'
 import { useListColumnWidth } from '@/composables/useColumnWidthMemory'
 import { useTableSearch } from '@/composables/useTableSearch'
+import { useVirtualTableHeaderScrollSync } from '@/composables/useVirtualTableHeaderScrollSync'
 import {
   buildVoucherFlatRows,
   discoverAuxColumnsFromRows,
@@ -212,6 +213,8 @@ function setColumnWidth(key: string, width: number) {
   columnWidths.value = { ...columnWidths.value, [key]: width }
 }
 const containerRef = ref<any>(null)
+// 表头被拖选自动滚动时与表体错位 → 强制回同步
+useVirtualTableHeaderScrollSync(containerRef)
 
 function handleRowClick(row: any) {
   emit('row-click', row)

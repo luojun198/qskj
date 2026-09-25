@@ -5,6 +5,8 @@ import {
   buildGeneralLedgerQuery,
   buildLedgerDetailQuery,
   buildLedgerGeneralQuery,
+  buildQuantityBalanceQuery,
+  buildForeignBalanceQuery,
 } from '../services/ledgerQuery.js'
 
 describe('ledgerQuery', () => {
@@ -205,5 +207,39 @@ describe('ledgerQuery', () => {
       expect((query.preBookSql.match(/\?/g) || []).length).toBe(query.preBookParams.length)
       expect(query.preBookSql).not.toBe('SELECT 0 as pre_book_debit, 0 as pre_book_credit')
     }
+  })
+
+  // FIX-250：十万级压测 P0-1——余额表分录发生额必须走一次性聚合 CTE，不能回到逐科目相关子查询
+  describe('余额表分录聚合（FIX-250）', () => {
+    const base = { accountSetId: 'as-1', startDate: '2026-09-01', endDate: '2026-09-30' }
+    const cases = [
+      ['科目余额表', buildLedgerGeneralQuery(base)],
+      ['数量金额表', buildQuantityBalanceQuery(base)],
+      ['外币余额表', buildForeignBalanceQuery(base)],
+    ] as const
+
+    it.each(cases)('%s 使用 entry_agg CTE 且凭证驱动 CROSS JOIN', (_name, q) => {
+      expect(q.sql).toMatch(/WITH entry_agg AS/)
+      expect(q.sql).toMatch(/FROM vouchers v\s+CROSS JOIN voucher_entries ve/)
+      expect(q.sql).toMatch(/LEFT JOIN entry_agg m ON m\.account_id = a\.id/)
+      // 不允许再出现按科目逐个反查分录的相关子查询
+      expect(q.sql).not.toMatch(/FROM voucher_entries ve[\s\S]*?WHERE ve\.account_id = a\.id/)
+    })
+
+    it.each(cases)('%s 占位符数量与参数一致', (_name, q) => {
+      expect(q.params).toHaveLength((q.sql.match(/\?/g) || []).length)
+    })
+
+    it('缺省日期区间为当年全年而不是当月（避免窄区间劣化计划）', () => {
+      const y = new Date().getFullYear()
+      const q = buildLedgerGeneralQuery({ accountSetId: 'as-1' })
+      expect(q.params).toContain(`${y}-01-01`)
+      expect(q.params).toContain(`${y}-12-31`)
+      // 不应出现任何「某月 1 日」形式的月初日期（年初除外）
+      const monthStarts = q.params.filter(
+        p => typeof p === 'string' && /^\d{4}-\d{2}-01$/.test(p) && !p.endsWith('-01-01')
+      )
+      expect(monthStarts).toEqual([])
+    })
   })
 })

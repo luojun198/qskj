@@ -60,6 +60,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useReloadOnActivated } from '@/composables/useReloadOnActivated'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowDown } from '@element-plus/icons-vue'
@@ -212,6 +213,8 @@ const handleDelete = async (template: PrintTemplate) => {
   }
 }
 
+// 从模板设计器返回时刷新列表
+useReloadOnActivated(() => { loadTemplates() })
 onMounted(() => {
   loadTemplates()
 })

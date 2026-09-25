@@ -112,6 +112,7 @@
     :title="form.action === 'out' ? '登记资产领用' : '登记资产归还'"
     width="560px"
     draggable
+    :close-on-click-modal="false"
   >
     <el-form :model="form" label-width="110px" size="small">
       <el-form-item label="资产" required>
@@ -189,14 +190,29 @@
         </el-form-item>
       </template>
 
-      <el-form-item v-else label="归还成色">
-        <el-input
-          v-model="form.condition_note"
-          type="textarea"
-          :rows="2"
-          placeholder="外观、功能是否完好，有无损坏"
-        />
-      </el-form-item>
+      <template v-else>
+        <el-form-item label="归还成色">
+          <el-input
+            v-model="form.condition_note"
+            type="textarea"
+            :rows="2"
+            placeholder="外观、功能是否完好，有无损坏"
+          />
+        </el-form-item>
+        <el-form-item label="使用部门">
+          <el-select v-model="form.dept_code" clearable style="width: 100%" placeholder="留空自动调回领用前的部门">
+            <el-option
+              v-for="d in dicts?.dept || []"
+              :key="d.code"
+              :label="`${d.code} ${d.name}`"
+              :value="d.code"
+            />
+          </el-select>
+          <div class="field-tip">
+            领用时调过部门的，归还自动调回原部门并记一条「部门调拨」；也可指定其他部门。
+          </div>
+        </el-form-item>
+      </template>
 
       <el-form-item label="保管人">
         <el-input v-model="form.keeper" placeholder="留空保持不变" />
@@ -385,7 +401,7 @@ async function submit() {
     })
     ElMessage.success(
       res.data.deptChangeId
-        ? `${REQUISITION_ACTION_LABELS[form.action]}登记成功，已同步记录部门调拨`
+        ? `${REQUISITION_ACTION_LABELS[form.action]}登记成功，${form.action === 'in' ? '部门已调回并' : '已同步'}记录部门调拨`
         : `${REQUISITION_ACTION_LABELS[form.action]}登记成功`
     )
     dialogVisible.value = false

@@ -1,7 +1,7 @@
 /**
  * 出纳管理 E2E 测试
  *
- * 覆盖：页面渲染 / 科目加载 / 日记账录入与查询 / 余额计算 / 银行对账 / 期初余额
+ * 覆盖：页面渲染 / 科目加载 / 日记账录入与查询 / 余额计算 / 出纳对账（对总账） / 期初余额
  */
 import { test, expect, waitForTable, navTo, resolveAccountSetId, API_BASE } from './fixtures'
 
@@ -24,8 +24,8 @@ test.describe('出纳管理', () => {
     await page.goto('/cashier/journal')
     await page.locator('.el-select').first().click()
     await page.waitForSelector('.el-select-dropdown', { timeout: 5000 })
-    // 期望有「现金科目」或「银行存款」分组标题
-    const dropdown = page.locator('.el-select-dropdown')
+    // 期望有「现金科目」或「银行存款」分组标题（FIX-253 后页面还有分页「条/页」下拉，取第一个）
+    const dropdown = page.locator('.el-select-dropdown').first()
     await expect(dropdown).toBeVisible()
     const optionCount = await dropdown.locator('.el-select-dropdown__item').count()
     expect(optionCount).toBeGreaterThan(0)
@@ -99,7 +99,7 @@ test.describe('出纳管理', () => {
     }
   })
 
-  test('银行对账 API 能自动勾对', async ({ request }) => {
+  test('FIX-260：外币科目日记账——币种跟科目走，本位币金额 = 原币 × 汇率', async ({ loggedInPage: page, request }) => {
     const asid = await resolveAccountSetId(request)
     const lr = await request.post(`${API}/api/auth/login`, {
       data: { username: 'admin', password: 'admin123', targetAccountSetId: asid },
@@ -107,7 +107,48 @@ test.describe('出纳管理', () => {
     const { token } = await lr.json()
     const H = { Authorization: `Bearer ${token}`, 'x-account-set-id': asid }
 
-    // 创建一条日记账 + 对应的银行对账单（金额相同、日期相同）
+    // 找一个外币出纳科目；库里没有则跳过（不造主数据）
+    const acRes = await request.get(`${API}/api/cashier/accounts`, { headers: H })
+    const accounts = (await acRes.json()).data as any[]
+    const usd = accounts.find(a => Number(a.is_foreign) === 1 && a.currency_code)
+    test.skip(!usd, '账套中没有外币出纳科目')
+
+    const createRes = await request.post(`${API}/api/cashier/journal`, {
+      headers: H,
+      data: { account_code: usd.code, biz_date: '2026-06-16', summary: 'E2E-USD', debit: 100, credit: 0, exchange_rate: 7.2 },
+    })
+    expect(createRes.ok()).toBeTruthy()
+    const created = (await createRes.json()).data
+    expect(created.currency).toBe(usd.currency_code)
+
+    const listRes = await request.get(`${API}/api/cashier/journal?account_code=${usd.code}&start_date=2026-06-16&end_date=2026-06-16`, { headers: H })
+    const list = (await listRes.json()).data
+    expect(list.currency).toBe(usd.currency_code)
+    const row = list.rows.find((r: any) => r.id === created.id)
+    expect(row.exchange_rate).toBe(7.2)
+    expect(row.base_debit).toBeCloseTo(720, 2)
+
+    // 页面：选中外币科目后出现币种标签，录入弹窗出现汇率栏
+    await page.goto('/cashier/journal')
+    await page.locator('.el-select').first().click()
+    await page.locator('.el-select-dropdown').first().locator('.el-select-dropdown__item', { hasText: usd.code }).first().click()
+    await expect(page.locator('.currency-tag')).toContainText(usd.currency_code)
+    await page.getByRole('button', { name: '录入日记账' }).click()
+    await expect(page.locator('.el-dialog').getByText('汇率')).toBeVisible()
+    await page.locator('.el-dialog__footer').getByRole('button', { name: '取消' }).click()
+
+    await request.delete(`${API}/api/cashier/journal/${created.id}`, { headers: H })
+  })
+
+  test('出纳对账 API：未生成凭证的日记账在出纳对账与差异清单中为未对项', async ({ request }) => {
+    const asid = await resolveAccountSetId(request)
+    const lr = await request.post(`${API}/api/auth/login`, {
+      data: { username: 'admin', password: 'admin123', targetAccountSetId: asid },
+    })
+    const { token } = await lr.json()
+    const H = { Authorization: `Bearer ${token}`, 'x-account-set-id': asid }
+
+    // FIX-262：对账 = 出纳日记账 ↔ 总账已记账分录；新录的日记账还没有凭证，只能是「出纳有、总账无」
     const date = '2026-06-20'
     const jRes = await request.post(`${API}/api/cashier/journal`, {
       headers: H,
@@ -115,31 +156,25 @@ test.describe('出纳管理', () => {
     })
     const { data: { id: jId } } = await jRes.json()
 
-    const sRes = await request.post(`${API}/api/cashier/bank-statement`, {
-      headers: H,
-      data: { account_code: '1002', biz_date: date, debit: 0, credit: 8000, bill_no: 'STMT001' },
-    })
-    const { data: { id: sId } } = await sRes.json()
-
-    // 执行自动勾对
-    const reconRes = await request.post(`${API}/api/cashier/reconcile/auto`, {
+    const autoRes = await request.post(`${API}/api/cashier/gl-reconcile/auto`, {
       headers: H,
       data: { account_code: '1002', start_date: date, end_date: date },
     })
-    const reconData = await reconRes.json()
-    expect(reconData.code).toBe(0)
-    expect(reconData.data.matched).toBe(1)
+    expect((await autoRes.json()).code).toBe(0)
 
-    // 验证日记账 reconciled 已更新
-    const verifyRes = await request.get(`${API}/api/cashier/journal?account_code=1002`, { headers: H })
-    const verifyData = await verifyRes.json()
-    const matched = verifyData.data.rows.find((r: any) => r.id === jId)
-    expect(matched?.reconciled).toBe(1)
+    const entries = await (await request.get(`${API}/api/cashier/gl-reconcile/entries`, {
+      headers: H, params: { account_code: '1002', start_date: date, end_date: date },
+    })).json()
+    expect(entries.code).toBe(0)
+    expect(entries.data.cashier.find((r: any) => r.id === jId)?.batch_id).toBeNull()
 
-    // 清理：先撤销对账（解绑），再删日记账与对账单，避免遗留孤立对账单
-    await request.post(`${API}/api/cashier/reconcile/cancel`, { headers: H, data: { journal_id: jId } })
+    const report = await (await request.get(`${API}/api/cashier/gl-reconcile/report`, {
+      headers: H, params: { account_code: '1002', end_date: date },
+    })).json()
+    expect(report.code).toBe(0)
+    expect(report.data.cashier_unmatched.some((r: any) => r.id === jId)).toBe(true)
+
     await request.delete(`${API}/api/cashier/journal/${jId}`, { headers: H })
-    await request.delete(`${API}/api/cashier/bank-statement/${sId}`, { headers: H })
   })
 
   test('结算方式字典 API 返回正确格式', async ({ request }) => {

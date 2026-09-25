@@ -2057,3 +2057,42 @@
 .voucher-reverse-confirm .el-message-box__message p {
   white-space: pre-line;
 }
+
+/* ========== 表格操作列：按钮紧凑排布（全局） ========== */
+/* 按钮间距压缩：Element 默认 .el-button + .el-button 12px，操作列内改 3px（含 el-link 混排） */
+:root {
+  --cw-op-gap: 6px;
+}
+
+.el-table .el-table__cell :is(.el-button, .el-link) + :is(.el-button, .el-link),
+.el-table-v2 .el-table-v2__row-cell :is(.el-button, .el-link) + :is(.el-button, .el-link) {
+  margin-left: var(--cw-op-gap);
+}
+
+/* link 型按钮在 apple-element-override.css 被设为 padding:4px 8px !important，
+   操作列内左右归零（保留上下点击区），否则文字间距会再多出 16px；需 !important 才能压过 */
+.el-table .el-table__cell .el-button.is-link,
+.el-table-v2 .el-table-v2__row-cell .el-button.is-link {
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
+/* 按钮组内不加间距（组自身以边框分隔） */
+.el-table .el-table__cell .el-button-group .el-button + .el-button,
+.el-table-v2 .el-table-v2__row-cell .el-button-group .el-button + .el-button {
+  margin-left: 0;
+}
+
+/* 含按钮的单元格（操作列）：不换行、左右留白压缩 */
+.el-table .el-table__cell .cell:has(.el-button, .el-link),
+.el-table-v2 .el-table-v2__row-cell:has(.el-button, .el-link) {
+  white-space: nowrap;
+  padding-left: 4px !important;
+  padding-right: 4px !important;
+}
+
+/* el-table-v2 表头：禁止拖选文字，避免浏览器选区自动滚动把 overflow:hidden 的表头单独滚开而与表体错位
+   （配合 composables/useVirtualTableHeaderScrollSync 的兜底回同步） */
+.el-table-v2__header-wrapper {
+  user-select: none;
+}

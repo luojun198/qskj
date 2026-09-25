@@ -34,14 +34,11 @@ export const ASSET_SIDEBAR_SECTIONS: GlSidebarSection[] = [
       { title: '部门设置', path: '/asset/dict' },
       { title: '资产类别', path: '/asset/dict' },
       { title: '资产用途', path: '/asset/dict' },
-      { title: '使用状态', path: '/asset/dict' },
-      { title: '注销原因', path: '/asset/dict' },
     ],
     rightItems: [
-      { title: '套账信息', path: '/base/account-set-info' },
-      { title: '凭证设置', path: '/base/voucher-type' },
-      { title: '自改密码', action: 'change-password' },
-      { title: '打印机设置', path: '/base/print-template' },
+      { title: '使用状态', path: '/asset/dict' },
+      { title: '资产处置', path: '/asset/dict' },
+      { title: '套账信息', path: '/system/param?tab=asset' },
     ],
   },
 ]

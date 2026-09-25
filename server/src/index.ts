@@ -60,6 +60,7 @@ import baseKeyboardShortcutsRoutes from './routes/baseKeyboardShortcuts.js'
 import baseCashFlowRoutes from './routes/baseCashFlow.js'
 import baseCurrencyRoutes from './routes/baseCurrency.js'
 import voucherRoutes from './routes/voucher.js'
+import voucherExcelImportRoutes from './routes/voucherExcelImport.js'
 import voucherAuditRoutes from './routes/voucherAudit.js'
 import voucherPostingRoutes from './routes/voucherPosting.js'
 import voucherBatchRoutes from './routes/voucherBatch.js'
@@ -269,6 +270,7 @@ app.use('/api/base', baseInitBalanceRoutes)
 app.use('/api/base', basePrintTemplateRoutes)
 app.use('/api', sharedTasksRoutes)
 app.use('/api/voucher', voucherRoutes)
+app.use('/api/voucher', voucherExcelImportRoutes)
 app.use('/api/voucher', voucherAuditRoutes)
 app.use('/api/voucher', voucherPostingRoutes)
 app.use('/api/voucher', voucherBatchRoutes)

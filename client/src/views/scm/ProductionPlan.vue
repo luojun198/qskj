@@ -100,6 +100,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick, watch } from 'vue'
+import { useReloadOnActivated } from '@/composables/useReloadOnActivated'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search, Setting } from '@element-plus/icons-vue'
@@ -236,6 +237,8 @@ async function runBatchAction(action: keyof typeof ACTION_LABEL) {
 
 watch(planTypeFilter, () => { clearSelection(); filters.value.supplier_code = ''; query() })
 
+// 从生产计划表单 / 生产工单页返回时刷新
+useReloadOnActivated(() => { load() })
 onMounted(async () => {
   void import('@/views/scm/ProductionPlanForm.vue')
   load()

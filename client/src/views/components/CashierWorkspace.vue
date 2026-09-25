@@ -6,9 +6,7 @@
         v-for="section in sidebarSections"
         :key="section.key"
         class="wb-card cashier-sidebar-section"
-        :style="sidebarSections.length > 1
-          ? { flex: `${Math.max(section.leftItems.length, section.rightItems.length)} 1 38px` }
-          : { flex: '0 0 auto' }"
+        :style="{ flex: '0 0 auto' }"
       >
         <div class="cashier-sidebar-section__header">
           <span class="cashier-sidebar-section__title">{{ section.title }}</span>

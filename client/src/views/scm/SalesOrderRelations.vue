@@ -131,6 +131,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { useReloadOnActivated } from '@/composables/useReloadOnActivated'
 import { useRouter } from 'vue-router'
 import { Close, Refresh, Search } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
@@ -288,6 +289,8 @@ function openNode(row: UiNode) {
   }
 }
 
+// 从下游单据 / 质检 / 报工页返回时刷新
+useReloadOnActivated(() => { load() })
 onMounted(load)
 </script>
 

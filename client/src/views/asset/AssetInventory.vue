@@ -88,7 +88,7 @@
               :min="0"
               size="small"
               style="width:80px"
-              @change="handleItemChange(row)"
+              @change="handleQtyChange(row)"
             />
             <span v-else>{{ row.actual_qty }}</span>
           </template>
@@ -136,7 +136,7 @@
     </template>
 
     <!-- 新建盘点弹窗 -->
-    <el-dialog v-model="createVisible" title="新建盘点" width="460px" draggable>
+    <el-dialog v-model="createVisible" title="新建盘点" width="460px" draggable :close-on-click-modal="false">
       <el-form :model="createForm" label-width="90px" size="small">
         <el-form-item label="盘点名称" required>
           <el-input v-model="createForm.name" placeholder="如 2026年半年度盘点" />
@@ -256,6 +256,17 @@ async function openInventory(row: InventorySummary) {
     currentInventory.value = res.data.inventory
     inventoryItems.value = res.data.items
   }
+}
+
+/** 改实盘数量时自动切换实盘状态：多于账面→盘盈、少于→盘亏、相等→正常；已标「损毁」且不多于账面的保留 */
+function handleQtyChange(item: InventoryItem) {
+  const book = Number(item.book_qty || 0)
+  const actual = Number(item.actual_qty ?? 0)
+  if (actual > book) item.actual_status = 'surplus'
+  else if (item.actual_status === 'damaged') { /* 损毁保留 */ }
+  else if (actual < book) item.actual_status = 'deficit'
+  else item.actual_status = 'normal'
+  return handleItemChange(item)
 }
 
 async function handleItemChange(item: InventoryItem) {

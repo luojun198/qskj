@@ -31,6 +31,8 @@ export type ExportValueType = 'text' | 'amount' | 'number' | 'integer'
  */
 export type ExportColumnDef<T = any> = {
   label: string
+  /** FIX-254：参数模式导出时叶子列对应服务端数据源的字段 key */
+  key?: string
   width?: number
   align?: ExportAlign
   type?: ExportValueType
@@ -281,6 +283,7 @@ function downloadBlob(blob: Blob, fileName: string) {
 /** 可序列化列定义（发送给服务端导出，剥离 value/bold/indent 等函数） */
 export type StyledXlsxColumnSpec = {
   label: string
+  key?: string
   width?: number
   align?: ExportAlign
   type?: ExportValueType
@@ -290,6 +293,7 @@ export type StyledXlsxColumnSpec = {
 function serializeColumns<T>(columns: ExportColumnDef<T>[]): StyledXlsxColumnSpec[] {
   return columns.map(col => {
     const spec: StyledXlsxColumnSpec = { label: col.label }
+    if (col.key) spec.key = col.key
     if (col.width != null) spec.width = col.width
     if (col.align) spec.align = col.align
     if (col.type) spec.type = col.type
@@ -402,6 +406,34 @@ export async function exportStyledTableViaServer<T>(
     percent: 100,
     message: '导出完成',
   })
+}
+
+/**
+ * FIX-254：参数模式导出——前端只提交筛选参数与列定义（每个叶子列带 key），
+ * 服务端自己查询 / 映射 / 流式生成 xlsx，浏览器全程不持有数据行。
+ * 支持的 source.type 与列 key 见 server/src/services/exportSources.ts。
+ */
+export async function exportStyledTableViaSource(options: {
+  fileName: string
+  sheetName?: string
+  title?: string
+  subtitle?: string
+  columns: ExportColumnDef<any>[]
+  source: { type: string; params: Record<string, unknown> }
+  stripe?: boolean
+}) {
+  const { fileName, sheetName, title, subtitle, columns, source, stripe } = options
+  const spec = {
+    fileName: ensureXlsxFileName(fileName),
+    sheetName,
+    title,
+    subtitle,
+    columns: serializeColumns(columns),
+    source,
+    stripe,
+  }
+  const blob = await request.downloadPost('/export/styled-xlsx', spec, { timeout: 600_000 })
+  downloadBlob(blob, spec.fileName)
 }
 
 export type ExportStyledWorkbookSheet<T = Record<string, unknown>> = Omit<

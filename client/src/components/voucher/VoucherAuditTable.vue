@@ -36,6 +36,7 @@ import { ElButton, ElCheckbox, ElTag, type Column } from 'element-plus'
 import { Loading } from '@element-plus/icons-vue'
 import { useFillHeightTable } from '@/composables/useFillHeightTable'
 import { useVirtualTableColumnResize } from '@/composables/useVirtualTableColumnResize'
+import { useVirtualTableHeaderScrollSync } from '@/composables/useVirtualTableHeaderScrollSync'
 import { formatMoney, statusType, statusText } from '@/composables/useVoucherAuditData'
 import { VOUCHER_VIRTUAL_ROW_HEIGHT } from '@/composables/useVoucherEntryVirtualColumns'
 import { discoverAuxColumnsFromRows, type AuxColumnDef } from '@/utils/voucherFlatList'
@@ -50,7 +51,8 @@ interface Props {
   canUnpost?: boolean
   getColVisible?: (prop: string) => boolean
   columnWidths?: Record<string, number>
-  mode?: 'audit' | 'query'
+  /** audit：审核/记账操作列 + 勾选；query：打印/删除；preview：只读预览（无勾选、无操作列，供生成凭证二次确认） */
+  mode?: 'audit' | 'query' | 'preview'
   loading?: boolean
   highlightText?: (text: string | number | null | undefined) => string
   getCellClassNameFn?: (params: { row: any }) => string
@@ -75,6 +77,8 @@ const props = withDefaults(defineProps<Props>(), {
 })
 
 const { containerRef } = useFillHeightTable()
+// 表头被拖选自动滚动时与表体错位 → 强制回同步
+useVirtualTableHeaderScrollSync(containerRef)
 
 const emit = defineEmits<{
   'selection-change': [rows: any[]]
@@ -208,7 +212,7 @@ const rowEventHandlers = {
   onClick: ({ rowData, event }: { rowData: any; event: Event }) => {
     const target = event?.target as HTMLElement | null
     if (target?.closest('.audit-actions, .audit-selection')) return
-    if (props.mode === 'query') {
+    if (props.mode === 'query' || props.mode === 'preview') {
       emit('row-click', rowData)
       return
     }
@@ -383,7 +387,7 @@ function buildColumn(key: string): Column<any> | undefined {
 const virtualColumns = computed<Column<any>[]>(() => {
   const cols: Column<any>[] = []
 
-  if (props.mode !== 'query') {
+  if (props.mode === 'audit') {
     cols.push({
       key: '__selection__',
       width: colWidth('__selection__', 40),
@@ -419,6 +423,8 @@ const virtualColumns = computed<Column<any>[]>(() => {
     const col = buildColumn(key)
     if (col) cols.push(col)
   }
+
+  if (props.mode === 'preview') return cols
 
   cols.push({
     key: '操作',
@@ -507,22 +513,8 @@ defineExpose({ tableRef, containerRef })
   color: #606266;
 }
 
-.audit-actions {
-  display: inline-flex;
-  flex-wrap: nowrap;
-  align-items: center;
-  gap: 2px;
-  line-height: 1;
-  max-width: 100%;
-  overflow: hidden;
-}
-
-.audit-actions :deep(.el-button.is-link) {
-  margin: 0;
-  padding: 2px 3px;
-  min-height: 20px;
-  font-size: 12px;
-}
+/* 操作列由 cellRenderer（h()）渲染，不带 scoped 属性，此处 scoped 选择器不会命中；
+   按钮间距/内边距统一走 common.css 的全局「表格操作列」规则（.el-table-v2__row-cell） */
 
 :deep(.audit-selection .el-checkbox__label) {
   display: none;

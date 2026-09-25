@@ -55,9 +55,9 @@ describe('flowConfig 路径去重', () => {
       if (!app) continue
       const covered = collectFlowCoveredPaths(config)
       const leftovers = app.sections.flatMap(s => s.items).filter(i => !covered.has(normalizeNavPath(i.path)))
-      // 出纳管理故意留下银行对账/出纳初始化；其余流程模块菜单应被流程覆盖
+      // 出纳管理故意留下出纳对账/出纳初始化；其余流程模块菜单应被流程覆盖
       if (title === '出纳管理') {
-        expect(leftovers.map(i => i.title)).toEqual(expect.arrayContaining(['银行勾对', '出纳初始化']))
+        expect(leftovers.map(i => i.title)).toEqual(expect.arrayContaining(['出纳对账', '出纳初始化']))
         expect(leftovers.map(i => i.title)).not.toContain('出纳录单')
       } else {
         expect(leftovers, `${title} 仍有未覆盖项：${leftovers.map(i => i.title).join('、')}`).toEqual([])

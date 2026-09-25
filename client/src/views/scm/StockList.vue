@@ -119,6 +119,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useReloadOnActivated } from '@/composables/useReloadOnActivated'
 import { useRouter } from 'vue-router'
 import { Search, InfoFilled, Setting } from '@element-plus/icons-vue'
 import { scmApi } from '@/api/scm'
@@ -289,6 +290,8 @@ async function load() {
   } finally { loading.value = false }
 }
 
+// 从库存台账 / 单据页返回时刷新
+useReloadOnActivated(() => { load() })
 onMounted(async () => {
   const w = await scmApi.getWarehouses()
   if (w.code === 0) warehouses.value = w.data

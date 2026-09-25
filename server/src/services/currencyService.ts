@@ -237,6 +237,16 @@ export function deleteCurrency(id: string, accountSetId: string): void {
     throw new Error(`币种 ${existing.code} 已被凭证分录引用，不能删除`)
   }
 
+  // FIX-260：出纳日记账 / 出纳期初也按币种分账，被引用的币种同样不能删
+  const hasTable = (t: string) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(t)
+  for (const [table, label] of [['cashier_journal', '出纳日记账'], ['cashier_init_balance', '出纳期初余额']] as const) {
+    if (!hasTable(table)) continue
+    const used = db
+      .prepare(`SELECT COUNT(*) AS c FROM ${table} WHERE account_set_id = ? AND UPPER(currency) = ?`)
+      .get(accountSetId, normalizeCurrencyCode(existing.code)) as { c: number }
+    if (used.c > 0) throw new Error(`币种 ${existing.code} 已被${label}引用，不能删除`)
+  }
+
   db.prepare(`DELETE FROM exchange_rates WHERE account_set_id = ? AND UPPER(currency_code) = ?`).run(
     accountSetId,
     normalizeCurrencyCode(existing.code)

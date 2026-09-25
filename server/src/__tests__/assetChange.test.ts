@@ -252,7 +252,7 @@ describe('固定资产变动引擎', () => {
       expect(row.change_item).toContain('停止计提折旧')
     })
 
-    it('不允许通过状态变更设为已报废', () => {
+    it('不允许通过状态变更设为已处置', () => {
       expect(() => change({ kind: 'status', payload: { status_code: '04' } })).toThrow(/资产处置/)
     })
 
@@ -284,6 +284,15 @@ describe('固定资产变动引擎', () => {
       expect(() => change({ kind: 'depr_factor', payload: { use_months: 2 } })).toThrow(
         /必须大于已计提月数/
       )
+    })
+
+    it('总工作量不得小于等于已完成工作量', () => {
+      db.prepare("UPDATE fixed_asset SET depr_method='2', total_workload=50000, workload_done=10000").run()
+      expect(() => change({ kind: 'depr_factor', payload: { total_workload: 8000 } })).toThrow(
+        /必须大于已完成工作量/
+      )
+      change({ kind: 'depr_factor', payload: { total_workload: 60000 } })
+      expect(asset().total_workload).toBe(60000)
     })
 
     it('折旧方法非法时拒绝', () => {

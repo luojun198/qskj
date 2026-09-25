@@ -132,6 +132,6 @@ async function handleGenVoucher() {
 </script>
 
 <style scoped>
-.action-btns { display: flex; justify-content: center; align-items: center; gap: 2px; flex-wrap: wrap; }
+.action-btns { display: flex; justify-content: center; align-items: center; gap: var(--cw-op-gap, 3px); flex-wrap: nowrap; white-space: nowrap; }
 .action-btns .el-button { margin: 0 !important; padding: 0 2px !important; min-width: auto; font-size: var(--cw-text-base); }
 </style>

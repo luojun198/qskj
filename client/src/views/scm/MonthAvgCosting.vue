@@ -56,6 +56,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useReloadOnActivated } from '@/composables/useReloadOnActivated'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft } from '@element-plus/icons-vue'
@@ -96,6 +97,8 @@ async function calc() {
   } finally { saving.value = false }
 }
 function openDoc(d: any) { router.push(scmDownstreamDocRoute(d.doc_id, 'audited', undefined, d.doc_type)) }
+// 从凭证/单据页返回时重新试算
+useReloadOnActivated(() => { preview() })
 onMounted(async () => { await loadPeriods(); preview() })
 </script>
 

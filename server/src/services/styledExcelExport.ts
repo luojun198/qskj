@@ -12,6 +12,8 @@ export type ExportValueType = 'text' | 'amount' | 'number' | 'integer'
 /** 列定义（可序列化）：叶子列携带 width/align/type；父列通过 children 表达多级表头 */
 export interface ExportColumnSpec {
   label: string
+  /** 参数模式导出（FIX-254）：叶子列对应数据源的字段 key */
+  key?: string
   width?: number
   align?: ExportAlign
   type?: ExportValueType
@@ -74,25 +76,6 @@ export function ensureXlsxFileName(fileName: string) {
 
 function applyGridBorder(cell: ExcelJS.Cell) {
   cell.border = { ...GRID_BORDER }
-}
-
-function ensureWorksheetGridLines(
-  worksheet: ExcelJS.Worksheet,
-  rowCount: number,
-  colCount: number,
-  startRow = 1
-) {
-  if (rowCount < startRow || colCount < 1) return
-  for (let r = startRow; r <= rowCount; r += 1) {
-    const row = worksheet.getRow(r)
-    for (let c = 1; c <= colCount; c += 1) {
-      const cell = row.getCell(c)
-      if (cell.value === null || cell.value === undefined) {
-        cell.value = ''
-      }
-      applyGridBorder(cell)
-    }
-  }
 }
 
 function getLeafColumns(columns: ExportColumnSpec[]): LeafColumn[] {
@@ -194,7 +177,58 @@ function normalizeCellValue(value: string | number | null | undefined) {
   return value
 }
 
-function appendStyledSheet(workbook: ExcelJS.Workbook, options: StyledXlsxSheetSpec) {
+/** 每写入这么多行让出一次事件循环，十万级导出期间其他请求仍可得到处理 */
+const YIELD_EVERY_ROWS = 2000
+/** 工作表 XML 在 zip 压缩流里积压超过该字节数就等它排空，把峰值内存压在这个量级 */
+const SHEET_BACKPRESSURE_BYTES = 8 * 1024 * 1024
+
+function yieldToEventLoop() {
+  return new Promise<void>(resolve => setImmediate(resolve))
+}
+
+/**
+ * ExcelJS 流式写入没有背压：`row.commit()` 把行 XML 写进内部 StreamBuf，StreamBuf 再写给 archiver 的
+ * zip 变换流；写入不等待下游消费，压缩慢于生成时整张表的 XML 都会堆在变换流的写缓冲里
+ * （24 万行实测 RSS 1.3GB）。这里直接看那条变换流的 writableLength，积压过多就等一次 'drain'。
+ */
+async function waitForSheetDrain(worksheet: ExcelJS.Worksheet) {
+  const target = (worksheet as any).stream?.pipes?.[0] as
+    | { writableLength?: number; once: (event: string, cb: () => void) => void }
+    | undefined
+  if (!target || typeof target.writableLength !== 'number') return
+  if (target.writableLength < SHEET_BACKPRESSURE_BYTES) return
+  await new Promise<void>(resolve => {
+    // 极端情况下 drain 不触发（下游已结束）也不能把导出挂死，兜底 1s
+    const timer = setTimeout(resolve, 1000)
+    target.once('drain', () => {
+      clearTimeout(timer)
+      resolve()
+    })
+  })
+}
+
+/** 数据行来源：数组，或按需产出的（异步）迭代器（参数模式导出直接从 SQL 游标产出，不先落成数组） */
+export type StyledXlsxRowSource =
+  | (string | number | null)[][]
+  | Iterable<(string | number | null)[]>
+  | AsyncIterable<(string | number | null)[]>
+
+export interface StyledXlsxStreamSpec extends Omit<StyledXlsxSheetSpec, 'rows'> {
+  rows: StyledXlsxRowSource
+}
+
+/**
+ * FIX-254（十万级压测 P1-3 / P2）：改用 ExcelJS 流式 WorkbookWriter，逐行 commit 到输出流。
+ * 旧实现先在内存构建整本工作簿（10 万行 × 10 列 ≈ 100 万个带样式的 Cell 对象，RSS 冲到 1.1GB），
+ * 再 writeBuffer；且全程同步，8 秒内整个后端无响应。现在：
+ *  - 行写完即释放，峰值内存只剩 zip 输出缓冲；
+ *  - 每 YIELD_EVERY_ROWS 行 await 一次 setImmediate，让排队的 HTTP 请求得到处理；
+ *  - 表格网格线在写每个单元格时一并画好（旧实现末尾再整表补一遍，流式下不可行）。
+ */
+export async function writeStyledXlsxToStream(
+  spec: StyledXlsxStreamSpec,
+  stream: NodeJS.WritableStream
+): Promise<{ rowCount: number }> {
   const {
     sheetName = 'Sheet1',
     title,
@@ -204,54 +238,62 @@ function appendStyledSheet(workbook: ExcelJS.Workbook, options: StyledXlsxSheetS
     subtotalRows,
     summaryValues,
     stripe = true,
-  } = options
+  } = spec
 
   const leafColumns = getLeafColumns(columns)
   const headerDepth = getHeaderDepth(columns)
   const { matrix, merges } = buildHeaderLayout(columns, headerDepth)
+  const colCount = leafColumns.length
 
+  // exceljs 的 stream 类型声明为 NodeJS.Stream，实际只用到写入方法，这里按写入流传入
+  const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+    stream: stream as any,
+    useStyles: true,
+    useSharedStrings: false,
+  })
+  workbook.creator = 'CW Finance'
   const worksheet = workbook.addWorksheet(sheetName, {
     views: [{ state: 'frozen', ySplit: (title ? 1 : 0) + (subtitle ? 1 : 0) + headerDepth }],
   })
+  worksheet.columns = leafColumns.map(column => ({
+    width: Math.max(8, Math.round((column.width || 96) / 8)),
+  }))
 
   let currentRow = 1
 
-  if (title) {
+  /** 标题 / 副标题行：整行合并，合并区内每个单元格都先画上网格线 */
+  const writeBannerRow = (text: string, height: number, isTitle: boolean) => {
     const row = worksheet.getRow(currentRow)
-    row.height = 24
-    const cell = row.getCell(1)
-    cell.value = title
-    applyCellStyle(cell, { title: true, align: 'center', bold: true })
-    if (leafColumns.length > 1) {
-      worksheet.mergeCells(currentRow, 1, currentRow, leafColumns.length)
+    row.height = height
+    for (let c = 1; c <= colCount; c += 1) {
+      const cell = row.getCell(c)
+      cell.value = c === 1 ? text : ''
+      applyCellStyle(
+        cell,
+        isTitle ? { title: true, align: 'center', bold: true } : { align: 'center' }
+      )
     }
+    if (colCount > 1) worksheet.mergeCells(currentRow, 1, currentRow, colCount)
+    row.commit()
     currentRow += 1
   }
+  if (title) writeBannerRow(title, 24, true)
+  if (subtitle) writeBannerRow(subtitle, 18, false)
 
-  if (subtitle) {
-    const row = worksheet.getRow(currentRow)
-    row.height = 18
-    const cell = row.getCell(1)
-    cell.value = subtitle
-    applyCellStyle(cell, { align: 'center' })
-    if (leafColumns.length > 1) {
-      worksheet.mergeCells(currentRow, 1, currentRow, leafColumns.length)
-    }
-    currentRow += 1
-  }
-
+  // 流式模式下合并必须在相关行 commit 之前完成：先把整块表头行填好、合并，再按顺序 commit
   const headerStartRow = currentRow
+  const headerRows: ExcelJS.Row[] = []
   for (let r = 0; r < matrix.length; r += 1) {
     const row = worksheet.getRow(currentRow)
     row.height = 20
-    matrix[r].forEach((label, index) => {
-      const cell = row.getCell(index + 1)
-      cell.value = label
+    for (let c = 1; c <= colCount; c += 1) {
+      const cell = row.getCell(c)
+      cell.value = matrix[r][c - 1] ?? ''
       applyCellStyle(cell, { header: true })
-    })
+    }
+    headerRows.push(row)
     currentRow += 1
   }
-
   for (const merge of merges) {
     worksheet.mergeCells(
       headerStartRow + merge.top - 1,
@@ -260,56 +302,68 @@ function appendStyledSheet(workbook: ExcelJS.Workbook, options: StyledXlsxSheetS
       merge.right
     )
   }
+  for (const row of headerRows) row.commit()
 
-  leafColumns.forEach((column, index) => {
-    worksheet.getColumn(index + 1).width = Math.max(8, Math.round((column.width || 96) / 8))
-  })
-
-  rows.forEach((rowData, rowIndex) => {
+  let rowIndex = 0
+  for await (const rowData of rows as AsyncIterable<(string | number | null)[]>) {
     const row = worksheet.getRow(currentRow)
     row.height = 18
-    leafColumns.forEach((column, colIndex) => {
-      const cell = row.getCell(colIndex + 1)
-      cell.value = normalizeCellValue(rowData[colIndex])
+    for (let c = 0; c < colCount; c += 1) {
+      const cell = row.getCell(c + 1)
+      cell.value = normalizeCellValue(rowData[c])
       applyCellStyle(cell, {
-        align: column.align,
-        type: column.type,
+        align: leafColumns[c].align,
+        type: leafColumns[c].type,
         stripe: stripe && rowIndex % 2 === 1,
       })
-    })
+    }
+    row.commit()
     currentRow += 1
-  })
+    rowIndex += 1
+    if (rowIndex % 500 === 0) await waitForSheetDrain(worksheet)
+    if (rowIndex % YIELD_EVERY_ROWS === 0) await yieldToEventLoop()
+  }
 
   for (const subtotal of subtotalRows || []) {
     const row = worksheet.getRow(currentRow)
     row.height = 18
-    leafColumns.forEach((column, colIndex) => {
-      const cell = row.getCell(colIndex + 1)
-      cell.value = normalizeCellValue(subtotal[colIndex] ?? '')
-      applyCellStyle(cell, { align: column.align, type: column.type, bold: true })
-    })
+    for (let c = 0; c < colCount; c += 1) {
+      const cell = row.getCell(c + 1)
+      cell.value = normalizeCellValue(subtotal[c] ?? '')
+      applyCellStyle(cell, { align: leafColumns[c].align, type: leafColumns[c].type, bold: true })
+    }
+    row.commit()
     currentRow += 1
   }
 
   if (summaryValues?.length) {
     const row = worksheet.getRow(currentRow)
     row.height = 20
-    leafColumns.forEach((column, colIndex) => {
-      const cell = row.getCell(colIndex + 1)
-      cell.value = colIndex === 0 ? '合计' : normalizeCellValue(summaryValues[colIndex] ?? '')
-      applyCellStyle(cell, { align: column.align, type: column.type, bold: true })
-    })
+    for (let c = 0; c < colCount; c += 1) {
+      const cell = row.getCell(c + 1)
+      cell.value = c === 0 ? '合计' : normalizeCellValue(summaryValues[c] ?? '')
+      applyCellStyle(cell, { align: leafColumns[c].align, type: leafColumns[c].type, bold: true })
+    }
+    row.commit()
     currentRow += 1
   }
 
-  ensureWorksheetGridLines(worksheet, currentRow - 1, leafColumns.length)
+  worksheet.commit()
+  await workbook.commit()
+  return { rowCount: rowIndex }
 }
 
-/** 根据 spec 生成 xlsx Buffer */
+/** 根据 spec 生成 xlsx Buffer（内部走流式写入，只驻留压缩后的文件字节） */
 export async function buildStyledXlsxBuffer(spec: StyledXlsxSheetSpec): Promise<Buffer> {
-  const workbook = new ExcelJS.Workbook()
-  workbook.creator = 'CW Finance'
-  appendStyledSheet(workbook, spec)
-  const buffer = await workbook.xlsx.writeBuffer()
-  return Buffer.from(buffer)
+  const { PassThrough } = await import('node:stream')
+  const chunks: Buffer[] = []
+  const sink = new PassThrough()
+  sink.on('data', (chunk: Buffer) => chunks.push(chunk))
+  const done = new Promise<void>((resolve, reject) => {
+    sink.on('end', resolve)
+    sink.on('error', reject)
+  })
+  await writeStyledXlsxToStream(spec, sink)
+  await done
+  return Buffer.concat(chunks)
 }

@@ -29,12 +29,14 @@ export const statusType: Record<string, 'primary' | 'success' | 'warning' | 'inf
   draft: 'info',
   audited: 'success',
   posted: 'warning',
+  pending: 'primary',
 }
 
 export const statusText: Record<string, string> = {
   draft: '草稿',
   audited: '已审核',
   posted: '已记账',
+  pending: '待生成',
 }
 
 export function useVoucherAuditData() {

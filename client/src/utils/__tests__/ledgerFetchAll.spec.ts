@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fetchAllPages } from '../ledgerFetchAll'
+import { fetchAllPages, FetchAllPagesAborted } from '../ledgerFetchAll'
 
 /** FIX-158：全量分页拉取 */
 describe('fetchAllPages', () => {
@@ -27,5 +27,38 @@ describe('fetchAllPages', () => {
     const r = await fetchAllPages<number, any>((p, s) => { calls++; return make(20, false)(p, s) }, { pageSize: 10 })
     expect(r.rows).toHaveLength(20)
     expect(calls).toBe(3)
+  })
+  // FIX-251：十万级保护
+  it('total 超过 largeTotal.threshold 时先确认，拒绝则抛 FetchAllPagesAborted 且不再翻页', async () => {
+    let calls = 0
+    const asked: number[] = []
+    await expect(
+      fetchAllPages<number, any>((p, s) => { calls++; return make(50, true)(p, s) }, {
+        pageSize: 10,
+        largeTotal: { threshold: 30, confirm: async t => { asked.push(t); return false } },
+      })
+    ).rejects.toBeInstanceOf(FetchAllPagesAborted)
+    expect(asked).toEqual([50])
+    expect(calls).toBe(1)
+  })
+
+  it('确认继续时正常拉完；未超阈值不询问', async () => {
+    let asked = 0
+    const r = await fetchAllPages<number, any>(make(50, true), {
+      pageSize: 10,
+      largeTotal: { threshold: 30, confirm: async () => { asked++; return true } },
+    })
+    expect(r.rows).toHaveLength(50)
+    expect(asked).toBe(1)
+    await fetchAllPages<number, any>(make(20, true), {
+      pageSize: 10,
+      largeTotal: { threshold: 30, confirm: async () => { asked++; return true } },
+    })
+    expect(asked).toBe(1)
+  })
+
+  it('超过 maxRows 硬上限直接报错（有 total 时首页即拦截，无 total 时累计拦截）', async () => {
+    await expect(fetchAllPages<number, any>(make(50, true), { pageSize: 10, maxRows: 40 })).rejects.toThrow('超过上限')
+    await expect(fetchAllPages<number, any>(make(50, false), { pageSize: 10, maxRows: 40 })).rejects.toThrow('超过上限')
   })
 })

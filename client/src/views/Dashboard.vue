@@ -648,7 +648,7 @@ const cashierCards = computed<MetricCard[]>(() => {
   return [
     { label: '资金余额合计', value: formatMoney(data.totalBalance), hint: '出纳账户期初 + 流水净额', color: '#2E84F5', bg: 'rgba(46, 132, 245, 0.12)', icon: NAV_ICONS.Wallet, path: '/cashier/daily-report' },
     { label: '出纳账户', value: data.accountCount, hint: '有期初或流水的账户数', color: '#0AA694', bg: 'rgba(18, 199, 174, 0.14)', icon: NAV_ICONS.Landmark, path: '/cashier/daily-report' },
-    { label: '未勾对流水', value: data.unreconciledCount, hint: '尚未与银行对账的记录', color: data.unreconciledCount > 0 ? '#F4A52E' : '#0AA694', bg: data.unreconciledCount > 0 ? 'rgba(244, 165, 46, 0.14)' : 'rgba(18, 199, 174, 0.14)', icon: NAV_ICONS.ListChecks, path: '/cashier/flow-query' },
+    { label: '未勾对流水', value: data.unreconciledCount, hint: '尚未与总账对上的出纳流水', color: data.unreconciledCount > 0 ? '#F4A52E' : '#0AA694', bg: data.unreconciledCount > 0 ? 'rgba(244, 165, 46, 0.14)' : 'rgba(18, 199, 174, 0.14)', icon: NAV_ICONS.ListChecks, path: '/cashier/flow-query' },
   ].filter(card => isAccessiblePath(card.path))
 })
 

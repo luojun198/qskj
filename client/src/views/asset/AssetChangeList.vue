@@ -134,6 +134,7 @@
 <script setup lang="ts">
 import { confirmRenumberAfterDelete } from '@/composables/useRenumberPrompt'
 import { ref, reactive, onMounted } from 'vue'
+import { useReloadOnActivated } from '@/composables/useReloadOnActivated'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Plus } from '@element-plus/icons-vue'
@@ -264,6 +265,8 @@ async function revoke(row: AssetChangeRow) {
   await confirmRenumberAfterDelete(res.data.affectedGroups, res.data.deletedVoucherNo ? 1 : 0)
 }
 
+// 从「资产变动」页返回时刷新
+useReloadOnActivated(() => { load() })
 onMounted(async () => {
   const dictRes = await fixedAssetApi.getDicts()
   dicts.value = dictRes.data

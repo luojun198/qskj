@@ -55,6 +55,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { useReloadOnActivated } from '@/composables/useReloadOnActivated'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, Search } from '@element-plus/icons-vue'
 import { scmApi } from '@/api/scm'
@@ -96,6 +97,8 @@ function openTree(row: any) { router.push(`/scm/boms/${row.bom_id}/tree`) }
 function openEdit(row: any) { router.push(`/scm/boms/${row.bom_id}/edit`) }
 function goBack() { router.push('/scm/boms') }
 
+// 从 BOM 编辑 / 结构页返回时刷新
+useReloadOnActivated(() => { itemCode.value && load() })
 onMounted(async () => {
   await searchItems(itemCode.value)
   if (itemCode.value) await load()

@@ -834,91 +834,73 @@ router.get('/scm/stock/summary', (req: AuthRequest, res) => {
 // 即时库存（join 物料名/仓库名）
 router.get('/scm/stock', (req: AuthRequest, res) => {
   const db = getDb()
-  const { keyword, warehouse_code } = req.query as any
-  const account_set_id = asid(req)
-  // params 顺序 = CTE 5 个分支(库存/SOa/PO/计划完工/计划材料) + 外层 WHERE 共 6 个 account_set_id，其后接仓库/关键字
-  const conds = ['a.account_set_id=?']
-  const params: any[] = [account_set_id, account_set_id, account_set_id, account_set_id, account_set_id, account_set_id]
-  if (warehouse_code) { conds.push('a.warehouse_code=?'); params.push(warehouse_code) }
-  if (keyword) { conds.push('(a.item_code LIKE ? OR i.name LIKE ?)'); params.push(`%${keyword}%`, `%${keyword}%`) }
-  const list = db.prepare(`
-    WITH AllItems AS (
-      SELECT account_set_id, item_code, IFNULL(warehouse_code, '') AS warehouse_code FROM scm_stock WHERE account_set_id=?
-      UNION
-      -- 销售未出货：已审核销售订单(SOa)未下推发货的行
-      SELECT d.account_set_id, l.item_code, IFNULL(l.warehouse_code, '') AS warehouse_code
-      FROM scm_doc_line l JOIN scm_doc d ON d.id = l.doc_id
-      WHERE d.account_set_id=? AND d.doc_type='SOa' AND d.status='audited'
-        AND l.qty > (SELECT COALESCE(SUM(l2.qty), 0) FROM scm_doc_line l2 WHERE l2.source_line_id = l.id)
-      UNION
-      -- 采购未入库：已审核采购订单(PO)未下推入库的行
-      SELECT d.account_set_id, l.item_code, IFNULL(l.warehouse_code, '') AS warehouse_code
-      FROM scm_doc_line l JOIN scm_doc d ON d.id = l.doc_id
-      WHERE d.account_set_id=? AND d.doc_type='PO' AND d.status='audited'
-        AND l.qty > (SELECT COALESCE(SUM(l2.qty), 0) FROM scm_doc_line l2 WHERE l2.source_line_id = l.id)
-      UNION
-      -- 计划未入库：已下达计划成品（成品仓）
-      SELECT p.account_set_id, p.item_code, IFNULL(p.fp_warehouse, '') AS warehouse_code
-      FROM scm_production_plan p
-      WHERE p.account_set_id=? AND p.status='released' AND p.plan_qty > COALESCE(p.finished_qty, 0)
-      UNION
-      -- 计划未领用：已下达计划的「实际执行 BOM」材料（行仓库优先、原料仓兜底）
-      SELECT p.account_set_id, bl.item_code, IFNULL(NULLIF(bl.warehouse_code, ''), IFNULL(p.yl_warehouse, '')) AS warehouse_code
-      FROM scm_production_plan p JOIN scm_production_plan_line bl ON bl.plan_id = p.id
-      WHERE p.account_set_id=? AND p.status='released'
-    )
-    SELECT a.item_code, a.warehouse_code, i.name AS item_name, i.spec, i.unit, w.name AS warehouse_name,
-      COALESCE(s.qty, 0) AS qty, COALESCE(s.amount, 0) AS amount, COALESCE(s.avg_cost, 0) AS avg_cost,
-      (
-        SELECT COALESCE(SUM(l.qty - (SELECT COALESCE(SUM(l2.qty), 0) FROM scm_doc_line l2 WHERE l2.source_line_id = l.id)), 0)
-        FROM scm_doc_line l JOIN scm_doc d ON d.id = l.doc_id
-        WHERE d.account_set_id = a.account_set_id AND d.doc_type = 'SOa' AND d.status = 'audited'
-          AND l.item_code = a.item_code AND IFNULL(l.warehouse_code, '') = a.warehouse_code
-      ) AS unshipped_sales_qty,
-      (
-        SELECT COALESCE(SUM(l.qty - (SELECT COALESCE(SUM(l2.qty), 0) FROM scm_doc_line l2 WHERE l2.source_line_id = l.id)), 0)
-        FROM scm_doc_line l JOIN scm_doc d ON d.id = l.doc_id
-        WHERE d.account_set_id = a.account_set_id AND d.doc_type = 'PO' AND d.status = 'audited'
-          AND l.item_code = a.item_code AND IFNULL(l.warehouse_code, '') = a.warehouse_code
-      ) AS unreceived_purchase_qty,
-      (
-        SELECT COALESCE(SUM(p.plan_qty - COALESCE(p.finished_qty, 0)), 0)
-        FROM scm_production_plan p
-        WHERE p.account_set_id = a.account_set_id AND p.status = 'released'
-          AND p.plan_qty > COALESCE(p.finished_qty, 0)
-          AND p.item_code = a.item_code AND IFNULL(p.fp_warehouse, '') = a.warehouse_code
-      ) AS unfinished_plan_qty
-    FROM AllItems a
-    LEFT JOIN scm_stock s ON s.account_set_id=a.account_set_id AND s.item_code=a.item_code AND IFNULL(s.warehouse_code, '')=a.warehouse_code
-    LEFT JOIN scm_item i ON i.account_set_id=a.account_set_id AND i.code=a.item_code
-    LEFT JOIN scm_warehouse w ON w.account_set_id=a.account_set_id AND w.code=a.warehouse_code
-    WHERE ${conds.join(' AND ')}
-    ORDER BY a.warehouse_code, a.item_code
-  `).all(...params) as any[]
-
-  // 计划未领用（含 BOM 展开，需 JS）：已下达计划按 BOM 应领 − 已领（PL/PB/WO 出 − PJ 入），按(材料,原料仓)汇总
-  const plans = db.prepare(
-    "SELECT * FROM scm_production_plan WHERE account_set_id=? AND status='released'"
-  ).all(account_set_id) as any[]
-  const unissuedMap = new Map<string, number>()
-  for (const plan of plans) {
-    for (const m of computeIssueSuggestion(db, account_set_id, plan, ['PL', 'PB', 'WO', 'PJ'])) {
-      if (m.suggest > 0) {
-        // 按(材料, 行仓库优先/原料仓兜底)归集，与上方 CTE 仓库口径一致
-        const k = `${m.item_code}|${m.warehouse_code || ''}`
-        unissuedMap.set(k, r6((unissuedMap.get(k) || 0) + m.suggest))
-      }
-    }
+  const { keyword, warehouse_code, page, page_size } = req.query as any
+  const aid = asid(req)
+  // 压测（FIX-249）：原实现对每行库存做 3 个相关子查询（各扫一遍 15 万明细行）+ 对每张已下达工单跑 computeIssueSuggestion，
+  // 1.5 万行库存 / 2000 张工单时单次请求 > 5 分钟并因 better-sqlite3 同步而阻塞整个服务。
+  // 改为 5 个 GROUP BY 聚合各算一次、JS 端按 (物料, 仓库) 合并；带 page 参数返回分页结构，不带保持数组（旧调用方）。
+  const key = (item: string, wh: any) => `${item}|${wh ?? ''}`
+  const stockRows = db.prepare('SELECT item_code, IFNULL(warehouse_code, \'\') AS warehouse_code, qty, amount, avg_cost FROM scm_stock WHERE account_set_id=?').all(aid) as any[]
+  // 销售未出货 / 采购未入库：订单行数量 − 已下推行数量，按 (物料, 行仓库) 聚合
+  const openOrder = (docType: string) => new Map<string, number>((db.prepare(`
+    SELECT l.item_code, IFNULL(l.warehouse_code, '') AS wh,
+      SUM(l.qty - COALESCE((SELECT SUM(l2.qty) FROM scm_doc_line l2 WHERE l2.source_line_id = l.id), 0)) AS open_qty
+    FROM scm_doc_line l JOIN scm_doc d ON d.id = l.doc_id
+    WHERE d.account_set_id=? AND d.doc_type=? AND d.status='audited'
+    GROUP BY l.item_code, IFNULL(l.warehouse_code, '')`).all(aid, docType) as any[]).map(r => [key(r.item_code, r.wh), r6(Math.max(0, Number(r.open_qty) || 0))]))
+  const unshipped = openOrder('SOa')
+  const unreceived = openOrder('PO')
+  // 计划未入库：已下达工单成品 计划 − 完工 − 报废，按 (成品, 成品仓) 聚合
+  const unfinished = new Map<string, number>((db.prepare(`
+    SELECT pp.item_code, IFNULL(NULLIF(pp.fp_warehouse,''), IFNULL(p.fp_warehouse,'')) AS wh,
+      SUM(MAX(0, pp.plan_qty - COALESCE(pp.finished_qty,0) - COALESCE(pp.scrap_qty,0))) AS q
+    FROM scm_production_plan_product pp JOIN scm_production_plan p ON p.id=pp.plan_id
+    WHERE p.account_set_id=? AND p.status='released' GROUP BY pp.item_code, wh`).all(aid) as any[]).map(r => [key(r.item_code, r.wh), r6(Number(r.q) || 0)]))
+  // 计划未领用：各工单每料 应领 Σ(用量×(1+损耗)×计划数) − 已领（已审核库存移动 出−入 + 草稿占用 − 已审核盘亏）
+  const needRows = db.prepare(`
+    SELECT l.plan_id, l.item_code, MIN(IFNULL(NULLIF(l.warehouse_code,''), IFNULL(p.yl_warehouse,''))) AS wh,
+      SUM(l.qty * (1 + COALESCE(l.scrap_rate,0)/100.0) * pp.plan_qty) AS need
+    FROM scm_production_plan_line l JOIN scm_production_plan_product pp ON pp.id=l.product_id
+    JOIN scm_production_plan p ON p.id=l.plan_id
+    WHERE p.account_set_id=? AND p.status='released' GROUP BY l.plan_id, l.item_code`).all(aid) as any[]
+  const issued = new Map<string, number>()
+  const addIssued = (plan: string, item: string, q: number) => issued.set(`${plan}|${item}`, r6((issued.get(`${plan}|${item}`) || 0) + q))
+  for (const r of db.prepare(`
+    SELECT d.plan_id, m.item_code, SUM(CASE WHEN m.direction='out' THEN m.qty ELSE -m.qty END) AS q
+    FROM scm_stock_move m JOIN scm_doc d ON d.account_set_id=m.account_set_id AND d.doc_type=m.doc_type AND d.doc_no=m.doc_no
+    WHERE d.account_set_id=? AND d.plan_id IS NOT NULL AND d.doc_type IN ('PL','PB','WO','PJ') GROUP BY d.plan_id, m.item_code`).all(aid) as any[]) addIssued(r.plan_id, r.item_code, Number(r.q) || 0)
+  for (const r of db.prepare(`
+    SELECT d.plan_id, dl.item_code, SUM(CASE WHEN dt.direction='out' THEN dl.qty ELSE -dl.qty END) AS q
+    FROM scm_doc_line dl JOIN scm_doc d ON d.id=dl.doc_id JOIN scm_doc_type dt ON dt.account_set_id=d.account_set_id AND dt.code=d.doc_type
+    WHERE d.account_set_id=? AND d.plan_id IS NOT NULL AND d.status='draft' AND d.doc_type IN ('PL','PB','WO','PJ') GROUP BY d.plan_id, dl.item_code`).all(aid) as any[]) addIssued(r.plan_id, r.item_code, Number(r.q) || 0)
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='scm_plan_wip_count'").get()) {
+    for (const r of db.prepare(`SELECT c.plan_id, l.item_code, SUM(-l.diff_qty) AS q FROM scm_plan_wip_count_line l JOIN scm_plan_wip_count c ON c.id=l.count_id
+      WHERE c.account_set_id=? AND c.status='audited' AND l.diff_qty<0 GROUP BY c.plan_id, l.item_code`).all(aid) as any[]) addIssued(r.plan_id, r.item_code, -(Number(r.q) || 0))
   }
-  for (const row of list) {
-    row.unissued_plan_qty = unissuedMap.get(`${row.item_code}|${row.warehouse_code}`) || 0
+  const unissued = new Map<string, number>()
+  for (const r of needRows) {
+    const suggest = r6(Math.max(0, (Number(r.need) || 0) - (issued.get(`${r.plan_id}|${r.item_code}`) || 0)))
+    if (suggest > 0) { const k = key(r.item_code, r.wh); unissued.set(k, r6((unissued.get(k) || 0) + suggest)) }
   }
-  // 去掉「库存与四项指标全为 0」的空行（计划材料 union 可能带入已领齐/无库存的材料）
-  const data = list.filter(r =>
-    Number(r.qty) || Number(r.amount) || Number(r.unshipped_sales_qty) ||
-    Number(r.unreceived_purchase_qty) || Number(r.unfinished_plan_qty) || Number(r.unissued_plan_qty)
-  )
-  res.json({ code: 0, data })
+  // 合并所有出现过的 (物料, 仓库)
+  const rowMap = new Map<string, any>()
+  const ensureRow = (item: string, wh: string) => { const k = key(item, wh); let row = rowMap.get(k); if (!row) { row = { item_code: item, warehouse_code: wh, qty: 0, amount: 0, avg_cost: 0, unshipped_sales_qty: 0, unreceived_purchase_qty: 0, unfinished_plan_qty: 0, unissued_plan_qty: 0 }; rowMap.set(k, row) } return row }
+  for (const s of stockRows) { const row = ensureRow(s.item_code, s.warehouse_code); row.qty = Number(s.qty) || 0; row.amount = Number(s.amount) || 0; row.avg_cost = Number(s.avg_cost) || 0; row.__stock = true }
+  const apply = (m: Map<string, number>, field: string) => { for (const [k, v] of m) { if (!v) continue; const [item, wh] = k.split('|'); ensureRow(item, wh)[field] = v } }
+  apply(unshipped, 'unshipped_sales_qty'); apply(unreceived, 'unreceived_purchase_qty'); apply(unfinished, 'unfinished_plan_qty'); apply(unissued, 'unissued_plan_qty')
+  const items = new Map<string, any>((db.prepare('SELECT code, name, spec, unit FROM scm_item WHERE account_set_id=?').all(aid) as any[]).map(i => [i.code, i]))
+  const whs = new Map<string, string>((db.prepare('SELECT code, name FROM scm_warehouse WHERE account_set_id=?').all(aid) as any[]).map(w => [w.code, w.name]))
+  const kw = keyword ? String(keyword).trim().toLowerCase() : ''
+  let data = [...rowMap.values()].map(r => ({ ...r, item_name: items.get(r.item_code)?.name || null, spec: items.get(r.item_code)?.spec || null, unit: items.get(r.item_code)?.unit || null, warehouse_name: whs.get(r.warehouse_code) || null }))
+    // 与旧实现一致：库存表里的行（含数量已清零的）始终列出；仅由订单 / 工单派生的虚行在各项均为 0 时隐藏
+    .filter(r => r.__stock || Number(r.qty) || Number(r.amount) || Number(r.unshipped_sales_qty) || Number(r.unreceived_purchase_qty) || Number(r.unfinished_plan_qty) || Number(r.unissued_plan_qty))
+    .map(({ __stock, ...r }) => r)
+  if (warehouse_code) data = data.filter(r => r.warehouse_code === String(warehouse_code))
+  if (kw) data = data.filter(r => String(r.item_code).toLowerCase().includes(kw) || String(r.item_name || '').toLowerCase().includes(kw))
+  data.sort((a, b) => a.warehouse_code.localeCompare(b.warehouse_code) || a.item_code.localeCompare(b.item_code))
+  if (page === undefined && page_size === undefined) return res.json({ code: 0, data })
+  const { page: pg, pageSize } = normalizePaging(page, page_size, 50, 2000)
+  res.json({ code: 0, data: { list: data.slice((pg - 1) * pageSize, pg * pageSize), total: data.length, page: pg, page_size: pageSize } })
 })
 
 // 出入库流水（库存明细账）

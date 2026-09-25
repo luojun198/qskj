@@ -23,10 +23,12 @@ export const CASHIER_PERMISSION_RULES: Array<{ re: RegExp; perm: string; alsoPer
   { re: /^\/cashier\/settle-types(\/|$)/, perm: 'cashier:dict', alsoPerms: ['cashier:param', 'cashier:journal'] },
   { re: /^\/cashier\/init-balance/,      perm: 'cashier:initbal' },
   // P1-3：出纳初始化清空全部出纳数据，与菜单一致要求 cashier:initbal（此前落入兜底规则，日记账岗位即可清空）
-  { re: /^\/cashier\/reset$/,            perm: 'cashier:initbal' },
-  // P2-13：对账单导入菜单挂在 cashier:reconcile 下，接口兼容两码
-  { re: /^\/cashier\/bank-statement\/import/, perm: 'cashier:import', alsoPerms: ['cashier:reconcile'] },
+  { re: /^\/cashier\/reset(\/|$)/,       perm: 'cashier:initbal' }, // FIX-264：含 /cashier/reset/preview
+  // FIX-262：对账单导入改为生成出纳日记账，需要日记账权限（兼容原导入权限 cashier:import）
+  { re: /^\/cashier\/bank-statement\/import/, perm: 'cashier:journal', alsoPerms: ['cashier:import'] },
   { re: /^\/cashier\/bank-statement/,    perm: 'cashier:reconcile' },
+  // FIX-262：出纳 ↔ 总账对账
+  { re: /^\/cashier\/gl-reconcile/,      perm: 'cashier:reconcile' },
   { re: /^\/cashier\/reconcil/,          perm: 'cashier:reconcile' }, // reconcile/* 与 reconciliation
   { re: /^\/cashier\/delete-vouchers/,   perm: 'cashier:voucher' },
   { re: /^\/cashier\/generate-voucher/,  perm: 'cashier:voucher' },

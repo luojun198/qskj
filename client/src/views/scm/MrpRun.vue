@@ -51,6 +51,7 @@
 
 <script setup lang="ts">
 import { nextTick, onMounted, reactive, ref } from 'vue'
+import { useReloadOnActivated } from '@/composables/useReloadOnActivated'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search } from '@element-plus/icons-vue'
@@ -90,6 +91,8 @@ async function openNew() {
   }
 }
 
+// 从 MRP 计算单表单返回时刷新
+useReloadOnActivated(() => { load() })
 onMounted(() => {
   void import('@/views/scm/MrpForm.vue')
   load()

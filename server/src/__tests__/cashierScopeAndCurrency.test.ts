@@ -7,6 +7,7 @@ vi.mock('../db/index.js', () => ({
 }))
 
 import { up as cashierJournalLinksUp } from '../db/migrations/20260917_cashier_journal_links.js'
+import { up as cashierJournalFxUp } from '../db/migrations/20260921_cashier_journal_fx.js'
 import {
   searchJournals,
   getAccountBalanceReport,
@@ -32,7 +33,7 @@ const AS = 'as1'
 function makeDb() {
   const db = new Database(':memory:')
   db.exec(`
-    CREATE TABLE accounts (id TEXT PRIMARY KEY, account_set_id TEXT, code TEXT, name TEXT, is_cash INTEGER DEFAULT 0, is_bank INTEGER DEFAULT 0, parent_id TEXT, is_enabled INTEGER DEFAULT 1);
+    CREATE TABLE accounts (id TEXT PRIMARY KEY, account_set_id TEXT, code TEXT, name TEXT, is_cash INTEGER DEFAULT 0, is_bank INTEGER DEFAULT 0, parent_id TEXT, is_enabled INTEGER DEFAULT 1, is_foreign INTEGER DEFAULT 0, currency_code TEXT);
     CREATE TABLE cashier_journal (
       id TEXT PRIMARY KEY, account_set_id TEXT, account_code TEXT, currency TEXT DEFAULT 'RMB',
       biz_date TEXT, seq INTEGER DEFAULT 0, summary TEXT, debit REAL DEFAULT 0, credit REAL DEFAULT 0,
@@ -54,6 +55,7 @@ function makeDb() {
     CREATE TABLE scm_ar_ap_verify (id TEXT PRIMARY KEY, account_set_id TEXT, in_log_id TEXT, out_log_id TEXT, amount REAL);
   `)
   cashierJournalLinksUp(db)
+  cashierJournalFxUp(db)
   db.prepare("INSERT INTO accounts (id, account_set_id, code, name, is_cash) VALUES ('a1001', ?, '1001', '库存现金', 1)").run(AS)
   db.prepare("INSERT INTO accounts (id, account_set_id, code, name, is_bank) VALUES ('a1002', ?, '1002', '银行存款', 1)").run(AS)
   db.prepare("INSERT INTO accounts (id, account_set_id, code, name) VALUES ('a1122', ?, '1122', '应收账款')").run(AS)
@@ -121,14 +123,21 @@ describe('批次 D：口径 / 权限 / 关联', () => {
     const r = (path: string, perms: string[], method = 'POST') => cashierPermissionReason({ path, method, permissions: perms })
     expect(r('/cashier/reset', ['cashier:journal'])).toBe('无此操作权限')
     expect(r('/cashier/reset', ['cashier:initbal'])).toBeNull()
+    // FIX-264：初始化预览同属出纳初始化权限
+    expect(r('/cashier/reset/preview', ['cashier:initbal'], 'GET')).toBeNull()
+    expect(r('/cashier/reset/preview', ['cashier:journal'], 'GET')).toBe('无此操作权限')
     expect(r('/cashier/periods/2026.5/9/close', ['cashier:journal'])).toBe('无此操作权限')
     expect(r('/cashier/periods/2026/9/close', ['cashier:param'])).toBeNull()
     expect(r('/cashier/periods/2026', ['cashier:journal'], 'GET')).toBeNull()
     expect(r('/cashier/daily-report', ['cashier:journal'], 'GET')).toBeNull()
     expect(r('/cashier/daily-report', ['cashier:report'], 'GET')).toBeNull()
     expect(r('/cashier/summary-report', ['cashier:report'], 'GET')).toBeNull()
-    expect(r('/cashier/bank-statement/import/confirm', ['cashier:reconcile'])).toBeNull()
-    expect(r('/cashier/bank-statement/import/confirm', ['cashier:journal'])).toBe('无此操作权限')
+    // FIX-262：对账单导入改为生成日记账，需日记账权限（兼容 cashier:import）；出纳 ↔ 总账对账需对账权限
+    expect(r('/cashier/bank-statement/import/confirm', ['cashier:journal'])).toBeNull()
+    expect(r('/cashier/bank-statement/import/confirm', ['cashier:import'])).toBeNull()
+    expect(r('/cashier/bank-statement/import/confirm', ['cashier:reconcile'])).toBe('无此操作权限')
+    expect(r('/cashier/gl-reconcile/manual', ['cashier:reconcile'])).toBeNull()
+    expect(r('/cashier/gl-reconcile/manual', ['cashier:journal'])).toBe('无此操作权限')
     expect(r('/cashier/journal', ['cashier:report'])).toBe('无此操作权限')
     expect(r('/cashier/journal', ['*'])).toBeNull()
   })

@@ -35,6 +35,8 @@ export interface PostingContext {
   userName?: string
   requireAudit: boolean
   allowDirectPost: boolean
+  /** FIX-252：批量记账已在任务开始时对涉及年度做过一次期初试算，逐张无需重复（每张 15ms） */
+  skipInitBalanceCheck?: boolean
 }
 
 export function validateVoucherForUnpost(voucher: VoucherLike | null | undefined) {
@@ -137,9 +139,11 @@ export function applyVoucherPosting(
     throw new Error(`凭证「${label}」已记账，拒绝重复执行`)
   }
 
-  const initBalanceError = validateInitBalanceBalancedForPosting(db, ctx.accountSetId, voucher.year)
-  if (initBalanceError) {
-    throw new Error(initBalanceError)
+  if (!ctx.skipInitBalanceCheck) {
+    const initBalanceError = validateInitBalanceBalancedForPosting(db, ctx.accountSetId, voucher.year)
+    if (initBalanceError) {
+      throw new Error(initBalanceError)
+    }
   }
 
   const resolvedEntries = resolvePostingEntries(db, voucher.id, entries)

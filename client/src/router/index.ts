@@ -192,6 +192,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '凭证录入', icon: 'EditPen', parent: '凭证管理' },
       },
       {
+        path: 'voucher/excel-import',
+        name: 'VoucherExcelImport',
+        component: () => import('@/views/voucher/ExcelImport.vue'),
+        meta: { title: 'Excel 转入凭证', parent: '凭证管理' },
+      },
+      {
         path: 'voucher/audit',
         name: 'VoucherAudit',
         component: () => import('@/views/voucher/Audit.vue'),
@@ -413,6 +419,18 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '出纳录单', icon: 'CreditCard', parent: '出纳管理' },
       },
       {
+        path: 'cashier/voucher-generate-result',
+        name: 'CashierVoucherGenerateResult',
+        component: () => import('@/views/cashier/VoucherGenerateResult.vue'),
+        meta: { title: '生成凭证结果', parent: '出纳管理' },
+      },
+      {
+        path: 'cashier/voucher-generate-preview',
+        name: 'CashierVoucherGeneratePreview',
+        component: () => import('@/views/cashier/VoucherGeneratePreview.vue'),
+        meta: { title: '生成凭证预览', parent: '出纳管理' },
+      },
+      {
         path: 'cashier/init-balance',
         name: 'CashierInitBalance',
         component: () => import('@/views/cashier/InitBalance.vue'),
@@ -458,19 +476,19 @@ const routes: RouteRecordRaw[] = [
         path: 'cashier/reconcile',
         name: 'CashierReconcile',
         component: () => import('@/views/cashier/Reconcile.vue'),
-        meta: { title: '银行勾对', icon: 'Connection', parent: '出纳管理' },
+        meta: { title: '出纳对账', icon: 'Connection', parent: '出纳管理' },
       },
       {
         path: 'cashier/reconciliation',
         name: 'CashierBankReconciliation',
         component: () => import('@/views/cashier/BankReconciliation.vue'),
-        meta: { title: '余额调节表', icon: 'ScaleToOriginal', parent: '出纳管理' },
+        meta: { title: '差异清单', icon: 'ScaleToOriginal', parent: '出纳管理' },
       },
       {
         path: 'cashier/bank-import',
         name: 'CashierBankImport',
         component: () => import('@/views/cashier/BankImport.vue'),
-        meta: { title: '银行对账单导入', icon: 'Upload', parent: '出纳管理' },
+        meta: { title: '对账单导入', icon: 'Upload', parent: '出纳管理' },
       },
       {
         path: 'base/keyboard-shortcuts',

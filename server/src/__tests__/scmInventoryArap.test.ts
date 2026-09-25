@@ -43,7 +43,8 @@ function createDb() {
       verify_date TEXT, in_log_id TEXT, out_log_id TEXT, amount REAL, created_by TEXT, created_at TEXT DEFAULT (datetime('now')));
     CREATE TABLE scm_item (id TEXT, account_set_id TEXT, code TEXT, name TEXT, purchase_price REAL, ref_cost REAL);
     CREATE TABLE cashier_journal (id TEXT, account_set_id TEXT, account_code TEXT, currency TEXT, biz_date TEXT,
-      summary TEXT, debit REAL, credit REAL, settle_type TEXT, counter_account TEXT, created_by TEXT);
+      summary TEXT, debit REAL, credit REAL, exchange_rate REAL DEFAULT 1, base_debit REAL DEFAULT 0, base_credit REAL DEFAULT 0,
+      settle_type TEXT, counter_account TEXT, created_by TEXT);
   `)
   return db
 }

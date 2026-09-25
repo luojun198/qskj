@@ -40,7 +40,23 @@ function prepDb() {
   rmSync(WORK, { recursive: true, force: true })
   mkdirSync(WORK, { recursive: true })
   const src = new Database(SRC_DB, { readonly: true })
-  return src.backup(TEMP_DB).then(() => src.close())
+  return src.backup(TEMP_DB).then(() => { src.close(); resetTestSetTxns() })
+}
+
+/** 开发库里测试账套（ZT001）可能已有手工 / 界面走查产生的单据，冒烟断言是绝对值，须把临时副本里该账套的业务数据清空（主数据保留） */
+function resetTestSetTxns() {
+  const db = new Database(TEMP_DB)
+  const keep = /^scm_(item|item_category|item_field_defs|item_unit|unit|warehouse|bin|partner|doc_type|doc_field_defs|bom|bom_line|routing|routing_line|work_center|col_scheme|col_scheme_user|qc_standard|qc_standard_item|report_query_scheme)$/
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'scm_%'").all().map(r => r.name)
+  const tx = db.transaction(() => {
+    for (const t of tables) {
+      if (keep.test(t)) continue
+      const cols = db.prepare(`PRAGMA table_info(${t})`).all().map(c => c.name)
+      if (cols.includes('account_set_id')) db.prepare(`DELETE FROM ${t} WHERE account_set_id=?`).run(TEST_SET)
+    }
+  })
+  tx()
+  db.close()
 }
 
 async function waitServer(timeoutMs = 90000) {
@@ -897,6 +913,8 @@ async function main() {
     // P2-2：报工草稿后调费率，审核时按当前费率重算
     const mo = (await get(PL('?page=1&page_size=50&keyword=MO-PROC2'))).data.list[0]
     const det = (await get(PL(`/${mo.id}`))).data
+    // WC1 在开发库里可能已被界面改过费率（ensure 对已存在记录不覆盖），先钉回 20/10
+    { const wcs0 = (await get('/api/scm/work-centers')).data; const w0 = wcs0.find(w => w.code === 'WC1'); await api('PUT', `/api/scm/work-centers/${w0.id}`, { ...w0, labor_rate: 20, overhead_rate: 10 }, { allowError: true }) }
     const r = await post('/api/scm/work-reports', { plan_id: mo.id, product_id: det.products[0].id, item_code: 'FP4', process_name: '下料', work_center_code: 'WC1', work_hours: 2, qty: 1 }, { allowError: true })
     assert('㉚ 报工草稿（人工 20×2=40）', r.status === 200 && dbq('SELECT labor_amount FROM scm_work_report WHERE id=?', r.data.id)[0].labor_amount === 40, r.message)
     const wcs = (await get('/api/scm/work-centers')).data; const w1 = wcs.find(w => w.code === 'WC1')

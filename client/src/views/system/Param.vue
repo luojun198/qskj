@@ -233,7 +233,7 @@
             <header class="param-section__head">
               <span class="param-section__marker" aria-hidden="true"></span>
               <h4 class="param-section__title">盘点科目
-                <span class="param-section__sub">盘点生成盘盈/盘亏凭证时使用的对应科目（未配置回退 6901）</span>
+                <span class="param-section__sub">盘点生成盘盈/盘亏凭证时使用的对应科目（未配置时盘盈回退 6901 以前年度损益调整、盘亏回退 1901 待处理财产损溢）</span>
               </h4>
             </header>
             <div class="param-section__body">
@@ -624,7 +624,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted, watch } from 'vue'
+import { computed, ref, onMounted, onActivated, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import request from '@/api/request'
 import { showSuccess, showOperationError } from '@/composables/useMessage'
@@ -1019,13 +1019,30 @@ function syncBrandPanelFromRoute() {
   brandPanelVisible.value = route.query.openBrandSettings === '1'
 }
 
+/** 支持 ?tab=xxx 直达指定页签（如从固定资产工作台「套账信息」进入） */
+const PARAM_TAB_NAMES = ['ledger', 'cashier', 'asset', 'supply']
+function syncTabFromRoute() {
+  const tab = route.query.tab
+  if (typeof tab === 'string' && (PARAM_TAB_NAMES as string[]).includes(tab)) {
+    activeTab.value = tab
+  }
+}
+
 watch(
   () => route.query.openBrandSettings,
   () => syncBrandPanelFromRoute()
 )
 
+// keep-alive 缓存下 onMounted 不重跑：激活或 query.tab 变化时同步页签
+watch(
+  () => route.query.tab,
+  () => syncTabFromRoute()
+)
+onActivated(() => syncTabFromRoute())
+
 onMounted(async () => {
   syncBrandPanelFromRoute()
+  syncTabFromRoute()
   await fetchData()
   if (route.query.openDashboardRules === '1') {
     await router.replace('/system/dashboard-rules')

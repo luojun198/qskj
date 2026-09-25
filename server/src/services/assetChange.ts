@@ -632,7 +632,7 @@ function applyStatusChange(ctx: ChangeContext): ApplyChangeResult {
   const newStatus = (ctx.payload.status_code ?? '').toString().trim()
   if (!newStatus) throw new Error('请选择新的使用状态')
   if (newStatus === '04') {
-    throw new Error('「已报废」状态请通过「资产处置」办理，以便生成清理凭证')
+    throw new Error('「已处置」状态请通过「资产处置」办理，以便生成清理凭证')
   }
   if (newStatus === (asset.status_code || '')) throw new Error('新状态与当前状态相同')
 
@@ -691,6 +691,12 @@ function applyDeprFactorChange(ctx: ChangeContext): ApplyChangeResult {
   const useMonthsChange = changes.find(c => c.field === 'use_months')
   if (useMonthsChange && Number(useMonthsChange.newVal) <= deprMonthsDone) {
     throw new Error(`调整后的使用月数必须大于已计提月数（${deprMonthsDone}）`)
+  }
+  // 与使用月数对称：总工作量不能小于等于已完成工作量，否则剩余净值永远提不完
+  const workloadDone = Number(asset.workload_done || 0)
+  const workloadChange = changes.find(c => c.field === 'total_workload')
+  if (workloadChange && workloadDone > 0 && Number(workloadChange.newVal) <= workloadDone) {
+    throw new Error(`调整后的总工作量必须大于已完成工作量（${workloadDone}）`)
   }
   const methodChange = changes.find(c => c.field === 'depr_method')
   if (methodChange && !['1', '2', '3', '4'].includes(String(methodChange.newVal))) {

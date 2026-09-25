@@ -32,7 +32,7 @@
     </div>
 
     <!-- 通用编辑弹窗 -->
-    <el-dialog v-model="dialogVisible" :title="editRow ? '编辑' : '新增'" width="480px" draggable>
+    <el-dialog v-model="dialogVisible" :title="editRow ? '编辑' : '新增'" width="480px" draggable :close-on-click-modal="false">
       <div v-if="editRow && navigationInfo" style="margin-bottom: 16px; border-bottom: 1px solid var(--el-border-color-lighter); padding-bottom: 12px;">
         <DialogNavigation
           :current="navigationInfo.current"
@@ -155,7 +155,8 @@ const DictPanel = defineComponent({
                 formatter: col.formatter,
               })
             ),
-            h(ElTableColumn, { label: '操作', width: 120, align: 'center' }, {
+            // 固定在右侧：资产类别列多（四个科目列），常规宽度下操作列会被挤出可视区
+            h(ElTableColumn, { label: '操作', width: 120, align: 'center', fixed: 'right' }, {
               default: ({ row }: any) => props.editable ? h('div', [
                 h(ElButton, { link: true, type: 'primary', size: 'small', onClick: () => emit('edit', row) }, () => '编辑'),
                 h(ElButton, { link: true, type: 'danger', size: 'small', onClick: () => emit('delete', row) }, () => '删除'),

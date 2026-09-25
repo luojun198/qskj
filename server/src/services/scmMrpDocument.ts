@@ -237,9 +237,12 @@ export function replaceMrpSources(db: Database.Database, aid: string, mrpId: str
     return [`${ref.kind}:${ref.id}`, ref]
   })).values()].filter(ref => ref.id)
   if (!refs.length) throw new Error('请至少选择一张来源单据')
-  const existingExtraQty = new Map((db.prepare(`SELECT source_key,snapshot_json FROM scm_mrp_source
+  // 同一 source_key 的行保留原 id（FIX-249）：前端保存 / 审核会带上 source_adjustments[].id，
+  // 原先 DELETE + INSERT 每次换 id，计算与页面加载并发时前端拿到的旧 id 再提交就报「需求来源明细不存在」
+  const existingRows = new Map((db.prepare(`SELECT id,source_key,snapshot_json FROM scm_mrp_source
     WHERE account_set_id=? AND mrp_doc_id=?`).all(aid, mrpId) as any[])
-    .map(row => [String(row.source_key), r6(Math.max(0, Number(json(row.snapshot_json).extra_qty) || 0))]))
+    .map(row => [String(row.source_key), { id: String(row.id), extra: r6(Math.max(0, Number(json(row.snapshot_json).extra_qty) || 0)) }]))
+  const existingExtraQty = new Map([...existingRows].map(([k, v]) => [k, v.extra]))
   const normalized: any[] = []
   for (const ref of refs) {
     ensureNotOccupied(db, aid, ref, mrpId)
@@ -247,14 +250,22 @@ export function replaceMrpSources(db: Database.Database, aid: string, mrpId: str
     if (!source.rows.length) throw new Error(`来源 ${source.source_no || ref.id} 已无可计算需求`)
     for (const row of source.rows) normalized.push({ ...row, ...ref, source_no: source.source_no })
   }
-  db.prepare('DELETE FROM scm_mrp_source WHERE mrp_doc_id=? AND account_set_id=?').run(mrpId, aid)
+  const keepKeys = new Set(normalized.map(row => String(row.source_key)))
+  const stale = [...existingRows].filter(([k]) => !keepKeys.has(k)).map(([, v]) => v.id)
+  if (stale.length) db.prepare(`DELETE FROM scm_mrp_source WHERE mrp_doc_id=? AND account_set_id=? AND id IN (${stale.map(() => '?').join(',')})`).run(mrpId, aid, ...stale)
   const insert = db.prepare(`INSERT INTO scm_mrp_source
     (id,account_set_id,mrp_doc_id,source_kind,source_id,source_no,source_key,source_line_id,item_code,demand_qty,allocated_net_qty,need_date,priority,snapshot_json)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+  const update = db.prepare(`UPDATE scm_mrp_source SET source_kind=?,source_id=?,source_no=?,source_line_id=?,item_code=?,demand_qty=?,allocated_net_qty=0,need_date=?,priority=?,snapshot_json=? WHERE id=?`)
+  const seen = new Set<string>()
   for (const row of normalized) {
-    const extraQty = existingExtraQty.get(String(row.source_key)) || 0
+    const key = String(row.source_key)
+    const extraQty = existingExtraQty.get(key) || 0
     const snapshot = { ...(row.snapshot || {}), ...(extraQty > 0 ? { extra_qty: extraQty } : {}) }
-    insert.run(uuidv4(), aid, mrpId, row.kind, row.id, row.source_no, row.source_key,
+    const existing = !seen.has(key) ? existingRows.get(key) : undefined
+    seen.add(key)
+    if (existing) update.run(row.kind, row.id, row.source_no, row.source_line_id, row.item_code, row.demand_qty, row.need_date, row.priority, JSON.stringify(snapshot), existing.id)
+    else insert.run(uuidv4(), aid, mrpId, row.kind, row.id, row.source_no, row.source_key,
       row.source_line_id, row.item_code, row.demand_qty, 0, row.need_date, row.priority, JSON.stringify(snapshot))
   }
   return normalized.length

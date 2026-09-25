@@ -9,10 +9,9 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest'
 import Database from 'better-sqlite3'
+import { up as cashierJournalFxUp } from '../db/migrations/20260921_cashier_journal_fx.js'
 import {
   generateCashierVoucher,
-  manualReconcile,
-  cancelReconcile,
   syncCashierFromVoucher,
   syncCashierCounterFromVoucher,
 } from '../services/cashierQuery.js'
@@ -24,7 +23,8 @@ function createDb(): Database.Database {
   db.exec(`
     CREATE TABLE accounts (
       id TEXT PRIMARY KEY, account_set_id TEXT, code TEXT, name TEXT,
-      direction TEXT, parent_id TEXT, is_cash INTEGER DEFAULT 0, is_bank INTEGER DEFAULT 0
+      direction TEXT, parent_id TEXT, is_cash INTEGER DEFAULT 0, is_bank INTEGER DEFAULT 0,
+      is_foreign INTEGER DEFAULT 0, currency_code TEXT
     );
     CREATE TABLE voucher_types (
       id TEXT PRIMARY KEY, account_set_id TEXT, name TEXT, code TEXT, sort_order INTEGER DEFAULT 0
@@ -41,7 +41,8 @@ function createDb(): Database.Database {
       amount REAL, amount_cents INTEGER, summary TEXT,
       dept_id TEXT, dept_name TEXT, project_id TEXT, project_name TEXT,
       supplier_id TEXT, supplier_name TEXT, person_id TEXT, person_name TEXT,
-      func_class_id TEXT, func_class_name TEXT, aux_data TEXT
+      func_class_id TEXT, func_class_name TEXT, aux_data TEXT,
+      currency_code TEXT, exchange_rate REAL, foreign_amount REAL
     );
     CREATE TABLE cashier_journal (
       id TEXT PRIMARY KEY, account_set_id TEXT, account_code TEXT, currency TEXT DEFAULT 'RMB',
@@ -74,6 +75,7 @@ function createDb(): Database.Database {
   db.prepare(
     "INSERT INTO voucher_types (id, account_set_id, name, code, sort_order) VALUES ('vt1', ?, '记账凭证', '1', 1)"
   ).run(ASID)
+  cashierJournalFxUp(db)
   return db
 }
 
@@ -208,38 +210,7 @@ describe('出纳生成凭证 generateCashierVoucher', () => {
   })
 })
 
-describe('银行勾对', () => {
-  let db: Database.Database
-  beforeEach(() => {
-    db = createDb()
-    db.prepare("INSERT INTO cashier_journal (id, account_set_id, account_code, biz_date, debit, reconciled) VALUES ('j1', ?, '1002', '2026-09-10', 100, 0)").run(ASID)
-    db.prepare("INSERT INTO bank_statement (id, account_set_id, account_code, biz_date, debit, matched) VALUES ('s1', ?, '1002', '2026-09-10', 100, 0)").run(ASID)
-  })
-
-  it('手动勾对：日记账与对账单同时标记已对且共享 match_batch', () => {
-    const r = manualReconcile({ db, accountSetId: ASID, journalId: 'j1', bankStatementId: 's1' })
-    expect('ok' in r).toBe(true)
-    const j = db.prepare('SELECT reconciled, match_batch FROM cashier_journal WHERE id=?').get('j1') as any
-    const s = db.prepare('SELECT matched, match_batch FROM bank_statement WHERE id=?').get('s1') as any
-    expect(j.reconciled).toBe(1)
-    expect(s.matched).toBe(1)
-    expect(j.match_batch).toBe(s.match_batch)
-  })
-
-  it('撤销勾对：通过 match_batch 联动恢复对账单', () => {
-    manualReconcile({ db, accountSetId: ASID, journalId: 'j1', bankStatementId: 's1' })
-    const r = cancelReconcile({ db, accountSetId: ASID, journalId: 'j1' })
-    expect('ok' in r).toBe(true)
-    expect((db.prepare('SELECT reconciled r FROM cashier_journal WHERE id=?').get('j1') as any).r).toBe(0)
-    expect((db.prepare('SELECT matched m FROM bank_statement WHERE id=?').get('s1') as any).m).toBe(0)
-  })
-
-  it('对已对账的日记账重复勾对：拒绝', () => {
-    manualReconcile({ db, accountSetId: ASID, journalId: 'j1', bankStatementId: 's1' })
-    const r = manualReconcile({ db, accountSetId: ASID, journalId: 'j1', bankStatementId: 's1' })
-    expect('error' in r).toBe(true)
-  })
-})
+// 银行勾对用例随 FIX-262 删除（对账改为出纳 ↔ 总账，见 cashierGlReconcile.test.ts）
 
 describe('凭证同步日记账 syncCashierFromVoucher', () => {
   let db: Database.Database

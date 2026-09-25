@@ -55,6 +55,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { useReloadOnActivated } from '@/composables/useReloadOnActivated'
 import { useRouter } from 'vue-router'
 import { Search } from '@element-plus/icons-vue'
 import { scmApi } from '@/api/scm'
@@ -74,6 +75,8 @@ async function load() {
 function onExpand(_row: any, rowsExp: any[]) { expanded.value = rowsExp.map(r => r.plan_id) }
 function goPlan(row: any) { router.push({ name: 'ScmProductionOrder', params: { id: row.plan_id } }) }
 function goShortage(row: any) { router.push({ name: 'ScmProductionOrder', params: { id: row.plan_id } }) }
+// 从生产工单页返回时刷新
+useReloadOnActivated(() => { load() })
 onMounted(load)
 </script>
 
