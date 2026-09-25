@@ -101,11 +101,12 @@ test.describe('固定资产', () => {
 
     await request.post(`${API}/api/asset/cards`, {
       headers: H,
-      data: { asset_no: assetNo, asset_name: '第一个', original_value: 1000 },
+      // 非工作量法须填使用月数（后端校验），否则第一次就 400，测不到重复编号
+      data: { asset_no: assetNo, asset_name: '第一个', original_value: 1000, depr_method: '1', use_months: 12 },
     })
     const dupRes = await request.post(`${API}/api/asset/cards`, {
       headers: H,
-      data: { asset_no: assetNo, asset_name: '重复编号', original_value: 2000 },
+      data: { asset_no: assetNo, asset_name: '重复编号', original_value: 2000, depr_method: '1', use_months: 12 },
     })
     expect(dupRes.status()).toBe(409)
 
@@ -134,7 +135,8 @@ test.describe('固定资产', () => {
     const list = (await listRes.json()).data
     const found = list.find((r: any) => r.id === id)
     expect(found).toBeDefined()
-    expect(found.salvage_rate).toBe(8)
+    // 评审 P2（FIX-296）：类别残值率与卡片同口径，百分数 8 归一为 0.08
+    expect(found.salvage_rate).toBe(0.08)
 
     // 清理
     await request.delete(`${API}/api/asset/dict/category/${id}`, { headers: H })

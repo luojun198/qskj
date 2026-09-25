@@ -132,6 +132,7 @@
 </template>
 
 <script setup lang="ts">
+import { monthEndDate } from '@/utils/monthEnd'
 import { ref, computed, onMounted, onActivated } from 'vue'
 import { storeToRefs } from 'pinia'
 import { Printer, Search, Download } from '@element-plus/icons-vue'
@@ -148,12 +149,11 @@ import { useVoucherModalRestore } from '@/composables/useVoucherModalRestore'
 import { formatAmount } from '@/utils/format'
 import HiprintDialog from '@/components/print/HiprintDialog.vue'
 import { buildTablePrintHtml } from '@/utils/printTemplateHiprint'
-import { exportStyledTable, type ExportColumnDef } from '@/utils/exportStyledExcel'
+import { exportStyledTableViaSource, type ExportColumnDef } from '@/utils/exportStyledExcel'
 import AccountScopeAlert from '@/components/AccountScopeAlert.vue'
 import FilterClearButton from '@/components/common/FilterClearButton.vue'
 import { useFilterClear } from '@/composables/useFilterClear'
 import { useRacedQuery } from '@/composables/useRacedQuery'
-import { fetchAllPages } from '@/utils/ledgerFetchAll'
 
 const list = ref<any[]>([])
 const total = ref(0)
@@ -298,7 +298,7 @@ function insertMonthlySubtotals(entries: any[]): any[] {
     if (currentMonth && entryMonth !== currentMonth) {
       result.push({
         id: `__monthly_subtotal_${currentMonth}__`,
-        voucher_date: currentMonth + '-31',
+        voucher_date: monthEndDate(currentMonth),
         voucher_type_name: '',
         voucher_no: '',
         account_code: '',
@@ -328,7 +328,7 @@ function insertMonthlySubtotals(entries: any[]): any[] {
   if (currentMonth && entries.length > 0) {
     result.push({
       id: `__monthly_subtotal_${currentMonth}__`,
-      voucher_date: currentMonth + '-31',
+      voucher_date: monthEndDate(currentMonth),
       voucher_type_name: '',
       voucher_no: '',
       account_code: '',
@@ -386,57 +386,33 @@ async function fetchData() {
 }
 
 async function exportData() {
-  // FIX-158：分页循环拉全量，不再 1 万条截断
-  const { rows: entries } = await fetchAllPages<any, any>((page, size) =>
-    request.get<any>('/ledger/chronological', { params: buildQueryParams(page, size) })
-  )
-  const entriesWithSubtotals = insertMonthlySubtotals(entries)
-  const allData = entriesWithSubtotals
+  // FIX-254：参数模式导出——只提交筛选参数与列定义，服务端一次查询 + 月合计 + 流式生成 xlsx。
+  // 旧链路（FIX-158 分页循环拉全量再在浏览器生成）十万级要 45s 且 JS 堆 3GB。
   const dateRange = isDateFilterActive()
     ? `${filters.value.start_date || '不限'}_${filters.value.end_date || '不限'}`
     : `${filters.value.year || new Date().getFullYear()}_${filters.value.period || new Date().getMonth() + 1}`
 
+  // 列 key 与 server/src/services/exportSources.ts 的 chronological 数据源一一对应
   const columns: ExportColumnDef[] = [
-    { label: '日期', width: colWidth('voucher_date', 100), value: row => row.voucher_date },
-    {
-      label: '凭证类型',
-      width: colWidth('voucher_type_name', 100),
-      value: row => row.voucher_type_name || '',
-    },
-    { label: '凭证号', width: colWidth('voucher_no', 130), value: row => row.voucher_no },
-    { label: '科目编码', width: colWidth('account_code', 100), value: row => row.account_code },
-    { label: '科目名称', width: colWidth('account_name', 140), value: row => row.account_name },
-    { label: '摘要', width: colWidth('summary', 180), value: row => row.summary },
-    {
-      label: '借方金额',
-      width: colWidth('借方金额', 140),
-      align: 'right',
-      type: 'amount',
-      value: row => {
-        if (row.is_monthly_subtotal) return row.monthly_debit
-        return row.direction === 'debit' ? row.amount : ''
-      },
-    },
-    {
-      label: '贷方金额',
-      width: colWidth('贷方金额', 140),
-      align: 'right',
-      type: 'amount',
-      value: row => {
-        if (row.is_monthly_subtotal) return row.monthly_credit
-        return row.direction === 'credit' ? row.amount : ''
-      },
-    },
-    { label: '制单人', width: colWidth('maker_name', 80), value: row => row.maker_name || '' },
+    { key: 'voucher_date', label: '日期', width: colWidth('voucher_date', 100) },
+    { key: 'voucher_type_name', label: '凭证类型', width: colWidth('voucher_type_name', 100) },
+    { key: 'voucher_no', label: '凭证号', width: colWidth('voucher_no', 130) },
+    { key: 'account_code', label: '科目编码', width: colWidth('account_code', 100) },
+    { key: 'account_name', label: '科目名称', width: colWidth('account_name', 140) },
+    { key: 'summary', label: '摘要', width: colWidth('summary', 180) },
+    { key: 'debit', label: '借方金额', width: colWidth('借方金额', 140), align: 'right', type: 'amount' },
+    { key: 'credit', label: '贷方金额', width: colWidth('贷方金额', 140), align: 'right', type: 'amount' },
+    { key: 'maker_name', label: '制单人', width: colWidth('maker_name', 80) },
   ]
 
-  await exportStyledTable({
+  const { page: _page, pageSize: _pageSize, ...params } = buildQueryParams(1, 1)
+  await exportStyledTableViaSource({
     fileName: `序时账_${dateRange}.xlsx`,
     sheetName: '序时账',
     title: '序时账',
     subtitle: printDateLabel.value,
     columns,
-    rows: allData,
+    source: { type: 'chronological', params },
   })
 }
 

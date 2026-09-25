@@ -479,6 +479,38 @@ import {
   up as scmItemOutsourceFeeUp,
   down as scmItemOutsourceFeeDown,
 } from './migrations/20260918_scm_item_outsource_fee.js'
+import {
+  up as scmPerfIndexesUp,
+  down as scmPerfIndexesDown,
+} from './migrations/20260918_scm_perf_indexes.js'
+import {
+  up as ledgerBalanceIndexesUp,
+  down as ledgerBalanceIndexesDown,
+} from './migrations/20260919_ledger_balance_indexes.js'
+import {
+  up as bankStatementColumnsUp,
+  down as bankStatementColumnsDown,
+} from './migrations/20260920_bank_statement_columns.js'
+import {
+  up as cashierJournalFxUp,
+  down as cashierJournalFxDown,
+} from './migrations/20260921_cashier_journal_fx.js'
+import {
+  up as cashierBankOpeningUp,
+  down as cashierBankOpeningDown,
+} from './migrations/20260923_cashier_bank_opening.js'
+import {
+  up as cashierGlMatchUp,
+  down as cashierGlMatchDown,
+} from './migrations/20260924_cashier_gl_match.js'
+import {
+  up as assetStatusDisposedNameUp,
+  down as assetStatusDisposedNameDown,
+} from './migrations/20260925_asset_status_disposed_name.js'
+import {
+  up as assetStatusDisposedBackfillUp,
+  down as assetStatusDisposedBackfillDown,
+} from './migrations/20260925_asset_status_disposed_backfill.js'
 
 /**
  * 迁移示例：添加新字段
@@ -2242,5 +2274,53 @@ export const migrations: Migration[] = [
     name: 'scm_item_outsource_fee',
     up: scmItemOutsourceFeeUp,
     down: scmItemOutsourceFeeDown,
+  },
+  {
+    version: 141,
+    name: 'scm_perf_indexes',
+    up: scmPerfIndexesUp,
+    down: scmPerfIndexesDown,
+  },
+  {
+    version: 142,
+    name: 'ledger_balance_indexes',
+    up: ledgerBalanceIndexesUp,
+    down: ledgerBalanceIndexesDown,
+  },
+  {
+    version: 143,
+    name: 'bank_statement_columns',
+    up: bankStatementColumnsUp,
+    down: bankStatementColumnsDown,
+  },
+  {
+    version: 144,
+    name: 'cashier_journal_fx',
+    up: cashierJournalFxUp,
+    down: cashierJournalFxDown,
+  },
+  {
+    version: 145,
+    name: 'cashier_bank_opening',
+    up: cashierBankOpeningUp,
+    down: cashierBankOpeningDown,
+  },
+  {
+    version: 146,
+    name: 'cashier_gl_match',
+    up: cashierGlMatchUp,
+    down: cashierGlMatchDown,
+  },
+  {
+    version: 147,
+    name: 'asset_status_disposed_name',
+    up: assetStatusDisposedNameUp,
+    down: assetStatusDisposedNameDown,
+  },
+  {
+    version: 148,
+    name: 'asset_status_disposed_backfill',
+    up: assetStatusDisposedBackfillUp,
+    down: assetStatusDisposedBackfillDown,
   },
 ]

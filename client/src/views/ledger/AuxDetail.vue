@@ -280,6 +280,7 @@
 </template>
 
 <script setup lang="ts">
+import { monthEndDate } from '@/utils/monthEnd'
 import { ref, computed, watch, onMounted, onActivated } from 'vue'
 import { useRoute } from 'vue-router'
 import { storeToRefs } from 'pinia'
@@ -922,7 +923,7 @@ function insertMonthlySubtotals(entries: any[], account: any): any[] {
     if (currentMonth && entryMonth !== currentMonth) {
       result.push({
         id: `__monthly_subtotal_${currentMonth}__`,
-        voucher_date: currentMonth + '-31',
+        voucher_date: monthEndDate(currentMonth),
         voucher_no: '',
         summary: '本月合计',
         direction: '',
@@ -935,7 +936,7 @@ function insertMonthlySubtotals(entries: any[], account: any): any[] {
 
       result.push({
         id: `__yearly_subtotal_${currentMonth}__`,
-        voucher_date: currentMonth + '-31',
+        voucher_date: monthEndDate(currentMonth),
         voucher_no: '',
         summary: '本年累计',
         direction: '',
@@ -971,7 +972,7 @@ function insertMonthlySubtotals(entries: any[], account: any): any[] {
   if (currentMonth && entries.length > 0) {
     result.push({
       id: `__monthly_subtotal_${currentMonth}__`,
-      voucher_date: currentMonth + '-31',
+      voucher_date: monthEndDate(currentMonth),
       voucher_no: '',
       summary: '本月合计',
       direction: '',
@@ -984,7 +985,7 @@ function insertMonthlySubtotals(entries: any[], account: any): any[] {
 
     result.push({
       id: `__yearly_subtotal_${currentMonth}__`,
-      voucher_date: currentMonth + '-31',
+      voucher_date: monthEndDate(currentMonth),
       voucher_no: '',
       summary: '本年累计',
       direction: '',

@@ -12,6 +12,7 @@ import { applyMovingAvgIn, applyMovingAvgOut, reverseDocMoves, getCostingMethod,
 import { applyPayment, applyInvoice, reverseInvoice, reversePayment, sumGrossAmount, getPartnerLedger, getAllPartnerLedger, applyReceivableFromShipment, applyPayableFromReceipt, applyReturnAdjustment, applyOutsourceFeePayable, getOpenItems, getPaymentSources, verifyArAp, cancelVerify, listVerifies, getDocVerifiedInfo, getArApAging, getDueReminder, getPartnerCredit, getPartnerOpenAr, getPartnerBalanceSummary } from '../services/scmArAp.js'
 import { assertAccountIdsInScope, type AccountScopeContext } from '../services/accountAuthorization.js'
 import { assertGlPeriodOpen } from '../services/voucherMutationGuard.js'
+import { assertPeriodOpen as assertAssetPeriodOpen } from '../services/assetVoucherBuilder.js'
 import { maintainDocBatches, reverseDocBatches } from '../services/scmBatch.js'
 import { maintainDocSerials, reverseDocSerials } from '../services/scmSerial.js'
 import { computeIssueSuggestion, computeProductionPlanActionState, computePushedQty, isPlanFullyFinished } from '../services/scmProduction.js'
@@ -2030,11 +2031,24 @@ router.post('/scm/docs/:id/gen-assets', operationLog('采购资产生成', '供�
   const doc = db.prepare('SELECT * FROM scm_doc WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
   if (!doc || doc.status !== 'audited') return res.status(400).json({ code: 400, message: '单据未审核' })
   if (doc.doc_type !== 'PI') return res.status(400).json({ code: 400, message: '仅采购入库可生成资产' })
+  // 评审 P2：生成的是资产卡片，须有资产新增权限，且资产所属期间（单据日期）未结账——与卡片新增同口径
+  if (!req.permissions?.includes('*') && !req.permissions?.includes('asset:edit')) {
+    return res.status(403).json({ code: 403, message: '无此操作权限（需要「固定资产」卡片维护权限）' })
+  }
+  {
+    const ym = String(doc.doc_date || '').match(/^(\d{4})-(\d{2})/)
+    if (!ym) return res.status(400).json({ code: 400, message: '单据日期不合法' })
+    try { assertAssetPeriodOpen(db, aid, Number(ym[1]), Number(ym[2])) } catch (e: any) {
+      return res.status(400).json({ code: 400, message: e.message })
+    }
+  }
 
   const lines = db.prepare('SELECT * FROM scm_doc_line WHERE doc_id=?').all(doc.id) as any[]
   const assetLines = lines.filter(l => { const item = getItem(db, aid, l.item_code); return item?.is_asset === 1 })
 
   let created = 0
+  // 评审 P2：整单一个事务，中途失败不留半截卡片
+  db.transaction(() => {
   for (const l of assetLines) {
     const item = getItem(db, aid, l.item_code)
     const assetNo = `CG-${doc.doc_no}-${l.seq}`
@@ -2052,6 +2066,7 @@ router.post('/scm/docs/:id/gen-assets', operationLog('采购资产生成', '供�
     )
     created++
   }
+  })()
   res.json({ code: 0, data: { created, totalAssetLines: assetLines.length } })
 })
 
@@ -2584,6 +2599,7 @@ router.get('/scm/docs/:id/availability', (req: AuthRequest, res) => {
 
   const rows = db.prepare(`
     SELECT l.*, i.name AS item_name, i.spec, i.unit, w.name AS warehouse_name,
+           ? AS source_doc_no,
            COALESCE(s.qty, 0) AS on_hand,
            COALESCE(NULLIF(l.source_type, ''), i.source_type, 'purchase') AS source_type,
            COALESCE(NULLIF(l.supplier_code, ''), i.supplier_code) AS supplier_code,
@@ -2618,7 +2634,7 @@ router.get('/scm/docs/:id/availability', (req: AuthRequest, res) => {
     LEFT JOIN scm_warehouse w ON w.account_set_id = l.account_set_id AND w.code = l.warehouse_code
     WHERE l.doc_id = ?
     ORDER BY l.seq
-  `).all(req.params.id, req.params.id) as any[]
+  `).all(doc.doc_no, req.params.id, req.params.id) as any[]
 
   // 本单已生成缺料单的数量池（按 物料+仓库 汇总），用于扣减重复缺口
   const mrRows = db.prepare(`

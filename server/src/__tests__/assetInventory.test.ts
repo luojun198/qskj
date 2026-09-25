@@ -11,6 +11,7 @@ import {
   insertAccounts,
   insertAssetDicts,
   enableDeptAux,
+  markDepreciated,
   SET_ID,
 } from './helpers/assetTestDb.js'
 
@@ -24,7 +25,8 @@ describe('固定资产盘点', () => {
     insertAccounts(db, [
       ['1601', '固定资产'],
       ['1602', '累计折旧'],
-      ['6901', '待处理财产损溢'],
+      ['1901', '待处理财产损溢'],
+      ['6901', '以前年度损益调整'],
     ])
     // 原值 10000 / 累折 4000 / 净值 6000
     insertAsset(db, {
@@ -33,6 +35,8 @@ describe('固定资产盘点', () => {
       accum_depr: 4000,
       net_value: 6000,
     })
+    // 评审 P1-9：盘点月（2026-06）已计提
+    markDepreciated(db, 'A1', 2026, 6)
     inventoryId = createInventory({
       db,
       accountSetId: SET_ID,
@@ -109,12 +113,12 @@ describe('固定资产盘点', () => {
     expect(totals.credit).toBe(10000)
   })
 
-  it('盘盈凭证借贷平衡：借固定资产 / 贷损溢', () => {
+  it('盘盈凭证借贷平衡：借固定资产原值份额 / 贷累计折旧份额 + 损溢净值份额（评审 P1-4）', () => {
     markAs('surplus', 2)
     complete()
     const totals = totalsOf(latestVoucher().id)
-    expect(totals.debit).toBe(6000)
-    expect(totals.credit).toBe(6000)
+    expect(totals.debit).toBe(10000)
+    expect(totals.credit).toBe(10000)
   })
 
   it('凭证 source 为 asset_inventory（原实现漏写，导致不受资产凭证删除拦截保护）', () => {
@@ -133,10 +137,10 @@ describe('固定资产盘点', () => {
   })
 
   it('科目缺失时以 voucherWarning 返回明确提示，不生成半截凭证', () => {
-    db.prepare("DELETE FROM accounts WHERE code='6901'").run()
+    db.prepare("DELETE FROM accounts WHERE code='1901'").run()
     markAs('deficit', 0)
     const result = complete()
-    expect(result.voucherWarning).toMatch(/6901/)
+    expect(result.voucherWarning).toMatch(/1901/)
     expect(db.prepare('SELECT COUNT(*) c FROM vouchers').get()).toEqual({ c: 0 })
   })
 
@@ -189,12 +193,12 @@ describe('固定资产盘点', () => {
   })
 
   it('A4：盘盈只就数量差入账，不重复计一整张卡片的净值', () => {
-    // 账面 1 台、实盘 3 台 → 盘盈 2 台，单位净值 6000
+    // 账面 1 台、实盘 3 台 → 盘盈 2 台：原值份额 20000、累折份额 8000、净值份额 12000
     markAs('surplus', 3)
     complete()
     const totals = totalsOf(latestVoucher().id)
-    expect(totals.debit).toBe(12000)
-    expect(totals.credit).toBe(12000)
+    expect(totals.debit).toBe(20000)
+    expect(totals.credit).toBe(20000)
   })
 
   it('A4：盘盈同步调增卡片数量与原值', () => {
@@ -203,8 +207,40 @@ describe('固定资产盘点', () => {
     const asset = db.prepare("SELECT * FROM fixed_asset WHERE asset_no='A1'").get() as any
     expect(asset.qty).toBe(3)
     expect(asset.original_value).toBe(30000)
-    // 累折不变，净值随原值同步调增
-    expect(asset.net_value).toBe(26000)
+    // 评审 P1-4：累折同比例调增，卡片与凭证（借 1601 20000 / 贷 1602 8000）一致
+    expect(asset.accum_depr).toBe(12000)
+    expect(asset.net_value).toBe(18000)
+    const byAccount = db
+      .prepare(
+        `SELECT a.code, SUM(CASE WHEN e.direction='debit' THEN e.amount ELSE -e.amount END) net
+         FROM voucher_entries e JOIN accounts a ON a.id = e.account_id WHERE e.voucher_id=? GROUP BY a.code`
+      )
+      .all(latestVoucher().id) as Array<{ code: string; net: number }>
+    const net = Object.fromEntries(byAccount.map(r => [r.code, r.net]))
+    expect(net['1601']).toBe(20000)
+    expect(net['1602']).toBe(-8000)
+  })
+
+  it('评审 P1-9：整卡盘亏的资产当月未计提时拒绝完成盘点', () => {
+    db.prepare('DELETE FROM fixed_asset_depr').run()
+    markAs('deficit', 0)
+    expect(() => complete()).toThrow(/A1 本月尚未计提折旧.*2026年6月/)
+    expect((db.prepare('SELECT status FROM fixed_asset_inventory WHERE id=?').get(inventoryId) as any).status).not.toBe('completed')
+  })
+
+  it('评审 P2：已完成的盘点不能再修改明细', () => {
+    markAs('normal', 1)
+    complete()
+    expect(() => markAs('deficit', 0)).toThrow(/已完成，盘点明细不能再修改/)
+  })
+
+  it('评审 P2：完成盘点中途失败整体回滚，主表仍为未完成', () => {
+    markAs('surplus', 2)
+    // 让盘盈调增卡片后写变动流水那一步失败
+    db.exec('DROP TABLE fixed_asset_change')
+    expect(() => complete()).toThrow()
+    expect((db.prepare('SELECT status FROM fixed_asset_inventory WHERE id=?').get(inventoryId) as any).status).not.toBe('completed')
+    expect((db.prepare("SELECT qty, original_value FROM fixed_asset WHERE asset_no='A1'").get() as any)).toMatchObject({ original_value: 10000 })
   })
 
   it('A9：已完成的盘点不能重复完成（避免重复生成凭证 / 重复处置卡片）', () => {
@@ -250,7 +286,7 @@ describe('固定资产盘点', () => {
     db.close()
     db = createAssetTestDb()
     insertAssetDicts(db)
-    insertAccounts(db, [['1601', '固定资产'], ['1602', '累计折旧'], ['6901', '待处理财产损溢']])
+    insertAccounts(db, [['1601', '固定资产'], ['1602', '累计折旧'], ['1901', '待处理财产损溢'], ['6901', '以前年度损益调整']])
     // 原值 3000 / qty 3 / 累折 600 / 净值 2400；残值率 0.05
     insertAsset(db, { asset_no: 'A1', qty: 3, original_value: 3000, accum_depr: 600, net_value: 2400, salvage_rate: 0.05, salvage_value: 150 })
     inventoryId = createInventory({ db, accountSetId: SET_ID, name: '部分盘亏', inventoryDate: '2026-06-30' })
@@ -261,7 +297,7 @@ describe('固定资产盘点', () => {
       .prepare('SELECT account_code, direction, amount FROM voucher_entries WHERE voucher_id=? ORDER BY seq')
       .all(latestVoucher().id) as any[]
     expect(entries).toEqual([
-      { account_code: '6901', direction: 'debit', amount: 800 },
+      { account_code: '1901', direction: 'debit', amount: 800 },
       { account_code: '1602', direction: 'debit', amount: 200 },
       { account_code: '1601', direction: 'credit', amount: 1000 },
     ])

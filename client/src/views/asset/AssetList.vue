@@ -15,6 +15,20 @@
         批量停启用
       </el-button>
       <el-button v-permission="'asset:edit'" size="small" @click="$router.push('/asset/import')">批量导入</el-button>
+      <!-- 评审 P2：filters 与后端筛选参数早已接好，但页面没有控件，筛选形同虚设 -->
+      <el-divider direction="vertical" />
+      <el-input v-model="filters.keyword" size="small" clearable placeholder="编号 / 名称" style="width:160px"
+        @keyup.enter="onFilterChange" @clear="onFilterChange" />
+      <el-select v-model="filters.category_code" size="small" clearable placeholder="资产类别" style="width:130px" @change="onFilterChange">
+        <el-option v-for="c in dicts.category" :key="c.code" :label="c.name" :value="c.code" />
+      </el-select>
+      <el-select v-model="filters.status_code" size="small" clearable placeholder="使用状态" style="width:120px" @change="onFilterChange">
+        <el-option v-for="c in dicts.status" :key="c.code" :label="c.name" :value="c.code" />
+      </el-select>
+      <el-select v-model="filters.dept_code" size="small" clearable placeholder="使用部门" style="width:130px" @change="onFilterChange">
+        <el-option v-for="c in dicts.dept" :key="c.code" :label="c.name" :value="c.code" />
+      </el-select>
+      <el-button size="small" type="primary" plain @click="onFilterChange"><el-icon><Search /></el-icon>查询</el-button>
     </div>
     <div ref="tableContainerRef" class="table-container">
       <el-table ref="tableRef" :data="list" :height="tableHeight" border stripe size="small" class="compact-data-table"
@@ -72,7 +86,7 @@
     </div>
 
     <!-- 新增/编辑弹窗 -->
-    <el-dialog v-model="dialogVisible" :title="editId ? '编辑固定资产' : '新增固定资产'" width="800px" draggable>
+    <el-dialog v-model="dialogVisible" :title="editId ? '编辑固定资产' : '新增固定资产'" width="800px" draggable :close-on-click-modal="false">
       <div v-if="editId && navigationInfo" style="margin-bottom: 16px; border-bottom: 1px solid var(--el-border-color-lighter); padding-bottom: 12px;">
         <DialogNavigation
           :current="navigationInfo.current"
@@ -133,7 +147,8 @@
           <el-row :gutter="16">
             <el-col :span="12">
               <el-form-item label="原值" required>
-                <el-input-number v-model="form.original_value" :precision="2" :min="0" style="width:100%" @change="onOriginalValueChange" />
+                <el-input-number v-model="form.original_value" :precision="2" :min="0" :disabled="!!valueLockReason" style="width:100%" @change="onOriginalValueChange" />
+                <span v-if="valueLockReason" class="tip-text">{{ valueLockReason }}，原值请通过「资产变动 → 原值变动」调整</span>
               </el-form-item>
             </el-col>
             <el-col :span="12">
@@ -155,7 +170,8 @@
             </el-col>
             <el-col :span="12">
               <el-form-item label="期初累计折旧">
-                <el-input-number v-model="form.accum_depr" :precision="2" :min="0" style="width:100%" @change="onAccumDeprChange" />
+                <el-input-number v-model="form.accum_depr" :precision="2" :min="0" :disabled="!!valueLockReason" style="width:100%" @change="onAccumDeprChange" />
+                <span v-if="valueLockReason" class="tip-text">累计折旧由计提 / 反折旧维护</span>
               </el-form-item>
             </el-col>
             <el-col :span="12">
@@ -247,7 +263,7 @@
     </el-dialog>
 
     <!-- 资产处置弹窗 -->
-    <el-dialog v-model="disposeVisible" title="资产处置" width="560px" draggable>
+    <el-dialog v-model="disposeVisible" title="资产处置" width="560px" draggable :close-on-click-modal="false">
       <div class="dispose-info" v-if="disposeAsset">
         <el-descriptions :column="2" border size="small">
           <el-descriptions-item label="资产编号">{{ disposeAsset.asset_no }}</el-descriptions-item>
@@ -306,6 +322,7 @@
       :title="batchKind === 'dept' ? '批量部门调拨' : '批量变更使用状态'"
       width="520px"
       draggable
+      :close-on-click-modal="false"
     >
       <el-alert
         type="info"
@@ -378,6 +395,7 @@ function disableFutureMonth(date: Date): boolean {
   return date.getFullYear() * 100 + date.getMonth() > now.getFullYear() * 100 + now.getMonth()
 }
 import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { useReloadOnActivated } from '@/composables/useReloadOnActivated'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Plus, Setting } from '@element-plus/icons-vue'
 import { fixedAssetApi, type AssetCard, type AssetDicts, DEPR_METHODS } from '@/api/fixedAsset'
@@ -511,6 +529,8 @@ const statusTagType = (code: string | null) => {
   return (map[code ?? ''] ?? 'info') as any
 }
 
+// 从资产变动 / 导入 / 明细页返回时刷新列表
+useReloadOnActivated(() => { handleQuery() })
 onMounted(async () => {
   // 字典与列表无依赖关系，并行加载减少首屏等待
   const [dictRes] = await Promise.all([
@@ -519,6 +539,12 @@ onMounted(async () => {
   ])
   if (dictRes.code === 0) dicts.value = dictRes.data
 })
+
+/** 改筛选条件后回到第 1 页再查 */
+function onFilterChange() {
+  pagination.page = 1
+  handleQuery()
+}
 
 async function handleQuery() {
   const res = await fixedAssetApi.getCards({
@@ -543,6 +569,7 @@ async function handleQuery() {
 
 async function openAdd() {
   editId.value = null
+  valueLockReason.value = null
   form.value = {
     original_value: 0,
     // AS-P0-1：残值率统一小数口径（0.05 表示 5%），与服务端/导入一致
@@ -563,10 +590,18 @@ async function openAdd() {
   } catch { /* 忽略，留空让用户手填 */ }
 }
 
-function openEdit(row: AssetCard) {
+/** 评审 P1-2：有财务痕迹的卡片原值 / 累计折旧只读（后端同样拦截） */
+const valueLockReason = ref<string | null>(null)
+
+async function openEdit(row: AssetCard) {
   editId.value = row.id
   form.value = { ...row }
+  valueLockReason.value = null
   dialogVisible.value = true
+  try {
+    const res = await fixedAssetApi.getCard(row.id)
+    if (res.code === 0 && editId.value === row.id) valueLockReason.value = res.data.value_lock_reason ?? null
+  } catch { /* 取不到时不锁，后端仍会拦截 */ }
 }
 
 function onOriginalValueChange() {
@@ -785,8 +820,6 @@ async function handleDispose() {
   font-size: 12px;
   font-weight: 500;
 }
-/* 操作列按钮紧凑排列：去掉相邻按钮默认 12px 间距，改为 2px 间隔 */
+/* 操作列按钮间距由全局 common.css（--cw-op-gap）统一控制 */
 .row-actions { display: inline-flex; align-items: center; gap: 0; }
-.row-actions .el-button + .el-button { margin-left: 6px; }
-.row-actions .el-button { padding: 0; }
 </style>

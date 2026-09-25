@@ -8,6 +8,8 @@
  */
 import type { Database } from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
+import { revokeAssetChange } from './assetChange.js'
+import { assertNotAfterCurrentPeriod, assertPeriodOpen } from './assetVoucherBuilder.js'
 
 export type RequisitionAction = 'out' | 'in'
 
@@ -50,6 +52,20 @@ function lastAction(db: Database, accountSetId: string, assetNo: string): any {
         LIMIT 1`
     )
     .get(accountSetId, assetNo)
+}
+
+/**
+ * 评审 P2：领用 / 归还日期须是真实日期、所属期间未结账、不晚于当前月份——
+ * 联动的部门调拨会写变动流水并影响折旧费用按部门分配，与其他资产业务同口径。
+ */
+function assertRequisitionDateWritable(db: Database, accountSetId: string, date: string): void {
+  const [y, m, d] = date.split('-').map(Number)
+  const dt = new Date(y, m - 1, d)
+  if (dt.getFullYear() !== y || dt.getMonth() !== m - 1 || dt.getDate() !== d) {
+    throw new Error(`日期 ${date} 不是有效日期`)
+  }
+  assertNotAfterCurrentPeriod(y, m, '领用 / 归还日期')
+  assertPeriodOpen(db, accountSetId, y, m)
 }
 
 /** 资产当前是否处于已领用未归还状态 */
@@ -98,9 +114,15 @@ export function createRequisition(params: CreateRequisitionParams): CreateRequis
   if (!/^\d{4}-\d{2}-\d{2}$/.test(actionDate || '')) {
     throw new Error('日期格式应为 YYYY-MM-DD')
   }
+  assertRequisitionDateWritable(db, accountSetId, actionDate)
 
   const asset = loadAsset(db, accountSetId, assetId)
   if (asset.scrap_date) throw new Error('该资产已处置，不能再办理领用归还')
+  // 评审 P2：不能早于该资产上一条领用 / 归还（归还早于领用会让「当前是否在借」与部门调回顺序错乱）
+  const prev = lastAction(db, accountSetId, asset.asset_no)
+  if (prev?.action_date && actionDate < String(prev.action_date)) {
+    throw new Error(`日期不能早于该资产上一条${prev.action === 'out' ? '领用' : '归还'}记录（${prev.action_date}）`)
+  }
 
   const checkedOut = isCheckedOut(db, accountSetId, asset.asset_no)
   if (action === 'out' && checkedOut) {
@@ -131,6 +153,9 @@ export function createRequisition(params: CreateRequisitionParams): CreateRequis
 
   const id = uuidv4()
   let deptChangeId: string | null = null
+  // 归还调回的部门要在写入本条归还记录之前算（之后「最后一条」就变成归还本身了）
+  const restoreTo =
+    action === 'in' ? deptCode ?? findDeptBeforeRequisition(db, accountSetId, asset) : null
 
   db.transaction(() => {
     db.prepare(
@@ -182,9 +207,25 @@ export function createRequisition(params: CreateRequisitionParams): CreateRequis
           actionDate,
           operatorName,
           operatorId,
+          source: 'out',
         })
       }
     } else {
+      // 归还：部门自动调回领用前的部门（手工指定部门时以指定为准）。
+      // 领用后若又做过手工部门调拨（当前部门已不是领用部门），尊重手工调拨，不再回调。
+      if (restoreTo && restoreTo !== (asset.dept_code || null)) {
+        db.prepare(`UPDATE fixed_asset SET dept_code=?, updated_at=datetime('now') WHERE id=?`).run(restoreTo, assetId)
+        deptChangeId = writeDeptChangeFromRequisition({
+          db,
+          accountSetId,
+          asset,
+          newDeptCode: restoreTo,
+          actionDate,
+          operatorName,
+          operatorId,
+          source: 'in',
+        })
+      }
       // 归还：清空使用人（保管人与存放地点按传入值更新，未传则保持）
       db.prepare(
         `UPDATE fixed_asset SET
@@ -202,7 +243,34 @@ export function createRequisition(params: CreateRequisitionParams): CreateRequis
   return { id, assetNo: asset.asset_no, action, deptChangeId }
 }
 
-/** 领用引起的部门转移，写成一条与「部门调拨」同构的变动流水 */
+/** 领用 / 归还联动的部门调拨流水备注（删除领用记录时据此找到并撤销） */
+const REQ_DEPT_REMARK: Record<RequisitionAction, string> = {
+  out: '由资产领用登记联动产生',
+  in: '由资产归还登记联动产生',
+}
+
+/**
+ * 归还时应调回的部门：取最近一条未归还领用对应的联动调拨流水的原部门。
+ * 当前部门已不是领用时调入的部门（期间有手工调拨）则返回 null，不回调。
+ */
+function findDeptBeforeRequisition(db: Database, accountSetId: string, asset: any): string | null {
+  const out = lastAction(db, accountSetId, asset.asset_no) as any
+  if (!out || out.action !== 'out' || !out.dept_code) return null
+  if ((asset.dept_code || null) !== out.dept_code) return null
+  const chg = db
+    .prepare(
+      `SELECT old_text FROM fixed_asset_change
+        WHERE account_set_id=? AND asset_no=? AND change_kind='dept' AND remark=?
+          AND change_date=? AND new_text=?
+        ORDER BY rowid DESC LIMIT 1`
+    )
+    .get(accountSetId, asset.asset_no, REQ_DEPT_REMARK.out, out.action_date, out.dept_code) as
+    | { old_text: string | null }
+    | undefined
+  return chg?.old_text || null
+}
+
+/** 领用 / 归还引起的部门转移，写成一条与「部门调拨」同构的变动流水 */
 function writeDeptChangeFromRequisition(args: {
   db: Database
   accountSetId: string
@@ -211,8 +279,9 @@ function writeDeptChangeFromRequisition(args: {
   actionDate: string
   operatorName: string
   operatorId: string | null
+  source: RequisitionAction
 }): string {
-  const { db, accountSetId, asset, newDeptCode, actionDate, operatorName, operatorId } = args
+  const { db, accountSetId, asset, newDeptCode, actionDate, operatorName, operatorId, source } = args
   const nameOf = (code: string | null) =>
     code
       ? ((
@@ -235,8 +304,8 @@ function writeDeptChangeFromRequisition(args: {
     accountSetId,
     asset.asset_no,
     actionDate,
-    `部门调拨：${nameOf(asset.dept_code)} → ${nameOf(newDeptCode)}（资产领用）`,
-    '由资产领用登记联动产生',
+    `部门调拨：${nameOf(asset.dept_code)} → ${nameOf(newDeptCode)}（${source === 'out' ? '资产领用' : '资产归还'}）`,
+    REQ_DEPT_REMARK[source],
     operatorName,
     asset.dept_code || null,
     newDeptCode,
@@ -250,7 +319,8 @@ function writeDeptChangeFromRequisition(args: {
 /**
  * 删除一条领用/归还记录。
  * 只允许删除该资产最后一条，否则「已领用/已归还」的状态推演会错乱。
- * 卡片上的使用人等字段不做回滚（属于事实性信息，由用户按需重新登记）。
+ * 卡片上的使用人等字段不做回滚（属于事实性信息，由用户按需重新登记）；
+ * 联动产生的部门调拨流水会一并撤销，部门随之还原。
  */
 export function deleteRequisition(params: {
   db: Database
@@ -267,8 +337,26 @@ export function deleteRequisition(params: {
   if (last?.id !== requisitionId) {
     throw new Error('只能删除该资产最后一条领用/归还记录')
   }
+  // 评审 P2：已结账期间的领用 / 归还（含联动的部门调拨）不可删除
+  if (/^\d{4}-\d{2}/.test(String(row.action_date || ''))) {
+    assertPeriodOpen(db, accountSetId, Number(String(row.action_date).slice(0, 4)), Number(String(row.action_date).slice(5, 7)))
+  }
 
-  db.prepare('DELETE FROM fixed_asset_requisition WHERE id=?').run(requisitionId)
+  // 该记录联动产生的部门调拨一并撤销（部门随之还原），否则删了领用 / 归还部门却停在原处
+  const linked = db
+    .prepare(
+      `SELECT id FROM fixed_asset_change
+        WHERE account_set_id=? AND asset_no=? AND change_kind='dept' AND remark=? AND change_date=?
+        ORDER BY rowid DESC LIMIT 1`
+    )
+    .get(accountSetId, row.asset_no, REQ_DEPT_REMARK[row.action as RequisitionAction], row.action_date) as
+    | { id: string }
+    | undefined
+
+  db.transaction(() => {
+    if (linked) revokeAssetChange({ db, accountSetId, changeId: linked.id })
+    db.prepare('DELETE FROM fixed_asset_requisition WHERE id=?').run(requisitionId)
+  })()
   return { assetNo: row.asset_no }
 }
 

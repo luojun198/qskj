@@ -299,6 +299,7 @@ function clearMasterDataForReinit(
 
   // 出纳与固定资产业务数据（依赖表先删）
   deleteIfExists(db, 'DELETE FROM cashier_attachments WHERE account_set_id = ?', accountSetId)
+  deleteIfExists(db, 'DELETE FROM cashier_gl_match WHERE account_set_id = ?', accountSetId)
   deleteIfExists(db, 'DELETE FROM cashier_journal WHERE account_set_id = ?', accountSetId)
   deleteIfExists(db, 'DELETE FROM cashier_init_balance WHERE account_set_id = ?', accountSetId)
   deleteIfExists(db, 'DELETE FROM bank_statement WHERE account_set_id = ?', accountSetId)

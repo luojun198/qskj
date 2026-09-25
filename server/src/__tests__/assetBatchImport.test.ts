@@ -84,6 +84,12 @@ describe('固定资产批量导入', () => {
     it('无法识别返回 null（表示格式错误）', () => {
       expect(normalizeDate('去年三月')).toBeNull()
     })
+
+    it('格式对但不是真实日期返回 null', () => {
+      expect(normalizeDate('2026-13-01')).toBeNull()
+      expect(normalizeDate('2026-02-30')).toBeNull()
+      expect(normalizeDate('2028-02-29')).toBe('2028-02-29')
+    })
   })
 
   // ── 模板列 ────────────────────────────────────────────────
@@ -138,7 +144,9 @@ describe('固定资产批量导入', () => {
     })
 
     it('残值率超出 0~1 时报错', () => {
-      expect(validate(goodRow({ salvage_rate: 10 }))[0].message).toContain('0~1')
+      expect(validate(goodRow({ salvage_rate: 10 }))[0].message).toContain('小于 1')
+      // 评审 P2：残值率 = 1 同样拒绝
+      expect(validate(goodRow({ salvage_rate: 1 }))[0].message).toContain('小于 1')
     })
 
     it('折旧方法非法时报错', () => {

@@ -5,8 +5,9 @@ import { test, expect } from './fixtures'
 
 test('标准报表页点资产负债表进入报表页', async ({ loggedInPage: page }) => {
   await page.goto('/ledger/standard-report')
-  await page.waitForSelector('.page, .el-table, .el-card', { timeout: 10000 })
-  const entry = page.locator('a, .el-button, .el-link, [role=button], .report-card, .el-table__row', { hasText: '资产负债表' }).first()
+  // 标准报表页根节点为 .standard-report-container，报表列表项是普通文本节点（非表格 / 卡片）
+  await page.waitForSelector('.standard-report-container', { timeout: 10000 })
+  const entry = page.getByText(/资产负债表/).first()
   await entry.waitFor({ state: 'visible', timeout: 8000 })
   await entry.click()
   await page.waitForTimeout(800)

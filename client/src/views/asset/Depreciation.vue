@@ -188,7 +188,7 @@
     </el-tabs>
 
     <!-- 工作量录入弹窗 -->
-    <el-dialog v-model="workloadVisible" title="录入工作量" width="700px" draggable>
+    <el-dialog v-model="workloadVisible" title="录入工作量" width="700px" draggable :close-on-click-modal="false">
       <div class="workload-hint">
         仅显示使用<b>工作量法</b>折旧的资产，录入本期实际工作量后点击「保存」即可。
       </div>
@@ -198,7 +198,10 @@
         <el-table-column label="总工作量" prop="total_workload" width="110" align="right">
           <template #default="{ row }">{{ row.total_workload ?? '-' }}</template>
         </el-table-column>
-        <el-table-column label="已录入工作" prop="workload_value" width="130" align="center">
+        <el-table-column label="剩余工作量" width="110" align="right">
+          <template #default="{ row }">{{ remainingWorkload(row) }}</template>
+        </el-table-column>
+        <el-table-column label="本期工作量" prop="workload_value" width="130" align="center">
           <template #default="{ row }">
             <el-input-number v-model="workloadValues[row.asset_no]" :min="0" :precision="2" size="small" style="width:120px" />
           </template>
@@ -215,6 +218,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
+import { useReloadOnActivated } from '@/composables/useReloadOnActivated'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Check, List, Edit, RefreshLeft } from '@element-plus/icons-vue'
@@ -397,7 +401,7 @@ async function handleExecute() {
     return ElMessage.warning('预览为空：请先对当前期间执行「重新预览」后再计提')
   }
   await ElMessageBox.confirm(
-    `确认对 ${period.value} 计提折旧（共 ${previewLines.value.length} 条，合计 ¥${fmtAmt(previewTotal.value)}）？此操作不可撤销。`,
+    `确认对 ${period.value} 计提折旧（共 ${previewLines.value.length} 条，合计 ¥${fmtAmt(previewTotal.value)}）？如需撤销，可在「取消折旧」页反折旧（凭证未记账时）。`,
     '计提确认', { type: 'warning' }
   )
   executing.value = true
@@ -414,7 +418,16 @@ async function handleExecute() {
       resultCount.value = res.data.assetCount
       resultTotal.value = res.data.totalDepr
       resultVoucher.value = res.data.voucher
-      ElMessage.success('折旧计提成功')
+      // 评审 P2：计提已写入但凭证生成失败时，此前只提示「成功」，用户以为凭证也有了
+      if (res.data.voucherWarning) {
+        ElMessageBox.alert(
+          `折旧已计提，但凭证未生成：${res.data.voucherWarning}。处理后可在「历史记录」页按期间补生成凭证。`,
+          '凭证未生成',
+          { type: 'warning' }
+        )
+      } else {
+        ElMessage.success(generateVoucher.value ? '折旧计提成功，凭证已生成' : '折旧计提成功')
+      }
       await checkPriorVoucher()
     }
   } finally {
@@ -461,6 +474,12 @@ async function openWorkloadDialog() {
     if (wRes.code === 0) {
       workloadValues.value = { ...wRes.data }
     }
+    // 本期已计提的资产：其 workload_done 已含本期旧工作量
+    const deprRes = await fixedAssetApi.getDeprHistory({ year: y, month: m })
+    const deprNos = new Set(((deprRes.code === 0 ? deprRes.data : []) as any[]).map((r: any) => r.asset_no))
+    workloadSavedPrev.value = Object.fromEntries(
+      Object.entries(wRes.code === 0 ? wRes.data : {}).filter(([no]) => deprNos.has(no))
+    ) as Record<string, number>
     // 初始化未录入项
     for (const a of workloadAssets.value) {
       if (!(a.asset_no in workloadValues.value)) {
@@ -473,7 +492,21 @@ async function openWorkloadDialog() {
   }
 }
 
+/** 剩余工作量 = 总工作量 − 已完成（本期已计提时已完成含本期旧值，需扣回） */
+const workloadSavedPrev = ref<Record<string, number>>({})
+function remainingWorkload(row: any): number {
+  const total = Number(row.total_workload || 0)
+  const done = Number(row.workload_done || 0) - (workloadSavedPrev.value[row.asset_no] || 0)
+  return Math.max(0, Math.round((total - done) * 100) / 100)
+}
+
 async function handleSaveWorkload() {
+  const over = workloadAssets.value.find(
+    (a: any) => Number(a.total_workload || 0) > 0 && (workloadValues.value[a.asset_no] || 0) > remainingWorkload(a)
+  )
+  if (over) {
+    return ElMessage.warning(`资产 ${over.asset_no} 本期工作量超过剩余工作量 ${remainingWorkload(over)}`)
+  }
   workloadSaving.value = true
   try {
     const { year: y, month: m } = parsePeriod(period.value)
@@ -485,6 +518,8 @@ async function handleSaveWorkload() {
   }
 }
 
+// 从「折旧冲销」页返回时刷新历史与凭证状态
+useReloadOnActivated(() => { loadHistory(); checkPriorVoucher() })
 onMounted(() => {
   baseData.loadAccounts()
   loadHistory()

@@ -8,11 +8,9 @@ vi.mock('../db/index.js', () => ({
 
 import { up as cashierPeriodClosingUp } from '../db/migrations/20260916_cashier_period_closing.js'
 import { up as cashierJournalLinksUp } from '../db/migrations/20260917_cashier_journal_links.js'
+import { up as cashierJournalFxUp } from '../db/migrations/20260921_cashier_journal_fx.js'
 import { closeCashierPeriod } from '../services/cashierPeriodClosing.js'
 import {
-  autoReconcile,
-  manualReconcile,
-  cancelReconcile,
   syncCashierFromVoucher,
 } from '../services/cashierQuery.js'
 import { applyPayment, reversePayment } from '../services/scmArAp.js'
@@ -31,7 +29,7 @@ const AS = 'as1'
 function makeDb() {
   const db = new Database(':memory:')
   db.exec(`
-    CREATE TABLE accounts (id TEXT PRIMARY KEY, account_set_id TEXT, code TEXT, name TEXT, is_cash INTEGER DEFAULT 0, is_bank INTEGER DEFAULT 0);
+    CREATE TABLE accounts (id TEXT PRIMARY KEY, account_set_id TEXT, code TEXT, name TEXT, is_cash INTEGER DEFAULT 0, is_bank INTEGER DEFAULT 0, is_foreign INTEGER DEFAULT 0, currency_code TEXT);
     CREATE TABLE cashier_journal (
       id TEXT PRIMARY KEY, account_set_id TEXT, account_code TEXT, currency TEXT DEFAULT 'RMB',
       biz_date TEXT, seq INTEGER DEFAULT 0, summary TEXT, debit REAL DEFAULT 0, credit REAL DEFAULT 0,
@@ -56,8 +54,9 @@ function makeDb() {
     CREATE TABLE scm_ar_ap_verify (id TEXT PRIMARY KEY, account_set_id TEXT, in_log_id TEXT, out_log_id TEXT, amount REAL);
   `)
   cashierPeriodClosingUp(db)
-  db.prepare("INSERT INTO accounts VALUES ('a1001', ?, '1001', '库存现金', 1, 0)").run(AS)
-  db.prepare("INSERT INTO accounts VALUES ('a1122', ?, '1122', '应收账款', 0, 0)").run(AS)
+  cashierJournalFxUp(db)
+  db.prepare("INSERT INTO accounts (id, account_set_id, code, name, is_cash, is_bank) VALUES ('a1001', ?, '1001', '库存现金', 1, 0)").run(AS)
+  db.prepare("INSERT INTO accounts (id, account_set_id, code, name, is_cash, is_bank) VALUES ('a1122', ?, '1122', '应收账款', 0, 0)").run(AS)
   db.prepare("INSERT INTO scm_partner VALUES ('p1', ?, 'P001', '客户甲', NULL, NULL, 0)").run(AS)
   return db
 }
@@ -80,62 +79,7 @@ describe('出纳完整性（批次 C）', () => {
     testDb = db
   })
 
-  it('P1-5：自动勾对每对独立批次并写 bank_statement_id，撤销一条不影响同批其它对账单', () => {
-    cashierJournalLinksUp(db)
-    addJ(db, 'j1', '2026-08-01', 100)
-    addJ(db, 'j2', '2026-08-02', 200)
-    addJ(db, 'j3', '2026-08-03', 300)
-    addS(db, 's1', '2026-08-01', 100)
-    addS(db, 's2', '2026-08-02', 200)
-    addS(db, 's3', '2026-08-03', 300)
-    const r = autoReconcile({ accountSetId: AS, accountCode: '1001' })
-    expect(r.matched).toBe(3)
-    expect(j(db, 'j1').bank_statement_id).toBe('s1')
-    expect(j(db, 'j2').bank_statement_id).toBe('s2')
-    expect(new Set([j(db, 'j1').match_batch, j(db, 'j2').match_batch, j(db, 'j3').match_batch]).size).toBe(3)
-    expect(j(db, 'j1').match_batch).toBe(String(s(db, 's1').match_batch))
-
-    expect(cancelReconcile({ db, accountSetId: AS, journalId: 'j2' })).toEqual({ ok: true })
-    expect(j(db, 'j2')).toMatchObject({ reconciled: 0, bank_statement_id: null })
-    expect(s(db, 's2').matched).toBe(0)
-    // 其余两对保持已对账
-    expect(s(db, 's1').matched).toBe(1)
-    expect(s(db, 's3').matched).toBe(1)
-    expect(j(db, 'j1').reconciled).toBe(1)
-  })
-
-  it('P1-5：存量共用批次（无 bank_statement_id）撤销时只在批次内仅剩一条对账单时反写，不连带清整批', () => {
-    cashierJournalLinksUp(db)
-    for (const n of [1, 2]) {
-      addJ(db, `j${n}`, '2026-08-01', 100 * n)
-      addS(db, `s${n}`, '2026-08-01', 100 * n)
-      db.prepare("UPDATE cashier_journal SET reconciled=1, match_batch='old' WHERE id=?").run(`j${n}`)
-      db.prepare("UPDATE bank_statement SET matched=1, match_batch='old' WHERE id=?").run(`s${n}`)
-    }
-    cancelReconcile({ db, accountSetId: AS, journalId: 'j1' })
-    expect(j(db, 'j1').reconciled).toBe(0)
-    expect(s(db, 's1').matched).toBe(1)
-    expect(s(db, 's2').matched).toBe(1)
-    expect(j(db, 'j2').reconciled).toBe(1)
-  })
-
-  it('P1-6：出纳已结账月份的日记账 / 对账单不参与自动勾对，手工勾对与撤销被拒绝', () => {
-    cashierJournalLinksUp(db)
-    addJ(db, 'j-jul', '2026-07-05', 100)
-    addS(db, 's-jul', '2026-07-05', 100)
-    addJ(db, 'j-aug', '2026-08-05', 100)
-    addS(db, 's-aug', '2026-08-05', 100)
-    // 先把 8 月一对勾上，再结 7 月
-    manualReconcile({ db, accountSetId: AS, journalId: 'j-aug', bankStatementId: 's-aug' })
-    closeCashierPeriod({ db, accountSetId: AS, year: 2026, month: 7 })
-    expect(autoReconcile({ accountSetId: AS, accountCode: '1001' }).matched).toBe(0)
-    expect(j(db, 'j-jul').reconciled).toBe(0)
-    expect(manualReconcile({ db, accountSetId: AS, journalId: 'j-jul', bankStatementId: 's-jul' })).toMatchObject({
-      error: expect.stringMatching(/7月出纳已结账/),
-    })
-    // 8 月未结账，撤销正常
-    expect(cancelReconcile({ db, accountSetId: AS, journalId: 'j-aug' })).toEqual({ ok: true })
-  })
+  // P1-5 / P1-6 银行勾对用例随 FIX-262 删除（已结账月份拦截见 cashierGlReconcile.test.ts）
 
   it('P2-6 / P1-6：凭证同步按凭证定位，改日期不重复插行；目标月份已结账则拒绝', () => {
     cashierJournalLinksUp(db)
@@ -185,6 +129,23 @@ describe('出纳完整性（批次 C）', () => {
     expect(() => reversePayment(db, AS, doc)).toThrow(/8月出纳已结账/)
     expect(db.prepare('SELECT COUNT(*) c FROM cashier_journal').get()).toEqual({ c: 1 })
     db.prepare("UPDATE cashier_period_closing SET status='open'").run()
+    reversePayment(db, AS, doc)
+    expect(db.prepare('SELECT COUNT(*) c FROM cashier_journal').get()).toEqual({ c: 0 })
+  })
+
+  it('评审 P0-3：SCM 收付款单在总账已结账月份审核 / 反审核被拒绝（出纳未结账也不放行）', () => {
+    const doc = { doc_type: 'RCV', doc_no: 'RCV-9', doc_date: '2026-08-15', partner_code: 'P001', settle_account: '1001', payment_type: 'cash' }
+    applyPayment(db, AS, doc, [{ amount: 300 }], '张三')
+    db.exec(`CREATE TABLE period_closing (id TEXT PRIMARY KEY, account_set_id TEXT, year INTEGER, period INTEGER,
+      status TEXT DEFAULT 'open', closed_by TEXT, closed_at TEXT, created_at TEXT, UNIQUE(account_set_id, year, period))`)
+    db.prepare("INSERT INTO period_closing (id, account_set_id, year, period, status) VALUES ('pc6', ?, 2026, 6, 'closed'), ('pc8', ?, 2026, 8, 'closed')").run(AS, AS)
+
+    const junDoc = { ...doc, doc_no: 'RCV-10', doc_date: '2026-06-15' }
+    expect(() => applyPayment(db, AS, junDoc, [{ amount: 100 }], '张三')).toThrow(/2026年6期已结账.*总账已结账月份/)
+    expect(() => reversePayment(db, AS, doc)).toThrow(/2026年8期已结账/)
+    expect(db.prepare('SELECT COUNT(*) c FROM cashier_journal').get()).toEqual({ c: 1 })
+
+    db.prepare("UPDATE period_closing SET status='open' WHERE period=8").run()
     reversePayment(db, AS, doc)
     expect(db.prepare('SELECT COUNT(*) c FROM cashier_journal').get()).toEqual({ c: 0 })
   })

@@ -1703,3 +1703,45 @@ export function sendBatchVoucherOperationResponse(
     data,
   })
 }
+
+/**
+ * 禁止负数余额（实时口径）：期初 + 全部凭证实时汇总；启用辅助核算时按各辅助项目分项校验。
+ * 手工录入 / 修改（routes/voucher.ts）与 Excel 转入（评审 P1-7）共用。
+ */
+export function validateNoNegativeBalanceRealtime(
+  db: any,
+  accountSetId: string,
+  entries: VoucherEntryInput[],
+  year: number,
+  period: number,
+  excludeVoucherId?: string
+): NoNegativeBalanceCheckResult | null {
+  const { categories } = loadVoucherAuxiliaryData({ db, accountSetId })
+  const realtimeGetters = createRealtimeNoNegativeBalanceGetters(db, {
+    accountSetId,
+    year,
+    period,
+    categories,
+    excludeVoucherId,
+  })
+  return validateVoucherEntriesNoNegativeBalance({
+    entries,
+    getAccountById: accountId => db.prepare('SELECT * FROM accounts WHERE id=?').get(accountId) as any,
+    ...realtimeGetters,
+  })
+}
+
+/** 凭证时序控制（system_params.voucher_time_control）开启时，返回账套现有凭证的最大日期；未开启返回 null */
+export function getVoucherTimeControlMaxDate(db: any, accountSetId: string, excludeVoucherId?: string): string | null {
+  const param = db
+    .prepare('SELECT param_value FROM system_params WHERE account_set_id = ? AND param_key = ?')
+    .get(accountSetId, 'voucher_time_control') as { param_value: string } | undefined
+  if (param?.param_value !== 'true') return null
+  const row = db
+    .prepare(
+      `SELECT MAX(voucher_date) AS max_date FROM vouchers
+       WHERE account_set_id = ? AND status IN ('draft', 'audited', 'posted') ${excludeVoucherId ? 'AND id <> ?' : ''}`
+    )
+    .get(...(excludeVoucherId ? [accountSetId, excludeVoucherId] : [accountSetId])) as { max_date: string | null } | undefined
+  return row?.max_date ?? ''
+}

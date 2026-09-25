@@ -49,3 +49,14 @@ describe('FIX-019 / P2-30 yuanToCents 异常输入防护', () => {
     expect(MONEY_EPSILON).toBe(0.005)
   })
 })
+
+describe('评审 P2：正负对称舍入', () => {
+  it('.5 远离 0，负数与正数互为相反数', async () => {
+    const { roundHalfAwayFromZero, round2Symmetric, yuanToCents } = await import('../utils/amountUtils.js')
+    expect(roundHalfAwayFromZero(2.5)).toBe(3)
+    expect(roundHalfAwayFromZero(-2.5)).toBe(-3)
+    expect(round2Symmetric(-0.125)).toBe(-0.13)
+    expect(round2Symmetric(0.125)).toBe(0.13)
+    expect(yuanToCents(-0.125)).toBe(-yuanToCents(0.125))
+  })
+})

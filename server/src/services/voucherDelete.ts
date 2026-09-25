@@ -58,6 +58,12 @@ export function deleteVoucherWithRefs(db: Database, accountSetId: string, vouche
     )
     // 供应链单据回写清理：否则单据既不能重新生成凭证、也无法反审核（死锁）
     db.prepare('UPDATE scm_doc SET voucher_id=NULL WHERE account_set_id=? AND voucher_id=?').run(accountSetId, voucher.id)
+    // 评审 P2：制费 / 人工吸收差异结转记录（迁移 139）。「转主营成本」的记录只由凭证体现结转效果，凭证删了记录作废（可再次结转）；
+    // 「分摊到成品」的记录挂着成本调整单，单据仍在，只断开凭证引用
+    if (hasColumn(db, 'scm_overhead_variance_run', 'voucher_id')) {
+      db.prepare('DELETE FROM scm_overhead_variance_run WHERE account_set_id=? AND voucher_id=? AND doc_id IS NULL').run(accountSetId, voucher.id)
+      db.prepare('UPDATE scm_overhead_variance_run SET voucher_id=NULL WHERE account_set_id=? AND voucher_id=?').run(accountSetId, voucher.id)
+    }
     // 出纳日记账关联清理（迁移 127 voucher_id 列；老库无该列时跳过）：凭证没了，日记账应回到"未生成凭证"
     if (hasColumn(db, 'cashier_journal', 'voucher_id')) {
       db.prepare(

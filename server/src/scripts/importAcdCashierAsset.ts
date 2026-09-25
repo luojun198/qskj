@@ -8,6 +8,7 @@
 import { getDb } from '../db/index.js'
 import { v4 as uuidv4 } from 'uuid'
 import { normalizeSalvageRate } from '../services/assetVoucherBuilder.js'
+import { computeBaseAmounts, getCashierBaseCurrency, normalizeCashierCurrency, resolveCashierRate } from '../services/cashierQuery.js'
 import type { ImportStats, ParsedTables, AcdRow } from './importAcdToCurrentAccountSet.js'
 
 // ---- 取值辅助 ----
@@ -50,6 +51,26 @@ function dateFromYmd(nf: string | undefined, yf: string | undefined, dd: string 
 function isFlagSet(v: string | undefined): boolean {
   const t = (v ?? '').trim()
   return t !== '' && t !== '0'
+}
+/**
+ * zc_gdzc 使用年限：synx（下标 11）是「使用年限（年）」，synx_y（下标 34）是「使用月数」。
+ * 以 ACD 自带月折旧额 yzje =（原值 − 残值）/ synx_y 验证。此前两列写反，use_months 落成年数，
+ * 折旧预览条件 depr_months_done < use_months 恒假，整账套资产静默不计提（评审 P0-1）。
+ * synx_y 缺失时按 synx × 12 兜底。
+ */
+export function acdAssetLife(synx: string | undefined, synxY: string | undefined): { useMonths: number | null; useYears: number | null } {
+  const years = int(synx)
+  const months = int(synxY)
+  const useMonths = months && months > 0 ? months : years && years > 0 ? years * 12 : null
+  return { useMonths, useYears: years }
+}
+/**
+ * zc_gdzc 净值 zcjz（下标 23）：ACD 常留空，num('') = 0 会让折旧基数（净值 − 残值）归零（评审 P0-2）。
+ * 为空时按「原值 − 累计折旧」补算（ACD 卡片无减值列），并由调用方记 warning。
+ */
+export function acdAssetNetValue(zcjz: string | undefined, originalValue: number, accumDepr: number): { value: number; fallback: boolean } {
+  if ((zcjz ?? '').trim() !== '') return { value: num(zcjz), fallback: false }
+  return { value: Math.round((originalValue - accumDepr) * 100) / 100, fallback: true }
 }
 /** 整行原始数据保存为 JSON，保证可逆还原 */
 function rawJson(row: AcdRow): string {
@@ -103,9 +124,14 @@ export function importCashierTables(
       `INSERT INTO cashier_journal
         (id, account_set_id, account_code, currency, biz_date, seq, summary,
          debit, credit, counter_account, counter_unit, bank_name, bank_account,
-         unit_code, reconciled, voucher_year, voucher_month, voucher_type, voucher_no, acd_raw, created_by)
-       VALUES (@id,@asid,@km,@bz,@rq,@xh,@zy,@jf,@df,@dfkm,@dw,@khyh,@yhzh,@dwbm,@gzm,@pnf,@pyf,@plx,@pbh,@raw,@lrr)`
+         unit_code, reconciled, voucher_year, voucher_month, voucher_type, voucher_no, acd_raw, created_by,
+         exchange_rate, base_debit, base_credit)
+       VALUES (@id,@asid,@km,@bz,@rq,@xh,@zy,@jf,@df,@dfkm,@dw,@khyh,@yhzh,@dwbm,@gzm,@pnf,@pyf,@plx,@pbh,@raw,@lrr,
+         @rate,@bjf,@bdf)`
     )
+    // 评审 P1-10：外币三列（迁移 144）此前未写，base_* 落默认 0，本位币合计 / 调节表恒为 0。
+    // 本位币行汇率 1；外币行 cn_mx 无汇率列，按业务日走出纳默认汇率链（resolveCashierRate，取不到回退 1）
+    const baseCurrency = getCashierBaseCurrency(db, accountSetId)
     // 幂等：按「科目+日期+序号+借贷+摘要」去重，重复导入同一账套不产生重复行
     const existingJournalKeys = new Set<string>(
       (db.prepare('SELECT account_code, biz_date, seq, debit, credit, summary FROM cashier_journal WHERE account_set_id=?').all(accountSetId) as any[])
@@ -122,18 +148,26 @@ export function importCashierTables(
       const dedupKey = `${km}|${bizDate}|${int(row[3]) ?? 0}|${num(row[8])}|${num(row[9])}|${s(row[7]) ?? ''}`
       if (existingJournalKeys.has(dedupKey)) { skippedDup++; continue }
       existingJournalKeys.add(dedupKey)
+      const currency = normalizeCashierCurrency(s(row[1]), baseCurrency)
+      const rate = resolveCashierRate(db, accountSetId, currency, bizDate)
+      const baseAmt = computeBaseAmounts(num(row[8]), num(row[9]), rate)
       if (!dryRun)
         ins.run({
           id: uuidv4(),
           asid: accountSetId,
           km,
-          bz: s(row[1]) || 'RMB',
+          bz: currency,
+          rate,
+          bjf: baseAmt.base_debit,
+          bdf: baseAmt.base_credit,
           rq: bizDate,
           xh: int(row[3]) ?? 0,
           zy: s(row[7]),
           jf: num(row[8]),
           df: num(row[9]),
-          gzm: isFlagSet(row[12]) ? 1 : 0,
+          // 评审 P1-10：ACD gzm 是旧「银行对账单勾对」标志；reconciled 自 FIX-262 起表示「已与总账分录匹配」（随 cashier_gl_match 批次维护），
+          // 语义不同不能照搬，否则无批次的行被当成已对上、差异清单失真。原值仍保留在 acd_raw[12]
+          gzm: 0,
           lrr: s(row[13]),
           dfkm: s(row[15]),
           dw: s(row[17]), // g_qymc 对方单位
@@ -239,6 +273,11 @@ export function importFixedAssetTables(
       if (!dryRun) ins.run(uuidv4(), accountSetId, code, s(row[1]), s(row[2]) === '1' ? 1 : 0)
       stats.fixedAsset.statuses++
     }
+    // 评审 P2：处置 / 盘亏统一置 04，ACD 字典通常没有这一项，补「04 已处置」（不计提），已有则不动
+    if (!dryRun)
+      db.prepare(
+        "INSERT INTO fixed_asset_status (id, account_set_id, code, name, depreciable) VALUES (?, ?, '04', '已处置', 0) ON CONFLICT(account_set_id, code) DO NOTHING"
+      ).run(uuidv4(), accountSetId)
     stats.importedTables.push('zc_sbzt.txt')
   }
 
@@ -289,11 +328,16 @@ export function importFixedAssetTables(
        ON CONFLICT(account_set_id, asset_no) DO UPDATE SET
          asset_name=excluded.asset_name, category_code=excluded.category_code, status_code=excluded.status_code,
          original_value=excluded.original_value, accum_depr=excluded.accum_depr, net_value=excluded.net_value,
+         use_months=excluded.use_months, use_years=excluded.use_years,
          acd_raw=excluded.acd_raw, updated_at=datetime('now')`
     )
+    let netFallback = 0
     for (const row of tables.fixedAssets) {
       const bh = s(row[0])
       if (!bh) continue
+      const life = acdAssetLife(row[11], row[34])
+      const net = acdAssetNetValue(row[23], num(row[6]), num(row[19]))
+      if (net.fallback) netFallback++
       if (!dryRun)
         ins.run({
           id: uuidv4(),
@@ -310,7 +354,7 @@ export function importFixedAssetTables(
           yzcz: num(row[8]),
           syrq: normDate(row[9]),
           zjff: s(row[10]),
-          synx: int(row[11]),
+          synx: life.useMonths,
           zgzl: num(row[12]),
           bz: s(row[13]),
           ytbh: s(row[14]),
@@ -319,14 +363,14 @@ export function importFixedAssetTables(
           ljzje: num(row[19]),
           zxyy: s(row[21]),
           zxrq: normDate(row[22]),
-          zcjz: num(row[23]),
+          zcjz: net.value,
           bjbh: s(row[25]),
           wbbz: s(row[26]) ? 1 : 0,
           wbje: num(row[27]),
           azdd: s(row[29]),
           dw: s(row[31]),
           sl: int(row[32]) ?? 1,
-          synxy: int(row[34]),
+          synxy: life.useYears,
           syr: s(row[35]),
           bgr: s(row[36]),
           ly: s(row[40]),
@@ -334,6 +378,8 @@ export function importFixedAssetTables(
         })
       stats.fixedAsset.assets++
     }
+    if (netFallback)
+      stats.warnings.push(`固定资产卡片有 ${netFallback} 张净值列为空，已按「原值 − 累计折旧」补算`)
     stats.importedTables.push('zc_gdzc.txt')
   }
 

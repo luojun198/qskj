@@ -10,8 +10,9 @@
  */
 import type Database from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
-import { assertCashierPeriodOpen, normalizeBizDate } from './cashierPeriodClosing.js'
-import { getCashierBaseCurrency, normalizeCashierCurrency } from './cashierQuery.js'
+import { assertCashierPeriodOpen, normalizeBizDate, parseBizDate } from './cashierPeriodClosing.js'
+import { assertGlPeriodOpen } from './voucherMutationGuard.js'
+import { lookupCashierAccountCurrency, getCashierBaseCurrency, normalizeCashierCurrency } from './cashierQuery.js'
 import { docExchangeRate, getScmBaseCurrency, isScmBaseCurrency, normalizeScmCurrency, toBase } from './scmCurrency.js'
 
 /**
@@ -45,6 +46,8 @@ function bumpVerified(db: Database.Database, logId: string, deltaFc: number) {
 /**
  * P1-1：收付款单写 / 删出纳日记账前必须过出纳结账闸。
  * 此前审核 / 反审核直接 INSERT / DELETE cashier_journal，已结账月份的出纳余额被静默篡改。
+ * 评审 P0-3：与出纳自身写入口（assertJournalDateWritable）同口径，再过总账期间闸——
+ * 否则总账已结账 / 已年结的月份仍能写出纳流水，随后制证被总账闸拦下，成为「有流水、无凭证」的僵尸行。
  */
 function assertCashierWritable(db: Database.Database, accountSetId: string, docDate: unknown): string {
   let bizDate: string
@@ -57,6 +60,12 @@ function assertCashierWritable(db: Database.Database, accountSetId: string, docD
     assertCashierPeriodOpen(db, accountSetId, bizDate)
   } catch (e: any) {
     throw new Error(`${e?.message || '出纳已结账'}（收付款单不能在已结账月份审核 / 反审核）`)
+  }
+  const ym = parseBizDate(bizDate)!
+  try {
+    assertGlPeriodOpen(db, accountSetId, ym.year, ym.month)
+  } catch (e: any) {
+    throw new Error(`${e?.message || '总账已结账'}（收付款单不能在总账已结账月份审核 / 反审核）`)
   }
   return bizDate
 }
@@ -78,7 +87,14 @@ export function applyPayment(db: Database.Database, accountSetId: string, doc: a
   const partner = db.prepare('SELECT * FROM scm_partner WHERE account_set_id=? AND code=?').get(accountSetId, doc.partner_code) as any
   const cashCode = String(doc.settle_account || '')
   // P1-2：写出纳流水统一落账套本位币口径（单据默认 CNY、出纳默认 RMB 此前被拆成两个币种，收付款流水在出纳视图里消失）
-  const currency = normalizeCashierCurrency(doc.currency, getCashierBaseCurrency(db, accountSetId))
+  // FIX-260：出纳流水币种跟结算科目走——外币科目按原币入账（带汇率与本位币金额），本位币科目按折算后的本位币入账
+  const baseCurrency = getCashierBaseCurrency(db, accountSetId)
+  const docCurrency = normalizeCashierCurrency(doc.currency, baseCurrency)
+  // 结算科目不存在（历史数据 / 未维护）时回退到单据币种
+  const currency = (cashCode ? lookupCashierAccountCurrency(db, accountSetId, cashCode) : null) ?? docCurrency
+  if (currency !== baseCurrency && currency !== docCurrency) {
+    throw new Error(`结算科目 ${cashCode} 的核算币种为 ${currency}，与单据币种 ${docCurrency} 不一致`)
+  }
   const bizDate = assertCashierWritable(db, accountSetId, doc.doc_date)
   const settleType = ({ cash: '现金', transfer: '转账', credit: '挂账' } as Record<string, string>)[doc.payment_type] || doc.payment_type || null
   const paramKey = isReceive ? 'scm:acc_ar' : 'scm:acc_ap'
@@ -94,8 +110,8 @@ export function applyPayment(db: Database.Database, accountSetId: string, doc: a
 
   // 出纳日记账
   const insCj = db.prepare(`INSERT INTO cashier_journal
-    (id, account_set_id, account_code, currency, biz_date, summary, debit, credit, settle_type, counter_account, created_by)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+    (id, account_set_id, account_code, currency, biz_date, summary, debit, credit, exchange_rate, base_debit, base_credit, settle_type, counter_account, created_by)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 
   const matches: Array<{ in_log_id: string; out_log_id: string; amount: number }> = []
   for (const l of lines) {
@@ -104,10 +120,15 @@ export function applyPayment(db: Database.Database, accountSetId: string, doc: a
 
     // 出纳日记账
     const journalId = uuidv4()
+    const baseAmount = toBase(amount, fx.rate)
+    // 外币科目：原币 = 单据金额、汇率 = 单据汇率；本位币科目：原币即本位币金额、汇率 1
+    const cjAmount = currency === baseCurrency ? baseAmount : amount
+    const cjRate = currency === baseCurrency ? 1 : fx.rate
     insCj.run(
       journalId, accountSetId, cashCode, currency, bizDate,
       l.remark || doc.remark || `${isReceive ? '收款' : '付款'}：${doc.doc_no} ${partner?.name || doc.partner_code}`,
-      isReceive ? amount : 0, isReceive ? 0 : amount, settleType, arApCode, operator
+      isReceive ? cjAmount : 0, isReceive ? 0 : cjAmount, cjRate,
+      isReceive ? baseAmount : 0, isReceive ? 0 : baseAmount, settleType, arApCode, operator
     )
 
     // 往来台账：收付款均为核销，往来余额减少 → direction='out'（out 行不参与账龄，到期日=单据日）

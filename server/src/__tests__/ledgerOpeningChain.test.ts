@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import Database from 'better-sqlite3'
-import { buildLedgerGeneralQuery } from '../services/ledgerQuery.js'
+import { buildLedgerDetailQuery, buildLedgerGeneralQuery } from '../services/ledgerQuery.js'
 import { resolveOpeningBaseYear } from '../services/initBalanceScope.js'
 
 /**
@@ -67,5 +67,35 @@ describe('FIX-153 期初链式上溯', () => {
 
     const legacy = run(false)
     expect(legacy.end_balance).toBeCloseTo(20, 2)
+  })
+
+  it('评审 P1-8：明细账期初同样链式上溯——2026-01 期初 = 100 + 250 + 40 = 390（旧口径 0）', () => {
+    const db = setup()
+    const run = (withResolver: boolean) => {
+      const q = buildLedgerDetailQuery({
+        accountSetId: SET,
+        accountId: 'a-1001',
+        startDate: '2026-01-01',
+        endDate: '2026-01-31',
+        page: 1,
+        pageSize: 100,
+        preBookEnabled: false,
+        ...(withResolver ? { resolveOpeningBaseYear: (y: number) => resolveOpeningBaseYear(db, SET, y) } : {}),
+      })
+      expect((q.initBalanceSql.match(/\?/g) || []).length).toBe(q.initBalanceParams.length)
+      return (db.prepare(q.initBalanceSql).get(...q.initBalanceParams) as any).init_balance
+    }
+    expect(run(true)).toBeCloseTo(390, 2)
+    expect(run(false)).toBeCloseTo(0, 2)
+  })
+
+  it('评审 P1-8：年内查询不受影响——2025-12 期初 = 100 + 250 = 350', () => {
+    const db = setup()
+    const q = buildLedgerDetailQuery({
+      accountSetId: SET, accountId: 'a-1001', startDate: '2025-12-01', endDate: '2025-12-31',
+      page: 1, pageSize: 100, preBookEnabled: false,
+      resolveOpeningBaseYear: (y: number) => resolveOpeningBaseYear(db, SET, y),
+    })
+    expect((db.prepare(q.initBalanceSql).get(...q.initBalanceParams) as any).init_balance).toBeCloseTo(350, 2)
   })
 })

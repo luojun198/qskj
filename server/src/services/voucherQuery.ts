@@ -19,6 +19,8 @@ export interface VoucherListFilters {
   accountIds?: number[]
   auditorId?: string
   voucherTypeIds?: string[]
+  /** 按凭证 id 列表过滤（出纳生成凭证结果页回显用，空数组视为无匹配） */
+  voucherIds?: string[]
   auxItems?: Record<string, number[]>
   auxFields?: Record<string, string>
   sortField?: string
@@ -119,6 +121,17 @@ export function buildVoucherListQuery(filters: VoucherListFilters, db: Database.
     params.push(Number(filters.period))
   }
 
+  // 按凭证 id 列表过滤（传了 ids 时以此为唯一数据范围，其余条件仍可叠加）
+  if (filters.voucherIds) {
+    if (filters.voucherIds.length === 0) {
+      conditions.push('1 = 0')
+    } else {
+      const placeholders = filters.voucherIds.map(() => '?').join(',')
+      conditions.push(`v.id IN (${placeholders})`)
+      params.push(...filters.voucherIds)
+    }
+  }
+
   if (filters.status === 'unposted') {
     // 凭证录入页：草稿与已审核都属于「未记账」
     conditions.push("v.status IN ('draft', 'audited')")
@@ -148,7 +161,8 @@ export function buildVoucherListQuery(filters: VoucherListFilters, db: Database.
     // 因此需要追加 * 做前缀匹配，否则 MATCH '安盾' 找不到"安盾安保服务有限公司"
     const rawKeyword = filters.keyword.trim()
     // 追加 * 做前缀匹配，否则 unicode61 分词器下 MATCH '安盾' 找不到"安盾安保服务有限公司"
-    const ftsQuery = rawKeyword.endsWith('*') ? rawKeyword : `${rawKeyword}*`
+    // 评审 P2：整体包成 FTS5 短语（内部双引号转义），关键字里的 " - : ( ) AND OR 等不再被当成查询语法触发 500
+    const ftsQuery = buildFtsPrefixQuery(rawKeyword)
 
     // 从 FTS5 表中搜索匹配的凭证 ID
     const voucherFtsResults = db
@@ -349,4 +363,10 @@ export function buildVoucherListQuery(filters: VoucherListFilters, db: Database.
       ? [...params, effectivePageSize]
       : [...params, effectivePageSize, (filters.page - 1) * effectivePageSize],
   }
+}
+
+/** 把用户关键字转成安全的 FTS5 前缀短语查询：`"关键字"*`（末尾自带的 * 视为前缀意图，去掉后统一追加） */
+export function buildFtsPrefixQuery(keyword: string): string {
+  const body = keyword.trim().replace(/\*+$/, '').replace(/"/g, '""')
+  return `"${body}"*`
 }

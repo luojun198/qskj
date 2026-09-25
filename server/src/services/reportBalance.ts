@@ -1,4 +1,5 @@
 import type { Database } from 'better-sqlite3'
+import { round2Symmetric } from '../utils/amountUtils.js'
 import { CLOSING_VOUCHER_TYPE_JOIN_SQL, NOT_CLOSING_VOUCHER_SQL } from '../utils/closingVoucherSql.js'
 import {
   filterAccountIdsByScope,
@@ -26,7 +27,8 @@ export interface BalanceQueryDb {
 
 /** 四舍五入到2位小数，避免浮点误差产生科学计数法字符串 */
 function round2(v: number): number {
-  return Math.round(v * 100) / 100
+  // 评审 P2：负数与正数对称舍入
+  return round2Symmetric(v)
 }
 
 /**

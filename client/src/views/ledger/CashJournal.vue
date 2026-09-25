@@ -186,6 +186,7 @@
 </template>
 
 <script setup lang="ts">
+import { monthEndDate } from '@/utils/monthEnd'
 import { ref, computed, nextTick, onMounted, onActivated, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { storeToRefs } from 'pinia'
@@ -478,7 +479,7 @@ function insertMonthlySubtotals(entries: any[], account: any): any[] {
     if (currentMonth && entryMonth !== currentMonth) {
       result.push({
         id: `__monthly_subtotal_${currentMonth}__`,
-        voucher_date: currentMonth + '-31',
+        voucher_date: monthEndDate(currentMonth),
         voucher_no: '',
         account_code: '',
         account_name: '',
@@ -496,7 +497,7 @@ function insertMonthlySubtotals(entries: any[], account: any): any[] {
       
       result.push({
         id: `__yearly_subtotal_${currentMonth}__`,
-        voucher_date: currentMonth + '-31',
+        voucher_date: monthEndDate(currentMonth),
         voucher_no: '',
         account_code: '',
         account_name: '',
@@ -537,7 +538,7 @@ function insertMonthlySubtotals(entries: any[], account: any): any[] {
   if (currentMonth && entries.length > 0) {
     result.push({
       id: `__monthly_subtotal_${currentMonth}__`,
-      voucher_date: currentMonth + '-31',
+      voucher_date: monthEndDate(currentMonth),
       voucher_no: '',
       account_code: '',
       account_name: '',
@@ -555,7 +556,7 @@ function insertMonthlySubtotals(entries: any[], account: any): any[] {
     
     result.push({
       id: `__yearly_subtotal_${currentMonth}__`,
-      voucher_date: currentMonth + '-31',
+      voucher_date: monthEndDate(currentMonth),
       voucher_no: '',
       account_code: '',
       account_name: '',

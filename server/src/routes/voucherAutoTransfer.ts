@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { getDb } from '../db/index.js'
-import { authMiddleware, AuthRequest, requirePermission, operationLog } from '../middleware/index.js'
+import { authMiddleware, AuthRequest, requirePermission, requireAnyPermission, operationLog } from '../middleware/index.js'
 import {
   buildAllTransferPreviews,
   createAllTransferVouchers,
@@ -14,7 +14,8 @@ router.use(authMiddleware)
 
 // ===================== 自动结转 =====================
 
-router.get('/auto-transfer/status', (req: AuthRequest, res) => {
+// 评审 P2：读接口补权限码（页面路由 period:carry，执行 / 撤销 base:transfer，二者任一即可查看）
+router.get('/auto-transfer/status', requireAnyPermission('period:carry', 'base:transfer'), (req: AuthRequest, res) => {
   const year = Number(req.query.year)
   const period = Number(req.query.period)
   const periodError = validateAutoTransferPeriod(year, period)
@@ -42,6 +43,7 @@ router.get('/auto-transfer/status', (req: AuthRequest, res) => {
 
 router.post(
   '/auto-transfer/preview',
+  requireAnyPermission('period:carry', 'base:transfer'),
   operationLog('预览自动结转', '凭证管理'),
   (req: AuthRequest, res) => {
     const year = Number(req.body.year)

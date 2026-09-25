@@ -8,6 +8,7 @@ import {
   insertAssetDicts,
   enableDeptAux,
   closePeriod,
+  markDepreciated,
   SET_ID,
 } from './helpers/assetTestDb.js'
 
@@ -49,6 +50,8 @@ describe('固定资产处置', () => {
       net_value: 6000,
       salvage_value: 500,
     })
+    // 评审 P1-9：处置月（2026-06）已计提
+    markDepreciated(db, 'A1', 2026, 6)
   })
 
   afterEach(() => db.close())
@@ -156,7 +159,7 @@ describe('固定资产处置', () => {
 
   // ── 业务规则 ────────────────────────────────────────────
 
-  it('资产状态置为已报废并保存处置前状态', () => {
+  it('资产状态置为已处置并保存处置前状态', () => {
     dispose()
     const asset = db.prepare("SELECT * FROM fixed_asset WHERE asset_no='A1'").get() as any
     expect(asset.status_code).toBe('04')
@@ -192,6 +195,33 @@ describe('固定资产处置', () => {
     expect(asset.status_code).toBe('01')
     expect(asset.scrap_date).toBeNull()
     expect(db.prepare('SELECT COUNT(*) c FROM vouchers WHERE id=?').get(voucherId)).toEqual({ c: 0 })
+  })
+
+  it('评审 P1-9：处置当月应提未提时拒绝处置，计提后可以处置', () => {
+    db.prepare('DELETE FROM fixed_asset_depr').run()
+    expect(() => dispose()).toThrow(/当月照提折旧.*2026年6月/)
+    expect((db.prepare("SELECT scrap_date FROM fixed_asset WHERE id='fa-A1'").get() as any).scrap_date).toBeNull()
+    markDepreciated(db, 'A1', 2026, 6)
+    expect(() => dispose()).not.toThrow()
+  })
+
+  it('评审 P1-9：已提满 / 起折月当月的资产不要求先计提', () => {
+    db.prepare('DELETE FROM fixed_asset_depr').run()
+    db.prepare("UPDATE fixed_asset SET depr_months_done=12, use_months=12 WHERE id='fa-A1'").run()
+    expect(() => dispose()).not.toThrow()
+    insertAsset(db, { asset_no: 'A2', original_value: 1000, net_value: 1000, start_depr_date: '2026-06-10' })
+    expect(() => disposeAsset({ db, accountSetId: SET_ID, assetId: 'fa-A2', changeTypeCode: null, scrapDate: '2026-06-25', scrapReason: '报废' } as any)).not.toThrow()
+  })
+
+  it('评审 P1-3：盘点盘亏核销形成的处置不能在卡片上撤销', () => {
+    db.prepare(
+      "UPDATE fixed_asset SET status_code='04', pre_scrap_status='01', scrap_date='2026-03-31', scrap_voucher_id=NULL WHERE id='fa-A1'"
+    ).run()
+    db.prepare("INSERT INTO fixed_asset_inventory (id, account_set_id, name, inventory_date, status) VALUES ('inv1', ?, '一季度盘点', '2026-03-31', 'completed')").run(SET_ID)
+    db.prepare("INSERT INTO fixed_asset_inventory_item (id, inventory_id, account_set_id, asset_no, actual_status, voucher_id) VALUES ('it1', 'inv1', ?, 'A1', 'deficit', 'v-inv')").run(SET_ID)
+
+    expect(() => cancelDisposal({ db, accountSetId: SET_ID, assetId: 'fa-A1' })).toThrow(/一季度盘点.*盘亏核销并已生成核销凭证/)
+    expect((db.prepare("SELECT status_code FROM fixed_asset WHERE id='fa-A1'").get() as any).status_code).toBe('04')
   })
 
   it('清理凭证已记账时拒绝撤销处置', () => {

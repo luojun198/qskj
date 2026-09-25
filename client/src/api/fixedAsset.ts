@@ -3,6 +3,8 @@ import type { RenumberGroup } from '@/composables/useRenumberPrompt'
 
 export interface AssetCard {
   id: string
+  /** 评审 P1-2：卡片详情返回——有财务痕迹时原值 / 累计折旧不可直改的原因 */
+  value_lock_reason?: string | null
   asset_no: string
   asset_name: string
   category_code: string | null
@@ -258,7 +260,7 @@ export const fixedAssetApi = {
     generate_voucher?: boolean
     accum_account?: string
   }) =>
-    request.post<{ lines: DeprLine[]; totalDepr: number; assetCount: number; voucher: any }>(
+    request.post<{ lines: DeprLine[]; totalDepr: number; assetCount: number; voucher: any; voucherWarning?: string | null }>(
       '/asset/depr/execute',
       data
     ),

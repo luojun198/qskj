@@ -15,9 +15,10 @@
           <el-option v-for="a in bankAccounts" :key="a.code" :label="`${a.code} ${a.name}`" :value="a.code" />
         </el-option-group>
       </el-select>
-      <el-select v-model="filters.currency" placeholder="币种" class="filter-ctl--xs" @change="handleQuery">
-        <el-option v-for="c in currencies" :key="c" :label="c" :value="c" />
-      </el-select>
+      <!-- FIX-260：币种跟科目走（外币科目按科目核算币种，其余为本位币），不再手选 -->
+      <el-tag :type="isForeignAccount ? 'warning' : 'info'" effect="plain" class="currency-tag" :title="isForeignAccount ? '外币科目：金额为原币，另列汇率与本位币金额' : '本位币科目'">
+        {{ currencyLabel(accountCurrency) }}
+      </el-tag>
       <el-date-picker v-model="filters.start_date" type="date" value-format="YYYY-MM-DD" placeholder="开始日期" class="filter-ctl--md" @change="handleQuery" />
       <span>至</span>
       <el-date-picker v-model="filters.end_date" type="date" value-format="YYYY-MM-DD" placeholder="结束日期" class="filter-ctl--md" @change="handleQuery" />
@@ -28,8 +29,8 @@
       <el-button plain :disabled="!rows.length" @click="handleExport"><el-icon><Download /></el-icon>导出</el-button>
       <el-button plain :loading="swapping" @click="handleBatchSwap"><el-icon><Connection /></el-icon>借贷互换</el-button>
       <el-divider direction="vertical" />
-      <el-button plain @click="showReconcile = true"><el-icon><Connection /></el-icon>银行对账</el-button>
-      <el-button type="success" :loading="generating" @click="handleGenerateVoucher"><el-icon><DocumentAdd /></el-icon>生成凭证</el-button>
+      <el-button plain @click="goReconcile"><el-icon><Connection /></el-icon>出纳对账</el-button>
+      <el-button type="success" @click="handleGenerateVoucher"><el-icon><DocumentAdd /></el-icon>生成凭证</el-button>
       <el-button type="danger" plain :loading="deletingVouchers" @click="handleDeleteCashierVouchers"><el-icon><Delete /></el-icon>删除凭证</el-button>
       <el-button plain @click="showColSetting = true"><el-icon><Setting /></el-icon>列设置</el-button>
       <el-button type="primary" @click="openAddDialog"><el-icon><Plus /></el-icon>录入日记账</el-button>
@@ -40,7 +41,18 @@
       <span>本期借方：<b class="debit">{{ fmt(journalResult.totalDebit) }}</b></span>
       <span>本期贷方：<b class="credit">{{ fmt(journalResult.totalCredit) }}</b></span>
       <span>期末余额：<b>{{ fmt(journalResult.closing) }}</b></span>
+      <template v-if="isForeignAccount">
+        <el-divider direction="vertical" />
+        <span>本位币借方：<b class="debit">{{ fmt(journalResult.totalBaseDebit ?? 0) }}</b></span>
+        <span>本位币贷方：<b class="credit">{{ fmt(journalResult.totalBaseCredit ?? 0) }}</b></span>
+      </template>
     </div>
+    <!-- 评审 P2：币种与科目不一致的存量流水不在本视图内，此前被静默隐藏 -->
+    <el-alert
+      v-if="journalResult?.otherCurrencyCount"
+      type="warning" :closable="false" show-icon style="margin-bottom:8px"
+      :title="`本科目在所选区间还有 ${journalResult.otherCurrencyCount} 条流水的币种与科目核算币种（${journalResult.currency || ''}）不一致，未显示也未计入余额。请核对科目币种设置，或删除后按正确币种重新录入。`"
+    />
 
     <!-- 日记账表格 -->
     <div ref="tableContainerRef" class="table-container">
@@ -79,21 +91,39 @@
         </el-table-column>
         <el-table-column v-else-if="column.key === 'bill_no'" column-key="bill_no" label="票据号" prop="bill_no" :width="cw('bill_no',100)" show-overflow-tooltip />
         <el-table-column v-else-if="column.key === 'counter_unit'" column-key="counter_unit" label="对方单位" prop="counter_unit" :width="cw('counter_unit',120)" show-overflow-tooltip />
-        <el-table-column v-else-if="column.key === 'debit'" column-key="debit" label="借方(收入)" :width="cw('debit',110)" align="right">
+        <el-table-column v-else-if="column.key === 'debit'" column-key="debit" :label="amountLabel('借方(收入)')" :width="cw('debit',110)" align="right">
           <template #default="{ row }"><span v-if="row.debit" class="debit">{{ fmt(row.debit) }}</span></template>
         </el-table-column>
-        <el-table-column v-else-if="column.key === 'credit'" column-key="credit" label="贷方(支出)" :width="cw('credit',110)" align="right">
+        <el-table-column v-else-if="column.key === 'credit'" column-key="credit" :label="amountLabel('贷方(支出)')" :width="cw('credit',110)" align="right">
           <template #default="{ row }"><span v-if="row.credit" class="credit">{{ fmt(row.credit) }}</span></template>
         </el-table-column>
-        <el-table-column v-else-if="column.key === 'balance'" column-key="balance" label="余额" :width="cw('balance',110)" align="right">
+        <el-table-column v-else-if="column.key === 'balance'" column-key="balance" :label="amountLabel('余额')" :width="cw('balance',110)" align="right">
           <template #default="{ row }">{{ fmt(row.balance ?? 0) }}</template>
+        </el-table-column>
+        <!-- FIX-260：外币科目才显示汇率 / 本位币金额列 -->
+        <el-table-column v-else-if="column.key === 'exchange_rate' && isForeignAccount" column-key="exchange_rate" label="汇率" :width="cw('exchange_rate',80)" align="right">
+          <template #default="{ row }">{{ fmtRate(row.exchange_rate) }}</template>
+        </el-table-column>
+        <el-table-column v-else-if="column.key === 'base_debit' && isForeignAccount" column-key="base_debit" :label="`借方(${baseCurrency})`" :width="cw('base_debit',110)" align="right">
+          <template #default="{ row }"><span v-if="row.base_debit" class="debit">{{ fmt(row.base_debit) }}</span></template>
+        </el-table-column>
+        <el-table-column v-else-if="column.key === 'base_credit' && isForeignAccount" column-key="base_credit" :label="`贷方(${baseCurrency})`" :width="cw('base_credit',110)" align="right">
+          <template #default="{ row }"><span v-if="row.base_credit" class="credit">{{ fmt(row.base_credit) }}</span></template>
         </el-table-column>
         <el-table-column v-else-if="column.key === 'reconciled'" column-key="reconciled" label="对账" :width="cw('reconciled',55)" align="center">
           <template #default="{ row }"><el-icon v-if="row.reconciled" color="#67c23a"><CircleCheck /></el-icon></template>
         </el-table-column>
-        <el-table-column v-else-if="column.key === 'voucher_no'" column-key="voucher_no" label="关联凭证" :width="cw('voucher_no',100)">
+        <el-table-column v-else-if="column.key === 'voucher_no'" column-key="voucher_no" label="凭证" :width="cw('voucher_no',150)">
           <template #default="{ row }">
-            <span v-if="row.voucher_no">{{ row.voucher_year }}-{{ String(row.voucher_month).padStart(2,'0') }} {{ row.voucher_no }}</span>
+            <template v-if="row.voucher_no">
+              <el-tag type="success" size="small" effect="plain">已生成</el-tag>
+              <span style="margin-left:4px;white-space:nowrap">{{ voucherNoLabel(row) }}</span>
+              <el-button link type="danger" size="small" style="margin-left:4px" @click.stop="handleRowDeleteVoucher(row)">删凭证</el-button>
+            </template>
+            <template v-else>
+              <el-tag type="info" size="small" effect="plain">未生成</el-tag>
+              <el-button link type="primary" size="small" style="margin-left:4px" @click.stop="handleRowGenerate(row)">生成</el-button>
+            </template>
           </template>
         </el-table-column>
         </template>
@@ -103,6 +133,19 @@
           </template>
         </el-table-column>
       </el-table>
+    </div>
+    <!-- FIX-253：服务端分页；期初 / 合计 / 期末仍是整个区间的口径 -->
+    <div v-if="journalResult" class="journal-pagination">
+      <el-pagination
+        v-model:current-page="page"
+        v-model:page-size="pageSize"
+        :page-sizes="[50, 100, 200, 500]"
+        :total="journalResult.total ?? rows.length"
+        layout="total, sizes, prev, pager, next, jumper"
+        small
+        @size-change="handleQuery"
+        @current-change="handleQuery"
+      />
     </div>
 
     <!-- 录入/编辑弹窗 -->
@@ -156,7 +199,7 @@
             </el-form-item>
           </el-col>
           <el-col :span="6">
-            <el-form-item label="收入(借)" label-width="70px">
+            <el-form-item :label="isForeignAccount ? `收入(${accountCurrency})` : '收入(借)'" label-width="70px">
               <el-input-number
                 v-model="form.debit"
                 :precision="2"
@@ -168,7 +211,7 @@
             </el-form-item>
           </el-col>
           <el-col :span="6">
-            <el-form-item label="支出(贷)" label-width="70px">
+            <el-form-item :label="isForeignAccount ? `支出(${accountCurrency})` : '支出(贷)'" label-width="70px">
               <div style="display: flex; gap: 8px; width: 100%;">
                 <el-input-number
                   v-model="form.credit"
@@ -182,6 +225,35 @@
                   <el-icon><Connection /></el-icon>
                 </el-button>
               </div>
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <!-- FIX-260：外币科目录入汇率，本位币金额自动折算（只读） -->
+        <el-row v-if="isForeignAccount" :gutter="15">
+          <el-col :span="12">
+            <el-form-item label="汇率" required>
+              <div style="display:flex; gap:8px; width:100%; align-items:center">
+                <el-input-number
+                  v-model="form.exchange_rate"
+                  :precision="rateDecimals"
+                  :min="0"
+                  :controls="false"
+                  style="flex:1"
+                  @change="rateTouched = true"
+                />
+                <el-button link type="primary" size="small" :loading="rateLoading" @click="loadDefaultRate(true)">取默认</el-button>
+              </div>
+            </el-form-item>
+          </el-col>
+          <el-col :span="6">
+            <el-form-item :label="`收入(${baseCurrency})`" label-width="70px">
+              <el-input :model-value="fmt(formBaseAmounts.base_debit)" readonly />
+            </el-form-item>
+          </el-col>
+          <el-col :span="6">
+            <el-form-item :label="`支出(${baseCurrency})`" label-width="70px">
+              <el-input :model-value="fmt(formBaseAmounts.base_credit)" readonly />
             </el-form-item>
           </el-col>
         </el-row>
@@ -270,144 +342,6 @@
       </template>
     </el-dialog>
 
-    <!-- 银行对账面板（双栏对比式） -->
-    <el-dialog v-model="showReconcile" title="银行对账" width="960px" draggable :close-on-click-modal="false">
-      <!-- 顶部工具栏 -->
-      <div class="recon-toolbar">
-        <el-date-picker v-model="reconDate[0]" type="date" value-format="YYYY-MM-DD" placeholder="开始日期" style="width:130px" size="small" />
-        <el-date-picker v-model="reconDate[1]" type="date" value-format="YYYY-MM-DD" placeholder="结束日期" style="width:130px" size="small" />
-        <el-checkbox v-model="useBillNo" size="small">票据号优先</el-checkbox>
-        <el-button type="primary" size="small" :loading="reconciling" @click="handleAutoReconcile">自动勾对</el-button>
-        <el-button size="small" @click="showAddStatement = !showAddStatement">
-          <el-icon><Plus /></el-icon>录入对账单
-        </el-button>
-        <el-button size="small" plain @click="$router.push('/cashier/reconciliation')">余额调节表</el-button>
-        <el-button size="small" plain @click="loadReconDialog" :loading="reconLoading">刷新</el-button>
-      </div>
-
-      <!-- 统计汇总条 -->
-      <div class="recon-stats">
-        <span>日记账：未对 <b>{{ reconJournalStats.unmatched }}条</b> ¥{{ fmtOr0(reconJournalStats.unmatchedAmt) }} ／ 已对 <b>{{ reconJournalStats.matched }}条</b></span>
-        <span class="recon-stats-sep">｜</span>
-        <span>对账单：未对 <b>{{ reconBankStats.unmatched }}条</b> ／ 已对 <b>{{ reconBankStats.matched }}条</b></span>
-        <template v-if="selectedJournalRow && selectedBankRow">
-          <span class="recon-stats-sep">｜</span>
-          <span class="recon-hint">
-            已选日记账 {{ fmt(selectedJournalRow.debit || selectedJournalRow.credit) }} + 对账单 {{ fmt(selectedBankRow.debit || selectedBankRow.credit) }}
-            <span v-if="Math.abs((selectedJournalRow.debit - selectedJournalRow.credit) - (selectedBankRow.debit - selectedBankRow.credit)) > 0.005" class="recon-warn">（金额不一致）</span>
-          </span>
-        </template>
-      </div>
-
-      <!-- 快速录入对账单（折叠） -->
-      <div v-if="showAddStatement" class="recon-add-form">
-        <el-date-picker v-model="addStmtForm.biz_date" type="date" value-format="YYYY-MM-DD" placeholder="日期" style="width:120px" size="small" />
-        <el-input-number v-model="addStmtForm.debit" :precision="2" :min="0" placeholder="收入(借)" style="width:120px" size="small" />
-        <el-input-number v-model="addStmtForm.credit" :precision="2" :min="0" placeholder="支出(贷)" style="width:120px" size="small" />
-        <el-input v-model="addStmtForm.bill_no" placeholder="票据号" style="width:110px" size="small" />
-        <div style="display: flex; gap: 4px; align-items: center;">
-          <el-select v-model="addStmtForm.settle_type" clearable placeholder="结算方式" style="width:100px" size="small">
-            <el-option v-for="s in settleTypes" :key="s.code" :label="s.name" :value="s.code" />
-          </el-select>
-          <el-button @click="quickAddSettleType" size="small" type="primary" plain circle style="width: 24px; height: 24px; padding: 0;">
-            <el-icon><Plus /></el-icon>
-          </el-button>
-        </div>
-        <el-button type="primary" size="small" :loading="addingStatement" @click="handleAddStatement">保存</el-button>
-        <el-button size="small" @click="showAddStatement = false">取消</el-button>
-      </div>
-
-      <!-- 双栏内容区 -->
-      <div class="recon-columns">
-        <!-- 左栏：出纳日记账 -->
-        <div class="recon-col">
-          <div class="recon-col-header">
-            <span class="recon-col-title">出纳日记账</span>
-            <el-radio-group v-model="reconJournalTab" size="small">
-              <el-radio-button value="unmatched">未对</el-radio-button>
-              <el-radio-button value="all">全部</el-radio-button>
-              <el-radio-button value="matched">已对</el-radio-button>
-            </el-radio-group>
-          </div>
-          <el-table
-            :data="filteredJournalRows"
-            size="small"
-            border
-            max-height="340"
-            highlight-current-row
-            @row-click="handleJournalRowClick"
-            :row-class-name="journalRowClass"
-          >
-            <el-table-column label="日期" prop="biz_date" width="90" />
-            <el-table-column label="摘要" prop="summary" min-width="90" show-overflow-tooltip />
-            <el-table-column label="借方" prop="debit" width="90" align="right">
-              <template #default="{row}"><span v-if="row.debit" class="debit">{{ fmt(row.debit) }}</span></template>
-            </el-table-column>
-            <el-table-column label="贷方" prop="credit" width="90" align="right">
-              <template #default="{row}"><span v-if="row.credit" class="credit">{{ fmt(row.credit) }}</span></template>
-            </el-table-column>
-            <el-table-column label="状态" width="55" align="center">
-              <template #default="{row}">
-                <el-tag :type="row.reconciled ? 'success' : 'info'" size="small">{{ row.reconciled ? '已对' : '未对' }}</el-tag>
-              </template>
-            </el-table-column>
-          </el-table>
-        </div>
-
-        <!-- 右栏：银行对账单 -->
-        <div class="recon-col">
-          <div class="recon-col-header">
-            <span class="recon-col-title">银行对账单</span>
-            <el-radio-group v-model="reconBankTab" size="small">
-              <el-radio-button value="unmatched">未对</el-radio-button>
-              <el-radio-button value="all">全部</el-radio-button>
-              <el-radio-button value="matched">已对</el-radio-button>
-            </el-radio-group>
-          </div>
-          <el-table
-            :data="filteredBankRows"
-            size="small"
-            border
-            max-height="340"
-            highlight-current-row
-            @row-click="handleBankRowClick"
-            :row-class-name="bankRowClass"
-          >
-            <el-table-column label="日期" prop="biz_date" width="90" />
-            <el-table-column label="票据号" prop="bill_no" min-width="80" show-overflow-tooltip />
-            <el-table-column label="借方" prop="debit" width="90" align="right">
-              <template #default="{row}"><span v-if="row.debit" class="debit">{{ fmt(row.debit) }}</span></template>
-            </el-table-column>
-            <el-table-column label="贷方" prop="credit" width="90" align="right">
-              <template #default="{row}"><span v-if="row.credit" class="credit">{{ fmt(row.credit) }}</span></template>
-            </el-table-column>
-            <el-table-column label="状态" width="55" align="center">
-              <template #default="{row}">
-                <el-tag :type="row.matched ? 'success' : 'info'" size="small">{{ row.matched ? '已对' : '未对' }}</el-tag>
-              </template>
-            </el-table-column>
-          </el-table>
-        </div>
-      </div>
-
-      <!-- 底部操作区 -->
-      <div class="recon-actions">
-        <template v-if="selectedJournalRow && !selectedJournalRow.reconciled && selectedBankRow && !selectedBankRow.matched">
-          <el-button type="primary" size="small" :loading="manualReconciling" @click="handleManualReconcile">
-            手动勾对
-          </el-button>
-          <el-button size="small" @click="selectedJournalRow = null; selectedBankRow = null">取消选择</el-button>
-        </template>
-        <template v-else-if="pendingCancelRow">
-          <span style="font-size: var(--cw-text-base);color:#606266">撤销「{{ pendingCancelRow.biz_date }}」的对账？</span>
-          <el-button type="danger" size="small" plain :loading="cancelReconciling" @click="handleCancelReconcile">确认撤销</el-button>
-          <el-button size="small" @click="pendingCancelRow = null">取消</el-button>
-        </template>
-        <template v-else>
-          <span style="font-size:12px;color:#909399">点击未对账行选中→两侧各选一行后可手动勾对；点击已对账行可撤销</span>
-        </template>
-      </div>
-    </el-dialog>
 
     <!-- 导入弹窗 -->
     <el-dialog v-model="importVisible" title="导入出纳日记账" width="720px" draggable>
@@ -452,6 +386,9 @@
           <el-table-column label="贷方(支出)" prop="credit" width="100" align="right">
             <template #default="{ row }"><span v-if="row.credit" class="credit">{{ fmt(row.credit) }}</span></template>
           </el-table-column>
+          <el-table-column v-if="isForeignAccount" label="汇率" prop="exchange_rate" width="80" align="right">
+            <template #default="{ row }">{{ row.exchange_rate ? fmtRate(row.exchange_rate) : '默认' }}</template>
+          </el-table-column>
         </el-table>
         <p v-if="importRows.length > 20" style="font-size:12px;color:#909399;margin:6px 0 0">仅预览前 20 条…</p>
         <el-alert
@@ -466,71 +403,25 @@
       <template #footer>
         <el-button @click="importVisible = false">取消</el-button>
         <el-button type="primary" :loading="importing" :disabled="!importRows.length" @click="confirmImport">
-          确认导入 {{ importRows.length ? `（${importRows.length} 条）` : '' }}
+          {{ importProgress ? `导入中 ${importProgress.done}/${importProgress.total} 批` : `确认导入${importRows.length ? `（${importRows.length} 条）` : ''}` }}
         </el-button>
       </template>
     </el-dialog>
 
     <ColumnSettingsDialog v-model="showColSetting" :columns="colSettings" @update:columns="updateJournalColumns" @reset="resetColSettings" />
-
-    <!-- 缺对方科目：拦截 + 可选挂账弹窗 -->
-    <el-dialog v-model="hangupVisible" title="存在未填对方科目的记录" width="660px" draggable>
-      <el-alert type="warning" :closable="false" show-icon style="margin-bottom:12px">
-        以下 {{ missingRows.length }} 条已对账记录未填写对方科目。可点「返回补全」逐条补全对方科目；
-        或指定一个<strong>末级挂账科目</strong>（如其他应收款/其他应付款），对这些记录统一挂账后生成凭证，事后再行调整。
-      </el-alert>
-      <el-table :data="missingRows" size="small" border max-height="240">
-        <el-table-column label="日期" prop="biz_date" width="110" />
-        <el-table-column label="摘要" prop="summary" min-width="180" show-overflow-tooltip />
-        <el-table-column label="借方(收入)" prop="debit" width="120" align="right">
-          <template #default="{ row }"><span v-if="row.debit" class="debit">{{ fmt(row.debit) }}</span></template>
-        </el-table-column>
-        <el-table-column label="贷方(支出)" prop="credit" width="120" align="right">
-          <template #default="{ row }"><span v-if="row.credit" class="credit">{{ fmt(row.credit) }}</span></template>
-        </el-table-column>
-      </el-table>
-      <div style="margin-top:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <span style="font-size: var(--cw-text-base);white-space:nowrap">挂账科目：</span>
-        <el-select
-          v-model="hangupAccount"
-          filterable
-          clearable
-          placeholder="选择末级挂账科目"
-          style="width:300px"
-          popper-class="counter-account-popper"
-          :filter-method="onCounterFilter"
-          @visible-change="onCounterVisibleChange"
-        >
-          <el-option
-            v-for="a in filteredCounterAccounts"
-            :key="a.code"
-            :label="`${a.code} ${a.name}`"
-            :value="a.isParent ? '' : a.code"
-            :disabled="a.isParent"
-            :class="{ 'parent-option': a.isParent }"
-          />
-        </el-select>
-        <el-checkbox v-model="rememberHangup">记住为默认挂账科目</el-checkbox>
-      </div>
-      <template #footer>
-        <el-button @click="hangupVisible = false">返回补全</el-button>
-        <el-button type="primary" :loading="generating" :disabled="!hangupAccount" @click="confirmHangupGenerate">
-          按挂账科目生成
-        </el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 // P2-7：默认日期用本地时间（此前 toISOString 取 UTC，东八区 0~8 点会落到前一天）
 import { formatDate } from '@/utils/format'
-import { ref, computed, onMounted, nextTick, watch } from 'vue'
+import { ref, computed, onMounted, onActivated, nextTick, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import type ExcelJS from 'exceljs'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Plus, Connection, CircleCheck, DocumentAdd, Setting, Delete, Upload, Download } from '@element-plus/icons-vue'
-import { cashierApi, type JournalRow, type JournalResult, type SettleType, type BankStatement } from '@/api/cashier'
-import request from '@/api/request'
+import { cashierApi, type JournalRow, type JournalResult, type SettleType } from '@/api/cashier'
+import { getCurrencies as getCurrencyMaster } from '@/api/currency'
 import { useBaseDataStore } from '@/stores/baseData'
 import { useFillHeightTable } from '@/composables/useFillHeightTable'
 import { useListColumnWidth } from '@/composables/useColumnWidthMemory'
@@ -542,6 +433,7 @@ import ColumnSettingsDialog from '@/components/common/ColumnSettingsDialog.vue'
 import FilterClearButton from '@/components/common/FilterClearButton.vue'
 import { loadColumnSettings, saveColumnSettings, type ColumnSetting } from '@/utils/columnSettings'
 import { useFilterClear } from '@/composables/useFilterClear'
+import { getTypeAbbr } from '@/utils/voucherFlatList'
 
 const { tableRef: colWidthTableRef, colWidth, onDragEnd } = useListColumnWidth('cashier_journal')
 const { containerRef: tableContainerRef, tableHeight } = useFillHeightTable()
@@ -550,6 +442,8 @@ function cw(key: string, fallback: number) { return colWidth(key, fallback) }
 
 const baseData = useBaseDataStore()
 const auxItems = useVoucherAuxItems()
+const router = useRouter()
+const route = useRoute()
 
 const settleAccountMap = computed(() => {
   const map = new Map<string, string>()
@@ -559,6 +453,19 @@ const settleAccountMap = computed(() => {
 function getSettleTypeName(code: string | null) {
   if (!code) return ''
   return settleAccountMap.value.get(code) || code
+}
+
+/** 凭证类型简称（记/收/付/转），按 journal 行的 voucher_type（凭证类型 id）映射 */
+function voucherTypeAbbr(row: JournalRow): string {
+  if (row.voucher_type == null) return '记'
+  const vt = baseData.voucherTypes.find(t => String(t.id) === String(row.voucher_type))
+  return vt ? getTypeAbbr(vt.name) : '记'
+}
+
+/** 凭证号展示：后端存的 voucher_no 已含类型前缀（如「结-016」）时原样显示，历史纯数字号才补前缀 */
+function voucherNoLabel(row: JournalRow): string {
+  const no = String(row.voucher_no ?? '')
+  return no.includes('-') ? no : `${voucherTypeAbbr(row)}-${no}`
 }
 
 // ── 列设置 ──────────────────────────────────────────────
@@ -574,8 +481,12 @@ const DEFAULT_COLS: ColumnSetting[] = [
   { key: 'debit', label: '借方(收入)', visible: true },
   { key: 'credit', label: '贷方(支出)', visible: true },
   { key: 'balance', label: '余额', visible: true },
+  // FIX-260：外币科目专用列（本位币科目不渲染）
+  { key: 'exchange_rate', label: '汇率', visible: true, group: '外币' },
+  { key: 'base_debit', label: '借方(本位币)', visible: true, group: '外币' },
+  { key: 'base_credit', label: '贷方(本位币)', visible: true, group: '外币' },
   { key: 'reconciled', label: '对账', visible: true },
-  { key: 'voucher_no', label: '关联凭证', visible: false },
+  { key: 'voucher_no', label: '凭证', visible: true },
 ]
 const colSettings = ref<ColumnSetting[]>(loadColumnSettings(COL_VIS_KEY, DEFAULT_COLS))
 const orderedVisibleJournalColumns = computed(() => colSettings.value.filter(column => column.visible))
@@ -587,7 +498,7 @@ function resetColSettings() {
 }
 const showColSetting = ref(false)
 
-const accounts = ref<{ code: string; name: string; is_cash: number; is_bank: number; id: string; parent_id?: string | null }[]>([])
+const accounts = ref<{ code: string; name: string; is_cash: number; is_bank: number; is_foreign?: number; currency_code?: string | null; id: string; parent_id?: string | null }[]>([])
 const cashAccounts = computed(() => accounts.value.filter(a => a.is_cash === 1))
 const bankAccounts = computed(() => accounts.value.filter(a => a.is_bank === 1 && a.is_cash !== 1))
 
@@ -669,6 +580,41 @@ function onCashierAccountVisibleChange(visible: boolean) { if (!visible) cashier
 
 const settleTypes = ref<SettleType[]>([])
 const currencies = ref<string[]>(['RMB'])
+/** FIX-260：本位币（后端币种列表第一项） */
+const baseCurrency = computed(() => currencies.value[0] || 'RMB')
+const currentAccount = computed(() => accounts.value.find(a => a.code === filters.value.account_code))
+/** 当前科目的核算币种：外币科目取科目币种，其余为本位币 */
+const accountCurrency = computed(() => {
+  const a = currentAccount.value
+  const code = a && Number(a.is_foreign || 0) === 1 && a.currency_code ? String(a.currency_code).toUpperCase() : ''
+  return code && code !== 'CNY' ? code : baseCurrency.value
+})
+const isForeignAccount = computed(() => accountCurrency.value !== baseCurrency.value)
+const CURRENCY_NAMES: Record<string, string> = { RMB: '人民币', CNY: '人民币', USD: '美元', EUR: '欧元', HKD: '港币', JPY: '日元', GBP: '英镑' }
+function currencyLabel(code: string) { return CURRENCY_NAMES[code] ? `${code} ${CURRENCY_NAMES[code]}` : code }
+function amountLabel(base: string) { return isForeignAccount.value ? `${base} ${accountCurrency.value}` : base }
+const rateDecimals = ref(4)
+/** 汇率小数位取币种主数据（外币类型页维护），取不到默认 4 */
+const currencyDecimals = ref<Record<string, number>>({})
+watch(accountCurrency, cur => { rateDecimals.value = currencyDecimals.value[cur] ?? 4 }, { immediate: true })
+function fmtRate(v: any) { const n = Number(v); return n > 0 ? n.toFixed(rateDecimals.value) : '' }
+const rateTouched = ref(false)
+const rateLoading = ref(false)
+const formBaseAmounts = computed(() => {
+  const r = Number(form.value.exchange_rate) || 0
+  const round2 = (n: number) => Math.round(n * r * 100) / 100
+  return { base_debit: round2(Number(form.value.debit) || 0), base_credit: round2(Number(form.value.credit) || 0) }
+})
+/** 外币科目：按业务日期取默认汇率；用户手改过则不覆盖（force=true 强制取默认） */
+async function loadDefaultRate(force = false) {
+  if (!isForeignAccount.value || !filters.value.account_code) return
+  if (rateTouched.value && !force) return
+  rateLoading.value = true
+  try {
+    const res = await cashierApi.getJournalRate({ account_code: filters.value.account_code, biz_date: form.value.biz_date })
+    if (res.code === 0 && res.data.rate > 0) { form.value.exchange_rate = res.data.rate; rateTouched.value = false }
+  } catch { /* ignore */ } finally { rateLoading.value = false }
+}
 const journalResult = ref<JournalResult | null>(null)
 const rows = computed(() => journalResult.value?.rows ?? [])
 
@@ -676,6 +622,12 @@ const firstDay = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1
 const lastDay = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0)
 const lastDayStr = `${lastDay.getFullYear()}-${String(lastDay.getMonth() + 1).padStart(2, '0')}-${String(lastDay.getDate()).padStart(2, '0')}`
 const filters = ref({ account_code: '', currency: 'RMB', start_date: firstDay, end_date: lastDayStr })
+// FIX-253：服务端分页状态；筛选条件一变立即回到第 1 页（sync 保证在 @change 里的 handleQuery 之前生效）
+const page = ref(1)
+const pageSize = ref(100)
+watch(filters, () => { page.value = 1 }, { deep: true, flush: 'sync' })
+// FIX-260：币种跟科目走
+watch(accountCurrency, cur => { filters.value.currency = cur }, { immediate: true, flush: 'sync' })
 const { clearFilters } = useFilterClear([filters])
 
 /** 清空筛选条件并查询全部（保留科目，清空起止日期） */
@@ -683,7 +635,7 @@ function handleClearFilters() {
   const currentAccount = filters.value.account_code || (cashierAccounts.value.find(a => !a.isParent)?.code || '')
   clearFilters()
   filters.value.account_code = currentAccount
-  filters.value.currency = 'RMB'
+  filters.value.currency = accountCurrency.value
   handleQuery()
 }
 
@@ -920,183 +872,15 @@ function formatCounterAccount(code: string | null) {
   return name ? `${code} ${name}` : code
 }
 
-const showReconcile = ref(false)
-const reconciling = ref(false)
-const generating = ref(false)
 const deletingVouchers = ref(false)
-const reconDate = ref<string[]>(['', ''])
-const unmatched = ref<BankStatement[]>([]) // 保留兼容性，实际对账弹窗使用 reconBankRows
 
-// ── 双栏对账面板状态 ──────────────────────────────────────
-const reconJournalRows = ref<JournalRow[]>([])
-const reconBankRows = ref<BankStatement[]>([])
-const reconLoading = ref(false)
-const reconJournalTab = ref<'all' | 'unmatched' | 'matched'>('unmatched')
-const reconBankTab = ref<'all' | 'unmatched' | 'matched'>('unmatched')
-const selectedJournalRow = ref<JournalRow | null>(null)
-const selectedBankRow = ref<BankStatement | null>(null)
-const pendingCancelRow = ref<JournalRow | null>(null)
-const showAddStatement = ref(false)
-const addingStatement = ref(false)
-const addStmtForm = ref({ biz_date: '', debit: 0, credit: 0, bill_no: '', settle_type: '' })
-const useBillNo = ref(true)
-const manualReconciling = ref(false)
-const cancelReconciling = ref(false)
-
-const filteredJournalRows = computed(() => {
-  if (reconJournalTab.value === 'unmatched') return reconJournalRows.value.filter(r => !r.reconciled)
-  if (reconJournalTab.value === 'matched') return reconJournalRows.value.filter(r => r.reconciled)
-  return reconJournalRows.value
-})
-const filteredBankRows = computed(() => {
-  if (reconBankTab.value === 'unmatched') return reconBankRows.value.filter(r => !r.matched)
-  if (reconBankTab.value === 'matched') return reconBankRows.value.filter(r => r.matched)
-  return reconBankRows.value
-})
-const reconJournalStats = computed(() => {
-  const rows = reconJournalRows.value
-  const matched = rows.filter(r => r.reconciled)
-  const unmatched = rows.filter(r => !r.reconciled)
-  return {
-    matched: matched.length,
-    unmatched: unmatched.length,
-    unmatchedAmt: unmatched.reduce((s, r) => s + r.debit + r.credit, 0),
-  }
-})
-const reconBankStats = computed(() => {
-  const rows = reconBankRows.value
-  return {
-    matched: rows.filter(r => r.matched).length,
-    unmatched: rows.filter(r => !r.matched).length,
-  }
-})
-function fmtOr0(v: number) { return v === 0 ? '0.00' : v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }
-
-function journalRowClass({ row }: { row: JournalRow }) {
-  if (selectedJournalRow.value?.id === row.id) return 'row-selected'
-  if (pendingCancelRow.value?.id === row.id) return 'row-cancel-pending'
-  return ''
-}
-function bankRowClass({ row }: { row: BankStatement }) {
-  if (selectedBankRow.value?.id === row.id) return 'row-selected'
-  return ''
+/** FIX-262：对账改为「出纳日记账 ↔ 总账已记账分录」，在全页面「出纳对账」中进行 */
+function goReconcile() {
+  router.push({ path: '/cashier/reconcile', query: filters.value.account_code ? { account_code: filters.value.account_code } : {} })
 }
 
-function handleJournalRowClick(row: JournalRow) {
-  if (row.reconciled) {
-    // 已对账行：触发撤销
-    pendingCancelRow.value = pendingCancelRow.value?.id === row.id ? null : row
-    selectedJournalRow.value = null
-    selectedBankRow.value = null
-  } else {
-    pendingCancelRow.value = null
-    selectedJournalRow.value = selectedJournalRow.value?.id === row.id ? null : row
-  }
-}
-function handleBankRowClick(row: BankStatement) {
-  if (!row.matched) {
-    pendingCancelRow.value = null
-    selectedBankRow.value = selectedBankRow.value?.id === row.id ? null : row
-  }
-}
-
-async function loadReconDialog() {
-  if (!filters.value.account_code) return
-  reconLoading.value = true
-  try {
-    const [jRes, bRes] = await Promise.all([
-      cashierApi.getJournal({
-        account_code: filters.value.account_code,
-        currency: filters.value.currency || undefined,
-        start_date: reconDate.value[0] || undefined,
-        end_date: reconDate.value[1] || undefined,
-      }),
-      cashierApi.getBankStatements({
-        account_code: filters.value.account_code,
-        start_date: reconDate.value[0] || undefined,
-        end_date: reconDate.value[1] || undefined,
-      }),
-    ])
-    if (jRes.code === 0) reconJournalRows.value = jRes.data.rows
-    if (bRes.code === 0) reconBankRows.value = bRes.data
-    // 同步更新主列表的 unmatched（保持历史兼容）
-    unmatched.value = reconBankRows.value
-  } finally {
-    reconLoading.value = false
-  }
-}
-
-async function handleManualReconcile() {
-  if (!selectedJournalRow.value || !selectedBankRow.value) return
-  manualReconciling.value = true
-  try {
-    const res = await cashierApi.manualReconcile({
-      journal_id: selectedJournalRow.value.id,
-      bank_statement_id: selectedBankRow.value.id,
-    })
-    if (res.code === 0) {
-      ElMessage.success('手动勾对成功')
-      selectedJournalRow.value = null
-      selectedBankRow.value = null
-      await Promise.all([loadReconDialog(), handleQuery()])
-    }
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.message || '手动勾对失败')
-  } finally {
-    manualReconciling.value = false
-  }
-}
-
-async function handleCancelReconcile() {
-  if (!pendingCancelRow.value) return
-  cancelReconciling.value = true
-  try {
-    const res = await cashierApi.cancelReconcile({ journal_id: pendingCancelRow.value.id })
-    if (res.code === 0) {
-      ElMessage.success('已撤销对账')
-      pendingCancelRow.value = null
-      await Promise.all([loadReconDialog(), handleQuery()])
-    }
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.message || '撤销失败')
-  } finally {
-    cancelReconciling.value = false
-  }
-}
-
-async function handleAddStatement() {
-  if (!addStmtForm.value.biz_date) return ElMessage.warning('请填写日期')
-  if (!addStmtForm.value.debit && !addStmtForm.value.credit) return ElMessage.warning('收入或支出不能同时为零')
-  addingStatement.value = true
-  try {
-    const res = await cashierApi.createBankStatement({
-      account_code: filters.value.account_code,
-      biz_date: addStmtForm.value.biz_date,
-      debit: addStmtForm.value.debit,
-      credit: addStmtForm.value.credit,
-      bill_no: addStmtForm.value.bill_no || null,
-      settle_type: addStmtForm.value.settle_type || null,
-    } as any)
-    if (res.code === 0) {
-      ElMessage.success('对账单已录入')
-      addStmtForm.value = { biz_date: '', debit: 0, credit: 0, bill_no: '', settle_type: '' }
-      showAddStatement.value = false
-      await loadReconDialog()
-    }
-  } finally {
-    addingStatement.value = false
-  }
-}
-
-// ── 生成凭证：缺对方科目挂账处理 ──────────────────────────
-interface MissingCounterRow { id: string; biz_date: string; summary: string | null; debit: number; credit: number }
-const hangupVisible = ref(false)
-const missingRows = ref<MissingCounterRow[]>([])
-const hangupAccount = ref('')
-const rememberHangup = ref(false)
-/** 系统参数：出纳默认挂账科目编码 */
-const defaultCounterAccount = ref('')
-/** 本次生成的会计期间范围（确认后缓存，挂账重试时复用） */
+// ── 生成凭证：预览页流转 ──────────────────────────────────
+/** 本次生成的会计期间范围（确认后缓存，预览页复用） */
 const genPeriod = ref<{ start: string; end: string }>({ start: '', end: '' })
 const genSelectedIds = ref<string[]>([])
 
@@ -1176,32 +960,51 @@ function onCreditChange(val: number | null | undefined) {
   }
 }
 
+/** 生成凭证预览/结果页写入的脏标记：返回本页（keep-alive 激活）时刷新列表，使凭证号等字段同步 */
+const JOURNAL_DIRTY_KEY = 'cashier:journal-dirty'
+onActivated(() => {
+  let dirty = false
+  try { dirty = sessionStorage.getItem(JOURNAL_DIRTY_KEY) === '1'; if (dirty) sessionStorage.removeItem(JOURNAL_DIRTY_KEY) } catch { /* ignore */ }
+  // 从出纳对账 / 对账单导入带 account_code 回来：切到该科目并刷新（导入会新增日记账）
+  const q = String(route.query.account_code || '')
+  if (q && q !== filters.value.account_code && accounts.value.some(a => a.code === q)) {
+    filters.value.account_code = q
+    handleQuery()
+    return
+  }
+  if ((dirty || q) && filters.value.account_code) handleQuery()
+})
+
 onMounted(async () => {
   // 首屏依赖的字典/参数请求一次性并行，避免串行瀑布阻塞挂载
-  // （/system/params 之前在 Promise.all 之后才发，多了一次串行往返）
-  const [acRes, stRes, , , pRes, curRes] = await Promise.all([
+  const [acRes, stRes, , , curRes] = await Promise.all([
     cashierApi.getAccounts(),
     cashierApi.getSettleTypes(),
     baseData.loadAccounts(),
     baseData.loadAuxCategories(),
-    // 读取出纳默认挂账科目（缺对方科目时的兜底科目），失败兜底为 null 不影响其余加载
-    request.get<any[]>('/system/params').catch(() => null),
     // 出纳币别（含本位币），失败兜底为 RMB
     cashierApi.getCurrencies().catch(() => null),
+    // 凭证类型（「凭证」列显示类型简称用）
+    baseData.loadVoucherTypes(),
   ])
   if (acRes.code === 0) accounts.value = acRes.data as any
+  // FIX-260：币种主数据的汇率小数位（未启用外币核算时接口可能 403，忽略）
+  getCurrencyMaster().then(r => {
+    if (r.code === 0 && Array.isArray(r.data)) {
+      currencyDecimals.value = Object.fromEntries(r.data.map(c => [String(c.code).toUpperCase(), Number(c.rate_decimals) || 4]))
+      rateDecimals.value = currencyDecimals.value[accountCurrency.value] ?? 4
+    }
+  }).catch(() => {})
   if (stRes.code === 0) settleTypes.value = stRes.data
   if (curRes && curRes.code === 0 && Array.isArray(curRes.data) && curRes.data.length) {
     currencies.value = curRes.data
-    // 本位币由后端排在第一位（可能不是 RMB）；当前选中不在列表里时回到本位币
-    if (!currencies.value.includes(filters.value.currency)) filters.value.currency = currencies.value[0]
   }
-  if (pRes && pRes.code === 0) {
-    const p = (pRes.data || []).find((x: any) => x.param_key === 'cashier:default_counter_account')
-    defaultCounterAccount.value = p?.param_value || ''
-  }
+  // FIX-260：币种跟科目走（本位币由后端排第一位）
+  filters.value.currency = accountCurrency.value
   if (accounts.value.length) {
-    filters.value.account_code = accounts.value[0].code
+    // 链接带了 account_code（出纳对账 / 对账单导入返回）则优先打开该科目
+    const q = String(route.query.account_code || '')
+    filters.value.account_code = accounts.value.some(a => a.code === q) ? q : accounts.value[0].code
     handleQuery()
   }
 })
@@ -1213,8 +1016,16 @@ async function handleQuery() {
     currency: filters.value.currency || undefined,
     start_date: filters.value.start_date || undefined,
     end_date: filters.value.end_date || undefined,
+    page: page.value,
+    page_size: pageSize.value,
   })
   if (res.code === 0) {
+    // 删除 / 筛选后本页可能已越界，回到最后一页重取
+    const maxPage = Math.max(1, Math.ceil((res.data.total ?? 0) / pageSize.value))
+    if (page.value > maxPage) {
+      page.value = maxPage
+      return handleQuery()
+    }
     journalResult.value = res.data
     // 预加载所有行的辅助项到缓存
     const auxMap = new Map<string, Set<string>>()
@@ -1243,12 +1054,17 @@ function openAddDialog() {
   counterAuxSelections.value = {}
   attachments.value = []
   queuedFiles.value = []
+  rateTouched.value = false
   dialogVisible.value = true
+  loadDefaultRate()
 }
+// FIX-260：新增外币流水时改日期 → 重新取该期间默认汇率（用户手改过则保留）
+watch(() => form.value.biz_date, () => { if (dialogVisible.value && !editRow.value) loadDefaultRate() })
 
 function openEditDialog(row: JournalRow) {
   editRow.value = row
   form.value = { ...row }
+  rateTouched.value = true
   counterAuxSelections.value = {}
   attachments.value = []
   queuedFiles.value = []
@@ -1296,6 +1112,7 @@ async function handleSave() {
   if (!form.value.biz_date) return ElMessage.warning('请填写日期')
   if (!form.value.debit && !form.value.credit) return ElMessage.warning('借方或贷方金额不能同时为零')
   if (form.value.debit && form.value.credit) return ElMessage.warning('借方和贷方不能同时有值')
+  if (isForeignAccount.value && !(Number(form.value.exchange_rate) > 0)) return ElMessage.warning('请填写大于 0 的汇率')
   const selected = Object.fromEntries(Object.entries(counterAuxSelections.value).filter(([, v]) => v))
   const counter_aux_item_id = Object.keys(selected).length > 0 ? JSON.stringify(selected) : null
   saving.value = true
@@ -1345,43 +1162,21 @@ async function handleDelete(id: string) {
   }
 }
 
-async function loadUnmatched() {
-  // 保留兼容性，实际加载由 loadReconDialog 统一处理
-  await loadReconDialog()
-}
-
-async function handleAutoReconcile() {
-  reconciling.value = true
-  try {
-    const res = await cashierApi.autoReconcile({
-      account_code: filters.value.account_code,
-      start_date: reconDate.value[0] || undefined,
-      end_date: reconDate.value[1] || undefined,
-      use_bill_no: useBillNo.value,
-    })
-    if (res.code === 0) {
-      ElMessage.success(`自动勾对完成，匹配 ${res.data.matched} 条`)
-      selectedJournalRow.value = null
-      selectedBankRow.value = null
-      pendingCancelRow.value = null
-      await Promise.all([loadReconDialog(), handleQuery()])
-    }
-  } finally {
-    reconciling.value = false
-  }
-}
-
 async function handleDeleteCashierVouchers() {
-  await ElMessageBox.confirm(
-    `将删除当前科目在所选日期范围内、由出纳生成的所有<b>未审核/已审核</b>凭证（已过账凭证跳过）。确认继续？`,
-    '批量删除出纳凭证', { type: 'warning', dangerouslyUseHTMLString: true }
-  )
+  // 勾选了记录：只删选中行对应的凭证；未勾选：删日期范围内全部出纳凭证
+  const byIds = selectedRows.value.length > 0
+  const ids = byIds ? selectedRows.value.map(r => r.id) : undefined
+  const confirmMsg = byIds
+    ? `将删除选中的 ${ids?.length ?? 0} 条记录对应的出纳凭证（已过账凭证跳过），确定继续？`
+    : `将删除当前科目在所选日期范围内、由出纳生成的所有未审核/已审核凭证（已过账凭证跳过），确定继续？`
+  await ElMessageBox.confirm(confirmMsg, '删除凭证', { type: 'info' })
   deletingVouchers.value = true
   try {
     const res = await cashierApi.deleteCashierVouchers({
       account_code: filters.value.account_code,
-      start_date: filters.value.start_date || undefined,
-      end_date: filters.value.end_date || undefined,
+      start_date: byIds ? undefined : (filters.value.start_date || undefined),
+      end_date: byIds ? undefined : (filters.value.end_date || undefined),
+      ids: byIds ? ids : undefined,
     })
     if (res.code === 0) {
       const { deleted, skipped, deletedNos } = res.data
@@ -1392,9 +1187,9 @@ async function handleDeleteCashierVouchers() {
           ? deletedNos.join('、')
           : `${deletedNos[0]} ~ ${deletedNos[deletedNos.length - 1]}`
       }
-      const dateRange = [filters.value.start_date, filters.value.end_date].filter(Boolean).join(' 至 ')
+      const dateRange = byIds ? '选中记录' : [filters.value.start_date, filters.value.end_date].filter(Boolean).join(' 至 ')
       const lines = [
-        dateRange ? `日期范围：${dateRange}` : '',
+        dateRange ? `范围：${dateRange}` : '',
         `已删除 <b>${deleted}</b> 张出纳凭证${nosStr ? `（${nosStr}）` : ''}`,
         skipped > 0 ? `跳过已过账凭证 <b>${skipped}</b> 张` : '',
       ].filter(Boolean).join('<br>')
@@ -1411,94 +1206,74 @@ async function handleDeleteCashierVouchers() {
 }
 
 async function handleGenerateVoucher() {
-  // 当前会计期间（当年当月）
-  const y = now.getFullYear()
-  const m = now.getMonth() + 1
-  const start = `${y}-${String(m).padStart(2,'0')}-01`
-  const lastDay = new Date(y, m, 0).getDate()
-  const end = `${y}-${String(m).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`
-
-  let msg = `将当前会计期间（${start} 至 ${end}）未生成凭证的出纳记录生成为会计凭证，确定继续？`
-  if (selectedRows.value.length > 0) {
-    msg = `将选中的 ${selectedRows.value.length} 条记录生成为会计凭证，确定继续？`
+  // 评审 P2：未勾选行时按页面筛选的日期区间生成（与「删除凭证」同口径）；此前固定取当前自然月，
+  // 查看 8 月流水点生成，实际生成的是 9 月的。筛选区间两端都为空时才退回当前自然月。
+  let start = filters.value.start_date || ''
+  let end = filters.value.end_date || ''
+  if (!start && !end) {
+    const y = now.getFullYear()
+    const m = now.getMonth() + 1
+    start = `${y}-${String(m).padStart(2,'0')}-01`
+    end = `${y}-${String(m).padStart(2,'0')}-${String(new Date(y, m, 0).getDate()).padStart(2,'0')}`
   }
 
-  try {
-    await ElMessageBox.confirm(msg, '生成凭证', { type: 'info' })
-  } catch { return }
   genPeriod.value = { start, end }
   genSelectedIds.value = selectedRows.value.map(r => r.id)
-  await runGenerateVoucher()
+  await openGeneratePreview()
 }
 
-/** 实际调用生成接口；hangupCode 为本批未填对方科目记录的挂账科目（可选） */
-async function runGenerateVoucher(hangupCode?: string) {
-  generating.value = true
+/** 行级快捷「生成」：只为该行生成凭证（预览页二次确认后真正生成） */
+async function handleRowGenerate(row: JournalRow) {
+  const [y, m] = row.biz_date.split('-').map(Number)
+  genPeriod.value = {
+    start: `${y}-${String(m).padStart(2, '0')}-01`,
+    end: `${y}-${String(m).padStart(2, '0')}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`,
+  }
+  genSelectedIds.value = [row.id]
+  await openGeneratePreview()
+}
+
+/** 行级快捷「删凭证」：只删除该行关联的出纳凭证（已过账由后端跳过并提示） */
+async function handleRowDeleteVoucher(row: JournalRow) {
+  await ElMessageBox.confirm(
+    `将删除该记录对应的出纳凭证（${voucherNoLabel(row)}，已过账凭证跳过）。确认继续？`,
+    '删除凭证', { type: 'warning' }
+  )
+  deletingVouchers.value = true
   try {
-    const res = await cashierApi.generateVoucher({
+    const res = await cashierApi.deleteCashierVouchers({
+      account_code: filters.value.account_code,
+      ids: [row.id],
+    })
+    if (res.code === 0) {
+      const { deleted, skipped, deletedNos } = res.data
+      if (deleted === 0 && skipped > 0) {
+        ElMessage.warning(`凭证 ${deletedNos[0] ?? ''} 已过账，已跳过删除`)
+      } else {
+        ElMessage.success(`已删除凭证 ${deletedNos.join('、')}`)
+      }
+      handleQuery()
+      // 删除可能造成断号，提示是否重新排号
+      await confirmRenumberAfterDelete(res.data.affectedGroups, deleted)
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.message || '操作失败')
+  } finally {
+    deletingVouchers.value = false
+  }
+}
+
+/** 生成凭证：跳转预览页（预览将生成的分录，二次确认后才真正生成） */
+async function openGeneratePreview() {
+  try {
+    sessionStorage.setItem('cashier:voucher-generate-preview', JSON.stringify({
       account_code: filters.value.account_code,
       start_date: genPeriod.value.start,
       end_date: genPeriod.value.end,
-      hangup_account_code: hangupCode,
       ids: genSelectedIds.value.length > 0 ? genSelectedIds.value : undefined,
-    })
-    if (res.code === 0) {
-      const { syncedCount, voucherNos } = res.data
-      // 5 张以内逐一列出，超过则折叠为「类型 首号-末号」
-      let msg: string
-      if (voucherNos.length <= 5) {
-        msg = voucherNos.join('、')
-      } else {
-        // 按类型前缀分组折叠：「记账 001-010」
-        const groups = new Map<string, string[]>()
-        for (const n of voucherNos) {
-          const dash = n.lastIndexOf('-')
-          const prefix = dash > 0 ? n.slice(0, dash) : ''
-          const num = dash > 0 ? n.slice(dash + 1) : n
-          if (!groups.has(prefix)) groups.set(prefix, [])
-          groups.get(prefix)!.push(num)
-        }
-        msg = [...groups.entries()].map(([prefix, nums]) =>
-          prefix ? `${prefix} ${nums[0]}-${nums[nums.length - 1]}` : `${nums[0]}-${nums[nums.length - 1]}`
-        ).join('、')
-      }
-      ElMessageBox.alert(`已生成 <b>${syncedCount}</b> 张凭证：<br>${msg}`, '生成凭证成功', {
-        dangerouslyUseHTMLString: true, confirmButtonText: '确定', type: 'success',
-      })
-      hangupVisible.value = false
-      handleQuery()
-    }
-  } catch (err: any) {
-    const data = err?.response?.data
-    if (data?.missingRows?.length) {
-      // 默认拦截：列出未填对方科目的记录，引导补全或指定挂账科目
-      missingRows.value = data.missingRows
-      hangupAccount.value = defaultCounterAccount.value || ''
-      rememberHangup.value = false
-      hangupVisible.value = true
-    } else {
-      ElMessage.error(data?.message || '生成凭证失败')
-    }
-  } finally {
-    generating.value = false
-  }
-}
-
-/** 挂账对话框：按指定挂账科目对未填记录统一挂账后生成 */
-async function confirmHangupGenerate() {
-  if (!hangupAccount.value) return ElMessage.warning('请选择挂账科目')
-  // 记住为默认挂账科目（持久化系统参数，需 system:account 权限）
-  if (rememberHangup.value && hangupAccount.value !== defaultCounterAccount.value) {
-    try {
-      await request.put('/system/params', {
-        params: [{ param_key: 'cashier:default_counter_account', param_value: hangupAccount.value }],
-      }, { skipErrorToast: true })
-      defaultCounterAccount.value = hangupAccount.value
-    } catch {
-      ElMessage.warning('将按本次挂账生成，但保存默认挂账科目失败（可能无系统参数权限）')
-    }
-  }
-  await runGenerateVoucher(hangupAccount.value)
+    }))
+  } catch { /* ignore */ }
+  router.push({ name: 'CashierVoucherGeneratePreview' })
 }
 
 // ── 导入：Excel 模版下载 + 解析 + 批量导入 ────────────────
@@ -1522,6 +1297,7 @@ async function downloadImportTemplate() {
     { label: '摘要', width: 160, value: r => r['摘要'] },
     { label: '借方(收入)', width: 110, align: 'right', type: 'amount', value: r => r['借方(收入)'] },
     { label: '贷方(支出)', width: 110, align: 'right', type: 'amount', value: r => r['贷方(支出)'] },
+    ...(isForeignAccount.value ? [{ label: '汇率', width: 90, align: 'right' as const, value: (r: any) => r['汇率'] }] : []),
     { label: '结算方式', width: 90, value: r => r['结算方式'] },
     { label: '票据号', width: 110, value: r => r['票据号'] },
     { label: '对方单位', width: 140, value: r => r['对方单位'] },
@@ -1540,6 +1316,7 @@ function matchImportField(label: string): string | null {
   if (!s) return null
   if (s.includes('日期')) return 'biz_date'
   if (s.includes('摘要')) return 'summary'
+  if (s.includes('汇率')) return 'exchange_rate'
   if (s.includes('借') || s.includes('收入')) return 'debit'
   if (s.includes('贷') || s.includes('支出')) return 'credit'
   if (s.includes('结算')) return 'settle_type'
@@ -1645,6 +1422,9 @@ async function handleImportFileChange(file: any) {
       const bill_no = cellText(get('bill_no'))
       const counter_unit = cellText(get('counter_unit'))
       const counter_account = cellText(get('counter_account'))
+      // 评审 P2：模版「汇率」列此前识别了却没读取，外币流水一律按默认汇率入账；留空仍走默认汇率
+      const rateCell = get('exchange_rate')
+      const exchange_rate = rateCell && cellText(rateCell) !== '' ? cellNum(rateCell) : undefined
 
       // 完全空白行：跳过且不计入错误
       if (!biz_date && !summary && !debit && !credit && !bill_no && !counter_unit && !counter_account) continue
@@ -1654,7 +1434,11 @@ async function handleImportFileChange(file: any) {
       }
       if (!biz_date) { errs.push({ row: r, message: '日期为空或格式错误' }); continue }
       if (!debit && !credit) { errs.push({ row: r, message: '借贷方金额均为空' }); continue }
-      parsed.push({ biz_date, summary, debit, credit, settle_type, bill_no, counter_unit, counter_account })
+      if (exchange_rate !== undefined && !(exchange_rate > 0)) { errs.push({ row: r, message: '汇率必须是大于 0 的数字' }); continue }
+      parsed.push({
+        biz_date, summary, debit, credit, settle_type, bill_no, counter_unit, counter_account,
+        ...(exchange_rate !== undefined ? { exchange_rate } : {}),
+      })
     }
 
     importRows.value = parsed
@@ -1667,30 +1451,52 @@ async function handleImportFileChange(file: any) {
   }
 }
 
+/** FIX-254：单次提交上限；超过按批提交并显示进度，10 万行不再一个 12MB 请求体一次打给服务端 */
+const IMPORT_BATCH_ROWS = 10000
+const importProgress = ref<{ done: number; total: number } | null>(null)
+
 async function confirmImport() {
   if (!importRows.value.length) return
   importing.value = true
+  importProgress.value = null
   try {
-    const res = await cashierApi.importJournal({
-      account_code: filters.value.account_code,
-      rows: importRows.value,
-    })
-    if (res.code === 0) {
-      const { inserted, errors } = res.data
-      ElMessage.success(`导入成功 ${inserted} 条${errors?.length ? `，${errors.length} 条被跳过` : ''}`)
-      importVisible.value = false
-      handleQuery()
+    const all = importRows.value
+    let inserted = 0
+    const errors: { row: number; message: string }[] = []
+    const batches = Math.ceil(all.length / IMPORT_BATCH_ROWS)
+    for (let b = 0; b < batches; b++) {
+      const offset = b * IMPORT_BATCH_ROWS
+      // seq 用全局行号，避免每批从 1 重新计数导致顺序错乱
+      const chunk = all.slice(offset, offset + IMPORT_BATCH_ROWS).map((r, i) => ({ ...r, seq: r.seq ?? offset + i + 1 }))
+      if (batches > 1) importProgress.value = { done: b, total: batches }
+      const res = await cashierApi.importJournal({ account_code: filters.value.account_code, rows: chunk })
+      if (res.code !== 0) break
+      inserted += res.data.inserted
+      for (const e of res.data.errors || []) errors.push({ row: e.row + offset, message: e.message })
     }
+    ElMessage.success(`导入成功 ${inserted} 条${errors.length ? `，${errors.length} 条被跳过` : ''}`)
+    importVisible.value = false
+    handleQuery()
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.message || '导入失败')
   } finally {
     importing.value = false
+    importProgress.value = null
   }
 }
 
 // ── 导出当前日记账为 Excel ────────────────────────────────
 async function handleExport() {
   if (!rows.value.length) return ElMessage.warning('暂无数据可导出')
+  // FIX-253：页面是分页显示，导出要拉整个区间
+  const fullRes = await cashierApi.getJournal({
+    account_code: filters.value.account_code,
+    currency: filters.value.currency || undefined,
+    start_date: filters.value.start_date || undefined,
+    end_date: filters.value.end_date || undefined,
+  })
+  if (fullRes.code !== 0) return
+  const exportRows = fullRes.data.rows
   const acc = formatCounterAccount(filters.value.account_code)
   const range = [filters.value.start_date, filters.value.end_date].filter(Boolean).join(' 至 ')
   const codeToName = new Map(settleTypes.value.map(s => [s.code, s.name]))
@@ -1701,15 +1507,24 @@ async function handleExport() {
     { label: '票据号', width: 110, value: r => r.bill_no || '' },
     { label: '对方单位', width: 140, value: r => r.counter_unit || '' },
     { label: '对方科目', width: 150, value: r => formatCounterAccount(r.counter_account) },
-    { label: '借方(收入)', width: 120, align: 'right', type: 'amount', value: r => r.debit || '' },
-    { label: '贷方(支出)', width: 120, align: 'right', type: 'amount', value: r => r.credit || '' },
-    { label: '余额', width: 120, align: 'right', type: 'amount', value: r => r.balance ?? 0 },
+    { label: amountLabel('借方(收入)'), width: 120, align: 'right', type: 'amount', value: r => r.debit || '' },
+    { label: amountLabel('贷方(支出)'), width: 120, align: 'right', type: 'amount', value: r => r.credit || '' },
+    { label: amountLabel('余额'), width: 120, align: 'right', type: 'amount', value: r => r.balance ?? 0 },
+    // FIX-260：外币科目导出汇率与本位币金额
+    ...(isForeignAccount.value
+      ? ([
+          { label: '汇率', width: 90, align: 'right', value: r => fmtRate(r.exchange_rate) },
+          { label: `借方(${baseCurrency.value})`, width: 120, align: 'right', type: 'amount', value: r => r.base_debit || '' },
+          { label: `贷方(${baseCurrency.value})`, width: 120, align: 'right', type: 'amount', value: r => r.base_credit || '' },
+        ] as ExportColumnDef<any>[])
+      : []),
     { label: '已对账', width: 70, align: 'center', value: r => (r.reconciled ? '是' : '') },
     { label: '关联凭证', width: 120, value: r => (r.voucher_no ? `${r.voucher_year}-${String(r.voucher_month).padStart(2, '0')} ${r.voucher_no}` : '') },
   ]
   const jr = journalResult.value
   const summaryValues = jr
-    ? ['', '', '', '', '', '', jr.totalDebit, jr.totalCredit, jr.closing, '', '']
+    ? ['', '', '', '', '', '', jr.totalDebit, jr.totalCredit, jr.closing,
+       ...(isForeignAccount.value ? ['', jr.totalBaseDebit ?? 0, jr.totalBaseCredit ?? 0] : []), '', '']
     : undefined
   await exportStyledTable({
     fileName: `出纳日记账_${filters.value.account_code}_${range || '全部'}.xlsx`,
@@ -1717,22 +1532,11 @@ async function handleExport() {
     title: `出纳日记账　${acc}`,
     subtitle: range ? `日期：${range}　期初：${fmt(jr?.opening ?? 0) || '0.00'}　期末：${fmt(jr?.closing ?? 0) || '0.00'}` : undefined,
     columns,
-    rows: rows.value,
+    rows: exportRows,
     summaryValues,
   })
 }
 
-// 打开对账面板时加载对账单
-watch(showReconcile, v => {
-  if (v) {
-    selectedJournalRow.value = null
-    selectedBankRow.value = null
-    pendingCancelRow.value = null
-    showAddStatement.value = false
-    loadReconDialog()
-  }
-})
-watch(reconDate, () => { if (showReconcile.value) loadReconDialog() }, { deep: true })
 </script>
 
 <style scoped>
@@ -1740,23 +1544,12 @@ watch(reconDate, () => { if (showReconcile.value) loadReconDialog() }, { deep: t
 .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .balance-summary { display: flex; gap: 24px; padding: 6px 16px; background: var(--el-fill-color-lighter); font-size: var(--cw-text-base); }
 .balance-summary b { font-weight: 600; }
+.currency-tag { height: 28px; line-height: 26px; font-weight: 600; }
 .debit { color: #409eff; }
 .credit { color: #f56c6c; }
 .table-container { flex: 1; overflow: hidden; padding: 0 16px 8px; }
+.journal-pagination { display: flex; justify-content: flex-end; padding: 4px 16px 8px; }
 :deep(.parent-option) { color: #c0c4cc; font-style: italic; }
-/* 银行对账面板 */
-.recon-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
-.recon-stats { display: flex; align-items: center; gap: 8px; padding: 5px 8px; background: var(--el-fill-color-lighter); border-radius: 4px; font-size: 12px; margin-bottom: 8px; }
-.recon-stats b { font-weight: 600; color: #303133; }
-.recon-stats-sep { color: #c0c4cc; }
-.recon-hint { color: #409eff; }
-.recon-warn { color: #e6a23c; font-weight: 600; }
-.recon-add-form { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 8px; background: var(--el-fill-color-lighter); border-radius: 4px; margin-bottom: 8px; }
-.recon-columns { display: flex; gap: 12px; }
-.recon-col { flex: 1; min-width: 0; }
-.recon-col-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
-.recon-col-title { font-size: var(--cw-text-base); font-weight: 600; color: #303133; }
-.recon-actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 8px 0; border-top: 1px solid var(--el-border-color-light); min-height: 40px; }
 
 .journal-attachments-section {
   margin-top: 16px;
@@ -1784,7 +1577,4 @@ watch(reconDate, () => { if (showReconcile.value) loadReconDialog() }, { deep: t
 .counter-account-popper .el-select-dropdown__item:hover .parent-option {
   color: #93c5fd;
 }
-/* 对账面板：行选中/撤销待确认 高亮 */
-.el-table tr.row-selected td { background-color: #ecf5ff !important; }
-.el-table tr.row-cancel-pending td { background-color: #fef0f0 !important; }
 </style>

@@ -3,6 +3,7 @@
  *
  * 提供折旧汇总表、折旧分配表、资产分类汇总表、资产明细账等报表数据查询
  */
+import { computeMonthDepr } from './fixedAssetDepreciation.js'
 import type { Database } from 'better-sqlite3'
 
 // ── 类型定义 ──────────────────────────────────────────────
@@ -66,6 +67,27 @@ export interface AssetLedgerResult {
 
 // ── 折旧汇总表 ──────────────────────────────────────────────
 
+/**
+ * 评审 P2：原值 / 减值取「该期期末」口径——卡片当前值减去期末之后发生的原值类 / 减值变动，
+ * 与增减变动表（P1-19）同一倒推法；此前取卡片当前值，查历史月份时原值、净值被后来的变动追溯改写。
+ * 部门分组取计提当时的部门（fixed_asset_depr.dept_code），调拨后历史月份不再挪组。
+ */
+const EOP_ORIGINAL_SQL = `(fa.original_value - COALESCE((
+    SELECT SUM(ch.amount) FROM fixed_asset_change ch
+    WHERE ch.account_set_id = fa.account_set_id AND ch.asset_no = fa.asset_no
+      AND ch.change_kind IN ('original_value', 'improvement', 'split', 'inventory_deficit')
+      AND ch.change_date > ?), 0))`
+const EOP_IMPAIRMENT_SQL = `(COALESCE(fa.impairment_amount, 0) - COALESCE((
+    SELECT SUM(ch.amount) FROM fixed_asset_change ch
+    WHERE ch.account_set_id = fa.account_set_id AND ch.asset_no = fa.asset_no
+      AND ch.change_kind = 'impairment' AND ch.change_date > ?), 0))`
+const DEPR_DEPT_SQL = 'COALESCE(fd.dept_code, fa.dept_code)'
+
+function periodEndDate(year: number, month: number): string {
+  const lastDay = new Date(year, month, 0).getDate()
+  return `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+}
+
 export function queryDeprSummary(params: {
   db: Database
   accountSetId: string
@@ -74,46 +96,30 @@ export function queryDeprSummary(params: {
   groupBy: 'category' | 'dept'
 }): DeprSummaryRow[] {
   const { db, accountSetId, year, month, groupBy } = params
+  const eop = periodEndDate(year, month)
+  const groupField = groupBy === 'category' ? 'fa.category_code' : DEPR_DEPT_SQL
+  const nameJoin =
+    groupBy === 'category'
+      ? 'LEFT JOIN fixed_asset_category gn ON gn.account_set_id = fa.account_set_id AND gn.code = fa.category_code'
+      : `LEFT JOIN fixed_asset_dept gn ON gn.account_set_id = fa.account_set_id AND gn.code = ${DEPR_DEPT_SQL}`
 
-  if (groupBy === 'category') {
-    return db.prepare(`
-      SELECT
-        fa.category_code AS group_code,
-        fc.name AS group_name,
-        COUNT(*) AS asset_count,
-        SUM(fa.original_value) AS total_original,
-        SUM(fd.month_depr) AS month_depr,
-        SUM(fd.accum_depr) AS total_accum_depr,
-        -- AS-P1-10：净值 = 该期期末原值口径 − 该期期末累计折旧（fd.accum_depr）− 减值，
-        -- 原先 SUM(fa.net_value) 取的是「今天的净值」，查历史月份时与累折列口径互相矛盾
-        SUM(fa.original_value - fd.accum_depr - COALESCE(fa.impairment_amount, 0)) AS total_net_value
-      FROM fixed_asset_depr fd
-      JOIN fixed_asset fa ON fa.account_set_id = fd.account_set_id AND fa.asset_no = fd.asset_no
-      LEFT JOIN fixed_asset_category fc ON fc.account_set_id = fa.account_set_id AND fc.code = fa.category_code
-      WHERE fd.account_set_id = ? AND fd.year = ? AND fd.month = ?
-      GROUP BY fa.category_code
-      ORDER BY fa.category_code
-    `).all(accountSetId, year, month) as DeprSummaryRow[]
-  }
-
-  // groupBy === 'dept'
   return db.prepare(`
     SELECT
-      fa.dept_code AS group_code,
-      fd2.name AS group_name,
+      ${groupField} AS group_code,
+      gn.name AS group_name,
       COUNT(*) AS asset_count,
-      SUM(fa.original_value) AS total_original,
+      SUM(${EOP_ORIGINAL_SQL}) AS total_original,
       SUM(fd.month_depr) AS month_depr,
       SUM(fd.accum_depr) AS total_accum_depr,
-      -- AS-P1-10：同上，净值按该期期末累折推算
-      SUM(fa.original_value - fd.accum_depr - COALESCE(fa.impairment_amount, 0)) AS total_net_value
+      -- AS-P1-10：净值 = 该期期末原值 − 该期期末累计折旧（fd.accum_depr）− 该期期末减值
+      SUM(${EOP_ORIGINAL_SQL} - fd.accum_depr - ${EOP_IMPAIRMENT_SQL}) AS total_net_value
     FROM fixed_asset_depr fd
     JOIN fixed_asset fa ON fa.account_set_id = fd.account_set_id AND fa.asset_no = fd.asset_no
-    LEFT JOIN fixed_asset_dept fd2 ON fd2.account_set_id = fa.account_set_id AND fd2.code = fa.dept_code
+    ${nameJoin}
     WHERE fd.account_set_id = ? AND fd.year = ? AND fd.month = ?
-    GROUP BY fa.dept_code
-    ORDER BY fa.dept_code
-  `).all(accountSetId, year, month) as DeprSummaryRow[]
+    GROUP BY ${groupField}
+    ORDER BY ${groupField}
+  `).all(eop, eop, eop, accountSetId, year, month) as DeprSummaryRow[]
 }
 
 // ── 折旧明细（汇总表下钻） ──────────────────────────────────
@@ -140,8 +146,9 @@ export function queryDeprDetail(params: {
   groupCode: string
 }): DeprDetailRow[] {
   const { db, accountSetId, year, month, groupBy, groupCode } = params
+  const eop = periodEndDate(year, month)
 
-  const whereField = groupBy === 'category' ? 'fa.category_code' : 'fa.dept_code'
+  const whereField = groupBy === 'category' ? 'fa.category_code' : DEPR_DEPT_SQL
 
   return db.prepare(`
     SELECT
@@ -150,20 +157,20 @@ export function queryDeprDetail(params: {
       fc.name AS category_name,
       fd2.name AS dept_name,
       fa.depr_method,
-      fa.original_value,
+      ${EOP_ORIGINAL_SQL} AS original_value,
       fd.month_depr,
       fd.accum_depr,
-      -- AS-P1-10：净值按该期期末累折推算，与汇总表口径一致
-      fa.original_value - fd.accum_depr - COALESCE(fa.impairment_amount, 0) AS net_value,
+      -- AS-P1-10 / 评审 P2：净值按该期期末原值 / 累折 / 减值推算，与汇总表口径一致
+      ${EOP_ORIGINAL_SQL} - fd.accum_depr - ${EOP_IMPAIRMENT_SQL} AS net_value,
       fp.expense_account
     FROM fixed_asset_depr fd
     JOIN fixed_asset fa ON fa.account_set_id = fd.account_set_id AND fa.asset_no = fd.asset_no
     LEFT JOIN fixed_asset_category fc ON fc.account_set_id = fa.account_set_id AND fc.code = fa.category_code
-    LEFT JOIN fixed_asset_dept fd2 ON fd2.account_set_id = fa.account_set_id AND fd2.code = fa.dept_code
+    LEFT JOIN fixed_asset_dept fd2 ON fd2.account_set_id = fa.account_set_id AND fd2.code = ${DEPR_DEPT_SQL}
     LEFT JOIN fixed_asset_purpose fp ON fp.account_set_id = fa.account_set_id AND fp.code = fa.purpose_code
     WHERE fd.account_set_id = ? AND fd.year = ? AND fd.month = ? AND ${whereField} = ?
     ORDER BY fa.asset_no
-  `).all(accountSetId, year, month, groupCode) as DeprDetailRow[]
+  `).all(eop, eop, eop, accountSetId, year, month, groupCode) as DeprDetailRow[]
 }
 
 // ── 折旧分配表（按费用科目汇总） ──────────────────────────────
@@ -854,11 +861,17 @@ export function queryDeprForecast(params: {
 }): ForecastRow[] {
   const { db, accountSetId, months = 12 } = params
 
-  // 获取所有应计提资产
+  // 获取所有应计提资产（取数条件与 previewDepreciation 一致，含 rebased 未来适用法标志）
   const assets = db.prepare(`
     SELECT fa.*,
       fp.expense_account,
-      fc.account_code AS asset_account
+      fc.account_code AS asset_account,
+      EXISTS (
+        SELECT 1 FROM fixed_asset_change ch
+         WHERE ch.account_set_id = fa.account_set_id
+           AND ch.asset_no = fa.asset_no
+           AND ch.change_kind IN ('original_value', 'depr_factor', 'impairment', 'improvement', 'split', 'inventory_deficit')
+      ) AS rebased
     FROM fixed_asset fa
     LEFT JOIN fixed_asset_purpose  fp ON fp.account_set_id = fa.account_set_id AND fp.code = fa.purpose_code
     LEFT JOIN fixed_asset_category fc ON fc.account_set_id = fa.account_set_id AND fc.code = fa.category_code
@@ -878,94 +891,53 @@ export function queryDeprForecast(params: {
 
   const now = new Date()
   const rows: ForecastRow[] = []
+  const hasDepr = db.prepare('SELECT 1 FROM fixed_asset_depr WHERE account_set_id=? AND asset_no=? AND year=? AND month=?')
 
   // 每项资产的运行时状态
   const states = assets.map(a => ({
     ...a,
+    rebased: !!a.rebased,
+    salvage_value: Number(a.salvage_value || 0),
     accum_depr: a.accum_depr as number,
     net_value: a.net_value as number,
     depr_months_done: a.depr_months_done as number,
   }))
 
-  for (let i = 1; i <= months; i++) {
-    const fy = now.getFullYear()
+  // 评审 P2：与计提预览同口径——单月折旧额走 computeMonthDepr（含未来适用法 rebased、末期补尾差），
+  // 从当月起预测（当月已计提的资产跳过），并遵守「计提月须晚于起折月」
+  for (let i = 0; i < months; i++) {
     const fm = now.getMonth() + 1 + i
-    const year = fy + Math.floor((fm - 1) / 12)
+    const year = now.getFullYear() + Math.floor((fm - 1) / 12)
     const month = ((fm - 1) % 12) + 1
     const period = `${year}-${String(month).padStart(2, '0')}`
 
     const details: ForecastDetail[] = []
 
     for (const s of states) {
-      // AS-P0-2：月数型按月数判断结束；工作量法按累计工作量判断结束
       if ((s.depr_method || '1') === '2') {
         const tw = s.total_workload || 0
         if (!(tw > 0) || (s.workload_done || 0) >= tw) continue
-      } else if (s.depr_months_done >= (s.use_months || 9999)) {
+      } else if (s.depr_months_done >= (s.use_months || 0)) {
         continue
       }
-      if (s.net_value <= (s.salvage_value || 0)) continue
+      if (s.start_depr_date) {
+        const [sy, sm] = String(s.start_depr_date).split('-').map(Number)
+        if (!Number.isFinite(sy) || !Number.isFinite(sm) || year * 12 + month <= sy * 12 + sm) continue
+      }
+      if (i === 0 && hasDepr.get(accountSetId, s.asset_no, year, month)) continue
 
       const method = s.depr_method || '1'
-      let monthDepr = 0
-
-      if (method === '1') {
-        // 平均年限法: 每月depr = depreciable / use_months
-        const depreciable = s.original_value - (s.salvage_value || 0)
-        if (depreciable > 0 && s.use_months > 0) {
-          monthDepr = Math.round((depreciable / s.use_months) * 100) / 100
-        }
-      } else if (method === '2') {
-        // AS-P0-2：工作量法按工作量口径预测（此前错按直线法），假定各月均衡工作量为 总工作量/使用月数
-        const totalWorkload = s.total_workload || 0
-        const doneWorkload = s.workload_done || 0
-        if (totalWorkload > 0 && doneWorkload < totalWorkload) {
-          const avgWorkload = s.use_months > 0 ? totalWorkload / s.use_months : 0
-          const depreciable = s.original_value - (s.salvage_value || 0)
-          if (depreciable > 0 && avgWorkload > 0) {
-            monthDepr = Math.round((depreciable / totalWorkload) * avgWorkload * 100) / 100
-          }
-        }
-      } else if (method === '3') {
-        // 双倍余额递减法
-        const remaining = (s.use_months || 0) - s.depr_months_done
-        if (remaining > 0) {
-          if (remaining <= 2) {
-            const rem = s.net_value - (s.salvage_value || 0)
-            monthDepr = Math.max(0, Math.round((rem / remaining) * 100) / 100)
-          } else {
-            const rate = 2 / (s.use_months || 1)
-            monthDepr = Math.round(s.net_value * rate * 100) / 100
-          }
-        }
-      } else if (method === '4') {
-        // 年数总和法
-        const depreciable = s.original_value - (s.salvage_value || 0)
-        const n = s.use_months || 1
-        const sumOfNums = (n * (n + 1)) / 2
-        const remaining = n - s.depr_months_done
-        if (remaining > 0) {
-          monthDepr = Math.round((depreciable * remaining / sumOfNums) * 100) / 100
-        }
-      }
-
-      // 不超过剩余净值
-      const maxDepr = Math.max(0, Math.round((s.net_value - (s.salvage_value || 0)) * 100) / 100)
-      monthDepr = Math.min(monthDepr, maxDepr)
-      monthDepr = Math.round(monthDepr * 100) / 100
-
+      // 工作量法假定各月均衡工作量 = 总工作量 / 使用月数
+      const estWorkload = method === '2' && s.use_months > 0 ? (s.total_workload || 0) / s.use_months : 0
+      const monthDepr = computeMonthDepr(s, estWorkload)
       if (monthDepr <= 0) continue
 
       // 更新运行时状态
       s.accum_depr = Math.round((s.accum_depr + monthDepr) * 100) / 100
       s.net_value = Math.round((s.net_value - monthDepr) * 100) / 100
       s.depr_months_done += 1
-      // AS-P0-2：工作量法同步推进累计工作量（与当月估算工作量一致）
-      if (method === '2' && s.use_months > 0 && (s.total_workload || 0) > 0) {
-        s.workload_done = Math.min(
-          s.total_workload,
-          Math.round(((s.workload_done || 0) + (s.total_workload || 0) / s.use_months) * 100) / 100
-        )
+      if (method === '2') {
+        s.workload_done = Math.min(s.total_workload, Math.round(((s.workload_done || 0) + estWorkload) * 100) / 100)
       }
 
       details.push({
@@ -986,7 +958,7 @@ export function queryDeprForecast(params: {
       year,
       month,
       asset_count: details.length,
-      total_depr: Math.round(details.reduce((s, d) => s + d.month_depr, 0) * 100) / 100,
+      total_depr: Math.round(details.reduce((sum, d) => sum + d.month_depr, 0) * 100) / 100,
       details,
     })
   }

@@ -65,4 +65,12 @@ describe('FIX-132 凭证删除守卫与关联清理', () => {
     deleteVoucherWithRefs(db, SET, get(db, 'v-fx'))
     expect(db.prepare('SELECT COUNT(*) c FROM fx_revaluation_runs').get()).toEqual({ c: 0 })
   })
+
+  it('评审 P2：删制费差异结转凭证——转主营成本的记录作废，分摊到成品的记录只断开凭证', () => {
+    const db = setup()
+    db.exec('CREATE TABLE scm_overhead_variance_run (id TEXT PRIMARY KEY, account_set_id TEXT, voucher_id TEXT, doc_id TEXT)')
+    db.prepare("INSERT INTO scm_overhead_variance_run VALUES ('ov1', ?, 'v-orig', NULL), ('ov2', ?, 'v-orig', 'doc-ca')").run(SET, SET)
+    deleteVoucherWithRefs(db, SET, get(db, 'v-orig'))
+    expect(db.prepare('SELECT id, voucher_id FROM scm_overhead_variance_run').all()).toEqual([{ id: 'ov2', voucher_id: null }])
+  })
 })

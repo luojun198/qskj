@@ -16,6 +16,7 @@ import {
   assertNotAfterCurrentPeriod,
 } from './assetVoucherBuilder.js'
 import { assertVoucherEntriesInScopeById } from './accountAuthorization.js'
+import { findUndepreciatedForDisposal } from './fixedAssetDepreciation.js'
 import { deleteVoucherRecords, type VoucherEntryInput } from './voucherEntry.js'
 
 export interface DisposalParams {
@@ -100,6 +101,16 @@ export function disposeAsset(params: DisposalParams): DisposalResult {
     }
   }
 
+  // 评审 P1-9：当月减少的资产当月照提折旧——当月应提未提时先计提再处置，
+  // 否则处置后计提按「已处置」跳过，当月折旧静默漏提、处置凭证的累计折旧也少一个月
+  {
+    const sy = parseInt(scrapDate.split('-')[0])
+    const sm = parseInt(scrapDate.split('-')[1])
+    if (findUndepreciatedForDisposal({ db, accountSetId, year: sy, month: sm, assetNos: [asset.asset_no] }).length) {
+      throw new Error(`按准则当月减少的资产当月照提折旧，请先在「计提折旧」执行 ${sy}年${sm}月 计提后再处置`)
+    }
+  }
+
   const originalValue = asset.original_value
   const accumDepr = asset.accum_depr
   const netValue = asset.net_value
@@ -107,6 +118,8 @@ export function disposeAsset(params: DisposalParams): DisposalResult {
 
   // 处置损益 = 处置收入 - 处置费用 - 净值
   const disposalGainLoss = Math.round((disposalIncome - disposalExpense - netValue) * 100) / 100
+
+  let voucher: { voucherId: string; voucherNo: string } | null = null
 
   // 在事务中执行
   db.transaction(() => {
@@ -152,6 +165,8 @@ export function disposeAsset(params: DisposalParams): DisposalResult {
         operatorName, voucherTypeId,
       })
       db.prepare('UPDATE fixed_asset SET scrap_voucher_id=? WHERE id=?').run(vid, assetId)
+      const vRow = db.prepare('SELECT voucher_no FROM vouchers WHERE id=?').get(vid) as { voucher_no: string } | undefined
+      voucher = { voucherId: vid, voucherNo: vRow?.voucher_no ?? '' }
       // AS-P1-12：科目授权——超权时抛错让整个处置事务回滚
       const scopeErr = assertVoucherEntriesInScopeById(
         db,
@@ -170,6 +185,8 @@ export function disposeAsset(params: DisposalParams): DisposalResult {
     accumDepr,
     netValue,
     disposalGainLoss,
+    // 前端据此提示「已生成清理凭证 记-xxx」（此前未返回，提示从不出现）
+    voucher,
   }
 }
 
@@ -343,6 +360,23 @@ export function cancelDisposal(params: {
 
   if (!asset) throw new Error('资产不存在')
   if (!asset.scrap_date) throw new Error('该资产未处置，无需撤销')
+
+  // 评审 P1-3：盘点盘亏 / 损毁置为「已处置」的卡片没有 scrap_voucher_id，核销凭证挂在盘点明细上。
+  // 在卡片上撤销只会还原卡片，盘点凭证（贷 1601）无对冲，资产账与总账永久不平——此类处置不在这里撤销。
+  if (!asset.scrap_voucher_id) {
+    const inv = db.prepare(`
+      SELECT inv.name, i.voucher_id FROM fixed_asset_inventory_item i
+      JOIN fixed_asset_inventory inv ON inv.id = i.inventory_id
+      WHERE i.account_set_id = ? AND i.asset_no = ? AND i.actual_status IN ('deficit', 'damaged')
+        AND inv.status = 'completed' AND inv.inventory_date = ?
+      LIMIT 1
+    `).get(accountSetId, asset.asset_no, asset.scrap_date) as { name: string; voucher_id: string | null } | undefined
+    if (inv) {
+      throw new Error(
+        `该资产由盘点「${inv.name}」盘亏核销${inv.voucher_id ? '并已生成核销凭证' : ''}，不能在卡片上撤销处置`
+      )
+    }
+  }
 
   // AS-P1-17：撤销处置会回写卡片财务字段，处置所属期间已结账则拒绝
   // （此前 cancelDisposal 全程无期间校验，已结账月份的处置可被撤销并回写资产账）

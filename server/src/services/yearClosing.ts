@@ -135,7 +135,10 @@ export function validatePreviousPeriodsClosed(params: {
   db: Database
   accountSetId: string
   year: number
+  /** 校验 [首期, beforePeriod) 均已结账；缺省 12（年结） */
+  beforePeriod?: number
 }) {
+  const beforePeriod = params.beforePeriod ?? 12
   const firstPeriod = getFirstPeriodForYear(params)
 
   const rows = params.db
@@ -151,14 +154,18 @@ export function validatePreviousPeriodsClosed(params: {
     .all(params.accountSetId, params.year) as Array<{ period: number }>
   const closedPeriods = new Set(rows.map(row => Number(row.period)))
   const missing: number[] = []
-  for (let period = firstPeriod; period < 12; period += 1) {
+  for (let period = firstPeriod; period < beforePeriod; period += 1) {
     if (!closedPeriods.has(period)) {
       missing.push(period)
     }
   }
 
   if (missing.length > 0) {
-    throw new Error(`年度结账前需先完成前序期间结账，未结账期间：${missing.join('、')}`)
+    throw new Error(
+      beforePeriod === 12
+        ? `年度结账前需先完成前序期间结账，未结账期间：${missing.join('、')}`
+        : `请按期间顺序结账，${params.year}年尚未结账的前序期间：${missing.join('、')}`
+    )
   }
 }
 
@@ -588,6 +595,13 @@ export function closeAccountingPeriod(params: ClosePeriodParams): ClosePeriodRes
   validateNoUnpostedVouchers(params)
 
   if (params.period !== 12) {
+    // 评审 P2：月结同样须按期间顺序（此前只有年结校验前序期间，可跳过 3 月直接结 5 月）
+    validatePreviousPeriodsClosed({
+      db: params.db,
+      accountSetId: params.accountSetId,
+      year: params.year,
+      beforePeriod: params.period,
+    })
     const transaction = params.db.transaction(() => {
       closePeriodRecord(params)
     })

@@ -26,8 +26,8 @@ export function up(db: Database.Database) {
       salvage_rate REAL NOT NULL DEFAULT 0,  -- czl 残值率
       salvage_value REAL NOT NULL DEFAULT 0, -- yzcz 预计净残值
       depr_method TEXT,                      -- zjff 折旧方法
-      use_months INTEGER,                    -- synx 使用月数
-      use_years INTEGER,                     -- synx_y 使用年数
+      use_months INTEGER,                    -- synx_y 使用月数
+      use_years INTEGER,                     -- synx 使用年限（synx_y 是月数，对应 use_months；评审 P0-1）
       total_workload REAL,                   -- zgzl 工作量法-总工作量
       depr_months_done INTEGER NOT NULL DEFAULT 0, -- ljzjy 已提月数
       workload_done REAL NOT NULL DEFAULT 0, -- ljgzl 累计工作量

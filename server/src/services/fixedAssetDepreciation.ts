@@ -135,6 +135,35 @@ function calcMethodSumOfYears(a: DeprAsset): number {
   return Math.round(((depreciable * remaining) / sumOfNums) * 100) / 100
 }
 
+/**
+ * 单项资产单月折旧额：四种方法 + 不超过剩余可折额 + 平均年限法末期补尾差。
+ * 预览计提与折旧预测（assetReportQuery.queryDeprForecast，评审 P2）共用，保证两处口径一致。
+ */
+export function computeMonthDepr(a: DeprAsset, currentWorkload: number): number {
+  const method = a.depr_method || '1'
+  let monthDepr = 0
+  if (method === '1') monthDepr = calcMethodAvgYears(a)
+  else if (method === '2') monthDepr = calcMethodWorkload(a, currentWorkload)
+  else if (method === '3') monthDepr = calcMethodDoubleDeclining(a)
+  else if (method === '4') monthDepr = calcMethodSumOfYears(a)
+
+  if (monthDepr <= 0) return 0
+
+  // 不超过剩余可折余额（防止最后一月多折）
+  const maxDepr = Math.max(0, Math.round((a.net_value - a.salvage_value) * 100) / 100)
+  monthDepr = Math.min(monthDepr, maxDepr)
+
+  // AS-P1-6：平均年限法最后一期把各月舍入累积的尾差一次补足，
+  // 使提满后净值恰好等于残值（此前尾差留存到处置时虚增清理损益）。
+  // 双倍余额递减（最后 2 月转直线）与年数总和（末期公式已=全额）天然提满，无需处理。
+  const remainingMonths = (a.use_months || 0) - a.depr_months_done
+  if (method !== '2' && method !== '3' && remainingMonths === 1 && maxDepr > 0 && monthDepr !== maxDepr) {
+    monthDepr = maxDepr
+  }
+
+  return Math.round(monthDepr * 100) / 100
+}
+
 // ── 计划明细：预览（不写库） ───────────────────────────────
 
 export function previewDepreciation(params: {
@@ -200,27 +229,7 @@ export function previewDepreciation(params: {
 
     const method = a.depr_method || '1'
     const currentWorkload = workloadMap[a.asset_no] ?? 0
-    let monthDepr = 0
-    if (method === '1') monthDepr = calcMethodAvgYears(a)
-    else if (method === '2') monthDepr = calcMethodWorkload(a, currentWorkload)
-    else if (method === '3') monthDepr = calcMethodDoubleDeclining(a)
-    else if (method === '4') monthDepr = calcMethodSumOfYears(a)
-
-    if (monthDepr <= 0) continue
-
-    // 不超过剩余可折余额（防止最后一月多折）
-    const maxDepr = Math.max(0, Math.round((a.net_value - a.salvage_value) * 100) / 100)
-    monthDepr = Math.min(monthDepr, maxDepr)
-
-    // AS-P1-6：平均年限法最后一期把各月舍入累积的尾差一次补足，
-    // 使提满后净值恰好等于残值（此前尾差留存到处置时虚增清理损益）。
-    // 双倍余额递减（最后 2 月转直线）与年数总和（末期公式已=全额）天然提满，无需处理。
-    const remainingMonths = (a.use_months || 0) - a.depr_months_done
-    if (method !== '2' && method !== '3' && remainingMonths === 1 && maxDepr > 0 && monthDepr !== maxDepr) {
-      monthDepr = maxDepr
-    }
-
-    monthDepr = Math.round(monthDepr * 100) / 100
+    const monthDepr = computeMonthDepr(a, currentWorkload)
     if (monthDepr <= 0) continue
 
     lines.push({
@@ -245,6 +254,26 @@ export function previewDepreciation(params: {
 }
 
 // ── 执行计提：写库 ─────────────────────────────────────────
+
+/**
+ * 评审 P1-9：按企业会计准则「当月减少的固定资产，当月照提折旧，下月起停提」。
+ * 处置（含盘点整卡盘亏）会把卡片置为「已处置」，此后计提按 depreciable 过滤、当月就不再计提。
+ * 所以处置前该资产若当月应提而未提，须先执行当月计提——返回这些资产编号（空数组表示可直接处置）。
+ * 口径与 previewDepreciation 一致：起折月之后、未提满、当月尚无计提记录且本月折旧额 > 0。
+ */
+export function findUndepreciatedForDisposal(params: {
+  db: Database
+  accountSetId: string
+  year: number
+  month: number
+  assetNos: string[]
+}): string[] {
+  if (!params.assetNos.length) return []
+  const wanted = new Set(params.assetNos)
+  return previewDepreciation({ db: params.db, accountSetId: params.accountSetId, year: params.year, month: params.month })
+    .filter(ln => wanted.has(ln.asset_no) && ln.month_depr > 0)
+    .map(ln => ln.asset_no)
+}
 
 export function executeDepreciation(params: {
   db: Database
@@ -490,7 +519,7 @@ export function reverseDepreciation(params: {
       AND EXISTS (SELECT 1 FROM fixed_asset_depr fd WHERE fd.account_set_id = fa.account_set_id
                     AND fd.asset_no = fa.asset_no AND fd.year = ? AND fd.month = ?)
   `).get(accountSetId, year, month) as any
-  if (Number(disposedCount?.count || 0) > 0) {
+  if (Number(disposedCount?.c || 0) > 0) {
     throw new Error('该期折旧涉及的资产已处置，请先撤销处置后再反折旧')
   }
 

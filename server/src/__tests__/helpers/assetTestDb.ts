@@ -417,3 +417,10 @@ export function closePeriod(db: Database.Database, year: number, period: number)
     "INSERT INTO period_closing (id, account_set_id, year, period, status) VALUES (?,?,?,?,'closed')"
   ).run(`pc-${year}-${period}`, SET_ID, year, period)
 }
+
+/** 评审 P1-9：处置 / 整卡盘亏前当月须已计提——夹具里标记某资产某月已计提（只写计提记录，不改卡片） */
+export function markDepreciated(db: Database.Database, assetNo: string, year: number, month: number) {
+  db.prepare(
+    'INSERT INTO fixed_asset_depr (id, account_set_id, asset_no, year, month, month_depr, accum_depr) VALUES (?, ?, ?, ?, ?, 0, 0)'
+  ).run(`d-${assetNo}-${year}-${month}`, SET_ID, assetNo, year, month)
+}

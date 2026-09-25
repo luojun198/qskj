@@ -248,9 +248,13 @@ async function handleExport() {
     { label: '关联凭证', width: 120, value: r => (r.voucher_no ? `${r.voucher_year}-${String(r.voucher_month).padStart(2, '0')} ${r.voucher_no}` : '') },
   ]
   
-  const totalDebit = rows.value.reduce((sum, r) => sum + (r.debit || 0), 0)
-  const totalCredit = rows.value.reduce((sum, r) => sum + (r.credit || 0), 0)
-  const summaryValues = ['合计', '', '', '', '', '', totalDebit, totalCredit, '', '']
+  // 评审 P2：未限定币种时结果可能混有外币，原币直接相加没有意义——多币种时改按本位币金额合计并标明
+  const mixed = new Set(rows.value.map(r => (r as any).currency || '')).size > 1
+  const pick = (r: any, f: 'debit' | 'credit') =>
+    mixed ? Number(r[f === 'debit' ? 'base_debit' : 'base_credit'] ?? r[f]) || 0 : Number(r[f]) || 0
+  const totalDebit = rows.value.reduce((sum, r) => sum + pick(r, 'debit'), 0)
+  const totalCredit = rows.value.reduce((sum, r) => sum + pick(r, 'credit'), 0)
+  const summaryValues = [mixed ? '合计（本位币）' : '合计', '', '', '', '', '', totalDebit, totalCredit, '', '']
 
   await exportStyledTable({
     fileName: `单据综合查询_${formatDate(new Date())}.xlsx`,

@@ -52,6 +52,9 @@
           >统计未记账凭证</el-checkbox
         >
         <el-divider direction="vertical" />
+        <!-- 评审 P2：隐藏零值此前恒为 true 且无开关 -->
+        <el-checkbox v-model="hideZero">隐藏零值</el-checkbox>
+        <el-divider direction="vertical" />
         <el-button type="primary" @click="fetchData"
           ><el-icon><Search /></el-icon>查询</el-button
         >

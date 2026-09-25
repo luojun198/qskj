@@ -11,6 +11,7 @@ import {
   createAssetTestDb,
   insertAsset,
   insertAssetDicts,
+  closePeriod,
   SET_ID,
 } from './helpers/assetTestDb.js'
 
@@ -117,6 +118,23 @@ describe('固定资产领用归还', () => {
 
   // ── 部门联动 ──────────────────────────────────────────────
 
+  describe('评审 P2：日期与期间校验', () => {
+    it('非真实日期、未来月份、已结账期间一律拒绝', () => {
+      expect(() => checkout({ actionDate: '2026-02-30' })).toThrow(/不是有效日期/)
+      expect(() => checkout({ actionDate: '2099-01-01' })).toThrow(/不能晚于当前月份/)
+      closePeriod(db, 2026, 6)
+      expect(() => checkout({ actionDate: '2026-06-01' })).toThrow()
+    })
+
+    it('归还日期不能早于领用日期；已结账期间的记录不能删除', () => {
+      checkout()
+      expect(() => checkin({ actionDate: '2026-05-20' })).toThrow(/不能早于该资产上一条领用记录/)
+      const r = checkin()
+      closePeriod(db, 2026, 7)
+      expect(() => deleteRequisition({ db, accountSetId: SET_ID, requisitionId: r.id })).toThrow()
+    })
+  })
+
   describe('领用引起部门变化时联动记变动流水', () => {
     it('部门变化 → 写一条 change_kind=dept 的流水', () => {
       const result = checkout({ deptCode: 'D2' })
@@ -161,6 +179,40 @@ describe('固定资产领用归还', () => {
         .prepare("SELECT * FROM fixed_asset_requisition WHERE action='in'")
         .get() as any
       expect(row.condition_note).toBe('外壳有划痕')
+    })
+
+    it('领用时调了部门 → 归还自动调回原部门并记一条调拨流水', () => {
+      checkout({ deptCode: 'D2' })
+      expect(asset().dept_code).toBe('D2')
+      const r = checkin()
+      expect(asset().dept_code).toBe('D1')
+      expect(r.deptChangeId).toBeTruthy()
+      const back = db.prepare('SELECT * FROM fixed_asset_change WHERE id=?').get(r.deptChangeId) as any
+      expect(back.change_item).toContain('资产归还')
+      expect(back.old_text).toBe('D2')
+      expect(back.new_text).toBe('D1')
+    })
+
+    it('领用未调部门 → 归还不动部门', () => {
+      checkout()
+      const r = checkin()
+      expect(asset().dept_code).toBe('D1')
+      expect(r.deptChangeId).toBeNull()
+    })
+
+    it('领用后又手工调拨到别的部门 → 归还不回调', () => {
+      checkout({ deptCode: 'D2' })
+      db.prepare("INSERT INTO fixed_asset_dept (id, account_set_id, code, name) VALUES ('dp-3', ?, 'D3', '财务部')").run(SET_ID)
+      db.prepare("UPDATE fixed_asset SET dept_code='D3' WHERE asset_no='A1'").run()
+      checkin()
+      expect(asset().dept_code).toBe('D3')
+    })
+
+    it('归还时指定部门以指定为准', () => {
+      checkout({ deptCode: 'D2' })
+      db.prepare("INSERT INTO fixed_asset_dept (id, account_set_id, code, name) VALUES ('dp-3', ?, 'D3', '财务部')").run(SET_ID)
+      checkin({ deptCode: 'D3' })
+      expect(asset().dept_code).toBe('D3')
     })
 
     it('没有未归还的领用记录时拒绝归还', () => {
@@ -310,6 +362,22 @@ describe('固定资产领用归还', () => {
       deleteRequisition({ db, accountSetId: SET_ID, requisitionId: out.id })
       expect(db.prepare('SELECT COUNT(*) c FROM fixed_asset_requisition').get()).toEqual({ c: 0 })
       expect(isCheckedOut(db, SET_ID, 'A1')).toBe(false)
+    })
+
+    it('删除归还记录 → 撤销联动的调回，部门回到领用部门', () => {
+      checkout({ deptCode: 'D2' })
+      const back = checkin()
+      expect(asset().dept_code).toBe('D1')
+      deleteRequisition({ db, accountSetId: SET_ID, requisitionId: back.id })
+      expect(asset().dept_code).toBe('D2')
+      expect(isCheckedOut(db, SET_ID, 'A1')).toBe(true)
+    })
+
+    it('删除领用记录 → 撤销联动的调拨，部门还原', () => {
+      const out = checkout({ deptCode: 'D2' })
+      deleteRequisition({ db, accountSetId: SET_ID, requisitionId: out.id })
+      expect(asset().dept_code).toBe('D1')
+      expect(db.prepare("SELECT COUNT(*) c FROM fixed_asset_change WHERE change_kind='dept'").get()).toEqual({ c: 0 })
     })
 
     it('不能删除中间记录（会让领用状态推演错乱）', () => {

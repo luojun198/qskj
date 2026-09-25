@@ -4,7 +4,7 @@ import { applyAssetChange } from '../services/assetChange.js'
 import { disposeAsset } from '../services/assetDisposal.js'
 import { createInventory, completeInventory } from '../services/assetInventory.js'
 import { previewDepreciation } from '../services/fixedAssetDepreciation.js'
-import { queryChangeSummary, queryChangeDetail, queryCategorySummary } from '../services/assetReportQuery.js'
+import { queryChangeSummary, queryChangeDetail, queryCategorySummary, queryDeprSummary, queryDeprDetail, queryDeprForecast } from '../services/assetReportQuery.js'
 import { createAssetTestDb, insertAsset, insertAccounts, insertAssetDicts, SET_ID } from './helpers/assetTestDb.js'
 
 /**
@@ -80,7 +80,8 @@ describe('固定资产业务规则（批次 E）', () => {
     const detail = queryChangeDetail({ db, accountSetId: SET_ID, year: 2026, month: 9, changeType: 'increase' })
     expect(detail).toEqual([expect.objectContaining({ asset_no: 'G1', original_value: 5000, change_item: '原值增减' })])
 
-    // 9 月处置 G2：减少 3000，期末 15000
+    // 9 月处置 G2：减少 3000，期末 15000（评审 P1-9：处置月须已计提）
+    db.prepare("INSERT INTO fixed_asset_depr (id, account_set_id, asset_no, year, month, month_depr, accum_depr) VALUES ('d-g2', ?, 'G2', 2026, 9, 0, 0)").run(SET_ID)
     disposeAsset({ db, accountSetId: SET_ID, assetId: 'fa-G2', changeTypeCode: null, scrapDate: '2026-09-20', scrapReason: '出售' })
     const sep2 = queryChangeSummary({ db, accountSetId: SET_ID, year: 2026, month: 9 })
     expect(sep2[0]).toMatchObject({ decrease_count: 1, decrease_amount: 3000, closing_count: 1, closing_original: 15000 })
@@ -105,6 +106,48 @@ describe('批次 F：剩余 P2', () => {
     db.prepare("INSERT INTO fixed_asset_depr (id, account_set_id, asset_no, year, month, month_depr, accum_depr) VALUES ('d1', ?, 'L1', 2026, 7, 2500, 2500)").run(SET_ID)
     const ledger2 = queryAssetLedger({ db, accountSetId: SET_ID, assetId: 'fa-L1' })!
     expect(ledger2.entries.at(-1)!.net_value_after).toBe(-500)
+    db.close()
+  })
+})
+
+describe('评审 P2：折旧汇总按该期期末原值 / 减值', () => {
+  it('后续原值变动与减值不改写历史月份的原值、净值', () => {
+    const db = createAssetTestDb()
+    insertAssetDicts(db)
+    insertAccounts(db, [['1601', '固定资产'], ['1602', '累计折旧'], ['1603', '固定资产减值准备'], ['6701', '资产减值损失']])
+    insertAsset(db, { asset_no: 'H1', original_value: 12000, salvage_value: 0, use_months: 60, net_value: 12000, accum_depr: 200, start_depr_date: '2026-01-15' })
+    db.prepare("INSERT INTO fixed_asset_depr (id, account_set_id, asset_no, year, month, dept_code, month_depr, accum_depr) VALUES ('d1', ?, 'H1', 2026, 2, 'D1', 200, 200)").run(SET_ID)
+    // 9 月原值 +3000、减值 500
+    applyAssetChange({ db, accountSetId: SET_ID, assetId: 'fa-H1', kind: 'original_value', changeDate: '2026-09-10', payload: { amount: 3000 }, operatorName: 't' })
+    applyAssetChange({ db, accountSetId: SET_ID, assetId: 'fa-H1', kind: 'impairment', changeDate: '2026-09-12', payload: { amount: 500 }, operatorName: 't' })
+
+    const [row] = queryDeprSummary({ db, accountSetId: SET_ID, year: 2026, month: 2, groupBy: 'category' })
+    expect(row.total_original).toBe(12000)
+    expect(row.total_net_value).toBe(11800)
+    const [detail] = queryDeprDetail({ db, accountSetId: SET_ID, year: 2026, month: 2, groupBy: 'dept', groupCode: 'D1' })
+    expect(detail).toMatchObject({ original_value: 12000, net_value: 11800 })
+    db.close()
+  })
+})
+
+describe('评审 P2：折旧预测与计提预览同口径', () => {
+  it('发生原值变动（未来适用法）后，预测当月折旧额 = 预览折旧额', () => {
+    const db = createAssetTestDb()
+    insertAssetDicts(db)
+    insertAccounts(db, [['1601', '固定资产'], ['1602', '累计折旧']])
+    const now = new Date()
+    const y = now.getFullYear()
+    const m = now.getMonth() + 1
+    insertAsset(db, { asset_no: 'K1', original_value: 12000, salvage_value: 0, use_months: 24, depr_months_done: 6, accum_depr: 3000, net_value: 9000, start_depr_date: '2020-01-15' })
+    // 净值改为 7200 并登记一条折旧要素变动 → 未来适用法：剩余 18 个月摊 7200 = 400（全期口径会是 12000/24 = 500）
+    db.prepare("UPDATE fixed_asset SET net_value=7200, accum_depr=4800 WHERE asset_no='K1'").run()
+    db.prepare("INSERT INTO fixed_asset_change (id, account_set_id, asset_no, change_date, change_item, change_kind, amount) VALUES ('c1', ?, 'K1', '2020-03-01', '折旧要素', 'depr_factor', 0)").run(SET_ID)
+
+    const preview = previewDepreciation({ db, accountSetId: SET_ID, year: y, month: m })
+    const forecast = queryDeprForecast({ db, accountSetId: SET_ID, months: 1 })
+    expect(preview[0].month_depr).toBe(400) // 7200 / 18
+    expect(forecast[0]).toMatchObject({ year: y, month: m })
+    expect(forecast[0].details[0].month_depr).toBe(preview[0].month_depr)
     db.close()
   })
 })

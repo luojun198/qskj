@@ -98,7 +98,12 @@ export function normalizeDate(v: unknown): string | undefined | null {
   const s = str(v)
   if (!s) return undefined
   const slashed = s.replace(/\//g, '-')
-  if (DATE_RE.test(slashed)) return slashed
+  if (DATE_RE.test(slashed)) {
+    // 格式对还要是真实日期（2026-13-01 / 2026-02-30 这类要拒绝）
+    const [y, m, d] = slashed.split('-').map(Number)
+    const dt = new Date(Date.UTC(y, m - 1, d))
+    return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d ? slashed : null
+  }
   // Excel 日期序列号：1899-12-30 为 0
   const serial = Number(s)
   if (Number.isFinite(serial) && serial > 0 && serial < 100000) {
@@ -159,8 +164,9 @@ export function validateImportRow(params: {
 
   const salvageRate = num(row.salvage_rate)
   if (salvageRate === null) err('salvage_rate', '残值率必须是数字')
-  else if (salvageRate !== undefined && (salvageRate < 0 || salvageRate > 1)) {
-    err('salvage_rate', '残值率应为 0~1 之间的小数（如 0.05 表示 5%）')
+  // 评审 P2：残值率 = 1 意味着残值等于原值、永不计提，与卡片 / 字典口径（0 ≤ 率 < 1）一致地拒绝
+  else if (salvageRate !== undefined && (salvageRate < 0 || salvageRate >= 1)) {
+    err('salvage_rate', '残值率应为大于等于 0 且小于 1 的小数（如 0.05 表示 5%）')
   }
 
   const deprMethod = str(row.depr_method)

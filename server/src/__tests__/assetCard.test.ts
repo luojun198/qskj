@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { getDictDeleteBlockReason, buildAssetCardUpdate } from '../services/assetCard.js'
+import { getDictDeleteBlockReason, buildAssetCardUpdate, getCardValueLockReason } from '../services/assetCard.js'
 import {
   createAssetTestDb,
   insertAsset,
@@ -158,5 +158,27 @@ describe('资产卡片更新字段构建', () => {
     expect(fields).not.toHaveProperty('account_set_id')
     expect(fields).not.toHaveProperty('id')
     expect(fields).not.toHaveProperty('impairment_amount')
+  })
+})
+
+describe('评审 P1-2：有财务痕迹的卡片锁定原值 / 累计折旧', () => {
+  let db: Database.Database
+  beforeEach(() => {
+    db = createAssetTestDb()
+    insertAsset(db, { asset_no: 'A1', original_value: 1000 })
+  })
+  afterEach(() => db.close())
+
+  it('刚录入、无任何痕迹的卡片不锁', () => {
+    expect(getCardValueLockReason(db, SET_ID, { asset_no: 'A1' })).toBeNull()
+  })
+
+  it('购置凭证 / 折旧记录 / 变动流水任一存在即锁', () => {
+    expect(getCardValueLockReason(db, SET_ID, { asset_no: 'A1', purchase_voucher_id: 'v1' })).toBe('已生成购置凭证')
+    db.prepare("INSERT INTO fixed_asset_depr (id, account_set_id, asset_no, year, month) VALUES ('d1', ?, 'A1', 2026, 1)").run(SET_ID)
+    expect(getCardValueLockReason(db, SET_ID, { asset_no: 'A1' })).toBe('已有折旧记录')
+    db.prepare('DELETE FROM fixed_asset_depr').run()
+    db.prepare("INSERT INTO fixed_asset_change (id, account_set_id, asset_no, change_item) VALUES ('c1', ?, 'A1', '原值变动')").run(SET_ID)
+    expect(getCardValueLockReason(db, SET_ID, { asset_no: 'A1' })).toBe('已有变动流水')
   })
 })

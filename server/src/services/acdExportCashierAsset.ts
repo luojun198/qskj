@@ -181,7 +181,7 @@ export function exportZcGdzc(db: Database, accountSetId: string): Buffer {
       yzcz:  r => s(r.salvage_value),
       syrq:  r => d(r.start_depr_date),
       zjff:  r => s(r.depr_method),
-      synx:  r => s(r.use_months),
+      synx:  r => s(r.use_years), // 年限；synx_y 才是月数（评审 P0-1）
       zgzl:  r => s(r.total_workload),
       bz:    r => s(r.remark),
       ytbh:  r => s(r.purpose_code),
@@ -197,7 +197,7 @@ export function exportZcGdzc(db: Database, accountSetId: string): Buffer {
       azdd:  r => s(r.install_place),
       dw:    r => s(r.unit),
       sl:    r => s(r.qty),
-      synx_y: r => s(r.use_years),
+      synx_y: r => s(r.use_months),
       syr:   r => s(r.user_name),
       bgr:   r => s(r.keeper),
       ly:    r => s(r.source),

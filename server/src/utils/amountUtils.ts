@@ -16,7 +16,23 @@
 export function yuanToCents(yuan: number): number {
   const v = Number(yuan)
   if (!Number.isFinite(v)) return 0
-  return Math.round(v * 100)
+  return roundHalfAwayFromZero(v * 100)
+}
+
+/**
+ * 评审 P2：四舍五入到整数，正负对称（.5 一律远离 0）。
+ * Math.round 对负数是「.5 向正无穷」：Math.round(2.5)=3 而 Math.round(-2.5)=-2，
+ * 红字 / 负数金额舍入后与对应正数不再互为相反数。
+ */
+export function roundHalfAwayFromZero(n: number): number {
+  if (!Number.isFinite(n)) return n
+  const r = Math.round(Math.abs(n))
+  return n < 0 ? -r : r
+}
+
+/** 金额保留两位小数，正负对称 */
+export function round2Symmetric(n: number): number {
+  return roundHalfAwayFromZero(n * 100) / 100
 }
 
 /**
@@ -107,3 +123,15 @@ export const MONEY_EPSILON = 0.005
 // 并在调用处明确说明容差来源与业务理由。
 //
 // 调用方搜索（grep amountsEqual）：无引用，直接删除安全。
+
+/**
+ * 查询参数里的金额筛选值：未传 / 空串 / 非数字 → undefined（不加条件），0 是合法下限 / 上限。
+ * 评审 P2：此前 `min_amount ? Number(...) : undefined` 把 0 当成未传；`parseFloat('abc')` 得 NaN 入参后整张结果静默为空。
+ */
+export function parseAmountFilter(v: unknown): number | undefined {
+  if (v === undefined || v === null) return undefined
+  const t = String(v).trim().replace(/,/g, '')
+  if (t === '') return undefined
+  const n = Number(t)
+  return Number.isFinite(n) ? n : undefined
+}

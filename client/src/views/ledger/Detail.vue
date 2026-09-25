@@ -77,7 +77,7 @@
     <el-table
       ref="tableRef"
       :height="tableHeight"
-      :data="list"
+      :data="pagedList"
       :style="{ width: `${ledgerTableWidth}px` }"
       :fit="false"
       border
@@ -240,9 +240,20 @@
     </el-table>
     </div>
 
-    <!-- 明细账不分页：一次性展示全部分录 -->
+    <!-- FIX-251：数据仍一次性拉全（余额 / 小计 / 导出 / 打印口径不变），只把渲染切成前端分页，
+         避免单科目十万行时 el-table 全量建 DOM 锁死主线程 -->
     <div class="pagination">
       <span class="total-tip">共 {{ total }} 条记录</span>
+      <el-pagination
+        v-model:current-page="displayPage"
+        v-model:page-size="displayPageSize"
+        :page-sizes="DISPLAY_PAGE_SIZES"
+        :total="list.length"
+        layout="sizes, prev, pager, next, jumper"
+        small
+        @size-change="handleDisplayPageChange"
+        @current-change="handleDisplayPageChange"
+      />
     </div>
 
     <VoucherEntryDialogHost ref="entryDialogHostRef" @saved="fetchData" />
@@ -271,7 +282,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onActivated, computed, watch } from 'vue'
+import { monthEndDate } from '@/utils/monthEnd'
+import { ref, onMounted, onActivated, computed, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { Printer, Search, Download } from '@element-plus/icons-vue'
@@ -299,12 +311,12 @@ import DetailBatchAccountsDialog, {
   type DetailBatchMode,
 } from '@/components/ledger/DetailBatchAccountsDialog.vue'
 import { buildTablePrintHtml } from '@/utils/printTemplateHiprint'
-import { exportStyledTable, exportStyledWorkbook, type ExportColumnDef } from '@/utils/exportStyledExcel'
+import { exportStyledTableViaServer, exportStyledWorkbook, type ExportColumnDef } from '@/utils/exportStyledExcel'
 import { formatSignedBalanceAmount } from '@/utils/exportLedgerHelpers'
 import { ACCOUNT_SELECT_POPPER_CLASS } from '@/utils/accountSelectDisplay'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRacedQuery } from '@/composables/useRacedQuery'
-import { fetchAllPages } from '@/utils/ledgerFetchAll'
+import { fetchAllPages, FetchAllPagesAborted } from '@/utils/ledgerFetchAll'
 
 /** 同一组件挂两条路由：/ledger/detail（本位币明细账）与 /ledger/foreign-detail（外币明细账） */
 const props = withDefaults(defineProps<{ mode?: 'base' | 'foreign' }>(), { mode: 'base' })
@@ -440,6 +452,40 @@ const { tableRef, colWidth, ledgerTableWidth, handleHeaderDragEnd, afterTableLay
   useLedgerWideTable(isForeignLedger.value ? 'ledger_foreign_detail' : 'ledger_detail', ledgerColumnDefs, { afterLayout: relayoutAfterData })
 
 const total = ref(0)
+
+// FIX-251（十万级压测 P0-2）：list 保存全量分录（含结转 / 小计行），表格只渲染当前显示页。
+// el-table 无虚拟滚动，3,000 行实测约 10 秒、10 万行主线程 >300 秒无响应；改为 200 行/页后单页渲染 <1 秒。
+const DISPLAY_PAGE_SIZES = [100, 200, 500, 1000]
+const DISPLAY_PAGE_SIZE_KEY = 'ledger_detail_display_page_size'
+/** 超过该行数时先确认再拉取，提醒缩小范围或直接导出 */
+const LARGE_RESULT_CONFIRM_ROWS = 50000
+const displayPage = ref(1)
+const displayPageSize = ref(readDisplayPageSize())
+const pagedList = computed(() => {
+  const size = displayPageSize.value
+  const start = (displayPage.value - 1) * size
+  return list.value.slice(start, start + size)
+})
+
+function readDisplayPageSize(): number {
+  try {
+    const saved = Number(localStorage.getItem(DISPLAY_PAGE_SIZE_KEY))
+    if (DISPLAY_PAGE_SIZES.includes(saved)) return saved
+  } catch {
+    /* 隐私模式等场景 localStorage 不可用，用默认值 */
+  }
+  return 200
+}
+
+async function handleDisplayPageChange() {
+  try {
+    localStorage.setItem(DISPLAY_PAGE_SIZE_KEY, String(displayPageSize.value))
+  } catch {
+    /* 同上 */
+  }
+  await nextTick()
+  tableRef.value?.setScrollTop?.(0)
+}
 
 /** 数量：6 位小数；0 或小计行留空 */
 function formatQuantityCell(value: number | null | undefined): string {
@@ -585,7 +631,7 @@ function readPreBook(res: any): { debit: number; credit: number } {
  * 原先 fetchData / fetchAccountDetailRows / exportData 各写一遍，改一处必漏两处。
  * pageSize 只是分页拉取的页大小；FIX-158 后无论页面还是导出都循环拉完全部分录，不再截断。
  */
-async function fetchDetailPayload(account: any, pageSize: number) {
+async function fetchDetailPayload(account: any, pageSize: number, options: { confirmLarge?: boolean } = {}) {
   const params: any = { year: getLedgerYear() }
 
   // 有子科目时按编码区间取数（含下级发生额），否则按科目 id 精确取
@@ -613,7 +659,19 @@ async function fetchDetailPayload(account: any, pageSize: number) {
 
   const all = await fetchAllPages<any, any>(
     (page, size) => request.get<any>('/ledger/detail', { params: { ...params, page, pageSize: size } }),
-    { pageSize }
+    {
+      pageSize,
+      // FIX-251：十万级分录先确认，避免用户误选大科目全年后长时间等待（导出走服务端生成，不必确认）
+      largeTotal: options.confirmLarge === false ? undefined : {
+        threshold: LARGE_RESULT_CONFIRM_ROWS,
+        confirm: total =>
+          ElMessageBox.confirm(
+            `该科目区间内有 ${total.toLocaleString()} 条分录，页面将分页显示；建议缩小日期范围，或直接使用「导出 Excel」。是否继续加载？`,
+            '数据量较大',
+            { type: 'warning', confirmButtonText: '继续加载', cancelButtonText: '取消' }
+          ).then(() => true, () => false),
+      },
+    }
   )
   const res: any = all.first || {}
   const openingBalance = res.initBalance || 0
@@ -901,7 +959,7 @@ function insertMonthlySubtotals(
     if (currentMonth && entryMonth !== currentMonth) {
       result.push({
         id: `__monthly_subtotal_${currentMonth}__`,
-        voucher_date: currentMonth + '-31',
+        voucher_date: monthEndDate(currentMonth),
         voucher_no: '',
         voucher_type_name: '',
         summary: '本月合计',
@@ -919,7 +977,7 @@ function insertMonthlySubtotals(
       
       result.push({
         id: `__yearly_subtotal_${currentMonth}__`,
-        voucher_date: currentMonth + '-31',
+        voucher_date: monthEndDate(currentMonth),
         voucher_no: '',
         voucher_type_name: '',
         summary: '本年累计',
@@ -971,7 +1029,7 @@ function insertMonthlySubtotals(
   if (currentMonth && entries.length > 0) {
     result.push({
       id: `__monthly_subtotal_${currentMonth}__`,
-      voucher_date: currentMonth + '-31',
+      voucher_date: monthEndDate(currentMonth),
       voucher_no: '',
       voucher_type_name: '',
       summary: '本月合计',
@@ -989,7 +1047,7 @@ function insertMonthlySubtotals(
     
     result.push({
       id: `__yearly_subtotal_${currentMonth}__`,
-      voucher_date: currentMonth + '-31',
+      voucher_date: monthEndDate(currentMonth),
       voucher_no: '',
       voucher_type_name: '',
       summary: '本年累计',
@@ -1070,11 +1128,18 @@ async function fetchData() {
     return
   }
 
-  const payload = await raced.run(() => fetchDetailPayload(account, 100000))
+  let payload: Awaited<ReturnType<typeof fetchDetailPayload>> | undefined
+  try {
+    payload = await raced.run(() => fetchDetailPayload(account, 100000))
+  } catch (error) {
+    if (error instanceof FetchAllPagesAborted) return
+    throw error
+  }
   if (!payload) return
   initBalance.value = payload.initBalance
   total.value = payload.total
   list.value = payload.rows
+  displayPage.value = 1
   initialLoaded.value = true
   await afterTableLayout()
 }
@@ -1101,7 +1166,7 @@ async function exportData() {
     return
   }
 
-  const { rows: exportRows } = await fetchDetailPayload(account, 10000)
+  const { rows: exportRows } = await fetchDetailPayload(account, 10000, { confirmLarge: false })
   const accountName = account ? `${account.code}_${account.name}` : pageTitle.value
   const dateRange =
     filters.value.start_date && filters.value.end_date
@@ -1115,7 +1180,8 @@ async function exportData() {
 
   const columns = buildExportColumns(account)
 
-  await exportStyledTable({
+  // FIX-254：改走服务端生成（spec 模式），浏览器不再用 ExcelJS 逐格建工作簿
+  await exportStyledTableViaServer({
     fileName: `${accountName}_${dateRange}.xlsx`,
     sheetName: pageTitle.value,
     title: pageTitle.value,

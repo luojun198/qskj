@@ -595,8 +595,6 @@ function rateText(currencyCode: string | null | undefined): string {
   return rate ? Number(rate).toFixed(4) : ''
 }
 
-const AUX_BALANCE_ITEM_BATCH = 5000
-const CHUNKED_LOAD_THRESHOLD = 500
 /** 大类别检索时最多渲染的匹配项数，避免一次性渲染海量复选框卡死 */
 const AUX_FILTER_SEARCH_LIMIT = 200
 /** 单类别加载到内存做客户端过滤的项目上限（超过则改用服务端检索） */
@@ -1031,122 +1029,10 @@ function buildQueryParams(extra: Record<string, unknown> = {}) {
   return params
 }
 
-function auxBalanceRowKey(row: {
-  account_code?: string
-  category_code?: string
-  aux_id?: string
-  currency_code?: string
-}) {
-  return `${row.account_code || ''}|${row.category_code || ''}|${row.aux_id || ''}|${
-    row.currency_code || ''
-  }`
-}
-
-function sortAuxBalanceRows(rows: any[]) {
-  return [...rows].sort((a, b) => {
-    const byAccount = String(a.account_code).localeCompare(String(b.account_code))
-    if (byAccount !== 0) return byAccount
-    const byCategory = String(a.category_code || '').localeCompare(String(b.category_code || ''))
-    if (byCategory !== 0) return byCategory
-    return String(a.aux_name || '').localeCompare(String(b.aux_name || ''))
-  })
-}
-
-function mergeAuxBalanceRows(chunk: any[]) {
-  if (chunk.length === 0) return
-  const map = new Map<string, any>()
-  for (const row of allRows.value) map.set(auxBalanceRowKey(row), row)
-  for (const row of chunk) map.set(auxBalanceRowKey(row), row)
-  allRows.value = sortAuxBalanceRows([...map.values()])
-}
-
 function updateClientPageSlice() {
   const start = (currentPage.value - 1) * pageSize.value
   list.value = allRows.value.slice(start, start + pageSize.value)
   total.value = allRows.value.length
-}
-
-function shouldUseChunkedLoad() {
-  return !(filters.value.aux_ids && filters.value.aux_ids.length > 0)
-}
-
-async function fetchDataChunked() {
-  loading.value = true
-  loadProgress.value = { loaded: 0, total: 0 }
-  allRows.value = []
-  list.value = []
-  total.value = 0
-  grandTotals.value = null
-  foreignTotals.value = null
-  foreignRates.value = {}
-  clientSidePagination.value = true
-  summaryLoading.value = false
-
-  try {
-    const metaRes: any = await request.post<any>(
-      '/ledger/aux-balance',
-      buildQueryParams({ item_limit: 0 })
-    )
-    const itemsTotal = metaRes.items_total ?? 0
-    if (metaRes.categoryFields) {
-      categoryFields.value = metaRes.categoryFields
-    }
-    loadProgress.value = { loaded: 0, total: itemsTotal }
-    hasQueried.value = true
-
-    if (itemsTotal === 0) {
-      return
-    }
-
-    summaryLoading.value = true
-    const summaryPromise = request
-      .post<any>('/ledger/aux-balance', buildQueryParams({ summary_only: true }))
-      .then((res: any) => {
-        grandTotals.value = res.totals || null
-        foreignTotals.value = res.foreign_totals || null
-        foreignRates.value = res.rates || {}
-      })
-      .catch(error => {
-        console.error('加载表尾合计失败:', error)
-        ElMessage.warning('表尾合计加载失败，明细数据仍可查看')
-      })
-      .finally(() => {
-        summaryLoading.value = false
-      })
-
-    for (let offset = 0; offset < itemsTotal; offset += AUX_BALANCE_ITEM_BATCH) {
-      const res: any = await request.post<any>(
-        '/ledger/aux-balance',
-        buildQueryParams({
-          item_offset: offset,
-          item_limit: AUX_BALANCE_ITEM_BATCH,
-          skip_summary: true,
-        })
-      )
-      mergeAuxBalanceRows(res.data || [])
-      loadProgress.value = {
-        loaded: Math.min(offset + AUX_BALANCE_ITEM_BATCH, itemsTotal),
-        total: itemsTotal,
-      }
-      updateClientPageSlice()
-      if (offset === 0) {
-        loading.value = false
-        await afterTableLayout()
-      }
-      await yieldToMain()
-    }
-
-    await summaryPromise
-    updateClientPageSlice()
-    await afterTableLayout()
-  } catch (error: any) {
-    console.error('分批查询辅助项目余额表失败:', error)
-    const msg = error?.response?.data?.error || error?.message || '查询失败'
-    ElMessage.error(msg)
-  } finally {
-    loading.value = false
-    loadProgress.value = { loaded: 0, total: 0 }
-  }
 }
 
 async function fetchDataServerPage() {
@@ -1186,68 +1072,8 @@ async function fetchData() {
   }
 
   // 无论项目数量多少都只请求当前页；服务端使用 SQLite 临时结果表聚合并分页。
-  // 保留旧分批函数仅用于兼容历史导出路径，不再作为页面查询入口。
+  // 评审 P2：旧的前端分批加载函数从未被调用，已删除。
   await fetchDataServerPage()
-}
-
-async function fetchSelectedItemsChunked() {
-  loading.value = true
-  loadProgress.value = { loaded: 0, total: filters.value.aux_ids.length }
-  allRows.value = []
-  list.value = []
-  clientSidePagination.value = true
-  grandTotals.value = null
-  foreignTotals.value = null
-  foreignRates.value = {}
-  summaryLoading.value = true
-
-  try {
-    for (let start = 0; start < filters.value.aux_ids.length; start += AUX_BALANCE_ITEM_BATCH) {
-      const batchIds = filters.value.aux_ids.slice(start, start + AUX_BALANCE_ITEM_BATCH)
-      const res: any = await request.post<any>(
-        '/ledger/aux-balance',
-        buildQueryParams({
-          aux_ids: batchIds.join(','),
-          skip_summary: true,
-        })
-      )
-      mergeAuxBalanceRows(res.data || [])
-      if (start === 0 && res.categoryFields) {
-        categoryFields.value = res.categoryFields
-      }
-      loadProgress.value = {
-        loaded: Math.min(start + AUX_BALANCE_ITEM_BATCH, filters.value.aux_ids.length),
-        total: filters.value.aux_ids.length,
-      }
-      updateClientPageSlice()
-      hasQueried.value = true
-      if (start === 0) {
-        loading.value = false
-        await afterTableLayout()
-      }
-      await yieldToMain()
-    }
-
-    const summaryRes: any = await request.post<any>(
-      '/ledger/aux-balance',
-      buildQueryParams({ summary_only: true })
-    )
-    grandTotals.value = summaryRes.totals || null
-    foreignTotals.value = summaryRes.foreign_totals || null
-    foreignRates.value = summaryRes.rates || {}
-    if (summaryRes.categoryFields) {
-      categoryFields.value = summaryRes.categoryFields
-    }
-    updateClientPageSlice()
-    await afterTableLayout()
-  } catch (error: any) {
-    console.error('分批查询辅助项目余额表失败:', error)
-    ElMessage.error(error?.response?.data?.error || error?.message || '查询失败')
-  } finally {
-    loading.value = false
-    summaryLoading.value = false
-    loadProgress.value = { loaded: 0, total: 0 }
-  }
 }
 
 async function exportData() {

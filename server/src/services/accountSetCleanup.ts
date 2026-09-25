@@ -81,6 +81,8 @@ export function cleanupAccountSetCascade(db: Database, accountSetId: string) {
     { sql: 'DELETE FROM system_params WHERE account_set_id = ?', params: [accountSetId] },
     // 出纳模块
     { sql: 'DELETE FROM cashier_attachments WHERE account_set_id = ?', params: [accountSetId] },
+    // 评审 P2：出纳↔总账对账匹配表（FIX-262）此前漏清，删账套后留孤儿行
+    { sql: 'DELETE FROM cashier_gl_match WHERE account_set_id = ?', params: [accountSetId] },
     { sql: 'DELETE FROM cashier_journal WHERE account_set_id = ?', params: [accountSetId] },
     { sql: 'DELETE FROM cashier_init_balance WHERE account_set_id = ?', params: [accountSetId] },
     { sql: 'DELETE FROM bank_statement WHERE account_set_id = ?', params: [accountSetId] },

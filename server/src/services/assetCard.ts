@@ -164,3 +164,23 @@ export function buildAssetCardUpdate(
 
   return fields
 }
+
+/**
+ * 评审 P1-2：卡片已有财务痕迹（购置凭证 / 折旧记录 / 变动流水 / 盘点核销）时，原值与累计折旧
+ * 只能走业务流程调整（资产变动 → 原值变动、计提 / 反折旧），不得在卡片上直改——
+ * 直改既无流水也无凭证，卡片与总账 1601/1602 永久脱钩，且报表按「当前原值 − 变动合计」倒推历史期初会被追溯改写。
+ * 返回锁定原因；无痕迹（刚录入、尚未生成任何凭证的期初卡片）返回 null。
+ */
+export function getCardValueLockReason(
+  db: { prepare: (sql: string) => { get: (...args: any[]) => any } },
+  accountSetId: string,
+  card: { asset_no: string; purchase_voucher_id?: string | null }
+): string | null {
+  if (card.purchase_voucher_id) return '已生成购置凭证'
+  const has = (sql: string) => !!db.prepare(sql).get(accountSetId, card.asset_no)
+  if (has('SELECT 1 FROM fixed_asset_depr WHERE account_set_id=? AND asset_no=? LIMIT 1')) return '已有折旧记录'
+  if (has('SELECT 1 FROM fixed_asset_change WHERE account_set_id=? AND asset_no=? LIMIT 1')) return '已有变动流水'
+  if (has('SELECT 1 FROM fixed_asset_inventory_item WHERE account_set_id=? AND asset_no=? AND voucher_id IS NOT NULL LIMIT 1'))
+    return '已有盘点核销凭证'
+  return null
+}

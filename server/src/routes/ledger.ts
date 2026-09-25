@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { parseAmountFilter } from '../utils/amountUtils.js'
 import { v4 as uuidv4 } from 'uuid'
 import { authMiddleware, AuthRequest, requirePermission, operationLog } from '../middleware/index.js'
 import {
@@ -26,7 +27,6 @@ import {
   buildCashJournalQuery,
   buildChronologicalQuery,
   buildGeneralLedgerQuery,
-  buildLedgerBalanceQuery,
   buildLedgerDetailQuery,
   buildLedgerGeneralQuery,
   buildForeignBalanceQuery,
@@ -152,11 +152,23 @@ router.use(authMiddleware)
 
 // ===================== 总账 =====================
 
+/**
+ * FIX-250：余额表类端点的日期收口。缺 start_date/end_date 时：有 year 取该年全年，否则当年全年，
+ * 并打一条 warn 便于定位漏传参数的调用方。旧行为回退「当月」会触发 SQLite 窄区间劣化计划（十万级 209 秒）。
+ */
+function resolveBalanceRouteDates(req: AuthRequest, endpoint: string) {
+  const { start_date, end_date, year } = req.query as Record<string, string | undefined>
+  if (start_date && end_date) return { startDate: start_date, endDate: end_date }
+  const y = Number(year) || new Date().getFullYear()
+  const startDate = start_date || `${y}-01-01`
+  const endDate = end_date || `${y}-12-31`
+  console.warn(`[ledger] ${endpoint} 缺少日期参数，已回退为 ${startDate}~${endDate}（query=${JSON.stringify(req.query)}）`)
+  return { startDate, endDate }
+}
+
 router.get('/general', (req: AuthRequest, res) => {
   const db = getDb()
   const {
-    start_date,
-    end_date,
     account_code,
     account_level,
     account_code_start,
@@ -164,6 +176,7 @@ router.get('/general', (req: AuthRequest, res) => {
     filter_types,
     include_unposted,
   } = req.query
+  const { startDate, endDate } = resolveBalanceRouteDates(req, '/ledger/general')
   const maxLevel = account_level ? Number(account_level) : undefined
 
   // 将逗号分隔的字符串转为数组
@@ -174,8 +187,8 @@ router.get('/general', (req: AuthRequest, res) => {
 
   const query = buildLedgerGeneralQuery({
     accountSetId: req.accountSetId || '',
-    startDate: start_date as string | undefined,
-    endDate: end_date as string | undefined,
+    startDate,
+    endDate,
     accountCode: account_code as string | undefined,
     accountLevel: undefined, // 不限制级次，确保子科目能正确汇总到父科目
     accountCodeStart: account_code_start as string | undefined,
@@ -275,8 +288,8 @@ router.get('/detail', (req: AuthRequest, res) => {
     makerName: maker_name as string | undefined,
     auditorName: auditor_name as string | undefined,
     summaryKeyword: summary_keyword as string | undefined,
-    minAmount: min_amount ? Number(min_amount) : undefined,
-    maxAmount: max_amount ? Number(max_amount) : undefined,
+    minAmount: parseAmountFilter(min_amount),
+    maxAmount: parseAmountFilter(max_amount),
     accountCodeStart: account_code_start as string | undefined,
     accountCodeEnd: account_code_end as string | undefined,
     currencyCode: typeof currency_code === 'string' ? currency_code : undefined,
@@ -286,6 +299,7 @@ router.get('/detail', (req: AuthRequest, res) => {
     accountScope: req.accountScope,
     accountSetStartDate: peekAccountSetStartDate(db, req.accountSetId || ''),
     preBookEnabled: hasPreBookColumns(db),
+    resolveOpeningBaseYear: year => resolveOpeningBaseYear(db, req.accountSetId || '', year),
   })
 
   const initBal = db.prepare(query.initBalanceSql).get(...query.initBalanceParams) as any
@@ -442,7 +456,8 @@ router.get('/voucher-summary', (req: AuthRequest, res) => {
 
 router.get('/quantity-balance', requirePermission('ledger:qty'), (req: AuthRequest, res) => {
   const db = getDb()
-  const { start_date, end_date, account_code, include_unposted } = req.query
+  const { account_code, include_unposted } = req.query
+  const { startDate, endDate } = resolveBalanceRouteDates(req, '/ledger/quantity-balance')
 
   if (account_code) {
     const codeErr = assertAccountCodePrefixInScope(
@@ -458,8 +473,8 @@ router.get('/quantity-balance', requirePermission('ledger:qty'), (req: AuthReque
 
   const query = buildQuantityBalanceQuery({
     accountSetId: req.accountSetId || '',
-    startDate: start_date as string | undefined,
-    endDate: end_date as string | undefined,
+    startDate,
+    endDate,
     accountCode: account_code as string | undefined,
     includeUnposted: includeUnpostedFlag(include_unposted),
     accountScope: req.accountScope,
@@ -590,75 +605,8 @@ router.get('/foreign-balance', (req: AuthRequest, res) => {
   res.json({ code: 0, data: list, summary, rates })
 })
 
-// ===================== 余额表 =====================
-
-router.get('/balance', (req: AuthRequest, res) => {
-  const db = getDb()
-  const { year, period } = req.query
-
-  // 不传递 filterTypes，我们在汇总后再过滤
-  const query = buildLedgerBalanceQuery({
-    accountSetId: req.accountSetId || '',
-    year: year as string | number | undefined,
-    period: period as string | number | undefined,
-    accountScope: req.accountScope,
-    accountSetStartDate: peekAccountSetStartDate(db, req.accountSetId || ''),
-    preBookEnabled: hasPreBookColumns(db),
-  })
-  let list = db.prepare(query.sql).all(...query.params) as any[]
-
-  // 去重：如果同一个科目出现多次，合并它们的金额
-  const deduplicatedMap = new Map<string, any>()
-  list.forEach(row => {
-    if (deduplicatedMap.has(row.account_code)) {
-      // 如果已存在，合并金额
-      const existing = deduplicatedMap.get(row.account_code)
-      existing.init_balance = (existing.init_balance || 0) + (row.init_balance || 0)
-      existing.current_debit = (existing.current_debit || 0) + (row.current_debit || 0)
-      existing.current_credit = (existing.current_credit || 0) + (row.current_credit || 0)
-      existing.end_balance = (existing.end_balance || 0) + (row.end_balance || 0)
-    } else {
-      deduplicatedMap.set(row.account_code, { ...row })
-    }
-  })
-  list = Array.from(deduplicatedMap.values())
-
-  const codeLengths = getCodeLengths(db, req.accountSetId || '')
-  list = supplementMissingParents(list, db, req.accountSetId || '', codeLengths)
-  list = accumulateParentBalances(list, codeLengths)
-  list = filterLedgerRowsByScope(req.accountScope, list)
-
-  const summary = {
-    totalInitDebit: 0,
-    totalInitCredit: 0,
-    totalDebit: 0,
-    totalCredit: 0,
-    totalEndDebit: 0,
-    totalEndCredit: 0,
-  }
-  for (const row of list as any[]) {
-    if (row.init_balance > 0) {
-      if (row.direction === 'debit') summary.totalInitDebit += row.init_balance
-      else summary.totalInitCredit += row.init_balance
-    } else if (row.init_balance < 0) {
-      // 负数余额反向显示
-      if (row.direction === 'debit') summary.totalInitCredit += Math.abs(row.init_balance)
-      else summary.totalInitDebit += Math.abs(row.init_balance)
-    }
-    summary.totalDebit += row.current_debit
-    summary.totalCredit += row.current_credit
-    if (row.end_balance > 0) {
-      if (row.direction === 'debit') summary.totalEndDebit += row.end_balance
-      else summary.totalEndCredit += row.end_balance
-    } else if (row.end_balance < 0) {
-      // 负数余额反向显示
-      if (row.direction === 'debit') summary.totalEndCredit += Math.abs(row.end_balance)
-      else summary.totalEndDebit += Math.abs(row.end_balance)
-    }
-  }
-
-  res.json({ code: 0, data: list, summary })
-})
+// 评审 P2：原 GET /ledger/balance（旧余额表）前端早已不再调用，且口径未随余额表后续修复同步（无期初上溯 / 账前发生额年度），已删除；
+// 科目余额表走 /ledger/general（buildLedgerGeneralQuery）。
 
 // ===================== 总分类账（带月度汇总） =====================
 
@@ -905,8 +853,8 @@ router.get('/cash-journal', (req: AuthRequest, res) => {
     accountId: account_id as string | undefined,
     accountType: account_type as string | undefined,
     direction: direction as string | undefined,
-    minAmount: min_amount ? Number(min_amount) : undefined,
-    maxAmount: max_amount ? Number(max_amount) : undefined,
+    minAmount: parseAmountFilter(min_amount),
+    maxAmount: parseAmountFilter(max_amount),
     oppositeAccountCode: opposite_account_code as string | undefined,
     includeUnposted: includeUnpostedFlag(include_unposted),
     page: clampPage(page),
@@ -951,6 +899,7 @@ router.get('/chronological', (req: AuthRequest, res) => {
     auditor_name,
     page = 1,
     pageSize = 100,
+    skip_count,
   } = req.query
 
   const query = buildChronologicalQuery({
@@ -961,8 +910,8 @@ router.get('/chronological', (req: AuthRequest, res) => {
     endDate: end_date as string | undefined,
     includeUnposted: includeUnpostedFlag(include_unposted),
     summaryKeyword: summary_keyword as string | undefined,
-    minAmount: min_amount as string | number | undefined,
-    maxAmount: max_amount as string | number | undefined,
+    minAmount: parseAmountFilter(min_amount),
+    maxAmount: parseAmountFilter(max_amount),
     makerName: maker_name as string | undefined,
     auditorName: auditor_name as string | undefined,
     page: clampPage(page),
@@ -970,7 +919,10 @@ router.get('/chronological', (req: AuthRequest, res) => {
     accountScope: req.accountScope,
   })
 
-  const total = (db.prepare(query.countSql).get(...query.countParams) as any).count
+  // FIX-253：导出 / 打印分页循环拉全量时（fetchAllPages）只有首页需要 total，
+  // 后续页传 skip_count=1 跳过 24 万行 JOIN 的 COUNT（十万级每页省约 0.5s）
+  const skipCount = clampPage(page) > 1 && ['1', 'true'].includes(String(skip_count))
+  const total = skipCount ? undefined : (db.prepare(query.countSql).get(...query.countParams) as any).count
   const list = db.prepare(query.listSql).all(...query.listParams)
   res.json({ code: 0, data: list, total })
 })
@@ -2174,13 +2126,15 @@ router.post('/aux-detail', (req: AuthRequest, res) => {
         conds.push('ve.summary LIKE ?')
         params.push(`%${summary_keyword}%`)
       }
-      if (min_amount !== undefined) {
+      const minAmt = parseAmountFilter(min_amount)
+      const maxAmt = parseAmountFilter(max_amount)
+      if (minAmt !== undefined) {
         conds.push('ve.amount >= ?')
-        params.push(parseFloat(min_amount as string))
+        params.push(minAmt)
       }
-      if (max_amount !== undefined) {
+      if (maxAmt !== undefined) {
         conds.push('ve.amount <= ?')
-        params.push(parseFloat(max_amount as string))
+        params.push(maxAmt)
       }
       if (maker_name) {
         conds.push('v.maker_name LIKE ?')

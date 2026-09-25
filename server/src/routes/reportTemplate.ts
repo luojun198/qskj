@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import multer from 'multer'
 import { v4 as uuidv4 } from 'uuid'
-import { authMiddleware, AuthRequest, requirePermission } from '../middleware/index.js'
+import { authMiddleware, AuthRequest, requirePermission, requireAnyPermission } from '../middleware/index.js'
 import { getDb } from '../db/index.js'
 import { executeTemplateSheets } from '../services/reportTemplateExecutor.js'
 import { resolveReportUnitName } from '../services/reportUnitName.js'
@@ -85,7 +85,7 @@ function buildCoveredMergeKeys(mergeMap: Map<string, { colSpan: number; rowSpan:
 }
 
 // 报表生成进度查询接口
-router.get('/tasks/:taskId', (req: AuthRequest, res) => {
+router.get('/tasks/:taskId', requireAnyPermission('report:view', 'report:define'), (req: AuthRequest, res) => {
   const { taskId } = req.params
   const task = getReportTask(taskId)
   if (!task) {
@@ -292,7 +292,8 @@ router.get('/templates', (req: AuthRequest, res) => {
  * 批量更新报表模板导航顺序（sort_order）。
  * - orders 必须覆盖当前账套下的全部报表，且 code 不可重复。
  */
-router.put('/templates/sort-order', (req: AuthRequest, res) => {
+// 评审 P2：写接口一律 report:define，执行 / 查看 report:view，导出 report:export（有 report:define 的均放行）
+router.put('/templates/sort-order', requirePermission('report:define'), (req: AuthRequest, res) => {
   const db = getDb()
   const accountSetId = resolveAccountSetId(req.accountSetId || '', db)
 
@@ -400,7 +401,7 @@ router.put('/templates/sort-order', (req: AuthRequest, res) => {
   })
 })
 
-router.get('/templates/:code', (req: AuthRequest, res) => {
+router.get('/templates/:code', requireAnyPermission('report:view', 'report:define'), (req: AuthRequest, res) => {
   const accountSetId = req.accountSetId || ''
   const reportCode = String(req.params.code || '').trim()
   const db = getDb()
@@ -530,7 +531,7 @@ router.get('/templates/:code', (req: AuthRequest, res) => {
   })
 })
 
-router.put('/templates/:code/cells', (req: AuthRequest, res) => {
+router.put('/templates/:code/cells', requirePermission('report:define'), (req: AuthRequest, res) => {
   const reportCode = String(req.params.code || '').trim()
   const { sheetId, cells } = (req.body || {}) as {
     sheetId?: string
@@ -702,7 +703,7 @@ function normalizeSheetSizeArray(
   })
 }
 
-router.patch('/templates/:code/sheets/:sheetId/layout', (req: AuthRequest, res) => {
+router.patch('/templates/:code/sheets/:sheetId/layout', requirePermission('report:define'), (req: AuthRequest, res) => {
   const reportCode = String(req.params.code || '').trim()
   const sheetId = String(req.params.sheetId || '').trim()
   const body = req.body || {}
@@ -780,7 +781,7 @@ router.patch('/templates/:code/sheets/:sheetId/layout', (req: AuthRequest, res) 
   }
 })
 
-router.post('/templates/:code/rowcol', (req: AuthRequest, res) => {
+router.post('/templates/:code/rowcol', requirePermission('report:define'), (req: AuthRequest, res) => {
   const reportCode = String(req.params.code || '').trim()
   const body = req.body || {}
   const sheetId = body.sheetId
@@ -893,7 +894,7 @@ router.post('/templates/:code/rowcol', (req: AuthRequest, res) => {
   res.json({ code: 0, message: '操作成功' })
 })
 
-router.post('/templates/import', excelUpload.single('file'), async (req: AuthRequest, res) => {
+router.post('/templates/import', requirePermission('report:define'), excelUpload.single('file'), async (req: AuthRequest, res) => {
   try {
     const db = getDb()
     const resolvedAccountSetId = resolveAccountSetId(req.accountSetId || '', db)
@@ -1288,7 +1289,7 @@ router.post('/templates/import', excelUpload.single('file'), async (req: AuthReq
   }
 })
 
-router.delete('/templates/:code/sheets/:sheetId', (req: AuthRequest, res) => {
+router.delete('/templates/:code/sheets/:sheetId', requirePermission('report:define'), (req: AuthRequest, res) => {
   const reportCode = String(req.params.code || '').trim()
   const sheetId = String(req.params.sheetId || '').trim()
   const db = getDb()
@@ -1322,7 +1323,7 @@ router.delete('/templates/:code/sheets/:sheetId', (req: AuthRequest, res) => {
   res.json({ code: 0, message: '删除成功' })
 })
 
-router.post('/templates/:code/execute', (req: AuthRequest, res) => {
+router.post('/templates/:code/execute', requireAnyPermission('report:view', 'report:define'), (req: AuthRequest, res) => {
   const reportCode = String(req.params.code || '').trim()
   const db = getDb()
   const resolvedAccountSetId = resolveAccountSetId(req.accountSetId || '', db)
@@ -1442,7 +1443,7 @@ router.post('/templates/:code/execute', (req: AuthRequest, res) => {
 })
 
 // 导出 Excel：基于原始模板回填取数结果（保留格式）
-router.get('/templates/:code/export', async (req: AuthRequest, res) => {
+router.get('/templates/:code/export', requireAnyPermission('report:export', 'report:define'), async (req: AuthRequest, res) => {
   const reportCode = String(req.params.code || '').trim()
   const db = getDb()
   const resolvedAccountSetId = resolveAccountSetId(req.accountSetId || '', db)
@@ -1489,7 +1490,7 @@ router.get('/templates/:code/export', async (req: AuthRequest, res) => {
  * - 若新 code 已被同账套的另一个报表占用，则**互换**两个报表的 code（用临时值中转，避免 UNIQUE 冲突）。
  * - is_enabled = 0 的报表不会出现在导航栏。
  */
-router.patch('/templates/:code/meta', (req: AuthRequest, res) => {
+router.patch('/templates/:code/meta', requirePermission('report:define'), (req: AuthRequest, res) => {
   const currentCode = String(req.params.code || '').trim()
   const db = getDb()
   const accountSetId = resolveAccountSetId(req.accountSetId || '', db)

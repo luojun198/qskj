@@ -15,7 +15,7 @@ import { deleteVoucherRecords } from '../services/voucherEntry.js'
 import { assertPeriodOpen, normalizeSalvageRate } from '../services/assetVoucherBuilder.js'
 import { deleteVoucherWithRefs } from '../services/voucherDelete.js'
 import { getVoucherImmutableReason } from '../services/voucherMutationGuard.js'
-import { getDictDeleteBlockReason, buildAssetCardUpdate } from '../services/assetCard.js'
+import { getDictDeleteBlockReason, buildAssetCardUpdate, getCardValueLockReason } from '../services/assetCard.js'
 import {
   applyAssetChange,
   revokeAssetChange,
@@ -36,6 +36,7 @@ import {
   loadImportDicts,
   validateImportRow,
   ASSET_IMPORT_COLUMNS,
+  normalizeDate,
 } from '../services/assetBatchImport.js'
 import fsp from 'fs/promises'
 import path from 'path'
@@ -107,7 +108,7 @@ const router = Router()
 router.use(authMiddleware)
 
 // ── 固定资产模块权限守卫：按路径(+方法)映射所需权限（admin '*' 自动放行） ──────
-const ASSET_PERMISSION_RULES: Array<{ re: RegExp; perm: string; methods?: string[] }> = [
+const ASSET_PERMISSION_RULES: Array<{ re: RegExp; perm: string | string[]; methods?: string[] }> = [
   { re: /^\/asset\/reset/,                  perm: 'asset:param' },     // 资产初始化（清空）
   { re: /^\/asset\/params/,                 perm: 'asset:param' },
   { re: /^\/asset\/dict/,                   perm: 'asset:dict' },     // dicts / dict/:type / dict/init
@@ -117,11 +118,14 @@ const ASSET_PERMISSION_RULES: Array<{ re: RegExp; perm: string; methods?: string
   { re: /^\/asset\/report/,                 perm: 'asset:report' },
   { re: /^\/asset\/cards\/[^/]+\/dispose/,  perm: 'asset:dispose' },
   // 变动/拆分规则须排在下方 /asset/cards 通配规则之前（数组按序匹配）
-  { re: /^\/asset\/cards\/[^/]+\/(change|split)/, perm: 'asset:change' },
+  // 评审 P2：asset:impair（资产减值改良）此前被这条规则挡在门外、单独授予永远无效；
+  // 放行后由路由按变动类型细分（减值 / 大修改良 → change 或 impair，其余 → change）
+  { re: /^\/asset\/cards\/[^/]+\/change/, perm: ['asset:change', 'asset:impair'] },
+  { re: /^\/asset\/cards\/[^/]+\/split/, perm: 'asset:change' },
   { re: /^\/asset\/cards\/[^/]+\/requisitions/, perm: 'asset:view', methods: ['GET'] },
   { re: /^\/asset\/cards\/[^/]+\/attachments/, perm: 'asset:view', methods: ['GET'] },
   { re: /^\/asset\/cards\/[^/]+\/attachments/, perm: 'asset:edit' },
-  { re: /^\/asset\/changes\/[^/]+\/revoke/, perm: 'asset:change' },
+  { re: /^\/asset\/changes\/[^/]+\/revoke/, perm: ['asset:change', 'asset:impair'] },
   { re: /^\/asset\/import\/columns/,        perm: 'asset:view', methods: ['GET'] },
   { re: /^\/asset\/changes\/batch-kinds/,  perm: 'asset:view', methods: ['GET'] },
   { re: /^\/asset\/changes\/batch/,        perm: 'asset:change' },
@@ -133,13 +137,22 @@ const ASSET_PERMISSION_RULES: Array<{ re: RegExp; perm: string; methods?: string
   { re: /^\/asset\/cards/,                  perm: 'asset:view', methods: ['GET'] }, // 读卡片/明细/台账/编号
   { re: /^\/asset\/cards/,                  perm: 'asset:edit' },     // 增删改卡片
 ]
+/** 按变动类型细分权限：减值 / 大修改良 → asset:change 或 asset:impair；其余 → asset:change */
+function assetChangePermissionError(req: AuthRequest, kind: unknown): string | null {
+  if (req.permissions?.includes('*') || req.permissions?.includes('asset:change')) return null
+  if ((kind === 'impairment' || kind === 'improvement') && req.permissions?.includes('asset:impair')) return null
+  return kind === 'impairment' || kind === 'improvement'
+    ? '无此操作权限（需要「资产减值改良」或「资产变动」权限）'
+    : '无此操作权限（需要「资产变动」权限）'
+}
+
 router.use((req: AuthRequest, res, next) => {
   if (!req.path.startsWith('/asset/')) return next()
   if (req.permissions?.includes('*')) return next()
   const rule = ASSET_PERMISSION_RULES.find(
     r => r.re.test(req.path) && (!r.methods || r.methods.includes(req.method))
   )
-  if (rule && !req.permissions?.includes(rule.perm)) {
+  if (rule && !(Array.isArray(rule.perm) ? rule.perm : [rule.perm]).some(p => req.permissions?.includes(p))) {
     return res.status(403).json({ code: 403, message: '无此操作权限' })
   }
   next()
@@ -309,9 +322,14 @@ router.post('/asset/dict/:type', operationLog('固定资产字典新增', '固�
     return res.status(409).json({ code: 409, message: '编码已存在' })
   }
   const id = uuidv4()
+  // 评审 P2：类别残值率与卡片同口径归一（5 → 0.05），非法值 400，不再落到 DB 触发器抛 500
+  const categoryRate = parseCategorySalvageRate(salvage_rate)
+  if (table === 'fixed_asset_category' && categoryRate === false) {
+    return res.status(400).json({ code: 400, message: '残值率必须是大于等于 0 且小于 1 的小数（如 0.05 表示 5%）' })
+  }
   if (table === 'fixed_asset_category') {
     db.prepare(`INSERT INTO fixed_asset_category (id,account_set_id,code,name,salvage_rate,account_code,depr_account_code,impairment_account_code,clearing_account_code) VALUES (?,?,?,?,?,?,?,?,?)`)
-      .run(id, req.accountSetId, code, name, salvage_rate ?? null, account_code ?? null, depr_account_code ?? null, impairment_account_code ?? null, clearing_account_code ?? null)
+      .run(id, req.accountSetId, code, name, categoryRate === false ? null : categoryRate, account_code ?? null, depr_account_code ?? null, impairment_account_code ?? null, clearing_account_code ?? null)
   } else if (table === 'fixed_asset_status') {
     db.prepare(`INSERT INTO fixed_asset_status (id,account_set_id,code,name,depreciable) VALUES (?,?,?,?,?)`)
       .run(id, req.accountSetId, code, name, depreciable ?? 1)
@@ -328,6 +346,13 @@ router.post('/asset/dict/:type', operationLog('固定资产字典新增', '固�
   res.json({ code: 0, data: { id } })
 })
 
+/** 类别残值率：未填 → null（不改 / 不设）；合法 → 归一后的小数；非法 → false */
+function parseCategorySalvageRate(raw: unknown): number | null | false {
+  if (raw === undefined || raw === null || raw === '') return null
+  const n = normalizeSalvageRate(raw)
+  return n === null ? false : n
+}
+
 // PUT /asset/dict/:type/:id
 router.put('/asset/dict/:type/:id', operationLog('固定资产字典修改', '固定资产'), (req: AuthRequest, res) => {
   const table = DICT_TABLES[req.params.type]
@@ -341,6 +366,10 @@ router.put('/asset/dict/:type/:id', operationLog('固定资产字典修改', '�
     depreciable, expense_account, direction 
   } = req.body
   if (table === 'fixed_asset_category') {
+    const categoryRate = parseCategorySalvageRate(salvage_rate)
+    if (categoryRate === false) {
+      return res.status(400).json({ code: 400, message: '残值率必须是大于等于 0 且小于 1 的小数（如 0.05 表示 5%）' })
+    }
     db.prepare(`UPDATE fixed_asset_category SET 
       name=COALESCE(?,name), 
       salvage_rate=COALESCE(?,salvage_rate), 
@@ -349,7 +378,7 @@ router.put('/asset/dict/:type/:id', operationLog('固定资产字典修改', '�
       impairment_account_code=COALESCE(?,impairment_account_code),
       clearing_account_code=COALESCE(?,clearing_account_code)
       WHERE id=?`)
-      .run(name, salvage_rate, account_code, depr_account_code, impairment_account_code, clearing_account_code, req.params.id)
+      .run(name, categoryRate, account_code, depr_account_code, impairment_account_code, clearing_account_code, req.params.id)
   } else if (table === 'fixed_asset_status') {
     db.prepare(`UPDATE fixed_asset_status SET name=COALESCE(?,name), depreciable=COALESCE(?,depreciable) WHERE id=?`)
       .run(name, depreciable, req.params.id)
@@ -452,9 +481,26 @@ router.get('/asset/cards/next-no', (req: AuthRequest, res) => {
 
 // GET /asset/cards/:id
 router.get('/asset/cards/:id', (req: AuthRequest, res) => {
-  const row = getDb().prepare('SELECT * FROM fixed_asset WHERE id=? AND account_set_id=?').get(req.params.id, req.accountSetId || '')
+  const db = getDb()
+  const asid = req.accountSetId || ''
+  const row = db.prepare('SELECT * FROM fixed_asset WHERE id=? AND account_set_id=?').get(req.params.id, asid) as any
   if (!row) return res.status(404).json({ code: 404, message: '资产不存在' })
-  res.json({ code: 0, data: row })
+  // 附加字典名称（与列表口径一致；变动页信息栏读 category_name / dept_name / status_name）
+  const dictName = (table: string, code: string | null) =>
+    code
+      ? ((db.prepare(`SELECT name FROM ${table} WHERE account_set_id=? AND code=?`).get(asid, code) as any)?.name ?? code)
+      : null
+  res.json({
+    code: 0,
+    data: {
+      ...row,
+      value_lock_reason: getCardValueLockReason(db, asid, row),
+      category_name: dictName('fixed_asset_category', row.category_code),
+      status_name: dictName('fixed_asset_status', row.status_code),
+      dept_name: dictName('fixed_asset_dept', row.dept_code),
+      purpose_name: dictName('fixed_asset_purpose', row.purpose_code),
+    },
+  })
 })
 
 // POST /asset/cards
@@ -468,7 +514,7 @@ router.post('/asset/cards', operationLog('固定资产新增', '固定资产'), 
   const id = uuidv4()
   const {
     asset_name: nm, category_code, status_code, dept_code, purpose_code,
-    acquire_date, start_depr_date, original_value = 0, salvage_rate = 0, salvage_value = 0,
+    acquire_date, start_depr_date, original_value = 0, salvage_rate = 0, salvage_value: rawSalvageValue,
     depr_method, use_months, use_years, total_workload, card_no, qty = 1, unit,
     user_name, keeper, source, install_place, remark,
     accum_depr = 0, depr_months_done = 0
@@ -494,8 +540,9 @@ router.post('/asset/cards', operationLog('固定资产新增', '固定资产'), 
   }
   for (const dateField of ['acquire_date', 'start_depr_date'] as const) {
     const v = (req.body as any)[dateField]
-    if (v && !/^\d{4}-\d{2}-\d{2}$/.test(String(v))) {
-      return res.status(400).json({ code: 400, message: `${dateField === 'acquire_date' ? '取得日期' : '起折日期'}必须为 YYYY-MM-DD 格式` })
+    // normalizeDate 同时校验格式与真实日期（拒绝 2026-13-01 这类）
+    if (v && normalizeDate(String(v)) !== String(v)) {
+      return res.status(400).json({ code: 400, message: `${dateField === 'acquire_date' ? '取得日期' : '起折日期'}必须为 YYYY-MM-DD 格式的有效日期` })
     }
   }
   if (qty !== undefined && qty !== null && (!Number.isFinite(Number(qty)) || Number(qty) < 0)) {
@@ -517,6 +564,11 @@ router.post('/asset/cards', operationLog('固定资产新增', '固定资产'), 
 
   // 计算净值：原值 - 累计折旧 (不扣除残值，残值是在提完折旧后剩余的金额)
   const net_value = Number(original_value) - Number(accum_depr)
+  // 未传预计净残值时按 原值 × 残值率 推算（界面总会带上；直接调接口时缺省为 0 会让折旧提到 0）
+  const salvage_value =
+    rawSalvageValue === undefined || rawSalvageValue === null || rawSalvageValue === ''
+      ? Math.round(Number(original_value) * (normalizedSalvageRate ?? 0) * 100) / 100
+      : Number(rawSalvageValue)
   db.prepare(
     `INSERT INTO fixed_asset
       (id,account_set_id,asset_no,asset_name,category_code,status_code,dept_code,purpose_code,
@@ -526,7 +578,7 @@ router.post('/asset/cards', operationLog('固定资产新增', '固定资产'), 
   ).run(
     id, req.accountSetId, asset_no, nm ?? asset_name, category_code ?? null, status_code ?? null,
     dept_code ?? null, purpose_code ?? null, acquire_date ?? null, start_depr_date ?? null,
-    Number(original_value), normalizedSalvageRate ?? 0, Number(salvage_value), depr_method ?? null,
+    Number(original_value), normalizedSalvageRate ?? 0, salvage_value, depr_method ?? null,
     use_months ?? null, use_years ?? null, total_workload ?? null,
     Number(accum_depr), Number(depr_months_done), net_value,
     card_no ?? null, qty, unit ?? null, user_name ?? null, keeper ?? null,
@@ -573,7 +625,7 @@ router.put('/asset/cards/:id', operationLog('固定资产修改', '固定资产'
   const existing = db.prepare('SELECT id FROM fixed_asset WHERE id=? AND account_set_id=?').get(req.params.id, req.accountSetId)
   if (!existing) return res.status(404).json({ code: 404, message: '资产不存在' })
   const cur = db.prepare(
-    'SELECT original_value, salvage_rate, salvage_value, accum_depr, impairment_amount, scrap_date, depr_months_done, use_months FROM fixed_asset WHERE id=?'
+    'SELECT asset_no, purchase_voucher_id, original_value, salvage_rate, salvage_value, accum_depr, impairment_amount, scrap_date, depr_months_done, use_months FROM fixed_asset WHERE id=?'
   ).get(req.params.id) as any
 
   // AS-P1-11：卡片直改不得绕过业务流程
@@ -589,6 +641,20 @@ router.put('/asset/cards/:id', operationLog('固定资产修改', '固定资产'
     Number((req.body as any).use_months) <= Number(cur.depr_months_done || 0)
   ) {
     return res.status(400).json({ code: 400, message: '调整后的使用月数不能小于等于已计提月数' })
+  }
+
+  // 评审 P1-2：有财务痕迹的卡片不得直改原值 / 累计折旧
+  const body = (req.body ?? {}) as Record<string, unknown>
+  const changedValue = (key: 'original_value' | 'accum_depr') =>
+    body[key] !== undefined && body[key] !== '' && Math.abs(Number(body[key]) - Number(cur[key] || 0)) >= 0.005
+  if (changedValue('original_value') || changedValue('accum_depr')) {
+    const lockReason = getCardValueLockReason(db, req.accountSetId || '', cur)
+    if (lockReason) {
+      return res.status(400).json({
+        code: 400,
+        message: `该资产${lockReason}，原值请通过「资产变动 → 原值变动」调整，累计折旧请通过计提 / 反折旧调整，不能在卡片上直接修改`,
+      })
+    }
   }
 
   let fields: Record<string, unknown>
@@ -614,6 +680,18 @@ router.delete('/asset/cards/:id', operationLog('固定资产删除', '固定资�
     'SELECT id, asset_no, purchase_voucher_id, scrap_voucher_id FROM fixed_asset WHERE id=? AND account_set_id=?'
   ).get(req.params.id, req.accountSetId) as any
   if (!row) return res.status(404).json({ code: 404, message: '资产不存在' })
+
+  // 已计提过折旧的资产不允许删除：折旧凭证是整期合并的（一张凭证含多项资产），
+  // 删卡只能删掉本卡的折旧记录、删不掉合并凭证里本卡那部分金额，总账累计折旧会与资产账对不上。
+  const deprCnt = db.prepare(
+    'SELECT COUNT(*) AS c FROM fixed_asset_depr WHERE account_set_id=? AND asset_no=?'
+  ).get(req.accountSetId, row.asset_no) as { c: number }
+  if (deprCnt.c > 0) {
+    return res.status(400).json({
+      code: 400,
+      message: `该资产已计提 ${deprCnt.c} 期折旧，不能删除；请先「取消折旧」到无折旧记录，或改用「处置」做资产减少`,
+    })
+  }
 
   // AS-P0-3：删除资产时把该资产产生的**全部**凭证一并删除。
   // 此前只删购置凭证，原值变动/减值/处置生成的凭证成为孤儿——资产与撤销变动入口都没了，
@@ -779,13 +857,10 @@ router.post(
     if (!kind) return res.status(400).json({ code: 400, message: '变动类型不能为空' })
     if (!change_date) return res.status(400).json({ code: 400, message: '变动日期不能为空' })
 
-    // AS-P1-12：减值单独要求 asset:impair 权限（此前该权限码定义了却无任何路由使用；
-    // 已有 asset:change 的用户天然兼容放行）
-    if (kind === 'impairment' && !req.permissions?.includes('*')) {
-      if (!req.permissions?.includes('asset:change') && !req.permissions?.includes('asset:impair')) {
-        return res.status(403).json({ code: 403, message: '无此操作权限（需要「资产减值」权限）' })
-      }
-    }
+    // AS-P1-12 / 评审 P2：减值、大修改良可由 asset:impair 单独授权（已有 asset:change 的用户兼容放行）；
+    // 其余变动类型仍须 asset:change
+    const assetChangeDenied = assetChangePermissionError(req, kind)
+    if (assetChangeDenied) return res.status(403).json({ code: 403, message: assetChangeDenied })
 
     try {
       const db = getDb()
@@ -858,6 +933,11 @@ router.post(
   '/asset/changes/:id/revoke',
   operationLog('固定资产撤销变动', '固定资产'),
   (req: AuthRequest, res) => {
+    const target = getDb()
+      .prepare('SELECT change_kind FROM fixed_asset_change WHERE id=? AND account_set_id=?')
+      .get(req.params.id, req.accountSetId) as { change_kind: string | null } | undefined
+    const revokeDenied = target ? assetChangePermissionError(req, target.change_kind) : null
+    if (revokeDenied) return res.status(403).json({ code: 403, message: revokeDenied })
     try {
       const result = revokeAssetChange({
         db: getDb(),
@@ -1218,6 +1298,43 @@ router.post('/asset/workload', (req: AuthRequest, res) => {
   }
   const db = getDb()
   const asid = req.accountSetId || ''
+  // 本月工作量不得超过剩余工作量（总工作量 − 已完成），否则累计工作量会超过总量
+  const getAsset = db.prepare(
+    'SELECT asset_no, total_workload, workload_done FROM fixed_asset WHERE account_set_id=? AND asset_no=?'
+  )
+  const getDepr = db.prepare(
+    'SELECT 1 FROM fixed_asset_depr WHERE account_set_id=? AND asset_no=? AND year=? AND month=?'
+  )
+  const getSaved = db.prepare(
+    'SELECT workload FROM fixed_asset_workload WHERE account_set_id=? AND asset_no=? AND year=? AND month=?'
+  )
+  for (const [assetNo, wl] of Object.entries(workloads)) {
+    const a = getAsset.get(asid, assetNo) as
+      | { asset_no: string; total_workload: number | null; workload_done: number | null }
+      | undefined
+    if (!a) return res.status(400).json({ code: 400, message: `资产 ${assetNo} 不存在` })
+    const total = Number(a.total_workload || 0)
+    // 评审 P2：该期已计提的工作量不可再改——折旧额与 workload_done 都按计提当时的工作量算，
+    // 改录后反折旧会按新值回退 workload_done，累计工作量与折旧序列对不上。须先反折旧再改。
+    const deprDone = getDepr.get(asid, assetNo, year, month)
+    if (deprDone) {
+      const saved = Number((getSaved.get(asid, assetNo, year, month) as any)?.workload || 0)
+      if (Math.abs(saved - Number(wl || 0)) > 1e-9) {
+        return res.status(400).json({
+          code: 400,
+          message: `资产 ${assetNo} ${year}年${month}月 已计提折旧，工作量不能再修改，如需调整请先反折旧`,
+        })
+      }
+      continue
+    }
+    const remaining = Math.max(0, Math.round((total - Number(a.workload_done || 0)) * 10000) / 10000)
+    if (total > 0 && Number(wl) > remaining) {
+      return res.status(400).json({
+        code: 400,
+        message: `资产 ${assetNo} 本月工作量 ${Number(wl)} 超过剩余工作量 ${remaining}（总工作量 ${total}）`,
+      })
+    }
+  }
   const upsert = db.prepare(`
     INSERT INTO fixed_asset_workload (id, account_set_id, asset_no, year, month, workload, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
@@ -1668,7 +1785,7 @@ router.post('/asset/inventory/:id/complete', operationLog('固定资产盘点完
       generateVoucher: req.body.generate_voucher ?? false,
       accumAccount: req.body.accum_account ?? '1602',
       surplusAccount: getAssetParamValue(db, asid, 'asset:inventory_surplus_account') || '6901',
-      deficitAccount: getAssetParamValue(db, asid, 'asset:inventory_deficit_account') || '6901',
+      deficitAccount: getAssetParamValue(db, asid, 'asset:inventory_deficit_account') || '1901', // 盘亏记待处理财产损溢；盘盈才记以前年度损益调整
       operatorName: (req as any).userName || '系统',
       accountScope: req.accountScope,
     })

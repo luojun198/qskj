@@ -1,4 +1,5 @@
 import { Router, type Response } from 'express'
+import { parseAmountFilter } from '../utils/amountUtils.js'
 import { v4 as uuidv4 } from 'uuid'
 import dayjs from 'dayjs'
 import { getDb } from '../db/index.js'
@@ -29,10 +30,8 @@ import {
   getVoucherDetail,
   getVoucherUpdateBalanceError,
   isPostedVoucher,
-  createRealtimeNoNegativeBalanceGetters,
   loadVoucherAuxiliaryData,
   replaceVoucherEntries,
-  validateVoucherEntriesNoNegativeBalance,
   validateVoucherEntryCount,
   validateVoucherDate,
   findDuplicateEntries,
@@ -45,6 +44,7 @@ import {
   buildVoucherNo,
   type VoucherEntryInput,
   type NoNegativeBalanceCheckResult,
+  validateNoNegativeBalanceRealtime,
 } from '../services/voucherEntry.js'
 import { getVoucherUndeletableReason, deleteVoucherWithRefs } from '../services/voucherDelete.js'
 import { getVoucherImmutableReason } from '../services/voucherMutationGuard.js'
@@ -55,30 +55,8 @@ import multer from 'multer'
 
 const router = Router()
 
-/** 禁止负数余额：期初 + 全部凭证实时汇总；启用辅助核算时按各辅助项目分项校验 */
-function validateNoNegativeBalance(
-  db: ReturnType<typeof getDb>,
-  accountSetId: string,
-  entries: VoucherEntryInput[],
-  year: number,
-  period: number,
-  excludeVoucherId?: string
-) {
-  const { categories } = loadVoucherAuxiliaryData({ db, accountSetId })
-  const realtimeGetters = createRealtimeNoNegativeBalanceGetters(db, {
-    accountSetId,
-    year,
-    period,
-    categories,
-    excludeVoucherId,
-  })
-  return validateVoucherEntriesNoNegativeBalance({
-    entries,
-    getAccountById: accountId =>
-      db.prepare('SELECT * FROM accounts WHERE id=?').get(accountId) as any,
-    ...realtimeGetters,
-  })
-}
+/** 禁止负数余额：期初 + 全部凭证实时汇总；启用辅助核算时按各辅助项目分项校验（实现见 services/voucherEntry） */
+const validateNoNegativeBalance = validateNoNegativeBalanceRealtime
 
 function respondNoNegativeBalanceError(res: Response, result: NoNegativeBalanceCheckResult) {
   return res.status(400).json({
@@ -803,6 +781,10 @@ router.post(
               direction: e.direction,
               amount: e.amount,
               summary: remark || e.summary || undefined,
+              // FIX-260：外币出纳科目按原币写日记账
+              currency_code: e.currency_code ?? null,
+              exchange_rate: e.exchange_rate ?? null,
+              foreign_amount: e.foreign_amount ?? null,
             }))
             syncCashierFromVoucher({
               db,
@@ -1108,12 +1090,19 @@ router.get('/vouchers', (req: AuthRequest, res) => {
     poster_name,
     sortField,
     sortOrder,
+    ids,
     ...rest
   } = req.query
 
   const voucherTypeIds =
     typeof voucher_type_ids === 'string' && voucher_type_ids.trim()
       ? voucher_type_ids.split(',').filter(id => id.trim())
+      : undefined
+
+  // 按凭证 id 列表过滤（出纳生成凭证结果页回显）
+  const queryVoucherIds =
+    typeof ids === 'string' && ids.trim()
+      ? ids.split(',').map(id => id.trim()).filter(Boolean)
       : undefined
 
   // 解析科目多选参数
@@ -1203,10 +1192,11 @@ router.get('/vouchers', (req: AuthRequest, res) => {
       accountIds,
       auditorId: auditor_id as string | undefined,
       voucherTypeIds,
+      voucherIds: queryVoucherIds,
       auxItems: Object.keys(auxItems).length > 0 ? auxItems : undefined,
       auxFields: Object.keys(auxFields).length > 0 ? auxFields : undefined,
-      minAmount: min_amount ? Number(min_amount) : undefined,
-      maxAmount: max_amount ? Number(max_amount) : undefined,
+      minAmount: parseAmountFilter(min_amount),
+      maxAmount: parseAmountFilter(max_amount),
       makerName: maker_name as string | undefined,
       auditorName: auditor_name as string | undefined,
       posterName: poster_name as string | undefined,
@@ -1539,6 +1529,10 @@ router.put(
           direction: e.direction,
           amount: e.amount, // DB 存储为 yuan
           summary: remark || e.summary || undefined,
+          // FIX-260：外币出纳科目按原币写日记账
+          currency_code: e.currency_code ?? null,
+          exchange_rate: e.exchange_rate ?? null,
+          foreign_amount: e.foreign_amount ?? null,
         }))
         syncCashierFromVoucher({
           db,

@@ -1,6 +1,13 @@
 import { Router } from 'express'
 import { getDb } from '../db/index.js'
-import { authMiddleware as auth, AuthRequest } from '../middleware/auth.js'
+import type { NextFunction, Response } from 'express'
+import { authMiddleware, AuthRequest, requirePermission } from '../middleware/auth.js'
+
+// 评审 P2：标准报表此前只校验登录；与页面路由（/ledger/standard-report → ledger:detail）同口径
+const ledgerDetailGuard = requirePermission('ledger:detail')
+function auth(req: AuthRequest, res: Response, next: NextFunction) {
+  authMiddleware(req, res, (err?: unknown) => (err ? next(err) : ledgerDetailGuard(req, res, next)))
+}
 import multer from 'multer'
 import { executeTemplateSheets } from '../services/reportTemplateExecutor.js'
 import { FORMULA_REFERENCE } from '../services/reportFormula.js'

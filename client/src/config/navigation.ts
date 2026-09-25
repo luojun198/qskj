@@ -92,6 +92,7 @@ const ROUTE_PERMISSION_MAP: Record<string, string | string[]> = {
   '/base/currency': 'base:currency',
   '/base/fund-source': 'base:project',
   '/voucher/entry': 'voucher:entry',
+  '/voucher/excel-import': 'voucher:entry',
   '/voucher/audit': ['voucher:audit', 'voucher:post', 'voucher:unpost'],
   '/voucher/auto-transfer': 'period:carry',
   '/voucher/fx-reval': 'period:carry',
@@ -138,14 +139,14 @@ const ROUTE_PERMISSION_MAP: Record<string, string | string[]> = {
   '/cashier/daily-report': 'cashier:journal',
   '/cashier/summary-report': 'cashier:journal',
   '/cashier/document-query': 'cashier:journal',
-  '/cashier/bank-import': 'cashier:reconcile',
+  '/cashier/bank-import': 'cashier:journal',
   '/cashier/reset': 'cashier:initbal',
   '/cashier/period-close': 'cashier:param',
   '/cashier/settle-type': 'cashier:dict',
   // 与 server/src/routes/fixedAsset.ts 的 ASSET_PERMISSION_RULES 保持一致，
   // 否则会出现「菜单可见但操作 403」
   '/asset/list': 'asset:view',
-  '/asset/change': 'asset:change',
+  '/asset/change': ['asset:change', 'asset:impair'],
   '/asset/change/list': 'asset:view',
   '/asset/requisition': 'asset:requisition',
   '/asset/import': 'asset:edit',
@@ -467,15 +468,17 @@ function getStaticNavApps(enableCashFlow: boolean, enableForeignCurrency = false
           label: '出纳业务',
           items: [
             { path: '/cashier/journal', title: '出纳录单', permission: 'cashier:journal', icon: 'Banknote' },
+            // FIX-262：对账单只作导入工具，生成出纳日记账
+            { path: '/cashier/bank-import', title: '对账单导入', permission: 'cashier:journal', icon: 'FileInput' },
           ],
         },
         {
           key: 'cashier-bank',
-          label: '银行对账',
+          label: '出纳对账',
           items: [
-            { path: '/cashier/reconcile', title: '银行勾对', permission: 'cashier:reconcile', icon: 'ListChecks' },
-            { path: '/cashier/reconciliation', title: '余额调节表', permission: 'cashier:reconcile', icon: 'Sheet' },
-            { path: '/cashier/bank-import', title: '银行对账单导入', permission: 'cashier:reconcile', icon: 'FileInput' },
+            // FIX-262：出纳日记账 ↔ 总账已记账分录
+            { path: '/cashier/reconcile', title: '出纳对账', permission: 'cashier:reconcile', icon: 'ListChecks' },
+            { path: '/cashier/reconciliation', title: '差异清单', permission: 'cashier:reconcile', icon: 'Sheet' },
           ],
         },
         {
@@ -512,7 +515,7 @@ function getStaticNavApps(enableCashFlow: boolean, enableForeignCurrency = false
           label: '资产业务',
           items: [
             { path: '/asset/list', title: '资产卡片', permission: 'asset:view', icon: 'IdCard' },
-            { path: '/asset/change', title: '资产变动', permission: 'asset:change', icon: 'ArrowLeftRight' },
+            { path: '/asset/change', title: '资产变动', permission: ['asset:change', 'asset:impair'], icon: 'ArrowLeftRight' },
             { path: '/asset/requisition', title: '领用归还', permission: 'asset:requisition', icon: 'UserCheck' },
             { path: '/asset/depreciation', title: '折旧计提', permission: 'asset:depr', icon: 'TrendingDown' },
             { path: '/asset/inventory', title: '资产盘点', permission: 'asset:inventory', icon: 'ClipboardCheck' },

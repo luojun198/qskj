@@ -259,6 +259,16 @@ describe('yearClosing', () => {
     ).toThrow('存在未记账凭证')
   })
 
+  it('评审 P2：月结须按期间顺序，前序期间未结账时拒绝', () => {
+    const db = createDb()
+    expect(() => closeAccountingPeriod({ db, accountSetId: 'set-1', year: 2026, period: 3 })).toThrow(
+      /尚未结账的前序期间：1、2/
+    )
+    closeAccountingPeriod({ db, accountSetId: 'set-1', year: 2026, period: 1 })
+    closeAccountingPeriod({ db, accountSetId: 'set-1', year: 2026, period: 2 })
+    expect(() => closeAccountingPeriod({ db, accountSetId: 'set-1', year: 2026, period: 3 })).not.toThrow()
+  })
+
   it('下一年度已有凭证时仍可重新计算并覆盖期初', () => {
     const db = createDb()
     closeMonths(db)

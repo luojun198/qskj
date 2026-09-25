@@ -90,6 +90,12 @@ async function main() {
     asid = chosen.id
     db.prepare("UPDATE system_params SET param_value='false' WHERE account_set_id=? AND param_key='require_audit'").run(asid)
     db.prepare("INSERT OR REPLACE INTO system_params (id, account_set_id, param_key, param_value) VALUES ('test-allow-direct', ?, 'allow_direct_post', 'true')").run(asid)
+    // 2026-09-25：测试账套里已有历史测试卡片（ZCTEST01~04 等），会混进本脚本的折旧预览 / 合计断言。
+    // 只在临时库副本里清掉该账套原有的资产业务数据，保证脚本只面对自己新建的 3 张卡片。
+    for (const t of ['fixed_asset_depr', 'fixed_asset_change', 'fixed_asset_workload', 'fixed_asset_requisition', 'fixed_asset']) {
+      try { db.prepare(`DELETE FROM ${t} WHERE account_set_id=?`).run(asid) } catch { /* 表不存在则跳过 */ }
+    }
+    db.prepare("DELETE FROM vouchers WHERE account_set_id=? AND source LIKE 'asset_%'").run(asid)
     db.close()
     console.log(`测试账套：${chosen.code} ${chosen.name} (${asid})`)
   }

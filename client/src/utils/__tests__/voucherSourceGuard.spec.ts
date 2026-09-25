@@ -15,4 +15,9 @@ describe('voucherSourceGuard', () => {
     expect(getAssetVoucherLockMessage({ source: 'asset_xxx' }, '删除')).toContain('固定资产模块')
     expect(getAssetVoucherLockMessage({ source: 'manual' }, '删除')).toBeNull()
   })
+
+  it('评审 P2：出纳凭证不可在凭证页删除，可编辑', () => {
+    expect(getAssetVoucherLockMessage({ source: 'cashier' }, '删除')).toContain('出纳')
+    expect(getAssetVoucherLockMessage({ source: 'cashier' }, '编辑')).toBeNull()
+  })
 })
