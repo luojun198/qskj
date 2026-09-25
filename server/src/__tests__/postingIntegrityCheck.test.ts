@@ -540,4 +540,37 @@ describe('postingIntegrityCheck', () => {
     expect(result.errors.join('')).toContain('库存现金')
     expect(result.errors.join('')).toContain('-2.00')
   })
+
+  it('FIX-324：分录已落库时同一科目只读一次余额；批量共用缓存后跨凭证不再重复查，负余额照样拦截', () => {
+    let balanceQueries = 0
+    const db = {
+      prepare(sql: string) {
+        if (sql.includes('FROM accounts')) {
+          return { get: () => ({ id: 'cash', name: '库存现金', direction: 'debit', no_negative: 1, is_aux: 0, is_cash: 1, is_bank: 0 }) }
+        }
+        if (sql.includes('FROM init_balances')) return { get: () => ({ init_balance: 100 }) }
+        if (sql.includes('FROM voucher_entries')) {
+          balanceQueries++
+          return { get: () => ({ total_debit: 0, total_credit: 150 }) }
+        }
+        throw new Error(`unexpected sql: ${sql}`)
+      },
+    }
+    const entries = [{ account_id: 'cash', direction: 'credit' as const, amount: 150 }]
+
+    // 不传缓存：该科目既受禁负约束又是现金科目，原实现读 4 次，现为每张 1 次
+    const r0 = checkPostingIntegrity(db as any, 'set-1', 2026, 5, entries, { entriesAlreadyPersisted: true })
+    expect(balanceQueries).toBe(1)
+    expect(r0.isValid).toBe(false)
+
+    balanceQueries = 0
+    const balanceCache = new Map<string, number>()
+    const r1 = checkPostingIntegrity(db as any, 'set-1', 2026, 5, entries, { entriesAlreadyPersisted: true, balanceCache })
+    const r2 = checkPostingIntegrity(db as any, 'set-1', 2026, 5, entries, { entriesAlreadyPersisted: true, balanceCache })
+    expect(balanceQueries).toBe(1)
+    for (const r of [r1, r2]) {
+      expect(r.isValid).toBe(false)
+      expect(r.errors.join('')).toContain('-50.00')
+    }
+  })
 })

@@ -58,3 +58,32 @@ describe('凭证全文索引（FIX-320）', () => {
     expect(search(db, '会议')).toEqual([])
   })
 })
+
+describe('凭证全文索引按 rowid 定位（FIX-321）', () => {
+  it('旧版触发器（按 UNINDEXED 列定位）视为不健康并自动重建为新版', () => {
+    const db = setup()
+    ensureVoucherFts(db as any)
+    // 模拟迁移 149 留下的旧版更新触发器
+    db.exec(`DROP TRIGGER vouchers_fts_update;
+      CREATE TRIGGER vouchers_fts_update AFTER UPDATE ON vouchers BEGIN
+        DELETE FROM vouchers_fts WHERE voucher_id = old.id;
+      END;`)
+    expect(isVoucherFtsHealthy(db as any)).toBe(false)
+    expect(ensureVoucherFts(db as any)).toBe(true)
+    expect(isVoucherFtsHealthy(db as any)).toBe(true)
+    expect(search(db, '安盾')).toEqual(['v-a'])
+  })
+
+  it('只改状态等非检索字段不触发索引更新；改审核人等检索字段按 rowid 更新', () => {
+    const db = setup()
+    ensureVoucherFts(db as any)
+    const plan = (db.prepare("EXPLAIN QUERY PLAN UPDATE vouchers_fts SET auditor_name='x' WHERE rowid = (SELECT k FROM voucher_fts_key WHERE voucher_id='v-a')").all() as any[]).map(r => r.detail).join(' | ')
+    expect(plan).toMatch(/VIRTUAL TABLE INDEX 0:=|rowid/i)
+    db.prepare("UPDATE vouchers SET status='audited' WHERE id='v-a'").run()
+    db.prepare("UPDATE vouchers SET auditor_name='张审核' WHERE id='v-a'").run()
+    expect(search(db, '张审核')).toEqual(['v-a'])
+    db.prepare("DELETE FROM vouchers WHERE id='v-a'").run()
+    expect((db.prepare('SELECT COUNT(*) c FROM voucher_fts_key').get() as any).c).toBe(0)
+    expect((db.prepare('SELECT COUNT(*) c FROM vouchers_fts').get() as any).c).toBe(0)
+  })
+})

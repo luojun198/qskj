@@ -266,6 +266,8 @@ export async function batchPostAsync(params: BatchOperationParams): Promise<stri
         return
       }
 
+      // FIX-324：整批共用实时余额缓存
+      const balanceCache = new Map<string, number>()
       const { success, failed, errors } = await runVoucherBatchInChunks(
         params.db,
         task.id,
@@ -286,6 +288,7 @@ export async function batchPostAsync(params: BatchOperationParams): Promise<stri
             allowDirectPost: allowDirectPostEnabled,
             // 上面 validateInitBalanceBalancedForYears 已对全部涉及年度试算通过
             skipInitBalanceCheck: true,
+            balanceCache,
           })
           return null
         },

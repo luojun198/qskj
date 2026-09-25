@@ -20,17 +20,37 @@ const N_CASHIER = args.cashier || 100000
 const N_BATCH = args.batch || 3000
 const N_EXPORT = args.export || 100000
 const WARN_MS = 1500, FAIL_MS = 5000
+/**
+ * --target=dev：直接在开发库「测试」账套造数并压测正在运行的开发服务（3105），数据保留供人工复查。
+ *   - 执行前用 SQLite 备份接口完整备份开发库；已有压测数据则拒绝重复造数
+ *   - 已记账凭证落在 9 月（账套 2026-09-01 启用）；批量审核 / 记账样本放在 10 月，不碰账套原有的 9 月草稿
+ *   - 单独建「压测凭证」类型，不占用「记账凭证」编号；造数后重建科目余额汇总表
+ * 不传则保持原行为：复制开发库到临时目录、另起 3199 服务。
+ */
+const TARGET_DEV = args.target === 'dev'
+/**
+ * --reuse（仅 dev）：复用已造好的压测数据复测，不再整批造数；只在 --batchmonth（默认 11）月新插 N_BATCH 张草稿供批量审核 / 记账。
+ * 建议配合 --stages=ABCEF（跳过会再灌 20 万行出纳数据的导入阶段）。
+ */
+const REUSE = TARGET_DEV && !!args.reuse
+const BATCH_MONTH = String(args.batchmonth || 11).padStart(2, '0')
 
 const ROOT = resolve(import.meta.dirname, '..')
 const SRC_DB = join(ROOT, 'data', 'finance-0523.db')
 const WORK = join(tmpdir(), 'cw-gl-stress')
-const TEMP_DB = join(WORK, 'finance.db')
+const TEMP_DB = TARGET_DEV ? SRC_DB : join(WORK, 'finance.db')
 const SERVER_LOG = join(WORK, 'server.log')
-const PORT = 3199
+const PORT = TARGET_DEV ? 3105 : 3199
 const BASE = `http://127.0.0.1:${PORT}`
-const AID = '96e41c72-0699-45b0-ad49-35048b1e875e'
+const AID = TARGET_DEV ? '1409b0d2-7e8c-4e27-ab5f-5e143be3e89d' /* 测试 */ : '96e41c72-0699-45b0-ad49-35048b1e875e'
+const BATCH_RANGE = TARGET_DEV
+  ? (args.reuse ? [`2026-${String(args.batchmonth || 11).padStart(2, '0')}-01`, `2026-${String(args.batchmonth || 11).padStart(2, '0')}-${new Date(2026, Number(args.batchmonth || 11), 0).getDate()}`] : ['2026-10-01', '2026-10-31'])
+  : ['2026-09-01', '2026-09-30']
 const sleep = ms => new Promise(r => setTimeout(r, ms))
-const dateOf = i => { const d = new Date(2026, i % 12, 1 + (i % 28)); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` }
+const dateOf = i => {
+  if (TARGET_DEV) return `2026-09-${String(1 + (i % 28)).padStart(2, '0')}`
+  const d = new Date(2026, i % 12, 1 + (i % 28)); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
 let rssExport = null
 function round2n(n) { return Math.round(n * 100) / 100 }
 
@@ -49,11 +69,53 @@ function median(arr) { const s = [...arr].sort((a, b) => a - b); return s[Math.f
 // ── 造数 ──
 function prepDb() {
   rmSync(WORK, { recursive: true, force: true }); mkdirSync(WORK, { recursive: true })
+  if (REUSE) return Promise.resolve()
+  if (TARGET_DEV) {
+    const chk = new Database(SRC_DB, { readonly: true })
+    const existed = chk.prepare("SELECT COUNT(*) c FROM vouchers WHERE account_set_id=? AND maker_name='压测'").get(AID).c
+    if (existed > 0) { chk.close(); throw new Error(`测试账套已有 ${existed} 张压测凭证，拒绝重复造数（如需重来请先从备份恢复）`) }
+    const bak = join(ROOT, 'data', 'finance-0523.bak-20260925-preGlStress.db')
+    console.log(`开发库备份 → ${bak}`)
+    return chk.backup(bak).then(() => chk.close())
+  }
   const src = new Database(SRC_DB, { readonly: true })
   return src.backup(TEMP_DB).then(() => src.close())
 }
 
+/** --reuse：只补批量操作用的草稿凭证（沿用首次造数的科目与「压测凭证」类型） */
+function seedBatchOnly() {
+  const db = new Database(TEMP_DB)
+  const round2 = n => Math.round(n * 100) / 100
+  const leafs = db.prepare("SELECT a.id, a.code, a.name, a.direction FROM accounts a WHERE a.account_set_id=? AND a.is_enabled=1 AND NOT EXISTS (SELECT 1 FROM accounts c WHERE c.account_set_id=a.account_set_id AND c.parent_id=a.id) ORDER BY a.code").all(AID)
+  const debtors = leafs.filter(a => a.direction === 'debit'), creditors = leafs.filter(a => a.direction === 'credit')
+  const cashAcc = db.prepare("SELECT id, code, name FROM accounts WHERE account_set_id=? AND code LIKE '1001%' AND is_enabled=1 ORDER BY code LIMIT 1").get(AID)
+  const vt = db.prepare("SELECT id FROM voucher_types WHERE account_set_id=? AND name='压测凭证'").get(AID)
+  if (!vt) throw new Error('未找到「压测凭证」类型，请先完整造数一次')
+  const existing = db.prepare("SELECT COUNT(*) c FROM vouchers WHERE account_set_id=? AND maker_name='压测' AND voucher_date LIKE ?").get(AID, `2026-${BATCH_MONTH}-%`).c
+  if (existing > 0) throw new Error(`2026-${BATCH_MONTH} 已有 ${existing} 张压测凭证，请换 --batchmonth`)
+  const insV = db.prepare(`INSERT INTO vouchers (id,account_set_id,voucher_no,voucher_type_id,voucher_date,year,period,status,total_amount,maker_name,remark,created_at,updated_at,attachments,source)
+    VALUES (?,?,?,?,?,?,?,'draft',?,'压测','压测',datetime('now'),datetime('now'),0,'manual')`)
+  const insE = db.prepare(`INSERT INTO voucher_entries (id,account_set_id,voucher_id,seq,account_id,account_code,account_name,direction,amount,amount_cents,summary,currency_code,exchange_rate)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,'CNY',1)`)
+  const t0 = Date.now()
+  db.transaction(() => {
+    for (let i = 0; i < N_BATCH; i++) {
+      const id = randomUUID()
+      const date = `2026-${BATCH_MONTH}-${String(1 + (i % 28)).padStart(2, '0')}`
+      const acc = debtors[(i * 7) % debtors.length], accC = creditors[(i * 11) % creditors.length]
+      const amt = round2(100 + ((i * 97) % 99900))
+      insV.run(id, AID, `压${BATCH_MONTH}-${String(i + 1).padStart(6, '0')}`, vt.id, date, 2026, Number(BATCH_MONTH), amt)
+      insE.run(randomUUID(), AID, id, 1, acc.id, acc.code, acc.name, 'debit', amt, Math.round(amt * 100), `批量压测${i}`)
+      insE.run(randomUUID(), AID, id, 2, accC.id, accC.code, accC.name, 'credit', amt, Math.round(amt * 100), `批量压测${i}`)
+    }
+  })()
+  console.log(`复用模式：新插 2026-${BATCH_MONTH} 草稿凭证 ${N_BATCH} 张（${(Date.now() - t0) / 1000}s）`)
+  db.close()
+  return { counts: {}, cashAcc }
+}
+
 function seed() {
+  if (REUSE) return seedBatchOnly()
   const db = new Database(TEMP_DB)
   db.pragma('journal_mode = WAL'); db.pragma('synchronous = OFF')
   const t0 = Date.now()
@@ -66,7 +128,16 @@ function seed() {
   const cashAcc = db.prepare("SELECT id, code, name FROM accounts WHERE account_set_id=? AND code LIKE '1001%' AND is_enabled=1 ORDER BY code LIMIT 1").get(AID)
   const bankAcc = db.prepare("SELECT id, code, name FROM accounts WHERE account_set_id=? AND (code LIKE '1002%' OR code LIKE '1012%') AND is_enabled=1 ORDER BY code LIMIT 1").get(AID)
   const deptCatId = db.prepare("SELECT id FROM aux_categories WHERE account_set_id=? AND code='dept' LIMIT 1").get(AID)?.id
-  const voucherType = db.prepare("SELECT id FROM voucher_types WHERE name='记账凭证' LIMIT 1").get()?.id || null
+  // 原实现未按账套过滤，可能取到别的账套的凭证类型
+  let voucherType = db.prepare("SELECT id FROM voucher_types WHERE account_set_id=? AND name='记账凭证' LIMIT 1").get(AID)
+    || db.prepare("SELECT id FROM voucher_types WHERE name='记账凭证' LIMIT 1").get()
+  if (TARGET_DEV) {
+    voucherType = db.prepare("SELECT id FROM voucher_types WHERE account_set_id=? AND name='压测凭证'").get(AID)
+    if (!voucherType) {
+      voucherType = { id: randomUUID() }
+      db.prepare("INSERT INTO voucher_types (id, account_set_id, name, code, description, sort_order) VALUES (?, ?, '压测凭证', 'YC', '十万级压测造数专用', 99)").run(voucherType.id, AID)
+    }
+  }
 
   console.log(`科目：末级 ${leafs.length}（借 ${debtors.length}/贷 ${creditors.length}），现金 ${cashAcc?.code}，银行 ${bankAcc?.code}`)
 
@@ -94,7 +165,7 @@ function seed() {
       const id = uuid()
       // 批量操作压测样本：最后 N_BATCH 张固定 9 月且为 draft，其余分散全年 posted
       const isDraft = i >= N_VOUCHERS - N_BATCH
-      const date = isDraft ? `2026-09-${String(1 + (i % 28)).padStart(2, '0')}` : dateOf(i)
+      const date = isDraft ? `2026-${TARGET_DEV ? '10' : '09'}-${String(1 + (i % 28)).padStart(2, '0')}` : dateOf(i)
       const period = Number(date.slice(5, 7))
       const status = isDraft ? 'draft' : 'posted'
       const lines = []
@@ -111,7 +182,7 @@ function seed() {
       const accC = creditors[(i * 11) % creditors.length]
       lines.push({ acc: accC, dir: 'credit', amt: round2(debitSum), dept: null })
       const totalAmt = round2(debitSum)
-      insV.run(id, AID, `记-${String(i + 1).padStart(8, '0')}`, voucherType.id, date, 2026, period, status, totalAmt, '压测')
+      insV.run(id, AID, `${TARGET_DEV ? '压' : '记'}-${String(i + 1).padStart(8, '0')}`, voucherType.id, date, 2026, period, status, totalAmt, '压测')
       let seq = 1
       for (const l of lines) {
         const deptItem = l.dept ? deptByCode.get(l.dept) : null
@@ -136,6 +207,12 @@ function seed() {
   }
   console.log(`造数完成 ${(Date.now() - t0) / 1000}s：凭证 ${fmt(counts.vouchers)} / 分录 ${fmt(counts.entries)} / 出纳 ${fmt(counts.cashier)} / 部门 ${fmt(counts.depts)}`)
   db.close()
+  if (TARGET_DEV) {
+    // 直接插入的「已记账」凭证没走过账，科目余额汇总表需重建，否则读汇总表的页面与凭证对不上
+    const t1 = Date.now()
+    execSync(`npx tsx src/scripts/rebuildAccountBalances.ts ${AID}`, { cwd: join(ROOT, 'server'), stdio: 'inherit' })
+    console.log(`科目余额汇总表重建完成 ${(Date.now() - t1) / 1000}s`)
+  }
   return { counts, deptByCode, cashAcc: { id: cashAcc.id, code: cashAcc.code, name: cashAcc.name }, bankAcc }
 }
 
@@ -151,6 +228,7 @@ async function waitServer(timeoutMs = 90000) {
 }
 
 async function startServer() {
+  if (TARGET_DEV) { await waitServer(); return }  // 直接用正在运行的开发服务
   child = spawn(process.execPath, ['--import', 'tsx/esm', 'src/index.ts'], {
     cwd: join(ROOT, 'server'),
     env: { ...process.env, DB_PATH: TEMP_DB, PORT: String(PORT), NODE_ENV: 'test' },
@@ -217,9 +295,9 @@ async function main() {
   await prepDb()
   const { counts, cashAcc } = seed()
   console.log(`压测科目：${cashAcc.code} ${cashAcc.name} (${cashAcc.id})\n`)
-  const rssBefore = rssOf(3199)
+  const rssBefore = rssOf(PORT)
   await startServer()
-  const rssAfterBoot = rssOf(3199)
+  const rssAfterBoot = rssOf(PORT)
 
   // 登录
   {
@@ -372,14 +450,14 @@ async function main() {
   if (stages.includes('E')) {
   console.log('\n── E. 批量审核/过账（异步任务） ──')
   {
-    const r = await api('POST', '/api/voucher/vouchers/batch-audit-async', { dateRange: ['2026-09-01', '2026-09-30'] })
+    const r = await api('POST', '/api/voucher/vouchers/batch-audit-async', { dateRange: BATCH_RANGE })
     if (r?.data?.taskId) {
       const done = await pollTask(r.data.taskId, 300000)
       record(`批量审核 ${fmt(N_BATCH)} 张（异步任务总耗时）`, done.ms, `完成 ${fmt(done.processed)} / 失败 ${fmt(done.failed)}`)
     } else console.log('  批量审核任务创建失败：' + JSON.stringify(r).slice(0, 200))
   }
   {
-    const r = await api('POST', '/api/voucher/vouchers/batch-post-async', { dateRange: ['2026-09-01', '2026-09-30'] })
+    const r = await api('POST', '/api/voucher/vouchers/batch-post-async', { dateRange: BATCH_RANGE })
     if (r?.data?.taskId) {
       // FIX-252：批量记账期间每 200ms 打一次明细账首页，观察其他请求是否被阻塞
       // 轻接口（凭证类型列表）反映「事件循环被占多久」，明细账首页反映真实业务请求体验
@@ -450,7 +528,7 @@ async function main() {
   for (const r of results) console.log(`${r.level === 'RED' ? '[红]' : r.level === 'YELLOW' ? '[黄]' : '[绿]'} ${String(Math.round(r.ms)).padStart(8)}ms  ${r.name}  ${r.detail}`)
 
   try { child.kill() } catch { }
-  console.log(`\n副本库与日志位于 ${WORK}`)
+  console.log(TARGET_DEV ? `\n数据已保留在开发库「测试」账套；造数前备份 data/finance-0523.bak-20260925-preGlStress.db` : `\n副本库与日志位于 ${WORK}`)
   console.log(red.length > 0 ? `\n结论：存在 ${red.length} 项超时(>5s)，需优化` : yellow.length > 0 ? `\n结论：无致命项，${yellow.length} 项偏慢(>1.5s)` : '\n结论：全部通过')
   process.exit(red.length > 0 ? 1 : 0)
 }

@@ -424,8 +424,9 @@ export function listJournal(params: {
   }
 
   // 评审 P2：币种跟科目走后，科目改过币种 / 迁移前录入的行按币种过滤不再显示，此前完全无提示
-  const otherConds = ['account_set_id = ?', 'account_code = ?', 'currency <> ?']
-  const otherParams: any[] = [accountSetId, accountCode, currency]
+  // FIX-325：<> 用不上索引，改写为两段范围，走 (账套, 科目, 币种) 索引
+  const otherConds = ['account_set_id = ?', 'account_code = ?', '(currency < ? OR currency > ?)']
+  const otherParams: any[] = [accountSetId, accountCode, currency, currency]
   if (params.startDate) { otherConds.push('biz_date >= ?'); otherParams.push(params.startDate) }
   if (params.endDate) { otherConds.push('biz_date <= ?'); otherParams.push(params.endDate) }
   const otherCurrencyCount = (db

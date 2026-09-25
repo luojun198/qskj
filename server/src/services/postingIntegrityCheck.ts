@@ -33,6 +33,12 @@ export interface PostingIntegrityOptions {
   /** 分录已在 voucher_entries（过账前检查默认 true），余额 = 期初 + 全部凭证，不再逐行累加 */
   entriesAlreadyPersisted?: boolean
   excludeVoucherId?: string
+  /**
+   * FIX-324：批量记账共用的实时余额缓存。实时余额 = 期初 + 本年截至本期的全部凭证（不区分状态），
+   * 同一批记账中同一科目 / 期间的结果不变，缓存后每科目每期只算一次（原先每张凭证每科目各算两遍，
+   * 10 万凭证时每次 ~70ms，批量记账 3000 张 96s 并阻塞服务）。仅在 entriesAlreadyPersisted 时使用。
+   */
+  balanceCache?: Map<string, number>
 }
 
 function applyEntryToBalance(
@@ -119,7 +125,18 @@ export function checkPostingIntegrity(
     return codes
   }
 
+  // 未传批量缓存时用本次检查内的临时缓存（同一科目既受禁负约束又是现金 / 银行科目时，两处共用一次读数）
+  const balanceCache = entriesAlreadyPersisted ? (options?.balanceCache ?? new Map<string, number>()) : undefined
+
   function readAccountRealtimeBalance(accountId: string): number {
+    const cacheKey = `a|${accountId}|${year}|${period}`
+    if (balanceCache?.has(cacheKey)) return balanceCache.get(cacheKey)!
+    const value = computeAccountRealtimeBalance(accountId)
+    balanceCache?.set(cacheKey, value)
+    return value
+  }
+
+  function computeAccountRealtimeBalance(accountId: string): number {
     const row = getAccountRealtimeBalance(db, {
       accountId,
       accountSetId,
@@ -136,7 +153,9 @@ export function checkPostingIntegrity(
     categoryCode: string,
     itemId: string
   ): number {
-    return getAccountRealtimeAuxBalance(db, {
+    const cacheKey = `x|${accountId}|${categoryCode}|${itemId}|${year}|${period}`
+    if (balanceCache?.has(cacheKey)) return balanceCache.get(cacheKey)!
+    const value = getAccountRealtimeAuxBalance(db, {
       accountId,
       accountSetId,
       year,
@@ -146,6 +165,8 @@ export function checkPostingIntegrity(
       accountDirection,
       excludeVoucherId: entriesAlreadyPersisted ? undefined : options?.excludeVoucherId,
     }).end_balance
+    balanceCache?.set(cacheKey, value)
+    return value
   }
 
   // 找到 accountId 自身或其最近 no_negative=1 的祖先科目（"约束源"）
@@ -206,12 +227,9 @@ export function checkPostingIntegrity(
             entry,
             categoryName,
             itemName,
-            balance: readAuxRealtimeBalance(
-              entry.account_id,
-              account.direction,
-              sel.categoryCode,
-              sel.itemId
-            ),
+            balance: entriesAlreadyPersisted
+              ? 0
+              : readAuxRealtimeBalance(entry.account_id, account.direction, sel.categoryCode, sel.itemId),
           }
           if (!entriesAlreadyPersisted) {
             cur.balance = applyEntryToBalance(
@@ -227,7 +245,7 @@ export function checkPostingIntegrity(
         const current = accountImpactMap.get(entry.account_id) || {
           account,
           constraint,
-          balance: readAccountRealtimeBalance(entry.account_id),
+          balance: entriesAlreadyPersisted ? 0 : readAccountRealtimeBalance(entry.account_id),
         }
         if (!entriesAlreadyPersisted) {
           current.balance = applyEntryToBalance(
@@ -262,7 +280,7 @@ export function checkPostingIntegrity(
     if (account.is_cash === 1 || account.is_bank === 1) {
       const current = cashBankImpactMap.get(entry.account_id) || {
         account,
-        balance: readAccountRealtimeBalance(entry.account_id),
+        balance: entriesAlreadyPersisted ? 0 : readAccountRealtimeBalance(entry.account_id),
       }
       if (!entriesAlreadyPersisted) {
         current.balance = applyEntryToSignedBalance(

@@ -693,6 +693,17 @@ export function buildGeneralLedgerQuery(filters: {
           SUM(CASE WHEN month = 12 AND direction = 'credit' THEN amount ELSE 0 END) as month12_credit
         FROM monthly_amounts
         GROUP BY account_id
+      ),
+      pre_year AS MATERIALIZED (
+        -- FIX-323：本年无期初行时，期初 = 年初之前的凭证累计。原为逐科目关联子查询（每科目扫一遍自己的全部分录再回查凭证
+        -- 判日期，10 万凭证时总分类账 4.6s），改为按凭证日期索引只取年初前凭证、按科目一次聚合；只在该分支被引用时计算
+        SELECT ve.account_id,
+          SUM(CASE WHEN ve.direction = 'debit' THEN ve.amount ELSE 0 END) AS dr,
+          SUM(CASE WHEN ve.direction = 'credit' THEN ve.amount ELSE 0 END) AS cr
+        FROM vouchers v
+        CROSS JOIN voucher_entries ve ON ve.voucher_id = v.id
+        WHERE v.account_set_id = ? AND ve.account_set_id = ? AND ${statusCondition} AND v.voucher_date < ?
+        GROUP BY ve.account_id
       )
       SELECT
         a.id as account_id,
@@ -732,17 +743,8 @@ export function buildGeneralLedgerQuery(filters: {
               ) ELSE 0 END`
             : '0'
         } ELSE COALESCE(
-          (SELECT
-             CASE WHEN a.direction = 'debit'
-               THEN SUM(CASE WHEN ve.direction = 'debit' THEN ve.amount ELSE -ve.amount END)
-               ELSE SUM(CASE WHEN ve.direction = 'credit' THEN ve.amount ELSE -ve.amount END)
-             END
-           FROM voucher_entries ve
-           JOIN vouchers v ON v.id = ve.voucher_id
-           WHERE ve.account_id = a.id
-             AND ve.account_set_id = ?
-             AND ${statusCondition}
-             AND v.voucher_date < ?),
+          (SELECT CASE WHEN a.direction = 'debit' THEN py.dr - py.cr ELSE py.cr - py.dr END
+           FROM pre_year py WHERE py.account_id = a.id),
           0
         ) END as init_balance,
         -- 各月发生额（从 CTE 中获取，账前发生额并入其归属月份）
@@ -754,6 +756,10 @@ export function buildGeneralLedgerQuery(filters: {
     params: [
       // monthly_amounts CTE
       ...cteParams,
+      // pre_year CTE（FIX-323）
+      filters.accountSetId,
+      filters.accountSetId,
+      `${y}-01-01`,
       // init_balances 年初余额
       filters.accountSetId,
       y,
@@ -762,9 +768,6 @@ export function buildGeneralLedgerQuery(filters: {
       y,
       // FIX-129 补充：含未记账时，年结自动行 + 上年未记账凭证
       ...(filters.includeUnposted ? [filters.accountSetId, y, filters.accountSetId, `${y}-01-01`] : []),
-      // 期初余额凭证查询
-      filters.accountSetId,
-      `${y}-01-01`,
       // 账前发生额所在月份列
       ...monthPreBookParams,
       // 科目筛选

@@ -180,36 +180,43 @@ export function queryPeriodFlow(
     SELECT
       COALESCE(SUM(CASE
         WHEN ${resolvedPredicates.income}
-          THEN CASE WHEN ve.direction='credit' THEN ve.amount ELSE -ve.amount END
+          THEN f.cr - f.dr
         ELSE 0
       END), 0) as income,
       COALESCE(SUM(CASE
         WHEN ${resolvedPredicates.pureExpense}
           AND NOT (${resolvedPredicates.fee} OR ${resolvedPredicates.cost})
-          THEN CASE WHEN ve.direction='debit' THEN ve.amount ELSE -ve.amount END
+          THEN f.dr - f.cr
         ELSE 0
       END), 0) as pureExpense,
       COALESCE(SUM(CASE
         WHEN ${resolvedPredicates.fee}
           AND NOT ${resolvedPredicates.cost}
-          THEN CASE WHEN ve.direction='debit' THEN ve.amount ELSE -ve.amount END
+          THEN f.dr - f.cr
         ELSE 0
       END), 0) as fee,
       COALESCE(SUM(CASE
         WHEN ${resolvedPredicates.cost}
-          THEN CASE WHEN ve.direction='debit' THEN ve.amount ELSE -ve.amount END
+          THEN f.dr - f.cr
         ELSE 0
       END), 0) as cost,
       COALESCE(SUM(CASE
         WHEN ${resolvedPredicates.expense}
-          THEN CASE WHEN ve.direction='debit' THEN ve.amount ELSE -ve.amount END
+          THEN f.dr - f.cr
         ELSE 0
       END), 0) as expense
-    FROM voucher_entries ve
-    JOIN vouchers v ON v.id = ve.voucher_id
-    JOIN accounts a ON a.id = ve.account_id
-    WHERE ve.account_set_id=? AND v.year=? AND v.period=?
-      AND v.status='posted' AND ${EXCLUDE_TRANSFER_VOUCHERS}
+    FROM (
+      -- FIX-322：先按科目聚合借贷再做分类判断（分类谓词含逐级上溯的递归子查询，原先对每条分录各算一遍）
+      SELECT ve.account_id,
+        SUM(CASE WHEN ve.direction='debit' THEN ve.amount ELSE 0 END) AS dr,
+        SUM(CASE WHEN ve.direction='credit' THEN ve.amount ELSE 0 END) AS cr
+      FROM vouchers v
+      CROSS JOIN voucher_entries ve ON ve.voucher_id = v.id
+      WHERE v.account_set_id=? AND ve.account_set_id = v.account_set_id AND v.year=? AND v.period=?
+        AND v.status='posted' AND ${EXCLUDE_TRANSFER_VOUCHERS}
+      GROUP BY ve.account_id
+    ) f
+    JOIN accounts a ON a.id = f.account_id
   `
     )
     .get(accountSetId, year, period) as any
@@ -346,10 +353,12 @@ function getCashBankLeavesByFlag(
           THEN CASE WHEN ve.direction='debit' THEN ve.amount ELSE -ve.amount END
           ELSE CASE WHEN ve.direction='credit' THEN ve.amount ELSE -ve.amount END
         END) as balance
-      FROM voucher_entries ve
+      -- FIX-322：从少量现金 / 银行末级科目出发（CROSS JOIN 固定连接顺序），按（账套, 科目）索引取分录；
+      -- 原先从本账套全部分录出发逐条回查凭证与科目（25 万分录时每次 ~3s）
+      FROM leaf_accounts l
+      CROSS JOIN voucher_entries ve
       JOIN vouchers v ON v.id = ve.voucher_id
-      JOIN leaf_accounts l ON l.id = ve.account_id
-      WHERE ve.account_set_id=?
+      WHERE ve.account_set_id=? AND ve.account_id = l.id
         AND v.status='posted'
         AND v.voucher_date >= ? AND v.voucher_date <= ?
       GROUP BY ve.account_id
@@ -479,8 +488,10 @@ const dashboardStatsHandler = ((req: AuthRequest, res: any) => {
   const cashBankStructure = getCashStructureForRequest(req, db, year, monthEnd)
 
   // 本期收入/支出只统计已记账凭证；草稿和已审核凭证只进入流程待办。
+  // FIX-322：凭证驱动（账套条件放凭证侧走期间索引，再按凭证取分录）；原先从本账套全部分录出发逐条回查凭证
   const flowConditions = [
-    've.account_set_id=?',
+    'v.account_set_id=?',
+    've.account_set_id = v.account_set_id',
     'v.year=?',
     'v.period=?',
     "v.status='posted'",
@@ -494,28 +505,35 @@ const dashboardStatsHandler = ((req: AuthRequest, res: any) => {
     SELECT
       COALESCE(SUM(CASE
         WHEN ${predicates.income}
-          THEN CASE WHEN ve.direction='credit' THEN ve.amount ELSE -ve.amount END
+          THEN f.cr - f.dr
         ELSE 0
       END), 0) as income,
       COALESCE(SUM(CASE
         WHEN ${predicates.expense}
-          THEN CASE WHEN ve.direction='debit' THEN ve.amount ELSE -ve.amount END
+          THEN f.dr - f.cr
         ELSE 0
       END), 0) as expense,
       COALESCE(SUM(CASE
         WHEN ${budgetPredicates.income}
-          THEN CASE WHEN ve.direction='credit' THEN ve.amount ELSE -ve.amount END
+          THEN f.cr - f.dr
         ELSE 0
       END), 0) as budgetIncome,
       COALESCE(SUM(CASE
         WHEN ${budgetPredicates.expense}
-          THEN CASE WHEN ve.direction='debit' THEN ve.amount ELSE -ve.amount END
+          THEN f.dr - f.cr
         ELSE 0
       END), 0) as budgetExpense
-    FROM voucher_entries ve
-    JOIN vouchers v ON v.id = ve.voucher_id
-    JOIN accounts a ON a.id = ve.account_id
-    WHERE ${flowConditions.join(' AND ')}
+    FROM (
+      -- FIX-322：先按科目聚合借贷再做分类判断（分类谓词含逐级上溯的递归子查询，原先对每条分录各算一遍）
+      SELECT ve.account_id,
+        SUM(CASE WHEN ve.direction='debit' THEN ve.amount ELSE 0 END) AS dr,
+        SUM(CASE WHEN ve.direction='credit' THEN ve.amount ELSE 0 END) AS cr
+      FROM vouchers v
+      CROSS JOIN voucher_entries ve ON ve.voucher_id = v.id
+      WHERE ${flowConditions.join(' AND ')}
+      GROUP BY ve.account_id
+    ) f
+    JOIN accounts a ON a.id = f.account_id
   `
     )
     .get(req.accountSetId, year, period, ...flowScopeParams) as any
@@ -571,8 +589,10 @@ const dashboardTrendHandler = ((req: AuthRequest, res: any) => {
   const startYear = Math.floor(startMonth / 12)
   const startPeriod = (startMonth % 12) + 1
 
+  // FIX-322：同上，凭证驱动（6 个月趋势 3.3s → 0.6s）
   const trendConditions = [
-    've.account_set_id=?',
+    'v.account_set_id=?',
+    've.account_set_id = v.account_set_id',
     '(v.year * 12 + v.period - 1) BETWEEN ? AND ?',
     "v.status='posted'",
     EXCLUDE_TRANSFER_VOUCHERS,
@@ -583,49 +603,56 @@ const dashboardTrendHandler = ((req: AuthRequest, res: any) => {
   // 单次查询获取 6 个月已记账数据
   const rows = db.prepare(`
     SELECT
-      v.year, v.period,
+      f.year, f.period,
       COALESCE(SUM(CASE
         WHEN ${predicates.income}
-          THEN CASE WHEN ve.direction='credit' THEN ve.amount ELSE -ve.amount END
+          THEN f.cr - f.dr
         ELSE 0
       END), 0) as income,
       COALESCE(SUM(CASE
         WHEN ${predicates.pureExpense}
           AND NOT (${predicates.fee} OR ${predicates.cost})
-          THEN CASE WHEN ve.direction='debit' THEN ve.amount ELSE -ve.amount END
+          THEN f.dr - f.cr
         ELSE 0
       END), 0) as pureExpense,
       COALESCE(SUM(CASE
         WHEN ${predicates.fee}
           AND NOT ${predicates.cost}
-          THEN CASE WHEN ve.direction='debit' THEN ve.amount ELSE -ve.amount END
+          THEN f.dr - f.cr
         ELSE 0
       END), 0) as fee,
       COALESCE(SUM(CASE
         WHEN ${predicates.cost}
-          THEN CASE WHEN ve.direction='debit' THEN ve.amount ELSE -ve.amount END
+          THEN f.dr - f.cr
         ELSE 0
       END), 0) as cost,
       COALESCE(SUM(CASE
         WHEN ${predicates.expense}
-          THEN CASE WHEN ve.direction='debit' THEN ve.amount ELSE -ve.amount END
+          THEN f.dr - f.cr
         ELSE 0
       END), 0) as expense,
       COALESCE(SUM(CASE
         WHEN ${budgetPredicates.income}
-          THEN CASE WHEN ve.direction='credit' THEN ve.amount ELSE -ve.amount END
+          THEN f.cr - f.dr
         ELSE 0
       END), 0) as budgetIncome,
       COALESCE(SUM(CASE
         WHEN ${budgetPredicates.expense}
-          THEN CASE WHEN ve.direction='debit' THEN ve.amount ELSE -ve.amount END
+          THEN f.dr - f.cr
         ELSE 0
       END), 0) as budgetExpense
-    FROM voucher_entries ve
-    JOIN vouchers v ON v.id = ve.voucher_id
-    JOIN accounts a ON a.id = ve.account_id
-    WHERE ${trendConditions.join(' AND ')}
-    GROUP BY v.year, v.period
+    FROM (
+      -- FIX-322：先按科目聚合借贷再做分类判断（分类谓词含逐级上溯的递归子查询，原先对每条分录各算一遍）
+      SELECT v.year, v.period, ve.account_id,
+        SUM(CASE WHEN ve.direction='debit' THEN ve.amount ELSE 0 END) AS dr,
+        SUM(CASE WHEN ve.direction='credit' THEN ve.amount ELSE 0 END) AS cr
+      FROM vouchers v
+      CROSS JOIN voucher_entries ve ON ve.voucher_id = v.id
+      WHERE ${trendConditions.join(' AND ')}
+      GROUP BY v.year, v.period, ve.account_id
+    ) f
+    JOIN accounts a ON a.id = f.account_id
+    GROUP BY f.year, f.period
   `).all(req.accountSetId, startMonth, endMonth, ...trendScopeParams) as any[]
 
   const results = []

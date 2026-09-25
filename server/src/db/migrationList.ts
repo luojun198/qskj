@@ -515,6 +515,14 @@ import {
   up as voucherFtsByIdUp,
   down as voucherFtsByIdDown,
 } from './migrations/20260925_voucher_fts_by_id.js'
+import {
+  up as voucherFtsRowidKeyUp,
+  down as voucherFtsRowidKeyDown,
+} from './migrations/20260925_voucher_fts_rowid_key.js'
+import {
+  up as cashierJournalCurrencyIndexUp,
+  down as cashierJournalCurrencyIndexDown,
+} from './migrations/20260925_cashier_journal_currency_index.js'
 
 /**
  * 迁移示例：添加新字段
@@ -2332,5 +2340,17 @@ export const migrations: Migration[] = [
     name: 'voucher_fts_by_id',
     up: voucherFtsByIdUp,
     down: voucherFtsByIdDown,
+  },
+  {
+    version: 150,
+    name: 'voucher_fts_rowid_key',
+    up: voucherFtsRowidKeyUp,
+    down: voucherFtsRowidKeyDown,
+  },
+  {
+    version: 151,
+    name: 'cashier_journal_currency_index',
+    up: cashierJournalCurrencyIndexUp,
+    down: cashierJournalCurrencyIndexDown,
   },
 ]

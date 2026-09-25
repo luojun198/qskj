@@ -37,6 +37,8 @@ export interface PostingContext {
   allowDirectPost: boolean
   /** FIX-252：批量记账已在任务开始时对涉及年度做过一次期初试算，逐张无需重复（每张 15ms） */
   skipInitBalanceCheck?: boolean
+  /** FIX-324：批量记账整批共用的实时余额缓存（见 PostingIntegrityOptions.balanceCache） */
+  balanceCache?: Map<string, number>
 }
 
 export function validateVoucherForUnpost(voucher: VoucherLike | null | undefined) {
@@ -161,7 +163,7 @@ export function applyVoucherPosting(
     voucher.year,
     voucher.period,
     resolvedEntries,
-    { entriesAlreadyPersisted: true }
+    { entriesAlreadyPersisted: true, balanceCache: ctx.balanceCache }
   )
   if (!integrityCheck.isValid) {
     throw new Error(integrityCheck.errors.join('；'))

@@ -124,7 +124,8 @@ describe('accountSetBackupRestore remap helpers', () => {
   })
 })
 
-describe.skipIf(!!SKIP_REASON)(`accountSetBackupRestore${SKIP_REASON ? `（跳过：${SKIP_REASON}）` : ''}`, () => {
+// 本组复制整个开发库做备份 / 恢复，耗时随开发库体积增长（留有十万级压测数据时约 15s），放宽超时
+describe.skipIf(!!SKIP_REASON)(`accountSetBackupRestore${SKIP_REASON ? `（跳过：${SKIP_REASON}）` : ''}`, { timeout: 60000 }, () => {
   let backupPath = ''
 
   beforeAll(async () => {
