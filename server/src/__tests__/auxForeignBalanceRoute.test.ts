@@ -10,6 +10,7 @@ vi.mock('../db/index.js', () => ({
 vi.mock('../middleware/index.js', () => ({
   authMiddleware: (_req: unknown, _res: unknown, next: () => void) => next(),
   requirePermission: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+  requireAnyPermission: () => (_req: unknown, _res: unknown, next: () => void) => next(),
   operationLog: () => (_req: unknown, _res: unknown, next: () => void) => next(),
 }))
 

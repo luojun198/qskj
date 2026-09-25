@@ -198,8 +198,9 @@ async function main() {
   await timeIt('销售订单关联表 第1页', 'GET', '/api/scm/sales-order-relations?page=1&page_size=20', undefined, { note: d => `roots=${d.data?.roots?.length}` })
 
   console.log('\n── 销售 / 采购报表 ──')
-  await timeIt('销售汇总（固定报表 全年）', 'POST', '/api/scm/report/sales/fixed-query', { report: 'summary', start_date: D1, end_date: D2 })
-  await timeIt('采购订单执行表', 'GET', `/api/scm/report/purchase/order-tracking?start_date=${D1}&end_date=${D2}`)
+  await timeIt('销售汇总（固定报表 全年）', 'POST', '/api/scm/report/sales/fixed-query', { report_code: 'summary', start_date: D1, end_date: D2 })
+  // 原路径 /api/scm/report/purchase/order-tracking 是前端页面路径，接口不存在（404），从未真正测到
+  await timeIt('采购订单执行表', 'POST', '/api/scm/report/purchase/fixed-query', { report_code: 'order_tracking', start_date: D1, end_date: D2 })
 
   const fails = rows.filter(r => r.level === 'FAIL'), warns = rows.filter(r => r.level === 'WARN')
   console.log(`\n==== 数据量：${JSON.stringify(counts)}`)

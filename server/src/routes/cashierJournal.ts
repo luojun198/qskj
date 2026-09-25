@@ -365,7 +365,7 @@ router.get('/cashier/init-balance/gl', (req: AuthRequest, res) => {
 
 // ── 日记账列表（含逐行余额） ──────────────────────────────
 router.get('/cashier/journal', (req: AuthRequest, res) => {
-  const { account_code, currency, start_date, end_date, reconciled, page, page_size } = req.query as Record<string, string>
+  const { account_code, currency, start_date, end_date, page, page_size } = req.query as Record<string, string>
   if (!account_code) return res.status(400).json({ code: 400, message: '科目编码不能为空' })
   if (!scopeGuard(req, res, [account_code])) return
   const result = listJournal({
@@ -374,7 +374,6 @@ router.get('/cashier/journal', (req: AuthRequest, res) => {
     currency: currency || undefined,
     startDate: start_date,
     endDate: end_date,
-    reconciled: reconciled !== undefined ? (Number(reconciled) as 0 | 1) : undefined,
     // FIX-253：传了 page / page_size 才分页，老调用方不传则仍返回全部行
     page: page !== undefined ? Number(page) : undefined,
     pageSize: page_size !== undefined ? Number(page_size) : undefined,

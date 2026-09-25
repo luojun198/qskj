@@ -358,16 +358,22 @@ let __optimizeTimer: NodeJS.Timeout | null = null
 /**
  * 压测（FIX-249）：没有 sqlite_stat1 时查询规划器对多表 JOIN 常选错索引
  * （例如按工单汇总库存流水时先扫全部流水再回查单据，单张工单 44ms → 有统计后 0.05ms）。
- * 库里没有统计信息就跑一次 ANALYZE，之后每小时 PRAGMA optimize 增量维护。
+ * 库里没有统计信息就跑一次 ANALYZE。
+ *
+ * FIX-318：统计信息「存在但过期」同样致命——表从几行涨到上万行后（批量导入 / 灌数），规划器仍按旧统计
+ * 以为只有 2~3 行，选三重全表嵌套扫描：库存查询的工单需求段 3000 工单 / 12000 行时 >5 分钟，
+ * better-sqlite3 同步执行把整个服务卡死。启动时用 optimize=0x10002（检查全部表，行数变化悬殊即重新分析），
+ * 运行中每 15 分钟 optimize 增量维护（只检查本连接用过的表，开销很小）。
  */
 function ensureQueryPlannerStats(database: DatabaseType) {
   try {
     const hasStat = database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sqlite_stat1'").get()
     const statRows = hasStat ? Number((database.prepare('SELECT COUNT(*) c FROM sqlite_stat1').get() as any)?.c) || 0 : 0
     if (!statRows) database.exec('ANALYZE')
+    else database.pragma('optimize=0x10002')
   } catch { /* 只读库 / 旧版本忽略 */ }
   if (!__optimizeTimer) {
-    __optimizeTimer = setInterval(() => { try { db?.pragma('optimize') } catch { /* ignore */ } }, 60 * 60 * 1000)
+    __optimizeTimer = setInterval(() => { try { db?.pragma('optimize') } catch { /* ignore */ } }, 15 * 60 * 1000)
     __optimizeTimer.unref()
   }
 }

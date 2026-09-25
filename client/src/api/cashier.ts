@@ -209,7 +209,6 @@ export const cashierApi = {
     currency?: string
     start_date?: string
     end_date?: string
-    reconciled?: 0 | 1
     /** FIX-253：传了才分页，不传返回全部行 */
     page?: number
     page_size?: number

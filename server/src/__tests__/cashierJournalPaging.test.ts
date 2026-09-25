@@ -108,13 +108,4 @@ describe('listJournal 分页（FIX-253）', () => {
     expect(r.otherCurrencyCount).toBe(1)
     expect(r.closing).toBe(1500 + 130 - 36)
   })
-
-  it('reconciled 过滤与分页共存时，合计只算过滤后的行', () => {
-    testDb.prepare("UPDATE cashier_journal SET reconciled = 1 WHERE seq <= 5 AND biz_date >= '2026-01-01'").run()
-    const r = listJournal({ ...base, reconciled: 1, page: 1, pageSize: 2 })
-    expect(r.total).toBe(5)
-    expect(r.rows).toHaveLength(2)
-    expect(r.totalDebit).toBe(30) // 1、3、5
-    expect(r.totalCredit).toBe(6) // 2、4
-  })
 })

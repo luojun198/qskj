@@ -4703,6 +4703,9 @@ export async function importAcdToAccountSet(
   // 供应链模块数据（cpda→scm_item, khda→scm_partner, ckda→scm_warehouse）
   importSupplyChainFromAcd(db, accountSet.id, acdBuffer)
 
+  // FIX-318：整套导入后各表规模骤增，立即刷新规划器统计，避免旧统计导致查询选错计划卡死服务
+  try { db.pragma('optimize=0x10002') } catch { /* 只读库等情况忽略 */ }
+
   // 报表模板不再随 ACD 导入自动加载，提示用户手动上传
   stats.warnings.push(
     'ACD 导入未自动加载报表模板：请在「报表 → 动态报表 → 导入 Excel」里手动上传所需模板'

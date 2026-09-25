@@ -326,7 +326,6 @@ export function listJournal(params: {
   startDate?: string
   endDate?: string
   /** 过滤对账状态：0=未对账，1=已对账，不传则返回全部 */
-  reconciled?: 0 | 1
   /** FIX-253：分页（1 起）；不传则返回区间全部行（对账 / 现金流量等消费方沿用） */
   page?: number
   pageSize?: number
@@ -380,10 +379,7 @@ export function listJournal(params: {
     rowConds.push('biz_date <= ?')
     rowParams.push(params.endDate)
   }
-  if (params.reconciled !== undefined) {
-    rowConds.push('reconciled = ?')
-    rowParams.push(params.reconciled)
-  }
+  // 评审 P2 收尾：去掉 reconciled 筛选——筛掉部分行后逐行余额 / 期末只累加剩余行，数字失真；前端从未使用
   const whereSql = rowConds.join(' AND ')
   const orderSql = 'ORDER BY biz_date, seq, created_at'
 

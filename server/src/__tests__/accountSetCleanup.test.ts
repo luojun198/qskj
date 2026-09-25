@@ -116,4 +116,14 @@ describe('cleanupAccountSetCascade', () => {
     expect(left).toBeUndefined()
     expect((db.prepare('SELECT COUNT(*) as c FROM user_roles').get() as { c: number }).c).toBe(0)
   })
+
+  it('评审 P2 收尾：清单外、带 account_set_id 的表（如供应链 / 汇率）也一并清掉，不留孤儿行', () => {
+    db.exec(`CREATE TABLE scm_unit (id TEXT PRIMARY KEY, account_set_id TEXT, code TEXT);
+             CREATE TABLE exchange_rates (id TEXT PRIMARY KEY, account_set_id TEXT, rate REAL);`)
+    db.prepare("INSERT INTO scm_unit VALUES ('u1', ?, 'PCS'), ('u2', 'other-set', 'PCS')").run(accountSetId)
+    db.prepare("INSERT INTO exchange_rates VALUES ('r1', ?, 7.1)").run(accountSetId)
+    cleanupAccountSetCascade(db, accountSetId)
+    expect(db.prepare('SELECT id FROM scm_unit').all()).toEqual([{ id: 'u2' }])
+    expect((db.prepare('SELECT COUNT(*) c FROM exchange_rates').get() as { c: number }).c).toBe(0)
+  })
 })

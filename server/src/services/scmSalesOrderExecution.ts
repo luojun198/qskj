@@ -26,15 +26,36 @@ export function querySalesOrderExecution(db: Database.Database, aid: string, f: 
   if (f.end_date) { conds.push('d.doc_date<=?'); ps.push(f.end_date) }
   const rows = db.prepare(`SELECT d.id doc_id, d.doc_no, d.doc_date, d.expect_date, d.partner_code, p.name partner_name,
       l.id line_id, l.item_code, i.name item_name, i.unit, COALESCE(l.warehouse_code, d.warehouse_code) warehouse_code, l.qty order_qty,
-      COALESCE((SELECT SUM(sl.qty) FROM scm_doc_line sl JOIN scm_doc sd ON sd.id=sl.doc_id WHERE sl.source_line_id=l.id AND sd.doc_type='SO' AND sd.status='audited'),0)
-        - COALESCE((SELECT SUM(rl.qty) FROM scm_doc_line rl JOIN scm_doc rd ON rd.id=rl.doc_id JOIN scm_doc_line sl2 ON sl2.id=rl.source_line_id
-            WHERE sl2.source_line_id=l.id AND rd.doc_type='SR' AND rd.status='audited'),0) shipped_qty
+      COALESCE(so.q, 0) - COALESCE(sr.q, 0) shipped_qty
     FROM scm_doc d JOIN scm_doc_line l ON l.doc_id=d.id
+    -- FIX-319：已发货 / 已退货原为逐行关联子查询，规划器从全部发货单反扫（每行 ~80ms，1.4 万行约 19 分钟）；
+    -- 改为按来源订单行一次聚合后左连接
+    LEFT JOIN (SELECT sl.source_line_id sid, SUM(sl.qty) q FROM scm_doc_line sl JOIN scm_doc sd ON sd.id=sl.doc_id
+               WHERE sd.account_set_id=? AND sd.doc_type='SO' AND sd.status='audited' AND sl.source_line_id IS NOT NULL
+               GROUP BY sl.source_line_id) so ON so.sid=l.id
+    LEFT JOIN (SELECT sl2.source_line_id sid, SUM(rl.qty) q FROM scm_doc_line rl JOIN scm_doc rd ON rd.id=rl.doc_id
+               JOIN scm_doc_line sl2 ON sl2.id=rl.source_line_id
+               WHERE rd.account_set_id=? AND rd.doc_type='SR' AND rd.status='audited' AND sl2.source_line_id IS NOT NULL
+               GROUP BY sl2.source_line_id) sr ON sr.sid=l.id
     LEFT JOIN scm_partner p ON p.account_set_id=d.account_set_id AND p.code=d.partner_code
     LEFT JOIN scm_item i ON i.account_set_id=d.account_set_id AND i.code=l.item_code
-    WHERE ${conds.join(' AND ')} ORDER BY d.doc_date DESC, d.doc_no DESC, l.seq`).all(...ps) as any[]
+    WHERE ${conds.join(' AND ')} ORDER BY d.doc_date DESC, d.doc_no DESC, l.seq`).all(aid, aid, ...ps) as any[]
   const today = new Date(); const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
-  const stockOf = db.prepare('SELECT COALESCE(SUM(qty),0) q FROM scm_stock WHERE account_set_id=? AND item_code=?')
+  // FIX-319：库存与采购在途只与物料有关，原先对每个订单行各查一次（采购在途每次 ~200ms，1.4 万行订单明细
+  // 约 47 分钟，同步阻塞整个服务）。改为各用一条 GROUP BY 聚合一次、逐行查 Map。
+  const stockByItem = new Map<string, number>(
+    (db.prepare('SELECT item_code, COALESCE(SUM(qty),0) q FROM scm_stock WHERE account_set_id=? GROUP BY item_code').all(aid) as any[])
+      .map(x => [x.item_code, Number(x.q) || 0])
+  )
+  const poOpenByItem = new Map<string, number>(
+    (db.prepare(`SELECT l.item_code, SUM(l.qty - COALESCE(pi.q, 0)) q
+        FROM scm_doc_line l JOIN scm_doc d ON d.id=l.doc_id
+        LEFT JOIN (SELECT pl.source_line_id sid, SUM(pl.qty) q FROM scm_doc_line pl JOIN scm_doc pd ON pd.id=pl.doc_id
+                    WHERE pd.account_set_id=? AND pd.doc_type='PI' AND pd.status='audited' AND pl.source_line_id IS NOT NULL
+                    GROUP BY pl.source_line_id) pi ON pi.sid=l.id
+        WHERE d.account_set_id=? AND d.doc_type='PO' AND d.status='audited'
+        GROUP BY l.item_code`).all(aid, aid) as any[]).map(x => [x.item_code, Number(x.q) || 0])
+  )
   // 与订单行相关的工单：直推（成品行 source_line_id=订单行）或经 MRP（scm_mrp_source 指向订单）
   const plansDirect = db.prepare(`SELECT p.id, p.code, p.plan_type, p.status, p.end_date, p.sched_end_date, pp.plan_qty, pp.finished_qty, pp.scrap_qty
     FROM scm_production_plan_product pp JOIN scm_production_plan p ON p.id=pp.plan_id WHERE pp.source_line_id=? AND p.status IN ('released','draft')`)
@@ -43,8 +64,6 @@ export function querySalesOrderExecution(db: Database.Database, aid: string, f: 
     JOIN scm_production_plan p ON p.account_set_id=s.account_set_id AND (p.source_doc_id=md.id OR p.source_doc_id IN (SELECT id FROM scm_doc WHERE doc_type='MR' AND source_doc_id=md.id))
     JOIN scm_production_plan_product pp ON pp.plan_id=p.id AND pp.item_code=?
     WHERE s.account_set_id=? AND s.source_kind='sales_order' AND s.source_id=? AND p.status IN ('released','draft')`)
-  const poOpen = db.prepare(`SELECT COALESCE(SUM(l.qty - COALESCE((SELECT SUM(pl.qty) FROM scm_doc_line pl JOIN scm_doc pd ON pd.id=pl.doc_id WHERE pl.source_line_id=l.id AND pd.doc_type='PI' AND pd.status='audited'),0)),0) q
-    FROM scm_doc_line l JOIN scm_doc d ON d.id=l.doc_id WHERE d.account_set_id=? AND d.doc_type='PO' AND d.status='audited' AND l.item_code=?`)
   const out: SalesExecRow[] = rows.map(r => {
     const orderQty = r6(Number(r.order_qty) || 0), shipped = r6(Number(r.shipped_qty) || 0)
     const openQty = r6(Math.max(0, orderQty - shipped))
@@ -61,8 +80,8 @@ export function querySalesOrderExecution(db: Database.Database, aid: string, f: 
       const d = x.sched_end_date || x.end_date
       if (d && (!est || d > est)) est = d
     }
-    const onHand = r6(Number((stockOf.get(aid, r.item_code) as any)?.q) || 0)
-    const po = r6(Number((poOpen.get(aid, r.item_code) as any)?.q) || 0)
+    const onHand = r6(stockByItem.get(r.item_code) || 0)
+    const po = r6(poOpenByItem.get(r.item_code) || 0)
     return {
       doc_id: r.doc_id, doc_no: r.doc_no, doc_date: r.doc_date, expect_date: r.expect_date, partner_code: r.partner_code, partner_name: r.partner_name,
       line_id: r.line_id, item_code: r.item_code, item_name: r.item_name || '', unit: r.unit, warehouse_code: r.warehouse_code,

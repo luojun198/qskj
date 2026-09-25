@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { parseAmountFilter } from '../utils/amountUtils.js'
 import { v4 as uuidv4 } from 'uuid'
-import { authMiddleware, AuthRequest, requirePermission, operationLog } from '../middleware/index.js'
+import { authMiddleware, AuthRequest, requirePermission, requireAnyPermission, operationLog } from '../middleware/index.js'
 import {
   findVatParentAccount,
   queryVatLedger,
@@ -166,7 +166,9 @@ function resolveBalanceRouteDates(req: AuthRequest, endpoint: string) {
   return { startDate, endDate }
 }
 
-router.get('/general', (req: AuthRequest, res) => {
+// 评审 P2 收尾：账簿读接口此前只校验登录，按页面路由的权限码（config/navigation.ts ROUTE_PERMISSION_MAP）补齐；
+// 注意路由名与权限 key 的历史错位：/general（科目余额表）= ledger:balance，/general-ledger（总分类账）= ledger:general
+router.get('/general', requirePermission('ledger:balance'), (req: AuthRequest, res) => {
   const db = getDb()
   const {
     account_code,
@@ -244,7 +246,7 @@ router.get('/general', (req: AuthRequest, res) => {
 
 // ===================== 明细账 =====================
 
-router.get('/detail', (req: AuthRequest, res) => {
+router.get('/detail', requirePermission('ledger:detail'), (req: AuthRequest, res) => {
   const db = getDb()
   const {
     year,
@@ -329,7 +331,7 @@ router.get('/detail', (req: AuthRequest, res) => {
 // ===================== 凭证汇总表 =====================
 
 /** 指定年月/类型下实际存在的凭证号区间，供条件窗自动填充默认值 */
-router.get('/voucher-summary/no-range', (req: AuthRequest, res) => {
+router.get('/voucher-summary/no-range', requirePermission('ledger:vsummary'), (req: AuthRequest, res) => {
   const db = getDb()
   const { year, period, voucher_type_id, scope } = req.query
   const query = buildVoucherSummaryNoRangeQuery({
@@ -352,7 +354,7 @@ router.get('/voucher-summary/no-range', (req: AuthRequest, res) => {
   })
 })
 
-router.get('/voucher-summary', (req: AuthRequest, res) => {
+router.get('/voucher-summary', requirePermission('ledger:vsummary'), (req: AuthRequest, res) => {
   const db = getDb()
   const accountSetId = req.accountSetId || ''
   const { year, period, voucher_type_id, voucher_no_start, voucher_no_end, level, scope } = req.query
@@ -528,7 +530,7 @@ router.get('/quantity-balance', requirePermission('ledger:qty'), (req: AuthReque
  *  - `summary`：按币种分桶的合计（结构与辅助外币表的 `foreign_totals` 一致）；
  *  - `rates`：各币种期末汇率，复用期末调汇的 `resolveClosingExchangeRate` 回退链。
  */
-router.get('/foreign-balance', (req: AuthRequest, res) => {
+router.get('/foreign-balance', requirePermission('ledger:foreign'), (req: AuthRequest, res) => {
   const db = getDb()
   const {
     year,
@@ -676,7 +678,7 @@ function queryMonthlyLedgerRows(
 
 // ===================== 财务分析：科目分析（排除损益结转） =====================
 
-router.get('/subject-analysis', (req: AuthRequest, res) => {
+router.get('/subject-analysis', requirePermission('ledger:balance'), (req: AuthRequest, res) => {
   const db = getDb()
   const { year, account_code, include_unposted } = req.query
   const code = String(account_code || '').trim()
@@ -720,7 +722,7 @@ router.get('/subject-analysis', (req: AuthRequest, res) => {
   res.json({ code: 0, data })
 })
 
-router.get('/general-ledger', (req: AuthRequest, res) => {
+router.get('/general-ledger', requirePermission('ledger:general'), (req: AuthRequest, res) => {
   const db = getDb()
   const { year, account_code, account_level, include_unposted } = req.query
   const maxLevel = account_level ? Number(account_level) : undefined
@@ -814,7 +816,7 @@ router.get('/general-ledger', (req: AuthRequest, res) => {
 
 // ===================== 日记账 =====================
 
-router.get('/cash-journal', (req: AuthRequest, res) => {
+router.get('/cash-journal', requireAnyPermission('ledger:cash', 'ledger:bank'), (req: AuthRequest, res) => {
   const db = getDb()
   const {
     year,
@@ -884,7 +886,7 @@ router.get('/cash-journal', (req: AuthRequest, res) => {
 
 // ===================== 序时账 =====================
 
-router.get('/chronological', (req: AuthRequest, res) => {
+router.get('/chronological', requirePermission('ledger:detail'), (req: AuthRequest, res) => {
   const db = getDb()
   const {
     year,
@@ -929,7 +931,7 @@ router.get('/chronological', (req: AuthRequest, res) => {
 
 // ===================== 辅助项目余额表 =====================
 
-router.post('/aux-balance', (req: AuthRequest, res) => {
+router.post('/aux-balance', requirePermission('ledger:aux'), (req: AuthRequest, res) => {
   const db = getDb()
   const {
     aux_category_ids,
@@ -1923,7 +1925,7 @@ router.post('/aux-balance', (req: AuthRequest, res) => {
 
 // ===================== 辅助项目明细账 =====================
 
-router.post('/aux-detail', (req: AuthRequest, res) => {
+router.post('/aux-detail', requirePermission('ledger:aux'), (req: AuthRequest, res) => {
   const db = getDb()
   const {
     aux_category_ids,
@@ -2562,7 +2564,7 @@ router.post('/aux-detail', (req: AuthRequest, res) => {
   }
 })
 
-router.get('/cash-flow-trial-balance', (req: AuthRequest, res) => {
+router.get('/cash-flow-trial-balance', requirePermission('ledger:cashflow'), (req: AuthRequest, res) => {
   try {
     const accountSetId = req.accountSetId || ''
     if (!isCashFlowEnabledForAccountSet(getDb(), accountSetId)) {
@@ -2582,7 +2584,7 @@ router.get('/cash-flow-trial-balance', (req: AuthRequest, res) => {
   }
 })
 
-router.get('/cash-flow-voucher-check', (req: AuthRequest, res) => {
+router.get('/cash-flow-voucher-check', requirePermission('ledger:cashflow'), (req: AuthRequest, res) => {
   try {
     const accountSetId = req.accountSetId || ''
     if (!isCashFlowEnabledForAccountSet(getDb(), accountSetId)) {

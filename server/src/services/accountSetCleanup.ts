@@ -127,10 +127,28 @@ export function cleanupAccountSetCascade(db: Database, accountSetId: string) {
           throw err
         }
       }
+      // 评审 P2 收尾：上面的显式清单按依赖顺序删，但新增模块（供应链 scm_*、币种 / 汇率等）常漏加，
+      // 删账套后留下孤儿行（开发库实测 6 个已删账套残留约 510 行）。最后统一扫一遍所有带 account_set_id 列的表兜底。
+      for (const table of listAccountSetScopedTables(db)) {
+        db.prepare(`DELETE FROM "${table}" WHERE account_set_id = ?`).run(accountSetId)
+      }
     })
     cleanup()
     repairDatabaseReferentialIntegrity(db)
   } finally {
     db.pragma('foreign_keys = ON')
   }
+}
+
+/** 所有带 account_set_id 列的业务表（排除 account_sets 本身与 FTS 虚表的影子表） */
+export function listAccountSetScopedTables(db: Database): string[] {
+  const tables = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND sql NOT LIKE 'CREATE VIRTUAL TABLE%'")
+    .all() as Array<{ name: string }>
+  return tables
+    .map(t => t.name)
+    .filter(name => name !== 'account_sets' && !/_fts(_|$)/.test(name))
+    .filter(name =>
+      (db.prepare(`PRAGMA table_info("${name}")`).all() as Array<{ name: string }>).some(c => c.name === 'account_set_id')
+    )
 }
