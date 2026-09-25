@@ -17,6 +17,28 @@ function rowToGbkLine(cells: string[]): Buffer {
   return iconv.encode(cells.join('\t') + '\r\n', 'gbk')
 }
 
+/**
+ * FIX-328：大表逐行累积文本、每 2000 行编码一次 GBK。原先整表 .all() 进内存、每行单独 iconv.encode 出一个小 Buffer，
+ * 25 万条出纳流水时峰值内存 +940MB，并发下会把开发服务撑崩。GBK 编码无状态，分块编码与逐行编码拼接的字节完全一致。
+ */
+class GbkChunkWriter {
+  private lines: string[] = []
+  private bufs: Buffer[] = []
+  push(cells: string[]) {
+    this.lines.push(cells.join('\t') + '\r\n')
+    if (this.lines.length >= 2000) this.flush()
+  }
+  private flush() {
+    if (!this.lines.length) return
+    this.bufs.push(iconv.encode(this.lines.join(''), 'gbk'))
+    this.lines = []
+  }
+  finish(): Buffer {
+    this.flush()
+    return Buffer.concat(this.bufs)
+  }
+}
+
 /** 从 DB 行组装导出列，优先用 acd_raw */
 function buildRowFromRaw(
   dbRow: Record<string, any>,
@@ -80,7 +102,8 @@ const ZC_SYDW_COLS = ['sydw','dw_mc'] as const
 // ── 导出函数（各表返回 GBK Buffer） ──────────────────────────
 
 export function exportCnMx(db: Database, accountSetId: string): Buffer {
-  const rows = db.prepare('SELECT * FROM cashier_journal WHERE account_set_id=? ORDER BY biz_date,seq,created_at').all(accountSetId) as any[]
+  // FIX-328：逐行迭代，不再整表进内存
+  const rows = db.prepare('SELECT * FROM cashier_journal WHERE account_set_id=? ORDER BY biz_date,seq,created_at').iterate(accountSetId) as IterableIterator<any>
   // CW 出纳生成凭证时，cashier_journal.voucher_type 存的是凭证类型 UUID、voucher_no 是「记-001」字符串；
   // 润衡 cn_mx 的 p_pzlx/p_pzbh 是整数。导出时映射回润衡可识别的数值，保证可逆还原。
   const vtCodeById = new Map<string, string>(
@@ -101,7 +124,7 @@ export function exportCnMx(db: Database, accountSetId: string): Buffer {
     if (m) return String(Number.parseInt(m[1], 10))
     return /^\d+$/.test(s) ? s : ''
   }
-  const bufs: Buffer[] = []
+  const out = new GbkChunkWriter()
   // 静态行序号（ACD dzd_xh 格式）
   for (const r of rows) {
     const cells = buildRowFromRaw(r, CN_MX_COLS, {
@@ -127,9 +150,9 @@ export function exportCnMx(db: Database, accountSetId: string): Buffer {
       p_pzlx: r => acdType(r.voucher_type),
       p_pzbh: r => acdNo(r.voucher_no),
     })
-    bufs.push(rowToGbkLine(cells))
+    out.push(cells)
   }
-  return Buffer.concat(bufs)
+  return out.finish()
 }
 
 export function exportCnNc(db: Database, accountSetId: string): Buffer {
@@ -145,9 +168,9 @@ export function exportJslb(db: Database, accountSetId: string): Buffer {
 }
 
 export function exportYhdzd(db: Database, accountSetId: string): Buffer {
-  const rows = db.prepare('SELECT * FROM bank_statement WHERE account_set_id=? ORDER BY biz_date,id').all(accountSetId) as any[]
+  const rows = db.prepare('SELECT * FROM bank_statement WHERE account_set_id=? ORDER BY biz_date,id').iterate(accountSetId) as IterableIterator<any>
   let xh = 1
-  const bufs: Buffer[] = []
+  const out = new GbkChunkWriter()
   for (const r of rows) {
     const cells = buildRowFromRaw(r, YHDZD_COLS, {
       dzd_xh: () => String(xh++),
@@ -160,9 +183,9 @@ export function exportYhdzd(db: Database, accountSetId: string): Buffer {
       dzbz:   r => r.matched ? '1' : '',
       dzbh:   r => s(r.match_batch),
     })
-    bufs.push(rowToGbkLine(cells))
+    out.push(cells)
   }
-  return Buffer.concat(bufs)
+  return out.finish()
 }
 
 export function exportZcGdzc(db: Database, accountSetId: string): Buffer {

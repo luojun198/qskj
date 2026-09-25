@@ -136,11 +136,14 @@ function accountHasVoucherActivity(
     return false
   }
   try {
+    // FIX-327：从分录 (账套, 科目) 索引出发再回查凭证。原写法账套条件放凭证侧，规划器从 (账套, 年度) 扫全年凭证
+    // 逐张回查分录，无发生额的科目每次扫满（10 万凭证时 ~350ms），报表每个公式对每个叶子科目各调一次，资产负债表 70~90s
     const row = db
       .prepare(
         `SELECT 1 FROM voucher_entries ve
-         JOIN vouchers v ON v.id = ve.voucher_id
-         WHERE v.account_set_id = ? AND ve.account_id = ? AND v.year = ?
+         CROSS JOIN vouchers v ON v.id = ve.voucher_id
+         WHERE ve.account_set_id = ? AND ve.account_id = ?
+           AND v.account_set_id = ve.account_set_id AND v.year = ?
            AND v.status IN ('draft', 'audited', 'posted')
          LIMIT 1`
       )
@@ -531,6 +534,7 @@ export function getPeriodRangeSumExcludeTransfer(
     }
 
     const placeholders = leafIds.map(() => '?').join(',')
+    // FIX-327：从分录 (账套, 科目) 索引出发（同 accountHasVoucherActivity），不再从 (账套, 年度) 扫全年凭证
     const row = db
       .prepare(
         `
@@ -538,10 +542,11 @@ export function getPeriodRangeSumExcludeTransfer(
         SUM(CASE WHEN ve.direction = 'debit' THEN ve.amount ELSE 0 END) as total_debit,
         SUM(CASE WHEN ve.direction = 'credit' THEN ve.amount ELSE 0 END) as total_credit
       FROM voucher_entries ve
-      JOIN vouchers v ON v.id = ve.voucher_id
+      CROSS JOIN vouchers v ON v.id = ve.voucher_id
       ${CLOSING_VOUCHER_TYPE_JOIN_SQL}
-      WHERE v.account_set_id = ?
+      WHERE ve.account_set_id = ?
         AND ve.account_id IN (${placeholders})
+        AND v.account_set_id = ve.account_set_id
         AND v.year = ?
         AND v.period >= ?
         AND v.period <= ?
@@ -620,10 +625,11 @@ export function getBatchPeriodRangeSums(
                 SUM(CASE WHEN ve.direction = 'debit' THEN ve.amount ELSE 0 END) AS d,
                 SUM(CASE WHEN ve.direction = 'credit' THEN ve.amount ELSE 0 END) AS c
          FROM voucher_entries ve
-         JOIN vouchers v ON v.id = ve.voucher_id
+         CROSS JOIN vouchers v ON v.id = ve.voucher_id
          ${CLOSING_VOUCHER_TYPE_JOIN_SQL}
-         WHERE v.account_set_id = ?
+         WHERE ve.account_set_id = ?
            AND ve.account_id IN (${idPlaceholders})
+           AND v.account_set_id = ve.account_set_id
            AND v.year = ?
            AND v.period >= ?
            AND v.period <= ?

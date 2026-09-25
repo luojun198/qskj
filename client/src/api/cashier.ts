@@ -94,7 +94,7 @@ export interface JournalResult {
   totalBaseDebit?: number
   totalBaseCredit?: number
   currency?: string
-  /** FIX-253：区间内行数；分页时另带 page / pageSize */
+  /** FIX-253：区间内行数；FIX-326 起接口强制分页，始终带 page / pageSize */
   total?: number
   page?: number
   pageSize?: number
@@ -134,8 +134,9 @@ export interface GlEntryRow {
 
 export interface GlReconcileSummary {
   currency: string
-  cashier: { debit: number; credit: number; balance: number; unmatched: number }
-  gl: { debit: number; credit: number; balance: number; unmatched: number }
+  /** count：区间内总行数（FIX-326，明细可能被截断，以此为准） */
+  cashier: { debit: number; credit: number; balance: number; unmatched: number; count: number }
+  gl: { debit: number; credit: number; balance: number; unmatched: number; count: number }
   /** 区间内该科目未记账凭证张数（不参与对账） */
   unposted: number
 }
@@ -150,6 +151,12 @@ export interface CashierGlReport {
   gl_balance: number
   cashier_unmatched: Array<{ id: string; biz_date: string; summary: string | null; debit: number; credit: number; bill_no: string | null }>
   gl_unmatched: Array<{ id: string; voucher_date: string; voucher_no: string; voucher_type_name: string | null; summary: string | null; debit: number; credit: number }>
+  /** FIX-326：两侧未达总行数与净额（服务端 SQL 汇总）；明细最多 list_limit 行 */
+  cashier_unmatched_total: number
+  gl_unmatched_total: number
+  cashier_unmatched_net: number
+  gl_unmatched_net: number
+  list_limit: number
   adjusted_cashier: number
   adjusted_gl: number
   difference: number
@@ -244,7 +251,11 @@ export const cashierApi = {
 
   // FIX-262：出纳对账（出纳日记账 ↔ 总账已记账分录，一对多 / 多对一）
   getGlReconcileEntries: (params: { account_code: string; start_date?: string; end_date?: string }) =>
-    request.get<{ cashier: GlCashierRow[]; gl: GlEntryRow[]; summary: GlReconcileSummary; stale: number }>(
+    request.get<{
+      cashier: GlCashierRow[]; gl: GlEntryRow[]; summary: GlReconcileSummary; stale: number
+      /** FIX-326：每侧明细上限与是否截断 */
+      limit: number; truncated: { cashier: boolean; gl: boolean }
+    }>(
       '/cashier/gl-reconcile/entries', { params }),
   glAutoMatch: (data: { account_code: string; start_date?: string; end_date?: string; day_tolerance?: number }) =>
     request.post<{ linked: number; matched: number; stale: number }>('/cashier/gl-reconcile/auto', data),

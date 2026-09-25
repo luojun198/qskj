@@ -36,7 +36,7 @@
       <!-- 未对项：左右两栏 -->
       <div class="unrecon-grid">
         <div class="unrecon-col">
-          <h4>出纳已记、总账未记（{{ data.cashier_unmatched.length }} 条）</h4>
+          <h4>出纳已记、总账未记（{{ unmatchedLabel(data.cashier_unmatched.length, data.cashier_unmatched_total) }}）</h4>
           <el-table :key="data.account_code + '_c'" :data="data.cashier_unmatched" size="small" border stripe max-height="320" style="width: 100%">
             <el-table-column label="日期" prop="biz_date" width="100" />
             <el-table-column label="摘要" prop="summary" min-width="140" show-overflow-tooltip />
@@ -53,7 +53,7 @@
           </div>
         </div>
         <div class="unrecon-col">
-          <h4>总账已记、出纳未记（{{ data.gl_unmatched.length }} 条）</h4>
+          <h4>总账已记、出纳未记（{{ unmatchedLabel(data.gl_unmatched.length, data.gl_unmatched_total) }}）</h4>
           <el-table :key="data.account_code + '_g'" :data="data.gl_unmatched" size="small" border stripe max-height="320" style="width: 100%">
             <el-table-column label="日期" prop="voucher_date" width="100" />
             <el-table-column label="凭证号" width="90">
@@ -129,9 +129,12 @@ function handleClearFilters() {
 
 const fmt = (v: number) =>
   v === 0 ? '0.00' : (Number(v) || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-const net = (rs: Array<{ debit: number; credit: number }>) => rs.reduce((s, r) => s + (r.debit || 0) - (r.credit || 0), 0)
-const cashierNet = computed(() => net(data.value?.cashier_unmatched ?? []))
-const glNet = computed(() => net(data.value?.gl_unmatched ?? []))
+// FIX-326：未对净额取服务端 SQL 汇总（明细最多 list_limit 条，前端求和会漏算被截断的部分）
+const cashierNet = computed(() => data.value?.cashier_unmatched_net ?? 0)
+const glNet = computed(() => data.value?.gl_unmatched_net ?? 0)
+function unmatchedLabel(shown: number, total?: number) {
+  return total != null && total > shown ? `共 ${total} 条，显示前 ${shown} 条` : `${shown} 条`
+}
 const isMatch = computed(() => !!data.value && Math.abs(data.value.difference) < 0.01)
 
 function voucherLabel(r: { voucher_no: string; voucher_type_name: string | null }) {

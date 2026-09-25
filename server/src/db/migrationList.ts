@@ -523,6 +523,10 @@ import {
   up as cashierJournalCurrencyIndexUp,
   down as cashierJournalCurrencyIndexDown,
 } from './migrations/20260925_cashier_journal_currency_index.js'
+import {
+  up as cashierJournalCoverIndexUp,
+  down as cashierJournalCoverIndexDown,
+} from './migrations/20260925_cashier_journal_cover_index.js'
 
 /**
  * 迁移示例：添加新字段
@@ -2352,5 +2356,11 @@ export const migrations: Migration[] = [
     name: 'cashier_journal_currency_index',
     up: cashierJournalCurrencyIndexUp,
     down: cashierJournalCurrencyIndexDown,
+  },
+  {
+    version: 152,
+    name: 'cashier_journal_cover_index',
+    up: cashierJournalCoverIndexUp,
+    down: cashierJournalCoverIndexDown,
   },
 ]

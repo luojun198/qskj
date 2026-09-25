@@ -442,7 +442,7 @@ describe('reportTemplateExecutor', () => {
         year INTEGER, period INTEGER, status TEXT
       );
       CREATE TABLE voucher_entries (
-        id TEXT PRIMARY KEY, voucher_id TEXT, account_id TEXT,
+        id TEXT PRIMARY KEY, account_set_id TEXT DEFAULT 'set-1', voucher_id TEXT, account_id TEXT,
         direction TEXT, amount REAL
       );
     `)

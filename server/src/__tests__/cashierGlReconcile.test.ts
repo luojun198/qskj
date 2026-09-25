@@ -9,6 +9,7 @@ import { up as glMatchUp } from '../db/migrations/20260924_cashier_gl_match.js'
 import { up as periodClosingUp } from '../db/migrations/20260916_cashier_period_closing.js'
 import {
   autoMatch, manualMatch, cancelMatch, pruneStaleMatches, listCashierRows, listGlEntries, getCashierGlReport,
+  getPeriodSummary,
 } from '../services/cashierGlReconcile.js'
 
 const AS = 'as1'
@@ -154,5 +155,28 @@ describe('cashierGlReconcile', () => {
     db.prepare("UPDATE cashier_init_balance SET balance=31000").run()
     rep = getCashierGlReport(scope(), '2026-09-30')
     expect(rep.difference).toBe(1000)
+  })
+
+  it('FIX-326：明细按上限截取，未达净额 / 本期合计按 SQL 汇总，不受截断影响', () => {
+    db.prepare("INSERT INTO cashier_init_balance VALUES ('ib', ?, ?, 'RMB', 0, '2026-08-01')").run(AS, BANK)
+    for (let i = 1; i <= 12; i++) j(`c${i}`, `2026-09-${String(i).padStart(2, '0')}`, 100 * i, 0)
+    for (let i = 1; i <= 7; i++) { v(`v${i}`, `2026-09-${String(i).padStart(2, '0')}`); e(`g${i}`, `v${i}`, 'debit', 100 * i) }
+    manualMatch(scope(), ['c1'], ['g1'])
+    const full = getCashierGlReport(scope(), '2026-09-30')
+    const cut = getCashierGlReport(scope(), '2026-09-30', { listLimit: 3 })
+    expect(cut.cashier_unmatched.map(r => r.id)).toEqual(['c2', 'c3', 'c4'])
+    expect(cut.gl_unmatched.map(r => r.id)).toEqual(['g2', 'g3', 'g4'])
+    expect(cut.cashier_unmatched_total).toBe(11)
+    expect(cut.gl_unmatched_total).toBe(6)
+    expect(cut.cashier_unmatched_net).toBe(7700)
+    expect(cut.gl_unmatched_net).toBe(2700)
+    expect(cut.adjusted_cashier).toBe(full.adjusted_cashier)
+    expect(cut.adjusted_gl).toBe(full.adjusted_gl)
+    expect(full.cashier_unmatched).toHaveLength(11)
+    expect(listGlEntries(scope(), { matched: true }).rows.map(r => r.id)).toEqual(['g1'])
+    expect(listCashierRows(scope(), { limit: 5 })).toHaveLength(5)
+    const sum = getPeriodSummary(scope(), '2026-09-01', '2026-09-30')
+    expect(sum.cashier).toMatchObject({ debit: 7800, count: 12, unmatched: 11 })
+    expect(sum.gl).toMatchObject({ debit: 2800, count: 7, unmatched: 6 })
   })
 })

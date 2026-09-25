@@ -1,7 +1,7 @@
 <template>
   <div class="page page-flow-query">
     <div class="filter-row" style="padding:12px 16px 0">
-      <el-select v-model="filters.account_code" filterable placeholder="选择科目" class="filter-ctl--md" @change="handleQuery">
+      <el-select v-model="filters.account_code" filterable placeholder="选择科目" class="filter-ctl--md" @change="handleSearch">
         <el-option-group v-if="cashAccounts.length" label="现金科目">
           <el-option v-for="a in cashAccounts" :key="a.code" :label="`${a.code} ${a.name}`" :value="a.code" />
         </el-option-group>
@@ -9,13 +9,13 @@
           <el-option v-for="a in bankAccounts" :key="a.code" :label="`${a.code} ${a.name}`" :value="a.code" />
         </el-option-group>
       </el-select>
-      <el-date-picker v-model="filters.start_date" type="date" value-format="YYYY-MM-DD" placeholder="开始日期" class="filter-ctl--md" @change="handleQuery" />
+      <el-date-picker v-model="filters.start_date" type="date" value-format="YYYY-MM-DD" placeholder="开始日期" class="filter-ctl--md" @change="handleSearch" />
       <span>至</span>
-      <el-date-picker v-model="filters.end_date" type="date" value-format="YYYY-MM-DD" placeholder="结束日期" class="filter-ctl--md" @change="handleQuery" />
-      <el-select v-model="filters.currency" placeholder="币种" class="filter-ctl--xs" @change="handleQuery">
+      <el-date-picker v-model="filters.end_date" type="date" value-format="YYYY-MM-DD" placeholder="结束日期" class="filter-ctl--md" @change="handleSearch" />
+      <el-select v-model="filters.currency" placeholder="币种" class="filter-ctl--xs" @change="handleSearch">
         <el-option v-for="c in currencies" :key="c" :label="c" :value="c" />
       </el-select>
-      <el-button type="primary" @click="handleQuery"><el-icon><Search /></el-icon>查询</el-button>
+      <el-button type="primary" @click="handleSearch"><el-icon><Search /></el-icon>查询</el-button>
       <FilterClearButton @clear="handleClearFilters" />
       <el-button plain :disabled="!journalResult" @click="handleExport"><el-icon><Download /></el-icon>导出</el-button>
       <el-button plain :disabled="!journalResult" @click="handlePrint"><el-icon><Printer /></el-icon>打印</el-button>
@@ -61,8 +61,18 @@
       </el-table>
     </div>
 
-    <div v-if="rows.length" class="table-footer">
-      <span>共 {{ journalResult ? journalResult.rows.length : 0 }} 条记录</span>
+    <!-- FIX-326：日记账接口强制分页；期初 / 合计 / 期末仍是整个区间的口径，逐行余额跨页连续 -->
+    <div v-if="journalResult" class="table-footer">
+      <el-pagination
+        v-model:current-page="page"
+        v-model:page-size="pageSize"
+        :page-sizes="[50, 100, 200, 500]"
+        :total="journalResult.total ?? journalResult.rows.length"
+        layout="total, sizes, prev, pager, next, jumper"
+        small
+        @size-change="handleQuery"
+        @current-change="handleQuery"
+      />
     </div>
   </div>
 </template>
@@ -76,7 +86,7 @@ import { useFillHeightTable } from '@/composables/useFillHeightTable'
 import { useListColumnWidth } from '@/composables/useColumnWidthMemory'
 import FilterClearButton from '@/components/common/FilterClearButton.vue'
 import { useFilterClear } from '@/composables/useFilterClear'
-import { exportStyledTable, type ExportColumnDef } from '@/utils/exportStyledExcel'
+import { exportStyledTableViaSource, type ExportColumnDef } from '@/utils/exportStyledExcel'
 import { useRoute } from 'vue-router'
 
 const route = useRoute()
@@ -89,9 +99,13 @@ const accounts = ref<{ code: string; name: string; is_cash: number; is_bank: num
 const cashAccounts = computed(() => accounts.value.filter(a => a.is_cash))
 const bankAccounts = computed(() => accounts.value.filter(a => a.is_bank && !a.is_cash))
 const journalResult = ref<JournalResult | null>(null)
+const page = ref(1)
+const pageSize = ref(100)
 const rows = computed(() => {
   const raw = journalResult.value?.rows ?? []
   if (raw.length === 0 && !journalResult.value) return []
+  // 期初行只在第 1 页显示（后续页的逐行余额已含前页累计）
+  if (page.value > 1) return raw
   const opening = journalResult.value?.opening ?? 0
   return [
     {
@@ -121,7 +135,7 @@ function handleClearFilters() {
   clearFilters()
   filters.value.account_code = currentAccount
   filters.value.currency = 'RMB'
-  handleQuery()
+  handleSearch()
 }
 
 const fmt = (v: number) => v === 0 ? '0.00' : v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -150,6 +164,12 @@ onMounted(async () => {
   }
 })
 
+/** 筛选条件变化：回到第 1 页 */
+function handleSearch() {
+  page.value = 1
+  handleQuery()
+}
+
 async function handleQuery() {
   if (!filters.value.account_code) return
   const res = await cashierApi.getJournal({
@@ -157,6 +177,8 @@ async function handleQuery() {
     currency: filters.value.currency || undefined,
     start_date: filters.value.start_date || undefined,
     end_date: filters.value.end_date || undefined,
+    page: page.value,
+    page_size: pageSize.value,
   })
   if (res.code === 0) journalResult.value = res.data
 }
@@ -169,26 +191,35 @@ async function handleExport() {
   const accName = accounts.value.find(a => a.code === filters.value.account_code)
   const acc = accName ? `${accName.code} ${accName.name}` : filters.value.account_code
   const range = [filters.value.start_date, filters.value.end_date].filter(Boolean).join(' 至 ')
+  // FIX-326：页面已分页，导出由服务端按整个区间流式生成（期初在副标题，期末在合计行）
   const columns: ExportColumnDef<any>[] = [
-    { label: '日期', width: 100, value: r => r.biz_date },
-    { label: '摘要', width: 160, value: r => r.summary || '' },
-    { label: '结算方式', width: 90, value: r => r.settle_type || '' },
-    { label: '票据号', width: 110, value: r => r.bill_no || '' },
-    { label: '对方单位', width: 140, value: r => r.counter_unit || '' },
-    { label: '借方(收入)', width: 120, align: 'right', type: 'amount', value: r => r.debit || '' },
-    { label: '贷方(支出)', width: 120, align: 'right', type: 'amount', value: r => r.credit || '' },
-    { label: '余额', width: 120, align: 'right', type: 'amount', value: r => r.balance ?? 0 },
-    { label: '已对账', width: 70, align: 'center', value: r => (r.reconciled ? '是' : '') },
-    { label: '关联凭证', width: 120, value: r => (r.voucher_no ? `${r.voucher_year}-${String(r.voucher_month).padStart(2, '0')} ${r.voucher_no}` : '') },
+    { key: 'biz_date', label: '日期', width: 100 },
+    { key: 'summary', label: '摘要', width: 160 },
+    { key: 'settle_type', label: '结算方式', width: 90 },
+    { key: 'bill_no', label: '票据号', width: 110 },
+    { key: 'counter_unit', label: '对方单位', width: 140 },
+    { key: 'debit', label: '借方(收入)', width: 120, align: 'right', type: 'amount' },
+    { key: 'credit', label: '贷方(支出)', width: 120, align: 'right', type: 'amount' },
+    { key: 'balance', label: '余额', width: 120, align: 'right', type: 'amount' },
+    { key: 'reconciled', label: '已对账', width: 70, align: 'center' },
+    { key: 'voucher', label: '关联凭证', width: 120 },
   ]
   const summaryValues = ['', '', '', '', '', jr.totalDebit, jr.totalCredit, jr.closing, '', '']
-  await exportStyledTable({
+  await exportStyledTableViaSource({
     fileName: `出纳流水账_${filters.value.account_code}_${range || '全部'}.xlsx`,
     sheetName: '出纳流水账',
     title: `出纳流水账　${acc}`,
-    subtitle: range ? `日期：${range}　期初：${fmt(jr.opening)}　期末：${fmt(jr.closing)}` : undefined,
+    subtitle: `${range ? `日期：${range}　` : ''}期初：${fmt(jr.opening)}　期末：${fmt(jr.closing)}`,
     columns,
-    rows: rows.value,
+    source: {
+      type: 'cashierJournal',
+      params: {
+        account_code: filters.value.account_code,
+        currency: filters.value.currency || undefined,
+        start_date: filters.value.start_date || undefined,
+        end_date: filters.value.end_date || undefined,
+      },
+    },
     summaryValues,
   })
 }

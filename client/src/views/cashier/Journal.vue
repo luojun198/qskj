@@ -426,7 +426,7 @@ import { useBaseDataStore } from '@/stores/baseData'
 import { useFillHeightTable } from '@/composables/useFillHeightTable'
 import { useListColumnWidth } from '@/composables/useColumnWidthMemory'
 import { useVoucherAuxItems } from '@/composables/useVoucherAuxItems'
-import { exportStyledTable, type ExportColumnDef } from '@/utils/exportStyledExcel'
+import { exportStyledTable, exportStyledTableViaSource, type ExportColumnDef } from '@/utils/exportStyledExcel'
 import { confirmRenumberAfterDelete } from '@/composables/useRenumberPrompt'
 import VoucherAttachments from '@/components/voucher/VoucherAttachments.vue'
 import ColumnSettingsDialog from '@/components/common/ColumnSettingsDialog.vue'
@@ -1488,51 +1488,50 @@ async function confirmImport() {
 // ── 导出当前日记账为 Excel ────────────────────────────────
 async function handleExport() {
   if (!rows.value.length) return ElMessage.warning('暂无数据可导出')
-  // FIX-253：页面是分页显示，导出要拉整个区间
-  const fullRes = await cashierApi.getJournal({
-    account_code: filters.value.account_code,
-    currency: filters.value.currency || undefined,
-    start_date: filters.value.start_date || undefined,
-    end_date: filters.value.end_date || undefined,
-  })
-  if (fullRes.code !== 0) return
-  const exportRows = fullRes.data.rows
+  // FIX-326：日记账接口已强制分页，导出改由服务端按区间逐天取数、流式生成 xlsx（不再把整个区间拉到浏览器）
   const acc = formatCounterAccount(filters.value.account_code)
   const range = [filters.value.start_date, filters.value.end_date].filter(Boolean).join(' 至 ')
-  const codeToName = new Map(settleTypes.value.map(s => [s.code, s.name]))
   const columns: ExportColumnDef<any>[] = [
-    { label: '日期', width: 100, value: r => r.biz_date },
-    { label: '摘要', width: 160, value: r => r.summary || '' },
-    { label: '结算方式', width: 90, value: r => (r.settle_type ? codeToName.get(r.settle_type) || r.settle_type : '') },
-    { label: '票据号', width: 110, value: r => r.bill_no || '' },
-    { label: '对方单位', width: 140, value: r => r.counter_unit || '' },
-    { label: '对方科目', width: 150, value: r => formatCounterAccount(r.counter_account) },
-    { label: amountLabel('借方(收入)'), width: 120, align: 'right', type: 'amount', value: r => r.debit || '' },
-    { label: amountLabel('贷方(支出)'), width: 120, align: 'right', type: 'amount', value: r => r.credit || '' },
-    { label: amountLabel('余额'), width: 120, align: 'right', type: 'amount', value: r => r.balance ?? 0 },
+    { key: 'biz_date', label: '日期', width: 100 },
+    { key: 'summary', label: '摘要', width: 160 },
+    { key: 'settle_type', label: '结算方式', width: 90 },
+    { key: 'bill_no', label: '票据号', width: 110 },
+    { key: 'counter_unit', label: '对方单位', width: 140 },
+    { key: 'counter_account', label: '对方科目', width: 150 },
+    { key: 'debit', label: amountLabel('借方(收入)'), width: 120, align: 'right', type: 'amount' },
+    { key: 'credit', label: amountLabel('贷方(支出)'), width: 120, align: 'right', type: 'amount' },
+    { key: 'balance', label: amountLabel('余额'), width: 120, align: 'right', type: 'amount' },
     // FIX-260：外币科目导出汇率与本位币金额
     ...(isForeignAccount.value
       ? ([
-          { label: '汇率', width: 90, align: 'right', value: r => fmtRate(r.exchange_rate) },
-          { label: `借方(${baseCurrency.value})`, width: 120, align: 'right', type: 'amount', value: r => r.base_debit || '' },
-          { label: `贷方(${baseCurrency.value})`, width: 120, align: 'right', type: 'amount', value: r => r.base_credit || '' },
+          { key: 'exchange_rate', label: '汇率', width: 90, align: 'right' },
+          { key: 'base_debit', label: `借方(${baseCurrency.value})`, width: 120, align: 'right', type: 'amount' },
+          { key: 'base_credit', label: `贷方(${baseCurrency.value})`, width: 120, align: 'right', type: 'amount' },
         ] as ExportColumnDef<any>[])
       : []),
-    { label: '已对账', width: 70, align: 'center', value: r => (r.reconciled ? '是' : '') },
-    { label: '关联凭证', width: 120, value: r => (r.voucher_no ? `${r.voucher_year}-${String(r.voucher_month).padStart(2, '0')} ${r.voucher_no}` : '') },
+    { key: 'reconciled', label: '已对账', width: 70, align: 'center' },
+    { key: 'voucher', label: '关联凭证', width: 120 },
   ]
   const jr = journalResult.value
   const summaryValues = jr
     ? ['', '', '', '', '', '', jr.totalDebit, jr.totalCredit, jr.closing,
        ...(isForeignAccount.value ? ['', jr.totalBaseDebit ?? 0, jr.totalBaseCredit ?? 0] : []), '', '']
     : undefined
-  await exportStyledTable({
+  await exportStyledTableViaSource({
     fileName: `出纳日记账_${filters.value.account_code}_${range || '全部'}.xlsx`,
     sheetName: '出纳日记账',
     title: `出纳日记账　${acc}`,
     subtitle: range ? `日期：${range}　期初：${fmt(jr?.opening ?? 0) || '0.00'}　期末：${fmt(jr?.closing ?? 0) || '0.00'}` : undefined,
     columns,
-    rows: exportRows,
+    source: {
+      type: 'cashierJournal',
+      params: {
+        account_code: filters.value.account_code,
+        currency: filters.value.currency || undefined,
+        start_date: filters.value.start_date || undefined,
+        end_date: filters.value.end_date || undefined,
+      },
+    },
     summaryValues,
   })
 }

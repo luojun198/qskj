@@ -44,6 +44,7 @@ import {
 } from '../services/cashierJournalImport.js'
 import {
   autoMatch, cancelMatch, getBatchMembers, getCashierGlReport, getPeriodSummary, listCashierRows, listGlEntries,
+  GL_RECONCILE_LIST_LIMIT,
   manualMatch, pruneStaleMatches,
 } from '../services/cashierGlReconcile.js'
 import type { Database } from 'better-sqlite3'
@@ -374,7 +375,7 @@ router.get('/cashier/journal', (req: AuthRequest, res) => {
     currency: currency || undefined,
     startDate: start_date,
     endDate: end_date,
-    // FIX-253：传了 page / page_size 才分页，老调用方不传则仍返回全部行
+    // FIX-326：一律分页（未传按第 1 页、每页 100 条，上限 1000）；导出走 /export/styled-xlsx 的 cashierJournal 数据源
     page: page !== undefined ? Number(page) : undefined,
     pageSize: page_size !== undefined ? Number(page_size) : undefined,
   })
@@ -634,10 +635,14 @@ router.get('/cashier/gl-reconcile/entries', (req: AuthRequest, res) => {
   if (!scopeGuard(req, res, [account_code])) return
   const s = glScope(req, account_code)
   const stale = pruneStaleMatches(s)
-  const cashier = listCashierRows(s, { start: start_date || undefined, end: end_date || undefined })
-  const gl = listGlEntries(s, { start: start_date || undefined, end: end_date || undefined })
-  const summary = getPeriodSummary(s, start_date || undefined, end_date || undefined)
-  res.json({ code: 0, data: { cashier, gl: gl.rows, summary, stale } })
+  // FIX-326：两侧明细各最多 GL_RECONCILE_LIST_LIMIT 行（多取 1 行判断是否截断）；合计由 summary 按 SQL 汇总
+  const limit = GL_RECONCILE_LIST_LIMIT
+  const range = { start: start_date || undefined, end: end_date || undefined }
+  const cashier = listCashierRows(s, { ...range, limit: limit + 1 })
+  const gl = listGlEntries(s, { ...range, limit: limit + 1 }).rows
+  const summary = getPeriodSummary(s, range.start, range.end)
+  const truncated = { cashier: cashier.length > limit, gl: gl.length > limit }
+  res.json({ code: 0, data: { cashier: cashier.slice(0, limit), gl: gl.slice(0, limit), summary, stale, limit, truncated } })
 })
 
 router.get('/cashier/gl-reconcile/batch/:batchId', (req: AuthRequest, res) => {

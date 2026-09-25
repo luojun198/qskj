@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
 import { buildChronologicalQuery } from './ledgerQuery.js'
+import { listJournal } from './cashierQuery.js'
 import type { AccountScopeContext } from './accountAuthorization.js'
 
 /**
@@ -20,6 +21,11 @@ export interface ExportSourceContext {
 }
 
 export interface ExportSource {
+  /**
+   * FIX-326：导出所需权限码（任一即可）。参数模式导出走 /export/styled-xlsx，此前只校验登录，
+   * 绕过了对应查询接口的权限码（如序时账要求 ledger:detail）。
+   */
+  permissions: readonly string[]
   /** 支持的列 key */
   keys: readonly string[]
   /** 行数（用于上限保护），可比实际输出行少（不含小计行） */
@@ -94,6 +100,7 @@ function mapChronologicalRow(row: any, keys: string[]): ExportCellValue[] {
 }
 
 const chronologicalSource: ExportSource = {
+  permissions: ['ledger:detail'],
   keys: CHRONOLOGICAL_KEYS,
   count(ctx, params) {
     const q = buildChronologicalQuery(buildChronologicalFilters(ctx, params))
@@ -183,6 +190,91 @@ function resolveMonthlyWindows(
   return windows
 }
 
+// ── 出纳日记账（FIX-326） ─────────────────────────────────
+/**
+ * 日记账接口改为强制分页后，页面「导出」不再拉全量到浏览器（25 万行时单次响应 170MB / 10s / 服务内存 ~1GB，
+ * 并发时撑爆进程）。服务端按业务日期逐天取数（每批只排序当天流水），逐行累计余额，流式写 xlsx。
+ */
+const CASHIER_JOURNAL_KEYS = [
+  'biz_date', 'seq', 'summary', 'settle_type', 'bill_no', 'counter_unit', 'counter_account',
+  'debit', 'credit', 'balance', 'exchange_rate', 'base_debit', 'base_credit', 'reconciled', 'voucher',
+] as const
+
+function cashierJournalFilters(ctx: ExportSourceContext, params: Record<string, unknown>) {
+  const accountCode = str(params.account_code)
+  if (!accountCode) throw new Error('缺少出纳科目')
+  return { accountCode, currency: str(params.currency), startDate: str(params.start_date), endDate: str(params.end_date) }
+}
+
+const cashierJournalSource: ExportSource = {
+  permissions: ['cashier:journal'],
+  keys: CASHIER_JOURNAL_KEYS,
+  count(ctx, params) {
+    const f = cashierJournalFilters(ctx, params)
+    const r = listJournalPage(ctx, f, 1, 1)
+    return r.total
+  },
+  async *rows(ctx, params, keys) {
+    const f = cashierJournalFilters(ctx, params)
+    const first = listJournalPage(ctx, f, 1, 1)
+    const currency = first.currency
+    let running = first.opening
+    const settleNames = new Map(
+      (ctx.db.prepare('SELECT code, name FROM settle_type WHERE account_set_id = ?').all(ctx.accountSetId) as any[]).map(r => [r.code, r.name])
+    )
+    const accNames = new Map(
+      (ctx.db.prepare('SELECT code, name FROM accounts WHERE account_set_id = ?').all(ctx.accountSetId) as any[]).map(r => [r.code, r.name])
+    )
+    const conds = ['account_set_id = ?', 'account_code = ?', 'currency = ?']
+    const base: unknown[] = [ctx.accountSetId, f.accountCode, currency]
+    if (f.startDate) { conds.push('biz_date >= ?'); base.push(f.startDate) }
+    if (f.endDate) { conds.push('biz_date <= ?'); base.push(f.endDate) }
+    const days = ctx.db
+      .prepare(`SELECT DISTINCT biz_date d FROM cashier_journal WHERE ${conds.join(' AND ')} ORDER BY biz_date`)
+      .all(...base) as Array<{ d: string }>
+    const dayStmt = ctx.db.prepare(
+      'SELECT * FROM cashier_journal WHERE account_set_id = ? AND account_code = ? AND currency = ? AND biz_date = ? ORDER BY seq, created_at'
+    )
+    let n = 0
+    for (const { d } of days) {
+      for (const r of dayStmt.all(ctx.accountSetId, f.accountCode, currency, d) as any[]) {
+        running += (Number(r.debit) || 0) - (Number(r.credit) || 0)
+        yield keys.map(key => {
+          switch (key) {
+            case 'settle_type': return r.settle_type ? settleNames.get(r.settle_type) || r.settle_type : ''
+            case 'counter_account': return r.counter_account ? `${r.counter_account}${accNames.get(r.counter_account) ? ' ' + accNames.get(r.counter_account) : ''}` : ''
+            case 'debit': return Number(r.debit) || ''
+            case 'credit': return Number(r.credit) || ''
+            case 'exchange_rate': return Number(r.exchange_rate) > 0 ? Number(r.exchange_rate) : ''
+            case 'base_debit': return Number(r.base_debit) || ''
+            case 'base_credit': return Number(r.base_credit) || ''
+            case 'balance': return Math.round(running * 100) / 100
+            case 'reconciled': return r.reconciled ? '是' : ''
+            case 'voucher': return r.voucher_no ? `${r.voucher_year}-${String(r.voucher_month).padStart(2, '0')} ${r.voucher_no}` : ''
+            default: return r[key] ?? ''
+          }
+        })
+        n += 1
+        if (n % YIELD_EVERY_ROWS === 0) await new Promise<void>(resolve => setImmediate(resolve))
+      }
+      await new Promise<void>(resolve => setImmediate(resolve))
+    }
+  },
+}
+
+function listJournalPage(ctx: ExportSourceContext, f: ReturnType<typeof cashierJournalFilters>, page: number, pageSize: number) {
+  return listJournal({
+    accountSetId: ctx.accountSetId,
+    accountCode: f.accountCode,
+    currency: f.currency,
+    startDate: f.startDate,
+    endDate: f.endDate,
+    page,
+    pageSize,
+  })
+}
+
 export const EXPORT_SOURCES: Record<string, ExportSource> = {
   chronological: chronologicalSource,
+  cashierJournal: cashierJournalSource,
 }

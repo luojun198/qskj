@@ -52,6 +52,11 @@ router.post('/styled-xlsx', async (req: AuthRequest, res) => {
     if (!exportSource) {
       return res.status(400).json({ code: 400, message: `不支持的导出数据源：${source.type}` })
     }
+    // FIX-326：参数模式导出按数据源校验权限（此前只校验登录）
+    const perms = req.permissions || []
+    if (!perms.includes('*') && !exportSource.permissions.some(p => perms.includes(p))) {
+      return res.status(403).json({ code: 403, message: '无此操作权限' })
+    }
     const leafKeys = collectLeafKeys(columns)
     const badKey = leafKeys.find(key => !key || !exportSource.keys.includes(key))
     if (badKey !== undefined || leafKeys.some(key => !key)) {
@@ -63,7 +68,19 @@ router.post('/styled-xlsx', async (req: AuthRequest, res) => {
       accountScope: req.accountScope,
     }
     const params = source.params && typeof source.params === 'object' ? source.params : {}
-    const total = exportSource.count(ctx, params)
+    // 出纳日记账按科目授权（与 /cashier/journal 同口径）
+    if (String(source.type) === 'cashierJournal' && req.accountScope?.restricted && !req.accountScope.bypass) {
+      const { assertAccountIdInScope } = await import('../services/accountAuthorization.js')
+      const acc = ctx.db.prepare('SELECT id FROM accounts WHERE account_set_id=? AND code=?').get(ctx.accountSetId, String((params as any).account_code || '')) as { id: string } | undefined
+      const scopeErr = acc ? assertAccountIdInScope(req.accountScope, acc.id) : null
+      if (scopeErr) return res.status(403).json({ code: 403, message: scopeErr })
+    }
+    let total: number
+    try {
+      total = exportSource.count(ctx, params)
+    } catch (e: any) {
+      return res.status(400).json({ code: 400, message: e?.message || '导出参数错误' })
+    }
     if (total > MAX_EXPORT_ROWS) {
       return res
         .status(400)

@@ -325,8 +325,7 @@ export function listJournal(params: {
   currency?: string
   startDate?: string
   endDate?: string
-  /** 过滤对账状态：0=未对账，1=已对账，不传则返回全部 */
-  /** FIX-253：分页（1 起）；不传则返回区间全部行（对账 / 现金流量等消费方沿用） */
+  /** FIX-253：分页（1 起）；FIX-326 起强制分页，不传按第 1 页、每页 100 条，上限 1000 */
   page?: number
   pageSize?: number
 }): {
@@ -339,10 +338,10 @@ export function listJournal(params: {
   totalBaseDebit: number
   totalBaseCredit: number
   currency: string
-  /** 区间内行数（与是否分页无关） */
+  /** 区间内行数（与分页无关） */
   total: number
-  page?: number
-  pageSize?: number
+  page: number
+  pageSize: number
   /** 评审 P2：同科目、同区间但币种与科目核算币种不一致的存量行数（这些行不在本视图内，前端据此提示） */
   otherCurrencyCount: number
 } {
@@ -396,27 +395,24 @@ export function listJournal(params: {
   const totalCredit = totals.c
   const closing = periodOpening + totalDebit - totalCredit
 
-  const paged = params.page !== undefined || params.pageSize !== undefined
-  const pageSize = paged ? Math.min(1000, Math.max(1, Math.trunc(Number(params.pageSize) || 100))) : totals.n
-  const page = paged ? Math.max(1, Math.trunc(Number(params.page) || 1)) : 1
+  // FIX-326：强制分页。此前不传 page / page_size 时返回区间全部行（FIX-253 为兼容老调用方保留），25 万行时单次响应
+  // 170MB / 10s / 服务内存 ~1GB，并发时撑爆进程。未传按第 1 页、每页 100 条；上限 1000；导出走服务端数据源 cashierJournal。
+  const pageSize = Math.min(1000, Math.max(1, Math.trunc(Number(params.pageSize) || 100)))
+  const page = Math.max(1, Math.trunc(Number(params.page) || 1))
   const offset = (page - 1) * pageSize
 
-  let rows: JournalRow[]
-  if (paged) {
-    const beforePage = db
-      .prepare(
-        `SELECT COALESCE(SUM(debit - credit),0) net FROM (
-           SELECT debit, credit FROM cashier_journal WHERE ${whereSql} ${orderSql} LIMIT ?
-         )`
-      )
-      .get(...rowParams, offset) as { net: number }
-    running += beforePage.net
-    rows = db
-      .prepare(`SELECT * FROM cashier_journal WHERE ${whereSql} ${orderSql} LIMIT ? OFFSET ?`)
-      .all(...rowParams, pageSize, offset) as JournalRow[]
-  } else {
-    rows = db.prepare(`SELECT * FROM cashier_journal WHERE ${whereSql} ${orderSql}`).all(...rowParams) as JournalRow[]
-  }
+  // 本页首行之前的净额（同一排序的 LIMIT 子查询），本页余额从「区间期初 + 前页净额」续算
+  const beforePage = db
+    .prepare(
+      `SELECT COALESCE(SUM(debit - credit),0) net FROM (
+         SELECT debit, credit FROM cashier_journal WHERE ${whereSql} ${orderSql} LIMIT ?
+       )`
+    )
+    .get(...rowParams, offset) as { net: number }
+  running += beforePage.net
+  const rows = db
+    .prepare(`SELECT * FROM cashier_journal WHERE ${whereSql} ${orderSql} LIMIT ? OFFSET ?`)
+    .all(...rowParams, pageSize, offset) as JournalRow[]
 
   for (const r of rows) {
     running += r.debit - r.credit
@@ -444,7 +440,8 @@ export function listJournal(params: {
     totalBaseCredit: totals.bc,
     currency,
     total: totals.n,
-    ...(paged ? { page, pageSize } : {}),
+    page,
+    pageSize,
   }
 }
 

@@ -16,6 +16,13 @@ import { calcSignedBalance } from '../utils/accountBalance.js'
 const EPS = 0.005
 const round2 = (n: number) => Math.round(n * 100) / 100
 
+/**
+ * FIX-326：对账工作台 / 差异清单每侧明细最多返回的行数。此前两侧明细不设上限（25 万流水时单次响应上百 MB），
+ * 合计 / 未达净额也是把全部明细取到 JS 再求和。现在合计一律 SQL 汇总（口径与截断无关），明细超出时带 truncated 提示缩小日期范围。
+ */
+// 页面两侧是普通 el-table（非虚拟滚动），每侧 5000 行时浏览器主线程卡 3 分钟，取 1000
+export const GL_RECONCILE_LIST_LIMIT = 1000
+
 export type MatchType = 'link' | 'auto' | 'manual'
 
 export interface GlEntryRow {
@@ -61,9 +68,19 @@ function glAmountSql(foreign: boolean) {
   return foreign ? 'COALESCE(ve.foreign_amount, 0)' : 've.amount'
 }
 
+/**
+ * FIX-326：分录按科目定位走 (account_set_id, account_id) 索引。voucher_entries.account_code 无索引，
+ * 只按它过滤会扫整个账套的分录（26 万分录时每次 ~1.1s，对账工作台一次请求要查 6~7 次）。account_code 条件保留，口径不变。
+ */
+function glAccountCond(s: Scope, params: unknown[]) {
+  const acc = s.db.prepare('SELECT id FROM accounts WHERE account_set_id=? AND code=?').get(s.accountSetId, s.accountCode) as { id: string } | undefined
+  if (!acc) { params.push(s.accountSetId, s.accountCode); return 've.account_set_id=? AND ve.account_code=?' }
+  params.push(s.accountSetId, acc.id, s.accountCode)
+  return 've.account_set_id=? AND ve.account_id=? AND ve.account_code=?'
+}
+
 function glWhere(s: Scope, foreign: boolean, currency: string, params: unknown[], start?: string, end?: string) {
-  const conds = ["ve.account_set_id=?", "ve.account_code=?", "v.status='posted'"]
-  params.push(s.accountSetId, s.accountCode)
+  const conds = [glAccountCond(s, params), "v.status='posted'"]
   if (foreign) {
     conds.push("UPPER(COALESCE(ve.currency_code,''))=?")
     params.push(currency.toUpperCase())
@@ -116,39 +133,83 @@ function dropBatch(db: Database.Database, accountSetId: string, batchId: string)
   for (const r of ids) upd.run(r.ref_id, accountSetId)
 }
 
-function batchMap(db: Database.Database, accountSetId: string, side: 'cashier' | 'gl') {
+function batchMap(db: Database.Database, accountSetId: string, accountCode: string, side: 'cashier' | 'gl') {
   const rows = db.prepare(
-    'SELECT m.ref_id, m.batch_id, m.match_type FROM cashier_gl_match m WHERE m.account_set_id=? AND m.side=?'
-  ).all(accountSetId, side) as Array<{ ref_id: string; batch_id: string; match_type: MatchType }>
+    'SELECT m.ref_id, m.batch_id, m.match_type FROM cashier_gl_match m WHERE m.account_set_id=? AND m.account_code=? AND m.side=?'
+  ).all(accountSetId, accountCode, side) as Array<{ ref_id: string; batch_id: string; match_type: MatchType }>
   return new Map(rows.map(r => [r.ref_id, r]))
 }
 
-/** 出纳日记账（该科目币种），带所属批次 */
-export function listCashierRows(s: Scope, opts: { start?: string; end?: string; matched?: boolean } = {}): CashierRow[] {
-  const { db, accountSetId, accountCode } = s
-  const { currency } = scopeCurrency(s)
+type ListOpts = { start?: string; end?: string; matched?: boolean; limit?: number }
+
+function cashierWhere(s: Scope, currency: string, opts: ListOpts, params: unknown[]) {
   const conds = ['account_set_id=?', 'account_code=?', 'currency=?']
-  const params: unknown[] = [accountSetId, accountCode, currency]
+  params.push(s.accountSetId, s.accountCode, currency)
   if (opts.start) { conds.push('biz_date>=?'); params.push(opts.start) }
   if (opts.end) { conds.push('biz_date<=?'); params.push(opts.end) }
   if (opts.matched !== undefined) { conds.push('reconciled=?'); params.push(opts.matched ? 1 : 0) }
+  return conds.join(' AND ')
+}
+
+/** 出纳日记账（该科目币种），带所属批次；limit 为返回行数上限（FIX-326） */
+export function listCashierRows(s: Scope, opts: ListOpts = {}): CashierRow[] {
+  const { db, accountSetId, accountCode } = s
+  const { currency } = scopeCurrency(s)
+  const params: unknown[] = []
+  const where = cashierWhere(s, currency, opts, params)
+  if (opts.limit) params.push(opts.limit)
   const rows = db.prepare(`
     SELECT id, biz_date, seq, summary, debit, credit, bill_no, voucher_id FROM cashier_journal
-    WHERE ${conds.join(' AND ')} ORDER BY biz_date, seq, created_at
+    WHERE ${where} ORDER BY biz_date, seq, created_at${opts.limit ? ' LIMIT ?' : ''}
   `).all(...params) as Array<Omit<CashierRow, 'batch_id' | 'match_type'>>
-  const bm = batchMap(db, accountSetId, 'cashier')
+  const bm = batchMap(db, accountSetId, accountCode, 'cashier')
   return rows.map(r => ({ ...r, batch_id: bm.get(r.id)?.batch_id ?? null, match_type: bm.get(r.id)?.match_type ?? null }))
 }
 
+/** FIX-326：出纳侧 SQL 汇总（行数 / 借 / 贷），不取明细 */
+export function sumCashierRows(s: Scope, opts: Omit<ListOpts, 'limit'> = {}): { n: number; debit: number; credit: number } {
+  const { currency } = scopeCurrency(s)
+  const params: unknown[] = []
+  const where = cashierWhere(s, currency, opts, params)
+  const r = s.db.prepare(
+    `SELECT COUNT(*) n, COALESCE(SUM(debit),0) d, COALESCE(SUM(credit),0) c FROM cashier_journal WHERE ${where}`
+  ).get(...params) as { n: number; d: number; c: number }
+  return { n: r.n, debit: round2(r.d), credit: round2(r.c) }
+}
+
+/** 总账侧是否已进批次（SQL 条件，走 uq_cashier_gl_match_ref） */
+function glMatchedCond(matched: boolean) {
+  return `${matched ? '' : 'NOT '}EXISTS (SELECT 1 FROM cashier_gl_match m WHERE m.side='gl' AND m.ref_id=ve.id)`
+}
+
+/** FIX-326：总账侧 SQL 汇总（行数 / 借 / 贷），不取明细 */
+export function sumGlEntries(s: Scope, opts: Omit<ListOpts, 'limit'> = {}): { n: number; debit: number; credit: number } {
+  const { foreign, currency } = scopeCurrency(s)
+  const params: unknown[] = []
+  let where = glWhere(s, foreign, currency, params, opts.start, opts.end)
+  if (opts.matched !== undefined) where += ` AND ${glMatchedCond(opts.matched)}`
+  const amt = glAmountSql(foreign)
+  const r = s.db.prepare(`
+    SELECT COUNT(*) n,
+           COALESCE(SUM(CASE WHEN ve.direction='debit' THEN ${amt} ELSE 0 END),0) d,
+           COALESCE(SUM(CASE WHEN ve.direction='credit' THEN ${amt} ELSE 0 END),0) c
+    FROM voucher_entries ve JOIN vouchers v ON v.id=ve.voucher_id WHERE ${where}`
+  ).get(...params) as { n: number; d: number; c: number }
+  return { n: r.n, debit: round2(r.d), credit: round2(r.c) }
+}
+
 /** 总账该科目已记账分录，带所属批次；另返回区间内未记账凭证张数 */
-export function listGlEntries(s: Scope, opts: { start?: string; end?: string; matched?: boolean } = {}): {
+export function listGlEntries(s: Scope, opts: ListOpts = {}): {
   rows: GlEntryRow[]
   unposted: number
 } {
   const { db, accountSetId, accountCode } = s
   const { foreign, currency } = scopeCurrency(s)
   const params: unknown[] = []
-  const where = glWhere(s, foreign, currency, params, opts.start, opts.end)
+  let where = glWhere(s, foreign, currency, params, opts.start, opts.end)
+  // FIX-326：已对 / 未对在 SQL 里过滤（原先取全部后在 JS 里筛），才能配合 LIMIT
+  if (opts.matched !== undefined) where += ` AND ${glMatchedCond(opts.matched)}`
+  if (opts.limit) params.push(opts.limit)
   const amt = glAmountSql(foreign)
   const all = db.prepare(`
     SELECT ve.id, ve.voucher_id, v.voucher_date, v.voucher_no, vt.name AS voucher_type_name,
@@ -159,25 +220,27 @@ export function listGlEntries(s: Scope, opts: { start?: string; end?: string; ma
     JOIN vouchers v ON v.id=ve.voucher_id
     LEFT JOIN voucher_types vt ON vt.id=v.voucher_type_id
     WHERE ${where}
-    ORDER BY v.voucher_date, v.voucher_no, ve.seq
+    ORDER BY v.voucher_date, v.voucher_no, ve.seq${opts.limit ? ' LIMIT ?' : ''}
   `).all(...params) as Array<Omit<GlEntryRow, 'batch_id' | 'match_type'>>
-  const bm = batchMap(db, accountSetId, 'gl')
-  let rows: GlEntryRow[] = all.map(r => ({
+  const bm = batchMap(db, accountSetId, accountCode, 'gl')
+  const rows: GlEntryRow[] = all.map(r => ({
     ...r,
     voucher_no: String(r.voucher_no ?? ''),
     batch_id: bm.get(r.id)?.batch_id ?? null,
     match_type: bm.get(r.id)?.match_type ?? null,
   }))
-  if (opts.matched !== undefined) rows = rows.filter(r => (r.batch_id !== null) === opts.matched)
+  return { rows, unposted: countUnposted(s, opts.start, opts.end) }
+}
 
-  const up: unknown[] = [accountSetId, accountCode]
-  const uc = ["ve.account_set_id=?", "ve.account_code=?", "v.status<>'posted'"]
-  if (opts.start) { uc.push('v.voucher_date>=?'); up.push(opts.start) }
-  if (opts.end) { uc.push('v.voucher_date<=?'); up.push(opts.end) }
-  const unposted = (db.prepare(`
+/** 区间内该科目未记账凭证张数 */
+function countUnposted(s: Scope, start?: string, end?: string): number {
+  const up: unknown[] = []
+  const uc = [glAccountCond(s, up), "v.status<>'posted'"]
+  if (start) { uc.push('v.voucher_date>=?'); up.push(start) }
+  if (end) { uc.push('v.voucher_date<=?'); up.push(end) }
+  return (s.db.prepare(`
     SELECT COUNT(DISTINCT v.id) n FROM voucher_entries ve JOIN vouchers v ON v.id=ve.voucher_id WHERE ${uc.join(' AND ')}
   `).get(...up) as { n: number }).n
-  return { rows, unposted }
 }
 
 function closedChecker(db: Database.Database, accountSetId: string) {
@@ -357,21 +420,29 @@ export function getBatchMembers(s: Scope, batchId: string): { cashier: string[];
 
 /** 本期汇总：出纳 / 总账 期间借贷与期末余额 */
 export function getPeriodSummary(s: Scope, start?: string, end?: string) {
-  const c = listCashierRows(s, { start, end })
-  const g = listGlEntries(s, { start, end })
+  // FIX-326：合计 / 未对行数一律 SQL 汇总（原先取两侧全部明细到 JS 求和）
+  const c = sumCashierRows(s, { start, end })
+  const cu = sumCashierRows(s, { start, end, matched: false })
+  const g = sumGlEntries(s, { start, end })
+  const gu = sumGlEntries(s, { start, end, matched: false })
   // 未指定截止日：余额算到「今天」与两侧最晚业务日期中较晚者，保证与明细口径一致
   let asOf = end || new Date().toISOString().slice(0, 10)
   if (!end) {
-    for (const r of c) if (r.biz_date > asOf) asOf = r.biz_date
-    for (const r of g.rows) if (r.voucher_date > asOf) asOf = r.voucher_date
+    const { currency, foreign } = scopeCurrency(s)
+    const cMax = (s.db.prepare('SELECT MAX(biz_date) d FROM cashier_journal WHERE account_set_id=? AND account_code=? AND currency=?' + (start ? ' AND biz_date>=?' : ''))
+      .get(s.accountSetId, s.accountCode, currency, ...(start ? [start] : [])) as { d: string | null }).d
+    const gp: unknown[] = []
+    const gMax = (s.db.prepare(`SELECT MAX(v.voucher_date) d FROM voucher_entries ve JOIN vouchers v ON v.id=ve.voucher_id WHERE ${glWhere(s, foreign, currency, gp, start)}`)
+      .get(...gp) as { d: string | null }).d
+    if (cMax && cMax > asOf) asOf = cMax
+    if (gMax && gMax > asOf) asOf = gMax
   }
-  const report = getCashierGlReport(s, asOf, { skipPrune: true })
-  const sum = (rs: Array<{ debit: number; credit: number }>, k: 'debit' | 'credit') => round2(rs.reduce((t, r) => t + (r[k] || 0), 0))
+  const report = getCashierGlReport(s, asOf, { skipPrune: true, listLimit: 0 })
   return {
     currency: report.currency,
-    cashier: { debit: sum(c, 'debit'), credit: sum(c, 'credit'), balance: report.cashier_balance, unmatched: c.filter(r => !r.batch_id).length },
-    gl: { debit: sum(g.rows, 'debit'), credit: sum(g.rows, 'credit'), balance: report.gl_balance, unmatched: g.rows.filter(r => !r.batch_id).length },
-    unposted: g.unposted,
+    cashier: { debit: c.debit, credit: c.credit, balance: report.cashier_balance, unmatched: cu.n, count: c.n },
+    gl: { debit: g.debit, credit: g.credit, balance: report.gl_balance, unmatched: gu.n, count: g.n },
+    unposted: countUnposted(s, start, end),
   }
 }
 
@@ -388,6 +459,12 @@ export interface CashierGlReport {
   cashier_unmatched: Array<{ id: string; biz_date: string; summary: string | null; debit: number; credit: number; bill_no: string | null }>
   /** 总账有、出纳无（未对已记账分录，日期 ≥ 出纳启用日） */
   gl_unmatched: Array<{ id: string; voucher_date: string; voucher_no: string; voucher_type_name: string | null; summary: string | null; debit: number; credit: number }>
+  /** FIX-326：两侧未达总行数与净额（SQL 汇总，不受明细上限影响）；明细最多 list_limit 行 */
+  cashier_unmatched_total: number
+  gl_unmatched_total: number
+  cashier_unmatched_net: number
+  gl_unmatched_net: number
+  list_limit: number
   adjusted_cashier: number
   adjusted_gl: number
   /** 调节后差额（≠0 通常是出纳期初与总账启用前余额不一致） */
@@ -397,7 +474,7 @@ export interface CashierGlReport {
 }
 
 /** 差异清单（出纳 ↔ 总账） */
-export function getCashierGlReport(s: Scope, endDate: string, opts: { skipPrune?: boolean } = {}): CashierGlReport {
+export function getCashierGlReport(s: Scope, endDate: string, opts: { skipPrune?: boolean; listLimit?: number } = {}): CashierGlReport {
   const { db, accountSetId, accountCode } = s
   const stale = opts.skipPrune ? 0 : pruneStaleMatches(s)
   const { currency, foreign } = scopeCurrency(s)
@@ -434,14 +511,23 @@ export function getCashierGlReport(s: Scope, endDate: string, opts: { skipPrune?
     glBalance = round2(calcSignedBalance(acc.direction, init, f.d, f.c))
   }
 
-  const cashierUnmatched = listCashierRows(s, { end: endDate, matched: false })
-    .map(({ id, biz_date, summary, debit, credit, bill_no }) => ({ id, biz_date, summary, debit, credit, bill_no }))
-  const glList = listGlEntries(s, { start: initDate ?? undefined, end: endDate, matched: false })
-  const glUnmatched = glList.rows.map(({ id, voucher_date, voucher_no, voucher_type_name, summary, debit, credit }) =>
-    ({ id, voucher_date, voucher_no, voucher_type_name, summary, debit, credit }))
-  const net = (rs: Array<{ debit: number; credit: number }>) => rs.reduce((t, r) => t + (r.debit || 0) - (r.credit || 0), 0)
-  const adjustedCashier = round2(cashierBalance - net(cashierUnmatched))
-  const adjustedGl = round2(glBalance - net(glUnmatched))
+  // FIX-326：未达净额 SQL 汇总；明细按上限截取（listLimit=0 时不取明细，仅汇总用）
+  const listLimit = opts.listLimit ?? GL_RECONCILE_LIST_LIMIT
+  const cSum = sumCashierRows(s, { end: endDate, matched: false })
+  const gSum = sumGlEntries(s, { start: initDate ?? undefined, end: endDate, matched: false })
+  const cashierUnmatched = listLimit > 0
+    ? listCashierRows(s, { end: endDate, matched: false, limit: listLimit })
+      .map(({ id, biz_date, summary, debit, credit, bill_no }) => ({ id, biz_date, summary, debit, credit, bill_no }))
+    : []
+  const glUnmatched = listLimit > 0
+    ? listGlEntries(s, { start: initDate ?? undefined, end: endDate, matched: false, limit: listLimit }).rows
+      .map(({ id, voucher_date, voucher_no, voucher_type_name, summary, debit, credit }) =>
+        ({ id, voucher_date, voucher_no, voucher_type_name, summary, debit, credit }))
+    : []
+  const cashierNet = round2(cSum.debit - cSum.credit)
+  const glNet = round2(gSum.debit - gSum.credit)
+  const adjustedCashier = round2(cashierBalance - cashierNet)
+  const adjustedGl = round2(glBalance - glNet)
   return {
     account_code: accountCode,
     currency,
@@ -451,10 +537,15 @@ export function getCashierGlReport(s: Scope, endDate: string, opts: { skipPrune?
     gl_balance: glBalance,
     cashier_unmatched: cashierUnmatched,
     gl_unmatched: glUnmatched,
+    cashier_unmatched_total: cSum.n,
+    gl_unmatched_total: gSum.n,
+    cashier_unmatched_net: cashierNet,
+    gl_unmatched_net: glNet,
+    list_limit: listLimit,
     adjusted_cashier: adjustedCashier,
     adjusted_gl: adjustedGl,
     difference: round2(adjustedCashier - adjustedGl),
-    unposted: glList.unposted,
+    unposted: countUnposted(s, initDate ?? undefined, endDate),
     stale,
   }
 }

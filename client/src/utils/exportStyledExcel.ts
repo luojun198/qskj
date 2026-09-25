@@ -420,9 +420,10 @@ export async function exportStyledTableViaSource(options: {
   subtitle?: string
   columns: ExportColumnDef<any>[]
   source: { type: string; params: Record<string, unknown> }
+  summaryValues?: (string | number | null)[]
   stripe?: boolean
 }) {
-  const { fileName, sheetName, title, subtitle, columns, source, stripe } = options
+  const { fileName, sheetName, title, subtitle, columns, source, summaryValues, stripe } = options
   const spec = {
     fileName: ensureXlsxFileName(fileName),
     sheetName,
@@ -430,6 +431,7 @@ export async function exportStyledTableViaSource(options: {
     subtitle,
     columns: serializeColumns(columns),
     source,
+    summaryValues,
     stripe,
   }
   const blob = await request.downloadPost('/export/styled-xlsx', spec, { timeout: 600_000 })

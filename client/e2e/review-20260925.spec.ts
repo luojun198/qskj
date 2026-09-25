@@ -27,16 +27,42 @@ async function api(request: APIRequestContext, method: 'get' | 'post' | 'put' | 
   return { status: res.status(), body }
 }
 
+/**
+ * 打开出纳日记账并翻到末页。测试账套 9 月有 25 万条压测流水（一页 100 条），用例流水记在 9 月 30 日（页面默认
+ * 本月区间的最后一天，排在最后），按接口给出的总行数算出末页，用分页器的「前往」跳过去。
+ */
+async function gotoJournalLastPage(page: Page) {
+  const list = await api(page.request, 'get', '/cashier/journal?account_code=1001&start_date=2026-09-01&end_date=2026-09-30&page_size=100')
+  const lastPage = Math.max(1, Math.ceil((list.body?.data?.total ?? 0) / 100))
+  await page.goto('/cashier/journal?account_code=1001')
+  await expect(page.locator('.journal-pagination')).toBeVisible()
+  if (lastPage > 1) {
+    const jump = page.locator('.journal-pagination .el-pagination__jump input')
+    await jump.fill(String(lastPage))
+    await jump.press('Enter')
+  }
+}
+
+async function removeJournal(id: string) {
+  // 先按勾选行删凭证（若还在），再删流水
+  await api(apiRequest, 'post', '/cashier/delete-vouchers', { account_code: '1001', ids: [id] })
+  await api(apiRequest, 'delete', `/cashier/journal/${id}`)
+}
+let apiRequest: APIRequestContext
+
 test.beforeAll(async ({ request }) => {
   H = await apiHeaders(request)
+  apiRequest = request
+  // 上次运行中途被打断（afterAll 未执行）残留的同名流水会被 .first() 误选，先清掉
+  const left = await api(request, 'get', '/cashier/journal?account_code=1001&start_date=2026-09-30&end_date=2026-09-30&page_size=1000')
+  for (const r of (left.body?.data?.rows ?? []) as Array<{ id: string; summary: string | null }>) {
+    if ((r.summary || '').startsWith(TAG)) await removeJournal(r.id)
+  }
 })
 
 test.afterAll(async ({ request }) => {
-  for (const id of created.journals) {
-    // 先按勾选行删凭证（若还在），再删流水
-    await api(request, 'post', '/cashier/delete-vouchers', { account_code: '1001', ids: [id] })
-    await api(request, 'delete', `/cashier/journal/${id}`)
-  }
+  apiRequest = request
+  for (const id of created.journals) await removeJournal(id)
   for (const id of created.cards) await api(request, 'delete', `/asset/cards/${id}`)
 })
 
@@ -121,7 +147,7 @@ test('出纳期初：可选择启用日期，「读入总账余额」不再报�
 
 test('出纳日记账：生成凭证后修改金额被拒（FIX-305）', async ({ loggedInPage: page, request }) => {
   const j = await api(request, 'post', '/cashier/journal', {
-    account_code: '1001', biz_date: '2026-09-15', summary: `${TAG}-出纳收款`, debit: 123.45, credit: 0, counter_account: '6602',
+    account_code: '1001', biz_date: '2026-09-30', summary: `${TAG}-出纳收款`, debit: 123.45, credit: 0, counter_account: '6602',
   })
   expect(j.body?.code, JSON.stringify(j.body)).toBe(0)
   const journalId = j.body.data.id
@@ -129,7 +155,7 @@ test('出纳日记账：生成凭证后修改金额被拒（FIX-305）', async (
   const g = await api(request, 'post', '/cashier/generate-voucher', { account_code: '1001', ids: [journalId] })
   expect(g.body?.code, JSON.stringify(g.body)).toBe(0)
 
-  await page.goto('/cashier/journal?account_code=1001')
+  await gotoJournalLastPage(page)
   const row = page.locator('.el-table__body tr', { hasText: `${TAG}-出纳收款` }).first()
   await expect(row).toBeVisible()
   await row.dblclick()
@@ -145,7 +171,9 @@ test('出纳日记账：生成凭证后修改金额被拒（FIX-305）', async (
 
 test('凭证查询：出纳凭证不能在凭证页删除（FIX-313）', async ({ loggedInPage: page }) => {
   await page.goto('/voucher/query')
-  // 列表为虚拟滚动，只渲染可见行：逐步向下滚动表格直到目标行渲染出来
+  // 测试账套 9 月有 10 万张压测凭证，先按摘要关键字搜索（FIX-320）缩小列表；列表为虚拟滚动，再逐步滚动直到目标行渲染出来
+  await page.getByPlaceholder('凭证号 / 摘要 / 金额 / 科目 / 辅助').fill(`${TAG}-出纳收款`)
+  await page.getByPlaceholder('凭证号 / 摘要 / 金额 / 科目 / 辅助').press('Enter')
   const row = page.getByText(`${TAG}-出纳收款`).first()
   await expect(page.getByText('已全部加载')).toBeVisible({ timeout: 10000 })
   const body = page.locator('.el-table__body-wrapper, .el-table-v2__body, .el-scrollbar__wrap').first()
@@ -162,7 +190,7 @@ test('凭证查询：出纳凭证不能在凭证页删除（FIX-313）', async (
 })
 
 test('出纳日记账：行上「删凭证」按勾选行删除成功（FIX-310）', async ({ loggedInPage: page, request }) => {
-  await page.goto('/cashier/journal?account_code=1001')
+  await gotoJournalLastPage(page)
   const row = page.locator('.el-table__body tr', { hasText: `${TAG}-出纳收款` }).first()
   await expect(row).toBeVisible()
   await row.getByRole('button', { name: '删凭证' }).click()
@@ -170,7 +198,7 @@ test('出纳日记账：行上「删凭证」按勾选行删除成功（FIX-310�
   await expect(page.locator('.el-message', { hasText: '已删除凭证' })).toBeVisible()
   await shot(page, '07-按行删出纳凭证成功')
   // 流水回到「未生成凭证」
-  const list = await api(request, 'get', '/cashier/journal?account_code=1001&start_date=2026-09-15&end_date=2026-09-15')
+  const list = await api(request, 'get', '/cashier/journal?account_code=1001&start_date=2026-09-30&end_date=2026-09-30&page_size=1000')
   const mine = list.body.data.rows.find((x: any) => x.id === created.journals[0])
   expect(mine.voucher_no).toBeNull()
 })

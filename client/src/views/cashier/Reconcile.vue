@@ -43,6 +43,7 @@
         <div class="sum-alerts">
           <el-tag v-if="summary.unposted" type="warning" effect="light">本期有 {{ summary.unposted }} 张未记账凭证未参与对账</el-tag>
           <el-tag v-if="staleCount" type="danger" effect="light">{{ staleCount }} 个对账批次因凭证变动已失效，已退回未对</el-tag>
+          <el-tag v-if="truncatedTip" type="warning" effect="light">{{ truncatedTip }}</el-tag>
         </div>
       </div>
     </div>
@@ -164,6 +165,8 @@ const cashierRows = ref<GlCashierRow[]>([])
 const glRows = ref<GlEntryRow[]>([])
 const summary = ref<GlReconcileSummary | null>(null)
 const staleCount = ref(0)
+/** FIX-326：明细超过上限时只显示前 N 条（合计 / 余额仍按整个区间） */
+const truncatedTip = ref('')
 const cTab = ref<'all' | 'unmatched' | 'matched'>('unmatched')
 const gTab = ref<'all' | 'unmatched' | 'matched'>('unmatched')
 const selC = ref<GlCashierRow[]>([])
@@ -257,6 +260,9 @@ async function load() {
     glRows.value = res.data.gl
     summary.value = res.data.summary
     if (res.data.stale) staleCount.value = res.data.stale
+    const t = res.data.truncated
+    const sides = [t?.cashier ? `出纳 ${res.data.summary.cashier.count} 条` : '', t?.gl ? `总账 ${res.data.summary.gl.count} 条` : ''].filter(Boolean)
+    truncatedTip.value = sides.length ? `区间内${sides.join('、')}，每侧仅显示前 ${res.data.limit} 条，请缩小日期范围后对账` : ''
   } finally { loading.value = false }
 }
 function reload() {
@@ -319,11 +325,12 @@ onActivated(() => {
 })
 
 onMounted(async () => {
-  mountedOnce = true
   const ac = await cashierApi.getAccounts()
   if (ac.code === 0) accounts.value = ac.data
   if (!accountCode.value && accounts.value.length) accountCode.value = accounts.value[0].code
   await load()
+  // FIX-326：keep-alive 首次挂载也会触发 onActivated；首次加载完成后才置位，避免进页面时重复加载两遍
+  mountedOnce = true
 })
 </script>
 

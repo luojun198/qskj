@@ -49,11 +49,12 @@ describe('listJournal 分页（FIX-253）', () => {
 
   const base = { accountSetId: ASID, accountCode: '1001', startDate: '2026-01-01', endDate: '2026-01-31' }
 
-  it('不分页时返回全部行，逐行余额连续', () => {
+  it('FIX-326：未传分页参数按第 1 页、每页 100 条返回（不再返回全部行），逐行余额连续', () => {
     const r = listJournal(base)
     expect(r.rows).toHaveLength(25)
     expect(r.total).toBe(25)
-    expect(r.page).toBeUndefined()
+    expect(r.page).toBe(1)
+    expect(r.pageSize).toBe(100)
     expect(r.opening).toBe(1500) // 1000 + 上年 500
     expect(r.totalDebit).toBe(130) // 13 × 10
     expect(r.totalCredit).toBe(36) // 12 × 3
@@ -107,5 +108,17 @@ describe('listJournal 分页（FIX-253）', () => {
     const r = listJournal(base)
     expect(r.otherCurrencyCount).toBe(1)
     expect(r.closing).toBe(1500 + 130 - 36)
+  })
+
+  it('FIX-326：区间行数超过默认页大小时只返回一页，合计与期末仍按整个区间', () => {
+    const ins = testDb.prepare(
+      'INSERT INTO cashier_journal (id, account_set_id, account_code, currency, biz_date, seq, summary, debit, credit) VALUES (?,?,?,?,?,?,?,?,?)'
+    )
+    for (let i = 0; i < 250; i++) ins.run(`b${i}`, ASID, '1001', 'RMB', '2026-01-28', 100 + i, '批量', 1, 0)
+    const r = listJournal(base)
+    expect(r.total).toBe(275)
+    expect(r.rows).toHaveLength(100)
+    expect(r.totalDebit).toBe(130 + 250)
+    expect(r.closing).toBe(1500 + 130 + 250 - 36)
   })
 })

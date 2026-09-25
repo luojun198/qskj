@@ -57,7 +57,7 @@ test.describe('出纳管理', () => {
 
     // 查询日记账 API 验证写入
     const listRes = await request.get(
-      `${API}/api/cashier/journal?account_code=1001`,
+      `${API}/api/cashier/journal?account_code=1001&start_date=2026-06-15&end_date=2026-06-15&page_size=1000`,
       { headers }
     )
     const listData = await listRes.json()
@@ -85,8 +85,13 @@ test.describe('出纳管理', () => {
     const ibData = await ibRes.json()
     expect(ibData.code).toBe(0)
 
-    // 查询日记账列表（含余额）
-    const listRes = await request.get(`${API}/api/cashier/journal?account_code=1001`, { headers })
+    // 查询日记账列表（含余额）。FIX-326：接口强制分页，逐行余额跨页连续，取最后一页的末行与期末比较
+    const firstRes = await request.get(`${API}/api/cashier/journal?account_code=1001&page_size=100`, { headers })
+    const firstData = await firstRes.json()
+    expect(firstData.code).toBe(0)
+    expect(firstData.data.rows.length).toBeLessThanOrEqual(100)
+    const lastPage = Math.max(1, Math.ceil(firstData.data.total / 100))
+    const listRes = await request.get(`${API}/api/cashier/journal?account_code=1001&page_size=100&page=${lastPage}`, { headers })
     const listData = await listRes.json()
     expect(listData.code).toBe(0)
 
