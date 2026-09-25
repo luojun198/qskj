@@ -172,7 +172,7 @@ export function buildVoucherListQuery(filters: VoucherListFilters, db: Database.
       WHERE vouchers_fts MATCH ?
     `
       )
-      .all(ftsQuery) as Array<{ voucher_id: number }>
+      .all(ftsQuery) as Array<{ voucher_id: string }>
 
     // 从分录 FTS5 表中搜索匹配的凭证 ID
     const entryFtsResults = db
@@ -182,10 +182,10 @@ export function buildVoucherListQuery(filters: VoucherListFilters, db: Database.
       WHERE voucher_entries_fts MATCH ?
     `
       )
-      .all(ftsQuery) as Array<{ voucher_id: number }>
+      .all(ftsQuery) as Array<{ voucher_id: string }>
 
-    // 合并两个结果集
-    const matchedVoucherIds = new Set<number>()
+    // 合并两个结果集（FIX-320：两张索引统一存凭证 id，按 v.id 过滤；原先按 v.rowid，分录命中的 UUID 永远对不上）
+    const matchedVoucherIds = new Set<string>()
     voucherFtsResults.forEach(r => matchedVoucherIds.add(r.voucher_id))
     entryFtsResults.forEach(r => matchedVoucherIds.add(r.voucher_id))
 
@@ -193,7 +193,7 @@ export function buildVoucherListQuery(filters: VoucherListFilters, db: Database.
     if (matchedVoucherIds.size > 0) {
       const voucherIdList = Array.from(matchedVoucherIds)
       const placeholders = voucherIdList.map(() => '?').join(',')
-      conditions.push(`v.rowid IN (${placeholders})`)
+      conditions.push(`v.id IN (${placeholders})`)
       params.push(...voucherIdList)
     } else {
       // 没有匹配结果，返回空

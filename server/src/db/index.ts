@@ -8,6 +8,7 @@ import dotenv from 'dotenv'
 import { PRESET_ROLES } from './permissions.js'
 import { ensureUserRoleLink } from '../services/userRoleLinks.js'
 import { ensureDynamicReportSchema } from './ensureDynamicReportSchema.js'
+import { ensureVoucherFts } from '../services/voucherFts.js'
 
 // ES module 的 import 会在模块求值前提升，server/src/index.ts 的 dotenv.config()
 // 可能在本模块顶层常量求值后才执行，导致 DB_PATH/DB_DIR 等环境变量读不到。
@@ -350,6 +351,12 @@ export function getDb(): Database.Database {
     }
     ensureAccountSetImportSourceColumn(db)
     ensureQueryPlannerStats(db)
+    // FIX-320：库被重建 / 恢复后凭证全文索引虚表可能丢失（迁移记录仍显示已执行），关键字搜索整体报错——启动自愈
+    try {
+      if (ensureVoucherFts(db)) console.log('[DB] 凭证全文索引缺失，已自动重建')
+    } catch (e) {
+      console.warn('[DB] 凭证全文索引自检失败:', (e as Error)?.message)
+    }
   }
   return db
 }

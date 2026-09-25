@@ -511,6 +511,10 @@ import {
   up as assetStatusDisposedBackfillUp,
   down as assetStatusDisposedBackfillDown,
 } from './migrations/20260925_asset_status_disposed_backfill.js'
+import {
+  up as voucherFtsByIdUp,
+  down as voucherFtsByIdDown,
+} from './migrations/20260925_voucher_fts_by_id.js'
 
 /**
  * 迁移示例：添加新字段
@@ -2322,5 +2326,11 @@ export const migrations: Migration[] = [
     name: 'asset_status_disposed_backfill',
     up: assetStatusDisposedBackfillUp,
     down: assetStatusDisposedBackfillDown,
+  },
+  {
+    version: 149,
+    name: 'voucher_fts_by_id',
+    up: voucherFtsByIdUp,
+    down: voucherFtsByIdDown,
   },
 ]

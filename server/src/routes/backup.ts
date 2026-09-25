@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { rebuildVoucherFts } from '../services/voucherFts.js'
 import { v4 as uuidv4 } from 'uuid'
 import {
   readFileSync,
@@ -1027,12 +1028,9 @@ router.post('/database/cleanup', requirePermission('system:backup'), (req: AuthR
       .prepare("DELETE FROM operation_logs WHERE created_at < datetime('now', '-30 days')")
       .run()
 
-    // 2. 重建 FTS 索引
+    // 2. 重建 FTS 索引（FIX-320：按凭证 / 分录 id 从源表整体重建，虚表丢失时也能恢复）
     try {
-      db.exec("INSERT INTO vouchers_fts(vouchers_fts) VALUES('rebuild')")
-    } catch (_) {}
-    try {
-      db.exec("INSERT INTO voucher_entries_fts(voucher_entries_fts) VALUES('rebuild')")
+      db.transaction(() => rebuildVoucherFts(db as any))()
     } catch (_) {}
 
     // 3. VACUUM 回收空间
