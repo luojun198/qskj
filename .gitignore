@@ -171,6 +171,7 @@ data/*.db.corrupted-*
 sout.log
 serr.log
 scratch/temp/
+scratch/tmp/
 
 # Playwright 运行产物
 client/test-results/
