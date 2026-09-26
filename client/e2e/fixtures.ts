@@ -13,6 +13,9 @@ const PASSWORD = 'admin123'
 /** 曾经硬编码的行政账套 id；库若还在就优先用它，保证与历史用例数据落在同一账套 */
 const PREFERRED_ACCOUNT_SET_ID = '5945a5a8-e9f2-4145-968f-86862ce54aa3'
 
+/** E2E 专用账套名（由「测试」账套压测前的单账套备份导入而来） */
+const E2E_ACCOUNT_SET_NAME = 'E2E专用'
+
 let cachedAccountSetId: string | null = null
 
 /**
@@ -32,7 +35,13 @@ export async function resolveAccountSetId(request: {
   const list = (body?.data ?? []) as Array<{ id: string; name?: string }>
   if (!list.length) throw new Error('账套列表为空，请先初始化数据库')
 
-  const hit = list.find(a => a.id === PREFERRED_ACCOUNT_SET_ID) ?? list[0]
+  // E2E 专用账套：与人工复查 / 压测数据隔离（「测试」账套有 10 万级压测数据，会拖慢并发用例）。
+  // 优先环境变量 E2E_ACCOUNT_SET_ID，其次名为「E2E专用」的账套，都没有时沿用原逻辑。
+  const hit =
+    list.find(a => a.id === process.env.E2E_ACCOUNT_SET_ID) ??
+    list.find(a => a.name === E2E_ACCOUNT_SET_NAME) ??
+    list.find(a => a.id === PREFERRED_ACCOUNT_SET_ID) ??
+    list[0]
   cachedAccountSetId = hit.id
   return hit.id
 }

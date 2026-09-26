@@ -38,7 +38,8 @@ test.describe('财务分析 · 科目分析', () => {
     await expect(dialog).toBeVisible()
     await expect(dialog.locator('.el-dialog__header')).toContainText('管理费用分析')
 
-    // 年度分析
+    // 年度分析。弹窗打开后科目异步回填，未填好就点确定只会提示「请选择要分析的科目」，弹窗不关
+    await expect(dialog).toContainText(/\d+ 管理费用/)
     await dialog.getByRole('button', { name: '确定' }).click()
     await expect(dialog).toBeHidden()
     await expect(page.locator('.el-table__header')).toContainText('12月')

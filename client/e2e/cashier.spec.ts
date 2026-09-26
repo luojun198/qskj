@@ -27,6 +27,8 @@ test.describe('出纳管理', () => {
     // 期望有「现金科目」或「银行存款」分组标题（FIX-253 后页面还有分页「条/页」下拉，取第一个）
     const dropdown = page.locator('.el-select-dropdown').first()
     await expect(dropdown).toBeVisible()
+    // 科目列表异步加载，count() 不会等待，先等第一个选项出现
+    await expect(dropdown.locator('.el-select-dropdown__item').first()).toBeVisible()
     const optionCount = await dropdown.locator('.el-select-dropdown__item').count()
     expect(optionCount).toBeGreaterThan(0)
   })

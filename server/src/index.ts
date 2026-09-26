@@ -346,6 +346,11 @@ const server = app.listen(PORT, () => {
   log.info(`API地址: http://localhost:${PORT}/api`)
 })
 
+// Node 默认空闲 5s 即关闭 keep-alive 连接；客户端（浏览器 / 反向代理 / 测试的请求上下文）恰好复用这条连接时
+// 会收到 ECONNRESET。空闲超时放宽到 65s，headersTimeout 须大于它
+server.keepAliveTimeout = 65_000
+server.headersTimeout = 66_000
+
 server.on('error', (error: NodeJS.ErrnoException) => {
   if (error.code === 'EADDRINUSE') {
     log.error(`端口 ${PORT} 已被占用，后端服务可能已经在运行。请关闭重复启动的服务后再重试。`)
