@@ -39,6 +39,38 @@ class GbkChunkWriter {
   }
 }
 
+/**
+ * FIX-332：大表按排序键先取有序 rowid（走覆盖索引，只排序小元组），再每 2000 行按 rowid 取整行，批间让出事件循环。
+ * 原先 SELECT * ... ORDER BY 把 30 万行整行（含 acd_raw）放进临时 B 树排序，且导出全程同步阻塞服务约 6s。
+ * 不跨批持有打开的迭代器，其他请求可在批间正常使用同一连接；批间被删掉的行跳过。
+ */
+async function* iterateOrderedRows(
+  db: Database,
+  table: string,
+  accountSetId: string,
+  orderBy: string,
+  chunkSize = 2000
+): AsyncGenerator<any> {
+  const rowids = db
+    .prepare(`SELECT rowid FROM ${table} WHERE account_set_id=? ORDER BY ${orderBy}`)
+    .pluck()
+    .all(accountSetId) as number[]
+  for (let i = 0; i < rowids.length; i += chunkSize) {
+    const ids = rowids.slice(i, i + chunkSize)
+    const byId = new Map<number, any>()
+    for (const row of db
+      .prepare(`SELECT rowid AS __rowid, * FROM ${table} WHERE rowid IN (${ids.map(() => '?').join(',')})`)
+      .all(...ids) as any[]) {
+      byId.set(row.__rowid, row)
+    }
+    for (const id of ids) {
+      const row = byId.get(id)
+      if (row) yield row
+    }
+    await new Promise<void>(resolve => setImmediate(resolve))
+  }
+}
+
 /** 从 DB 行组装导出列，优先用 acd_raw */
 function buildRowFromRaw(
   dbRow: Record<string, any>,
@@ -101,9 +133,9 @@ const ZC_SYDW_COLS = ['sydw','dw_mc'] as const
 
 // ── 导出函数（各表返回 GBK Buffer） ──────────────────────────
 
-export function exportCnMx(db: Database, accountSetId: string): Buffer {
-  // FIX-328：逐行迭代，不再整表进内存
-  const rows = db.prepare('SELECT * FROM cashier_journal WHERE account_set_id=? ORDER BY biz_date,seq,created_at').iterate(accountSetId) as IterableIterator<any>
+export async function exportCnMx(db: Database, accountSetId: string): Promise<Buffer> {
+  // FIX-328 / FIX-332：分批取数、批间让出事件循环，不再整表进内存
+  const rows = iterateOrderedRows(db, 'cashier_journal', accountSetId, 'biz_date,seq,created_at')
   // CW 出纳生成凭证时，cashier_journal.voucher_type 存的是凭证类型 UUID、voucher_no 是「记-001」字符串；
   // 润衡 cn_mx 的 p_pzlx/p_pzbh 是整数。导出时映射回润衡可识别的数值，保证可逆还原。
   const vtCodeById = new Map<string, string>(
@@ -125,33 +157,31 @@ export function exportCnMx(db: Database, accountSetId: string): Buffer {
     return /^\d+$/.test(s) ? s : ''
   }
   const out = new GbkChunkWriter()
-  // 静态行序号（ACD dzd_xh 格式）
-  for (const r of rows) {
-    const cells = buildRowFromRaw(r, CN_MX_COLS, {
-      kmbm: r => s(r.account_code),
-      bz:   r => s(r.currency) || 'RMB',
-      rq:   r => d(r.biz_date),
-      xh:   r => s(r.seq),
-      nf:   r => r.biz_date ? r.biz_date.slice(0,4) : '',
-      yf:   r => r.biz_date ? String(parseInt(r.biz_date.slice(5,7))) : '',
-      dd:   r => r.biz_date ? String(parseInt(r.biz_date.slice(8,10))) : '',
-      zy:   r => s(r.summary),
-      jf:   r => s(r.debit),
-      df:   r => s(r.credit),
-      gzm:  r => r.reconciled ? '1' : '',
-      lrr:  r => s(r.created_by),
-      dfkm: r => s(r.counter_account),
-      g_qymc: r => s(r.counter_unit),
-      khyh: r => s(r.bank_name),
-      yhzh: r => s(r.bank_account),
-      dwbm: r => s(r.unit_code),
-      p_nf: r => s(r.voucher_year),
-      p_yf: r => s(r.voucher_month),
-      p_pzlx: r => acdType(r.voucher_type),
-      p_pzbh: r => acdNo(r.voucher_no),
-    })
-    out.push(cells)
+  // FIX-332：列覆盖函数只依赖行参数，提到循环外只建一次（原先每行新建 20 多个闭包，30 万行约 2s）
+  const overrides: Record<string, (r: Record<string, any>) => string> = {
+    kmbm: r => s(r.account_code),
+    bz:   r => s(r.currency) || 'RMB',
+    rq:   r => d(r.biz_date),
+    xh:   r => s(r.seq),
+    nf:   r => r.biz_date ? r.biz_date.slice(0,4) : '',
+    yf:   r => r.biz_date ? String(parseInt(r.biz_date.slice(5,7))) : '',
+    dd:   r => r.biz_date ? String(parseInt(r.biz_date.slice(8,10))) : '',
+    zy:   r => s(r.summary),
+    jf:   r => s(r.debit),
+    df:   r => s(r.credit),
+    gzm:  r => r.reconciled ? '1' : '',
+    lrr:  r => s(r.created_by),
+    dfkm: r => s(r.counter_account),
+    g_qymc: r => s(r.counter_unit),
+    khyh: r => s(r.bank_name),
+    yhzh: r => s(r.bank_account),
+    dwbm: r => s(r.unit_code),
+    p_nf: r => s(r.voucher_year),
+    p_yf: r => s(r.voucher_month),
+    p_pzlx: r => acdType(r.voucher_type),
+    p_pzbh: r => acdNo(r.voucher_no),
   }
+  for await (const r of rows) out.push(buildRowFromRaw(r, CN_MX_COLS, overrides))
   return out.finish()
 }
 
@@ -167,24 +197,22 @@ export function exportJslb(db: Database, accountSetId: string): Buffer {
   return Buffer.concat(bufs)
 }
 
-export function exportYhdzd(db: Database, accountSetId: string): Buffer {
-  const rows = db.prepare('SELECT * FROM bank_statement WHERE account_set_id=? ORDER BY biz_date,id').iterate(accountSetId) as IterableIterator<any>
+export async function exportYhdzd(db: Database, accountSetId: string): Promise<Buffer> {
+  const rows = iterateOrderedRows(db, 'bank_statement', accountSetId, 'biz_date,id')
   let xh = 1
   const out = new GbkChunkWriter()
-  for (const r of rows) {
-    const cells = buildRowFromRaw(r, YHDZD_COLS, {
-      dzd_xh: () => String(xh++),
-      rq:     r => d(r.biz_date),
-      kmbm:   r => s(r.account_code),
-      jf:     r => s(r.debit),
-      df:     r => s(r.credit),
-      jslb:   r => s(r.settle_type),
-      pz_ph:  r => s(r.bill_no),
-      dzbz:   r => r.matched ? '1' : '',
-      dzbh:   r => s(r.match_batch),
-    })
-    out.push(cells)
+  const overrides: Record<string, (r: Record<string, any>) => string> = {
+    dzd_xh: () => String(xh++),
+    rq:     r => d(r.biz_date),
+    kmbm:   r => s(r.account_code),
+    jf:     r => s(r.debit),
+    df:     r => s(r.credit),
+    jslb:   r => s(r.settle_type),
+    pz_ph:  r => s(r.bill_no),
+    dzbz:   r => r.matched ? '1' : '',
+    dzbh:   r => s(r.match_batch),
   }
+  for await (const r of rows) out.push(buildRowFromRaw(r, YHDZD_COLS, overrides))
   return out.finish()
 }
 
@@ -308,12 +336,12 @@ export function exportZcSydw(db: Database, accountSetId: string): Buffer {
 
 // ── 主导出函数：返回所有表的 Map<filename, Buffer> ────────────
 
-export function exportCashierAssetTables(db: Database, accountSetId: string): Map<string, Buffer> {
+export async function exportCashierAssetTables(db: Database, accountSetId: string): Promise<Map<string, Buffer>> {
   return new Map([
-    ['rhsj\\cn_mx.txt',   exportCnMx(db, accountSetId)],
+    ['rhsj\\cn_mx.txt',   await exportCnMx(db, accountSetId)],
     ['rhsj\\cn_nc.txt',   exportCnNc(db, accountSetId)],
     ['rhsj\\jslb.txt',    exportJslb(db, accountSetId)],
-    ['rhsj\\yhdzd.txt',   exportYhdzd(db, accountSetId)],
+    ['rhsj\\yhdzd.txt',   await exportYhdzd(db, accountSetId)],
     ['rhsj\\zc_gdzc.txt', exportZcGdzc(db, accountSetId)],
     ['rhsj\\zc_yzjb.txt', exportZcYzjb(db, accountSetId)],
     ['rhsj\\zc_yzzj.txt', exportZcYzzj(db, accountSetId)],

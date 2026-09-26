@@ -5,7 +5,8 @@
  * GET  /api/acd-export/cashier-asset/preview → JSON 预览（行数统计，不下载）
  */
 import { Router } from 'express'
-import { deflateSync } from 'zlib'
+import { deflate } from 'zlib'
+import { promisify } from 'util'
 import { authMiddleware, AuthRequest } from '../middleware/index.js'
 import { getDb } from '../db/index.js'
 import { exportCashierAssetTables } from '../services/acdExportCashierAsset.js'
@@ -40,14 +41,21 @@ router.get('/acd-export/cashier-asset/preview', (req: AuthRequest, res) => {
  * 实际使用润衡需要 .acd 格式；这里导出 ZIP（tar），
  * 若需完整 .acd 二进制则用 buildAcdBuffer。
  */
-router.get('/acd-export/cashier-asset', (req: AuthRequest, res) => {
+// FIX-332：导出改为异步（分批取数 + 异步压缩），导出期间服务可响应其他请求
+const deflateAsync = promisify(deflate)
+
+router.get('/acd-export/cashier-asset', async (req: AuthRequest, res) => {
   const db = getDb()
   const asid = req.accountSetId || ''
   const accountSet = db.prepare('SELECT name, code FROM account_sets WHERE id=?').get(asid) as any
   const setName = accountSet?.name || 'export'
 
-  const tables = exportCashierAssetTables(db, asid)
-  const acdBuf = buildAcdBuffer(tables)
+  let acdBuf: Buffer
+  try {
+    acdBuf = await buildAcdBuffer(await exportCashierAssetTables(db, asid))
+  } catch (e: any) {
+    return res.status(500).json({ code: 500, message: e?.message || 'ACD 导出失败' })
+  }
 
   const filename = encodeURIComponent(`${setName}_出纳固资_${new Date().toISOString().slice(0,10)}.acd`)
   res.setHeader('Content-Type', 'application/octet-stream')
@@ -62,7 +70,7 @@ router.get('/acd-export/cashier-asset', (req: AuthRequest, res) => {
  *   元数据: flag(4) + uncompressed_size(4) + compressed_size(4)
  *   压缩数据: zlib.deflate
  */
-function buildAcdBuffer(tables: Map<string, Buffer>): Buffer {
+async function buildAcdBuffer(tables: Map<string, Buffer>): Promise<Buffer> {
   const parts: Buffer[] = []
 
   for (const [filename, content] of tables) {
@@ -75,7 +83,7 @@ function buildAcdBuffer(tables: Map<string, Buffer>): Buffer {
     nameBuf[Math.min(nameBytes.length, 31)] = 0x00
 
     // zlib 压缩
-    const compressed = deflateSync(content)
+    const compressed = await deflateAsync(content)
     const meta = Buffer.alloc(12)
     meta.writeUInt32LE(1, 0)                    // flag = 1
     meta.writeUInt32LE(content.length, 4)       // uncompressed_size

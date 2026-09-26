@@ -43,7 +43,7 @@ import {
   resolveAccountSetStartDate,
   syncAccountSetStartDate,
 } from '../services/accountSetDefaults.js'
-import { importSingleAccountSetBackupAsNewAccountSet } from '../services/accountSetBackupRestore.js'
+import { importSingleAccountSetBackupAsNewAccountSetAsync } from '../services/accountSetBackupRestore.js'
 import { repairDatabaseReferentialIntegrity } from '../services/databaseIntegrityRepair.js'
 
 // 备份上传存储（uploads 目录在 deploy 根目录）
@@ -709,7 +709,8 @@ router.post('/switch-account-set', authMiddleware, (req: AuthRequest, res) => {
 
 // ===================== 备份导入 =====================
 // 上传备份文件并导入为新账套（登录前使用，无需认证）
-router.post('/backup-import', upload.single('file'), (req: any, res) => {
+// FIX-333：分块异步导入，导入大账套期间服务不被整段阻塞
+router.post('/backup-import', upload.single('file'), async (req: any, res) => {
   const { name, fiscal_year, start_date } = req.body as any
 
   if (!req.file) {
@@ -722,7 +723,7 @@ router.post('/backup-import', upload.single('file'), (req: any, res) => {
   const backupPath = req.file.path
 
   try {
-    const result = importSingleAccountSetBackupAsNewAccountSet({
+    const result = await importSingleAccountSetBackupAsNewAccountSetAsync({
       sourcePath: backupPath,
       name,
       fiscalYear: fiscal_year ? Number(fiscal_year) : undefined,

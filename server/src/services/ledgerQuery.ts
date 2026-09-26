@@ -621,6 +621,18 @@ export function buildGeneralLedgerQuery(filters: {
   const cteParams: SqlParam[] = [filters.accountSetId, filters.accountSetId, `${y}-01-01`, `${y}-12-31`]
   appendAccountScopeCondition(filters.accountScope, 've.account_id', cteConditions, cteParams)
 
+  // FIX-331：指定了科目（科目分析、总账按科目查）时，外层只取该科目子树，CTE 却聚合了全年全部凭证的全部分录
+  // （10 万凭证时科目分析 1.8s）。此时限定分录科目并改由分录 (账套, 科目) 索引出发；未指定科目仍为凭证驱动
+  const subtreeCondition = 've.account_id IN (SELECT id FROM accounts WHERE account_set_id = ? AND code LIKE ?)'
+  const subtreeParams: SqlParam[] = filters.accountCode ? [filters.accountSetId, `${filters.accountCode}%`] : []
+  if (filters.accountCode) {
+    cteConditions.push(subtreeCondition)
+    cteParams.push(...subtreeParams)
+  }
+  const entryFrom = filters.accountCode
+    ? 'voucher_entries ve\n        CROSS JOIN vouchers v ON v.id = ve.voucher_id'
+    : 'vouchers v\n        CROSS JOIN voucher_entries ve ON ve.voucher_id = v.id'
+
   // FIX-105：账前发生额落在启用日前一天所属月份。中途启用账套的 1~N-1 月没有凭证明细，
   // 只有这一笔汇总数，挂在启用前最后一个月，可保证「期初 + 各月 = 期末」逐列勾稽。
   // 账前发生额落在本年之前时并入期初，否则期初只取年初余额
@@ -657,8 +669,7 @@ export function buildGeneralLedgerQuery(filters: {
           CAST(strftime('%m', v.voucher_date) AS INTEGER) as month,
           ve.direction,
           SUM(ve.amount) as amount
-        FROM vouchers v
-        CROSS JOIN voucher_entries ve ON ve.voucher_id = v.id
+        FROM ${entryFrom}
         ${transferJoin}
         WHERE ${cteConditions.join(' AND ')}
         GROUP BY ve.account_id, month, ve.direction
@@ -700,9 +711,10 @@ export function buildGeneralLedgerQuery(filters: {
         SELECT ve.account_id,
           SUM(CASE WHEN ve.direction = 'debit' THEN ve.amount ELSE 0 END) AS dr,
           SUM(CASE WHEN ve.direction = 'credit' THEN ve.amount ELSE 0 END) AS cr
-        FROM vouchers v
-        CROSS JOIN voucher_entries ve ON ve.voucher_id = v.id
-        WHERE v.account_set_id = ? AND ve.account_set_id = ? AND ${statusCondition} AND v.voucher_date < ?
+        FROM ${entryFrom}
+        WHERE v.account_set_id = ? AND ve.account_set_id = ? AND ${statusCondition} AND v.voucher_date < ?${
+          filters.accountCode ? `\n          AND ${subtreeCondition}` : ''
+        }
         GROUP BY ve.account_id
       )
       SELECT
@@ -760,6 +772,7 @@ export function buildGeneralLedgerQuery(filters: {
       filters.accountSetId,
       filters.accountSetId,
       `${y}-01-01`,
+      ...subtreeParams,
       // init_balances 年初余额
       filters.accountSetId,
       y,

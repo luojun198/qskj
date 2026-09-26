@@ -24,6 +24,8 @@ import { initDefaultAccountSet } from '../scripts/seedAccounts.js'
 import {
   extraTableRowsSql,
   importSingleAccountSetBackupAsNewAccountSet,
+  importSingleAccountSetBackupAsNewAccountSetAsync,
+  cleanupInterruptedAccountSetImports,
   listExtraBackupTables,
   restoreSingleAccountSetFromBackup,
 } from '../services/accountSetBackupRestore.js'
@@ -151,6 +153,51 @@ describe('单账套备份覆盖全部模块（FIX-329）', { timeout: 60000 }, (
     // 源账套不受影响
     expect(count('cashier_journal', A)).toBe(1)
     expect(one<{ id: string }>('SELECT id FROM cashier_journal WHERE account_set_id = ?', A).id).toBe(ids.j1)
+  })
+
+  it('分块异步导入（FIX-333）：结果与同步导入一致，导入期间账套不可见且事件循环持续运转', async () => {
+    // 造足够多的出纳流水，确保跨越多个提交块
+    const ins2 = db.prepare('INSERT INTO cashier_journal (id, account_set_id, account_code, biz_date, debit, credit) VALUES (?, ?, ?, ?, ?, ?)')
+    db.transaction(() => { for (let i = 0; i < 20000; i++) ins2.run(uuidv4(), A, '1001', '2026-09-03', i, 0) })()
+    const r = await doAccountSetBackup(A)
+    backups.push(r!.filepath)
+
+    let ticks = 0
+    let sawImporting = false
+    const timer = setInterval(() => {
+      ticks++
+      const row = db.prepare("SELECT status FROM account_sets WHERE name = '分块导入'").get() as { status: string } | undefined
+      if (row?.status === 'inactive') sawImporting = true
+    }, 0)
+    const { accountSetId: D, stats } = await importSingleAccountSetBackupAsNewAccountSetAsync({ sourcePath: r!.filepath, name: '分块导入' }, { chunkMs: 0 })
+    clearInterval(timer)
+
+    expect(ticks).toBeGreaterThanOrEqual(3)
+    expect(sawImporting).toBe(true)
+    expect((db.prepare('SELECT status FROM account_sets WHERE id = ?').get(D) as { status: string }).status).toBe('active')
+    expect(stats.extraRows).toBeGreaterThanOrEqual(20012)
+    for (const t of listExtraBackupTables(db)) expect([t.table, count(t.table, D)]).toEqual([t.table, count(t.table, A)])
+    const n = (sql: string, id: string) => (db.prepare(sql).get(id) as { n: number }).n
+    expect(n('SELECT COUNT(*) n FROM vouchers WHERE account_set_id = ?', D)).toBe(n('SELECT COUNT(*) n FROM vouchers WHERE account_set_id = ?', A))
+    expect(n('SELECT COUNT(*) n FROM voucher_entries WHERE account_set_id = ?', D)).toBe(n('SELECT COUNT(*) n FROM voucher_entries WHERE account_set_id = ?', A))
+    expect(db.inTransaction).toBe(false)
+    expect(db.pragma('foreign_keys', { simple: true })).toBe(1)
+    expect((db.prepare("SELECT COUNT(*) n FROM system_params WHERE param_key = 'backup:import_in_progress'").get() as { n: number }).n).toBe(0)
+  })
+
+  it('启动时清理上次中断的分块导入', () => {
+    const { accountSetId: E } = importSingleAccountSetBackupAsNewAccountSet({ sourcePath: backups[0], name: '中断导入' })
+    db.prepare("UPDATE account_sets SET status = 'inactive' WHERE id = ?").run(E)
+    db.prepare("INSERT INTO system_params (id, account_set_id, param_key, param_value) VALUES (?, ?, 'backup:import_in_progress', '')").run(uuidv4(), E)
+    expect(cleanupInterruptedAccountSetImports(db)).toBe(1)
+    expect(db.prepare('SELECT id FROM account_sets WHERE id = ?').get(E)).toBeUndefined()
+    expect(count('cashier_journal', E)).toBe(0)
+  })
+
+  it('分块异步导入失败时整体清理，不留下半个账套', async () => {
+    const before = (db.prepare('SELECT COUNT(*) n FROM account_sets').get() as { n: number }).n
+    await expect(importSingleAccountSetBackupAsNewAccountSetAsync({ sourcePath: TEMP_DB_PATH, name: '坏备份' })).rejects.toThrow()
+    expect((db.prepare('SELECT COUNT(*) n FROM account_sets').get() as { n: number }).n).toBe(before)
   })
 
   it('旧版备份（不含出纳等表）合并恢复时，不清空目标账套现有的出纳 / 固资数据', async () => {

@@ -293,14 +293,14 @@ const UUID_TOKEN_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
  * 辅助项目 / 用户等）即换成新 id，文本里嵌着的 UUID（JSON、「类目:项目」串）同样替换。
  * 仅处理备份里确实存在的表：旧版备份不含出纳等表时，目标账套这些模块的现有数据保持不动（不清空）。
  */
-function restoreExtraAccountSetTables(params: {
+function* restoreExtraAccountSetTables(params: {
   sourceDb: Database.Database
   targetDb: Database.Database
   sourceAccountSetId: string
   targetAccountSetId: string
   knownMaps: Array<Map<string, string>>
   userIdMap: Map<string, string | null>
-}): { tables: number; rows: number } {
+}): Generator<void, { tables: number; rows: number }> {
   const { sourceDb, targetDb, sourceAccountSetId, targetAccountSetId, knownMaps, userIdMap } = params
   const tables = listExtraBackupTables(sourceDb).filter(t => tableExists(targetDb, t.table))
   if (tables.length === 0) return { tables: 0, rows: 0 }
@@ -325,6 +325,7 @@ function restoreExtraAccountSetTables(params: {
     const sql = extraTableRowsSql(t).replace(/^SELECT (c\.)?\*/, 'SELECT $1id')
     for (const row of sourceDb.prepare(sql).iterate(sourceAccountSetId) as IterableIterator<{ id: unknown }>) {
       if (typeof row.id === 'string' && row.id) idMap.set(row.id, uuidv4())
+      if (idMap.size % (RESTORE_CHUNK_ROWS * 10) === 0) yield
     }
   }
   const lookup = new Map<string, string>(idMap)
@@ -366,6 +367,7 @@ function restoreExtraAccountSetTables(params: {
         })
       )
       rows++
+      if (rows % RESTORE_CHUNK_ROWS === 0) yield
     }
   }
   return { tables: tables.length, rows }
@@ -778,7 +780,21 @@ function remapValue(value: unknown, idMap?: Map<string, string>): unknown {
   return idMap.get(value) ?? null
 }
 
-function insertMappedRows(params: {
+/**
+ * FIX-333：恢复分块。插入循环每写这么多行 yield 一次：同步恢复直接跑完（单事务，语义不变）；
+ * 「导入为新账套」在 yield 处提交事务并让出事件循环，导入大账套期间服务不再整段卡住。
+ */
+const RESTORE_CHUNK_ROWS = 2000
+/** 分块恢复每个事务最多连续执行的时长：块太小时提交 / 检查点开销成倍增加（每 2000 行提交一次，30 万行导入 34s → 71s） */
+const RESTORE_CHUNK_MS = 200
+
+function drain<T>(gen: Generator<void, T>): T {
+  let r = gen.next()
+  while (!r.done) r = gen.next()
+  return r.value
+}
+
+type InsertMappedRowsParams = {
   sourceDb: Database.Database
   targetDb: Database.Database
   table: string
@@ -794,7 +810,13 @@ function insertMappedRows(params: {
   customParams?: unknown[]
   skipColumns?: string[]
   valueTransforms?: Record<string, (value: unknown) => unknown>
-}) {
+}
+
+function insertMappedRows(params: InsertMappedRowsParams): number {
+  return drain(insertMappedRowsGen(params))
+}
+
+function* insertMappedRowsGen(params: InsertMappedRowsParams): Generator<void, number> {
   const {
     sourceDb,
     targetDb,
@@ -822,14 +844,15 @@ function insertMappedRows(params: {
     customQuery ||
     `SELECT * FROM ${table} WHERE account_set_id = ?${orderBy ? ` ORDER BY ${orderBy}` : ''}`
   const queryParams = customQuery ? customParams : [sourceAccountSetId]
-  const rows = sourceDb.prepare(query).all(...queryParams) as Record<string, unknown>[]
-  if (rows.length === 0) return 0
+  // 备份库是独立只读连接，逐行迭代（不整表进内存），迭代器跨 yield 保持打开无碍
+  const rows = sourceDb.prepare(query).iterate(...queryParams) as IterableIterator<Record<string, unknown>>
 
   const placeholders = columns.map(() => '?').join(', ')
   const insertStmt = targetDb.prepare(
     `INSERT INTO ${table} (${columns.join(', ')}) VALUES (${placeholders})`
   )
 
+  let count = 0
   for (const row of rows) {
     const oldId = typeof row.id === 'string' ? row.id : null
     const values = columns.map(column => {
@@ -857,9 +880,11 @@ function insertMappedRows(params: {
       return row[column]
     })
     insertStmt.run(...values)
+    count++
+    if (count % RESTORE_CHUNK_ROWS === 0) yield
   }
 
-  return rows.length
+  return count
 }
 
 function importSecurityFromBackup(params: {
@@ -926,21 +951,23 @@ function importSecurityFromBackup(params: {
   }
 }
 
-/**
- * 登录页：将单账套备份导入为新账套（含用户/角色与全部业务数据）
- */
-export function importSingleAccountSetBackupAsNewAccountSet(params: {
+type ImportAsNewParams = {
   sourcePath: string
   name: string
   fiscalYear?: number
   startDate?: string
-}): {
+}
+
+type ImportAsNewResult = {
   accountSetId: string
   code: string
   fiscalYear: number
   startDate: string
   stats: AccountSetRestoreStats
-} {
+}
+
+/** 建新账套并导入用户 / 角色（小表，同步）；返回后续恢复业务数据所需信息 */
+function createImportTargetAccountSet(params: ImportAsNewParams, status: 'active' | 'inactive') {
   const scope = detectBackupScope(params.sourcePath)
   if (scope.type !== 'single_account_set' || !scope.sourceAccountSetId) {
     if (scope.type === 'full') {
@@ -952,7 +979,6 @@ export function importSingleAccountSetBackupAsNewAccountSet(params: {
   const targetDb = getDb()
   const sourceDb = new Database(params.sourcePath, { readonly: true })
   let newAccountSetId = ''
-
   try {
     const backupAccountSet = sourceDb
       .prepare('SELECT * FROM account_sets WHERE id = ?')
@@ -975,9 +1001,9 @@ export function importSingleAccountSetBackupAsNewAccountSet(params: {
     targetDb
       .prepare(
         `INSERT INTO account_sets (id, name, code, fiscal_year, start_date, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'active', datetime('now'), datetime('now'))`
+         VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`
       )
-      .run(newAccountSetId, params.name, code, fiscalYear, startDate)
+      .run(newAccountSetId, params.name, code, fiscalYear, startDate, status)
 
     let importedUsers = importSecurityFromBackup({
       sourceDb,
@@ -989,50 +1015,106 @@ export function importSingleAccountSetBackupAsNewAccountSet(params: {
       ensureAccountSetSecurityBootstrap(newAccountSetId)
       importedUsers = 1
     }
-
-    sourceDb.close()
-
-    const stats = restoreSingleAccountSetFromBackup({
-      targetAccountSetId: newAccountSetId,
-      sourcePath: params.sourcePath,
-    })
-    stats.users = importedUsers
-
-    syncAccountSetStartDate(targetDb, newAccountSetId, startDate)
-
-    return {
-      accountSetId: newAccountSetId,
-      code,
-      fiscalYear,
-      startDate,
-      stats,
-    }
+    return { targetDb, accountSetId: newAccountSetId, code, fiscalYear, startDate, importedUsers }
   } catch (error) {
-    if (newAccountSetId) {
-      try {
-        cleanupAccountSetCascade(targetDb, newAccountSetId)
-      } catch {
-        /* ignore rollback errors */
-      }
-    }
+    if (newAccountSetId) cleanupImportedAccountSet(targetDb, newAccountSetId)
     throw error
   } finally {
-    try {
-      sourceDb.close()
-    } catch {
-      /* ignore */
-    }
+    sourceDb.close()
   }
 }
 
 /**
- * 将单账套备份合并恢复到当前账套（不清除用户/角色，仅覆盖业务数据）
+ * 分块导入进行中的标记（以 backup: 开头：恢复时清理业务参数、复制源参数都会跳过它）。
+ * 服务在导入途中被强行关闭时，启动时据此清理半成品账套（见 cleanupInterruptedAccountSetImports）。
  */
-export function restoreSingleAccountSetFromBackup(params: {
+const IMPORT_IN_PROGRESS_PARAM = 'backup:import_in_progress'
+
+/** 启动时清理上次未完成的分块导入（账套停留在 inactive + 进行中标记） */
+export function cleanupInterruptedAccountSetImports(db: Database.Database = getDb()): number {
+  if (!tableExists(db, 'system_params')) return 0
+  const ids = (
+    db.prepare('SELECT account_set_id FROM system_params WHERE param_key = ?').all(IMPORT_IN_PROGRESS_PARAM) as Array<{
+      account_set_id: string | null
+    }>
+  )
+    .map(r => r.account_set_id)
+    .filter((id): id is string => !!id)
+  for (const id of ids) {
+    cleanupImportedAccountSet(db, id)
+    db.prepare('DELETE FROM system_params WHERE account_set_id = ? AND param_key = ?').run(id, IMPORT_IN_PROGRESS_PARAM)
+  }
+  return ids.length
+}
+
+function cleanupImportedAccountSet(db: Database.Database, accountSetId: string) {
+  try {
+    cleanupAccountSetCascade(db, accountSetId)
+  } catch {
+    /* ignore rollback errors */
+  }
+}
+
+/**
+ * 登录页：将单账套备份导入为新账套（含用户/角色与全部业务数据）。单事务同步执行。
+ */
+export function importSingleAccountSetBackupAsNewAccountSet(params: ImportAsNewParams): ImportAsNewResult {
+  const t = createImportTargetAccountSet(params, 'active')
+  try {
+    const stats = restoreSingleAccountSetFromBackup({ targetAccountSetId: t.accountSetId, sourcePath: params.sourcePath })
+    stats.users = t.importedUsers
+    syncAccountSetStartDate(t.targetDb, t.accountSetId, t.startDate)
+    return { accountSetId: t.accountSetId, code: t.code, fiscalYear: t.fiscalYear, startDate: t.startDate, stats }
+  } catch (error) {
+    cleanupImportedAccountSet(t.targetDb, t.accountSetId)
+    throw error
+  }
+}
+
+/**
+ * FIX-333：导入为新账套（分块异步版，登录页使用）。导入期间账套状态为 inactive 并带进行中标记（登录列表 / 鉴权不可见），
+ * 分块提交并让出事件循环，其他用户照常使用；完成后置为 active，失败整体清理。
+ */
+export async function importSingleAccountSetBackupAsNewAccountSetAsync(
+  params: ImportAsNewParams,
+  /** 每个事务最多连续执行的毫秒数；测试传 0 让每 RESTORE_CHUNK_ROWS 行都让出一次 */
+  options: { chunkMs?: number } = {}
+): Promise<ImportAsNewResult> {
+  const t = createImportTargetAccountSet(params, 'inactive')
+  t.targetDb
+    .prepare("INSERT INTO system_params (id, account_set_id, param_key, param_value) VALUES (?, ?, ?, datetime('now'))")
+    .run(uuidv4(), t.accountSetId, IMPORT_IN_PROGRESS_PARAM)
+  try {
+    const stats = await restoreSingleAccountSetFromBackupChunked(
+      { targetAccountSetId: t.accountSetId, sourcePath: params.sourcePath },
+      options.chunkMs
+    )
+    stats.users = t.importedUsers
+    syncAccountSetStartDate(t.targetDb, t.accountSetId, t.startDate)
+    t.targetDb.transaction(() => {
+      t.targetDb.prepare("UPDATE account_sets SET status = 'active', updated_at = datetime('now') WHERE id = ?").run(t.accountSetId)
+      t.targetDb.prepare('DELETE FROM system_params WHERE account_set_id = ? AND param_key = ?').run(t.accountSetId, IMPORT_IN_PROGRESS_PARAM)
+    })()
+    return { accountSetId: t.accountSetId, code: t.code, fiscalYear: t.fiscalYear, startDate: t.startDate, stats }
+  } catch (error) {
+    cleanupImportedAccountSet(t.targetDb, t.accountSetId)
+    throw error
+  }
+}
+
+type SingleAccountSetRestoreParams = {
   targetAccountSetId: string
   sourcePath: string
   userId?: string
-}): AccountSetRestoreStats {
+}
+
+/** 打开一次单账套恢复：校验、建映射，返回按块推进的恢复步骤（调用方负责事务与关闭备份库） */
+function openSingleAccountSetRestore(params: SingleAccountSetRestoreParams): {
+  sourceDb: Database.Database
+  targetDb: Database.Database
+  stats: AccountSetRestoreStats
+  steps: Generator<void, void>
+} {
   const { targetAccountSetId, sourcePath, userId } = params
   const scope = detectBackupScope(sourcePath)
   if (scope.type !== 'single_account_set' || !scope.sourceAccountSetId) {
@@ -1081,312 +1163,358 @@ export function restoreSingleAccountSetFromBackup(params: {
     sourceAccountSetName: scope.sourceAccountSetName || null,
   }
 
-  try {
-    targetDb.pragma('foreign_keys = OFF')
-    const run = targetDb.transaction(() => {
-      clearAccountSetBusinessData(targetDb, targetAccountSetId)
+  function* steps(): Generator<void, void> {
+    clearAccountSetBusinessData(targetDb, targetAccountSetId)
 
-      insertMappedRows({
-        sourceDb,
-        targetDb,
-        table: 'voucher_types',
-        sourceAccountSetId: scope.sourceAccountSetId!,
-        targetAccountSetId,
-        idMap: voucherTypeMap,
-      })
-
-      stats.auxCategories = insertMappedRows({
-        sourceDb,
-        targetDb,
-        table: 'aux_categories',
-        sourceAccountSetId: scope.sourceAccountSetId!,
-        targetAccountSetId,
-        idMap: auxCategoryMap,
-        skipColumns: ['default_item_id'],
-      })
-
-      insertMappedRows({
-        sourceDb,
-        targetDb,
-        table: 'aux_category_fields',
-        sourceAccountSetId: scope.sourceAccountSetId!,
-        targetAccountSetId,
-        idMap: miscIdMap,
-        foreignKeyMaps: { category_id: auxCategoryMap },
-        customQuery:
-          'SELECT acf.* FROM aux_category_fields acf INNER JOIN aux_categories ac ON acf.category_id = ac.id WHERE ac.account_set_id = ?',
-        customParams: [scope.sourceAccountSetId],
-      })
-
-      stats.auxItems = insertMappedRows({
-        sourceDb,
-        targetDb,
-        table: 'aux_items',
-        sourceAccountSetId: scope.sourceAccountSetId!,
-        targetAccountSetId,
-        idMap: auxItemMap,
-        foreignKeyMaps: { type: auxCategoryMap },
-      })
-
-      syncAuxCategoryDefaultItems({
-        sourceDb,
-        targetDb,
-        sourceAccountSetId: scope.sourceAccountSetId!,
-        categoryIdMap: auxCategoryMap,
-        itemIdMap: auxItemMap,
-      })
-
-      const auxTypesTransform = (value: unknown) => remapAccountAuxTypes(value, auxCategoryMap)
-      stats.accounts = insertMappedRows({
-        sourceDb,
-        targetDb,
-        table: 'accounts',
-        sourceAccountSetId: scope.sourceAccountSetId!,
-        targetAccountSetId,
-        idMap: accountMap,
-        selfParent: true,
-        orderBy: 'level, code',
-        valueTransforms: { aux_types: auxTypesTransform },
-      })
-
-      const auxItemIdTransform = auxItemIdValueTransform(auxItemMap)
-      const auxDataTransform = (value: unknown) =>
-        remapVoucherAuxDataJson(value, auxCategoryMap, categoryCodeByOldId, auxItemMap)
-      const templateEntriesTransform = (value: unknown) =>
-        remapVoucherTemplateEntriesDataJson(value, {
-          accountMap,
-          auxItemMap,
-          categoryIdMap: auxCategoryMap,
-          categoryCodeByOldId,
-        })
-
-      stats.initBalances = insertMappedRows({
-        sourceDb,
-        targetDb,
-        table: 'init_balances',
-        sourceAccountSetId: scope.sourceAccountSetId!,
-        targetAccountSetId,
-        idMap: miscIdMap,
-        foreignKeyMaps: { account_id: accountMap },
-        valueTransforms: { aux_item_id: auxItemIdTransform },
-      })
-
-      insertMappedRows({
-        sourceDb,
-        targetDb,
-        table: 'transfer_types',
-        sourceAccountSetId: scope.sourceAccountSetId!,
-        targetAccountSetId,
-        idMap: transferTypeMap,
-      })
-
-      stats.vouchers = insertMappedRows({
-        sourceDb,
-        targetDb,
-        table: 'vouchers',
-        sourceAccountSetId: scope.sourceAccountSetId!,
-        targetAccountSetId,
-        idMap: voucherMap,
-        foreignKeyMaps: { voucher_type_id: voucherTypeMap },
-        userIdMap,
-        userColumns: ['maker_id', 'auditor_id', 'poster_id'],
-      })
-
-      stats.voucherEntries = insertMappedRows({
-        sourceDb,
-        targetDb,
-        table: 'voucher_entries',
-        sourceAccountSetId: scope.sourceAccountSetId!,
-        targetAccountSetId,
-        idMap: miscIdMap,
-        foreignKeyMaps: {
-          voucher_id: voucherMap,
-          account_id: accountMap,
-          dept_id: auxItemMap,
-          project_id: auxItemMap,
-          supplier_id: auxItemMap,
-          person_id: auxItemMap,
-          func_class_id: auxItemMap,
-        },
-        valueTransforms: { aux_data: auxDataTransform },
-      })
-
-      insertMappedRows({
-        sourceDb,
-        targetDb,
-        table: 'transfer_items',
-        sourceAccountSetId: scope.sourceAccountSetId!,
-        targetAccountSetId,
-        idMap: miscIdMap,
-      })
-
-      insertMappedRows({
-        sourceDb,
-        targetDb,
-        table: 'report_templates',
-        sourceAccountSetId: scope.sourceAccountSetId!,
-        targetAccountSetId,
-        idMap: reportTemplateMap,
-      })
-
-      insertMappedRows({
-        sourceDb,
-        targetDb,
-        table: 'report_template_items',
-        sourceAccountSetId: scope.sourceAccountSetId!,
-        targetAccountSetId,
-        idMap: miscIdMap,
-        foreignKeyMaps: { template_id: reportTemplateMap },
-        customQuery:
-          'SELECT rti.* FROM report_template_items rti INNER JOIN report_templates rt ON rti.template_id = rt.id WHERE rt.account_set_id = ?',
-        customParams: [scope.sourceAccountSetId],
-      })
-
-      insertMappedRows({
-        sourceDb,
-        targetDb,
-        table: 'print_templates',
-        sourceAccountSetId: scope.sourceAccountSetId!,
-        targetAccountSetId,
-        idMap: miscIdMap,
-      })
-
-      insertMappedRows({
-        sourceDb,
-        targetDb,
-        table: 'voucher_templates',
-        sourceAccountSetId: scope.sourceAccountSetId!,
-        targetAccountSetId,
-        idMap: miscIdMap,
-        foreignKeyMaps: { voucher_type_id: voucherTypeMap },
-        userIdMap,
-        userColumns: ['created_by'],
-        valueTransforms: { entries_data: templateEntriesTransform },
-      })
-
-      insertMappedRows({
-        sourceDb,
-        targetDb,
-        table: 'voucher_attachments',
-        sourceAccountSetId: scope.sourceAccountSetId!,
-        targetAccountSetId,
-        idMap: miscIdMap,
-        foreignKeyMaps: { voucher_id: voucherMap },
-        userIdMap,
-        userColumns: ['created_by'],
-      })
-
-      insertMappedRows({
-        sourceDb,
-        targetDb,
-        table: 'account_balances',
-        sourceAccountSetId: scope.sourceAccountSetId!,
-        targetAccountSetId,
-        idMap: miscIdMap,
-        foreignKeyMaps: { account_id: accountMap },
-        valueTransforms: { aux_item_id: auxItemIdTransform },
-      })
-
-      insertMappedRows({
-        sourceDb,
-        targetDb,
-        table: 'period_closing',
-        sourceAccountSetId: scope.sourceAccountSetId!,
-        targetAccountSetId,
-        idMap: miscIdMap,
-      })
-
-      insertMappedRows({
-        sourceDb,
-        targetDb,
-        table: 'budget_surplus_adjustments',
-        sourceAccountSetId: scope.sourceAccountSetId!,
-        targetAccountSetId,
-        idMap: miscIdMap,
-      })
-
-      insertMappedRows({
-        sourceDb,
-        targetDb,
-        table: 'cash_flow_items',
-        sourceAccountSetId: scope.sourceAccountSetId!,
-        targetAccountSetId,
-        idMap: miscIdMap,
-      })
-
-      insertMappedRows({
-        sourceDb,
-        targetDb,
-        table: 'auto_transfer_runs',
-        sourceAccountSetId: scope.sourceAccountSetId!,
-        targetAccountSetId,
-        idMap: miscIdMap,
-      })
-
-      insertMappedRows({
-        sourceDb,
-        targetDb,
-        table: 'system_params',
-        sourceAccountSetId: scope.sourceAccountSetId!,
-        targetAccountSetId,
-        idMap: miscIdMap,
-        customQuery:
-          "SELECT * FROM system_params WHERE account_set_id = ? AND param_key NOT LIKE 'backup:%'",
-        customParams: [scope.sourceAccountSetId],
-      })
-
-      insertMappedRows({
-        sourceDb,
-        targetDb,
-        table: 'ai_config',
-        sourceAccountSetId: scope.sourceAccountSetId!,
-        targetAccountSetId,
-        idMap: miscIdMap,
-      })
-
-      restoreReportDefinitionTables({
-        sourceDb,
-        targetDb,
-        sourceAccountSetId: scope.sourceAccountSetId!,
-        targetAccountSetId,
-      })
-
-      importAccountScopesFromBackup({
-        sourceDb,
-        targetDb,
-        sourceAccountSetId: scope.sourceAccountSetId!,
-        targetAccountSetId,
-        roleMap,
-        userIdMap,
-        accountMap,
-      })
-
-      remapVoucherSelfReferences(targetDb, targetAccountSetId, voucherMap)
-
-      const extra = restoreExtraAccountSetTables({
-        sourceDb,
-        targetDb,
-        sourceAccountSetId: scope.sourceAccountSetId!,
-        targetAccountSetId,
-        knownMaps: [voucherMap, accountMap, auxItemMap, auxCategoryMap, voucherTypeMap, transferTypeMap, reportTemplateMap, roleMap, miscIdMap],
-        userIdMap,
-      })
-      stats.extraTables = extra.tables
-      stats.extraRows = extra.rows
+    yield* insertMappedRowsGen({
+      sourceDb,
+      targetDb,
+      table: 'voucher_types',
+      sourceAccountSetId: scope.sourceAccountSetId!,
+      targetAccountSetId,
+      idMap: voucherTypeMap,
     })
 
-    run()
-    restoreAttachmentFilesFromBackup(sourceDb)
-  } finally {
-    targetDb.pragma('foreign_keys = ON')
-    sourceDb.close()
+    stats.auxCategories = yield* insertMappedRowsGen({
+      sourceDb,
+      targetDb,
+      table: 'aux_categories',
+      sourceAccountSetId: scope.sourceAccountSetId!,
+      targetAccountSetId,
+      idMap: auxCategoryMap,
+      skipColumns: ['default_item_id'],
+    })
+
+    yield* insertMappedRowsGen({
+      sourceDb,
+      targetDb,
+      table: 'aux_category_fields',
+      sourceAccountSetId: scope.sourceAccountSetId!,
+      targetAccountSetId,
+      idMap: miscIdMap,
+      foreignKeyMaps: { category_id: auxCategoryMap },
+      customQuery:
+        'SELECT acf.* FROM aux_category_fields acf INNER JOIN aux_categories ac ON acf.category_id = ac.id WHERE ac.account_set_id = ?',
+      customParams: [scope.sourceAccountSetId],
+    })
+
+    stats.auxItems = yield* insertMappedRowsGen({
+      sourceDb,
+      targetDb,
+      table: 'aux_items',
+      sourceAccountSetId: scope.sourceAccountSetId!,
+      targetAccountSetId,
+      idMap: auxItemMap,
+      foreignKeyMaps: { type: auxCategoryMap },
+    })
+
+    syncAuxCategoryDefaultItems({
+      sourceDb,
+      targetDb,
+      sourceAccountSetId: scope.sourceAccountSetId!,
+      categoryIdMap: auxCategoryMap,
+      itemIdMap: auxItemMap,
+    })
+
+    const auxTypesTransform = (value: unknown) => remapAccountAuxTypes(value, auxCategoryMap)
+    stats.accounts = yield* insertMappedRowsGen({
+      sourceDb,
+      targetDb,
+      table: 'accounts',
+      sourceAccountSetId: scope.sourceAccountSetId!,
+      targetAccountSetId,
+      idMap: accountMap,
+      selfParent: true,
+      orderBy: 'level, code',
+      valueTransforms: { aux_types: auxTypesTransform },
+    })
+
+    const auxItemIdTransform = auxItemIdValueTransform(auxItemMap)
+    const auxDataTransform = (value: unknown) =>
+      remapVoucherAuxDataJson(value, auxCategoryMap, categoryCodeByOldId, auxItemMap)
+    const templateEntriesTransform = (value: unknown) =>
+      remapVoucherTemplateEntriesDataJson(value, {
+        accountMap,
+        auxItemMap,
+        categoryIdMap: auxCategoryMap,
+        categoryCodeByOldId,
+      })
+
+    stats.initBalances = yield* insertMappedRowsGen({
+      sourceDb,
+      targetDb,
+      table: 'init_balances',
+      sourceAccountSetId: scope.sourceAccountSetId!,
+      targetAccountSetId,
+      idMap: miscIdMap,
+      foreignKeyMaps: { account_id: accountMap },
+      valueTransforms: { aux_item_id: auxItemIdTransform },
+    })
+
+    yield* insertMappedRowsGen({
+      sourceDb,
+      targetDb,
+      table: 'transfer_types',
+      sourceAccountSetId: scope.sourceAccountSetId!,
+      targetAccountSetId,
+      idMap: transferTypeMap,
+    })
+
+    stats.vouchers = yield* insertMappedRowsGen({
+      sourceDb,
+      targetDb,
+      table: 'vouchers',
+      sourceAccountSetId: scope.sourceAccountSetId!,
+      targetAccountSetId,
+      idMap: voucherMap,
+      foreignKeyMaps: { voucher_type_id: voucherTypeMap },
+      userIdMap,
+      userColumns: ['maker_id', 'auditor_id', 'poster_id'],
+    })
+
+    stats.voucherEntries = yield* insertMappedRowsGen({
+      sourceDb,
+      targetDb,
+      table: 'voucher_entries',
+      sourceAccountSetId: scope.sourceAccountSetId!,
+      targetAccountSetId,
+      idMap: miscIdMap,
+      foreignKeyMaps: {
+        voucher_id: voucherMap,
+        account_id: accountMap,
+        dept_id: auxItemMap,
+        project_id: auxItemMap,
+        supplier_id: auxItemMap,
+        person_id: auxItemMap,
+        func_class_id: auxItemMap,
+      },
+      valueTransforms: { aux_data: auxDataTransform },
+    })
+
+    yield* insertMappedRowsGen({
+      sourceDb,
+      targetDb,
+      table: 'transfer_items',
+      sourceAccountSetId: scope.sourceAccountSetId!,
+      targetAccountSetId,
+      idMap: miscIdMap,
+    })
+
+    yield* insertMappedRowsGen({
+      sourceDb,
+      targetDb,
+      table: 'report_templates',
+      sourceAccountSetId: scope.sourceAccountSetId!,
+      targetAccountSetId,
+      idMap: reportTemplateMap,
+    })
+
+    yield* insertMappedRowsGen({
+      sourceDb,
+      targetDb,
+      table: 'report_template_items',
+      sourceAccountSetId: scope.sourceAccountSetId!,
+      targetAccountSetId,
+      idMap: miscIdMap,
+      foreignKeyMaps: { template_id: reportTemplateMap },
+      customQuery:
+        'SELECT rti.* FROM report_template_items rti INNER JOIN report_templates rt ON rti.template_id = rt.id WHERE rt.account_set_id = ?',
+      customParams: [scope.sourceAccountSetId],
+    })
+
+    yield* insertMappedRowsGen({
+      sourceDb,
+      targetDb,
+      table: 'print_templates',
+      sourceAccountSetId: scope.sourceAccountSetId!,
+      targetAccountSetId,
+      idMap: miscIdMap,
+    })
+
+    yield* insertMappedRowsGen({
+      sourceDb,
+      targetDb,
+      table: 'voucher_templates',
+      sourceAccountSetId: scope.sourceAccountSetId!,
+      targetAccountSetId,
+      idMap: miscIdMap,
+      foreignKeyMaps: { voucher_type_id: voucherTypeMap },
+      userIdMap,
+      userColumns: ['created_by'],
+      valueTransforms: { entries_data: templateEntriesTransform },
+    })
+
+    yield* insertMappedRowsGen({
+      sourceDb,
+      targetDb,
+      table: 'voucher_attachments',
+      sourceAccountSetId: scope.sourceAccountSetId!,
+      targetAccountSetId,
+      idMap: miscIdMap,
+      foreignKeyMaps: { voucher_id: voucherMap },
+      userIdMap,
+      userColumns: ['created_by'],
+    })
+
+    yield* insertMappedRowsGen({
+      sourceDb,
+      targetDb,
+      table: 'account_balances',
+      sourceAccountSetId: scope.sourceAccountSetId!,
+      targetAccountSetId,
+      idMap: miscIdMap,
+      foreignKeyMaps: { account_id: accountMap },
+      valueTransforms: { aux_item_id: auxItemIdTransform },
+    })
+
+    yield* insertMappedRowsGen({
+      sourceDb,
+      targetDb,
+      table: 'period_closing',
+      sourceAccountSetId: scope.sourceAccountSetId!,
+      targetAccountSetId,
+      idMap: miscIdMap,
+    })
+
+    yield* insertMappedRowsGen({
+      sourceDb,
+      targetDb,
+      table: 'budget_surplus_adjustments',
+      sourceAccountSetId: scope.sourceAccountSetId!,
+      targetAccountSetId,
+      idMap: miscIdMap,
+    })
+
+    yield* insertMappedRowsGen({
+      sourceDb,
+      targetDb,
+      table: 'cash_flow_items',
+      sourceAccountSetId: scope.sourceAccountSetId!,
+      targetAccountSetId,
+      idMap: miscIdMap,
+    })
+
+    yield* insertMappedRowsGen({
+      sourceDb,
+      targetDb,
+      table: 'auto_transfer_runs',
+      sourceAccountSetId: scope.sourceAccountSetId!,
+      targetAccountSetId,
+      idMap: miscIdMap,
+    })
+
+    yield* insertMappedRowsGen({
+      sourceDb,
+      targetDb,
+      table: 'system_params',
+      sourceAccountSetId: scope.sourceAccountSetId!,
+      targetAccountSetId,
+      idMap: miscIdMap,
+      customQuery:
+        "SELECT * FROM system_params WHERE account_set_id = ? AND param_key NOT LIKE 'backup:%'",
+      customParams: [scope.sourceAccountSetId],
+    })
+
+    yield* insertMappedRowsGen({
+      sourceDb,
+      targetDb,
+      table: 'ai_config',
+      sourceAccountSetId: scope.sourceAccountSetId!,
+      targetAccountSetId,
+      idMap: miscIdMap,
+    })
+
+    restoreReportDefinitionTables({
+      sourceDb,
+      targetDb,
+      sourceAccountSetId: scope.sourceAccountSetId!,
+      targetAccountSetId,
+    })
+
+    importAccountScopesFromBackup({
+      sourceDb,
+      targetDb,
+      sourceAccountSetId: scope.sourceAccountSetId!,
+      targetAccountSetId,
+      roleMap,
+      userIdMap,
+      accountMap,
+    })
+
+    remapVoucherSelfReferences(targetDb, targetAccountSetId, voucherMap)
+
+    const extra = yield* restoreExtraAccountSetTables({
+      sourceDb,
+      targetDb,
+      sourceAccountSetId: scope.sourceAccountSetId!,
+      targetAccountSetId,
+      knownMaps: [voucherMap, accountMap, auxItemMap, auxCategoryMap, voucherTypeMap, transferTypeMap, reportTemplateMap, roleMap, miscIdMap],
+      userIdMap,
+    })
+    stats.extraTables = extra.tables
+    stats.extraRows = extra.rows
   }
 
+  return { sourceDb, targetDb, stats, steps: steps() }
+}
+
+function assertRestoredSomething(stats: AccountSetRestoreStats) {
   if (stats.accounts === 0 && stats.vouchers === 0) {
     throw new Error('备份文件中没有可恢复的业务数据')
   }
+}
 
-  return stats
+/**
+ * 将单账套备份合并恢复到当前账套（不清除用户/角色，仅覆盖业务数据）。单事务、原子替换。
+ */
+export function restoreSingleAccountSetFromBackup(params: SingleAccountSetRestoreParams): AccountSetRestoreStats {
+  const r = openSingleAccountSetRestore(params)
+  try {
+    r.targetDb.pragma('foreign_keys = OFF')
+    r.targetDb.transaction(() => drain(r.steps))()
+    restoreAttachmentFilesFromBackup(r.sourceDb)
+  } finally {
+    r.targetDb.pragma('foreign_keys = ON')
+    r.sourceDb.close()
+  }
+  assertRestoredSomething(r.stats)
+  return r.stats
+}
+
+/**
+ * FIX-333：分块恢复——约每 RESTORE_CHUNK_MS 提交一次事务并让出事件循环（10 万凭证账套导入原先同步阻塞服务约 30s）。
+ * 非原子：仅用于「导入为新账套」——目标账套导入完成前为 inactive + 进行中标记（登录列表与鉴权不可见），失败由调用方整体清理。
+ * 外键检查只在本次同步块内关闭，让出前恢复，不影响其他请求。
+ */
+async function restoreSingleAccountSetFromBackupChunked(
+  params: SingleAccountSetRestoreParams,
+  chunkMs = RESTORE_CHUNK_MS
+): Promise<AccountSetRestoreStats> {
+  const r = openSingleAccountSetRestore(params)
+  try {
+    for (let done = false; !done; ) {
+      r.targetDb.pragma('foreign_keys = OFF')
+      try {
+        r.targetDb.exec('BEGIN')
+        const chunkStart = Date.now()
+        do {
+          done = !!r.steps.next().done
+        } while (!done && Date.now() - chunkStart < chunkMs)
+        r.targetDb.exec('COMMIT')
+      } catch (error) {
+        if (r.targetDb.inTransaction) r.targetDb.exec('ROLLBACK')
+        throw error
+      } finally {
+        r.targetDb.pragma('foreign_keys = ON')
+      }
+      if (!done) await new Promise<void>(resolve => setImmediate(resolve))
+    }
+    restoreAttachmentFilesFromBackup(r.sourceDb)
+  } finally {
+    r.sourceDb.close()
+  }
+  assertRestoredSomething(r.stats)
+  return r.stats
 }
 
 export function formatAccountSetRestoreSummary(stats: AccountSetRestoreStats): string {

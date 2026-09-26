@@ -46,6 +46,7 @@ import { initDefaultAccountSet } from './scripts/seedAccounts.js'
 import { initDefaultPrintTemplate } from './scripts/initPrintTemplate.js'
 import { log } from './utils/logger.js'
 import { initTaskQueue } from './services/taskQueue.js'
+import { cleanupInterruptedAccountSetImports } from './services/accountSetBackupRestore.js'
 
 // 路由
 import authRoutes from './routes/auth.js'
@@ -182,6 +183,14 @@ try {
   }
 } catch (error) {
   log.error('数据库兼容升级失败:', error)
+}
+
+// FIX-333：上次分块导入账套途中服务被关闭时，清理停留在「导入中」的半成品账套
+try {
+  const cleaned = cleanupInterruptedAccountSetImports()
+  if (cleaned > 0) log.warn(`已清理 ${cleaned} 个未完成导入的账套`)
+} catch (error) {
+  log.error('清理未完成导入的账套失败:', error)
 }
 
 initTaskQueue()

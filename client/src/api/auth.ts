@@ -108,6 +108,8 @@ export function backupImport(
   formData.append('name', name)
   return request.post('/auth/backup-import', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
+    // 大账套（10 万级凭证）导入需数十秒
+    timeout: 600_000,
   })
 }
 
