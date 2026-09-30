@@ -7,6 +7,7 @@
  *
  * 二维码用 qrcode 在浏览器端渲染成 data URI 内嵌，避免打印时再发网络请求。
  */
+import { todayStr } from './format'
 import QRCode from 'qrcode'
 import type { AssetCard } from '@/api/fixedAsset'
 import { DEPR_METHODS } from '@/api/fixedAsset'
@@ -111,7 +112,7 @@ export function buildAssetCardHtml(
         <tr class="sign-row">
           <td colspan="6">
             制表人：____________&#12288;&#12288;保管人：____________
-            部门负责人：____________&#12288;&#12288;制表日期：${new Date().toISOString().slice(0, 10)}
+            部门负责人：____________&#12288;&#12288;制表日期：${todayStr()}
           </td>
         </tr>
       </table>`

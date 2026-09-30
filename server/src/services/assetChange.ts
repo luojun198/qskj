@@ -14,6 +14,7 @@
  * 剩余期间摊余逻辑见 fixedAssetDepreciation.getRemainingBaseForAsset。
  */
 import type { Database } from 'better-sqlite3'
+import { fallbackOriginalAccount } from './assetAccountResolver.js'
 import { v4 as uuidv4 } from 'uuid'
 import {
   insertAssetVoucher,
@@ -432,7 +433,7 @@ function generateValueChangeVoucher(
           .get(accountSetId, asset.category_code)
       : null
   ) as any
-  const assetAccount = assetCat?.account_code || '1601'
+  const assetAccount = assetCat?.account_code || fallbackOriginalAccount(db, accountSetId)
 
   const accounts = resolveAccounts(db, accountSetId, [assetAccount, counter], KIND_LABELS[kind])
   const auxContext = loadAssetAuxContext(db, accountSetId)

@@ -1,3 +1,4 @@
+import { todayStr } from '@/utils/format'
 import { ref, computed } from 'vue'
 import type { Ref } from 'vue'
 import { useUserStore } from '@/stores/user'
@@ -39,7 +40,7 @@ export function useVoucherForm(auxCategories: Ref<any[]>) {
       id: '',
       voucher_type_id: '',
       voucher_no: '',
-      voucher_date: new Date().toISOString().split('T')[0],
+      voucher_date: todayStr(),
       entries: Array.from({ length: 6 }, () => createEntry()),
       remark: '',
       maker_name: currentUser,

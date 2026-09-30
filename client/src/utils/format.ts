@@ -102,3 +102,20 @@ export function truncate(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text
   return text.substring(0, maxLength) + '...'
 }
+
+/**
+ * 本地时区的今天（YYYY-MM-DD）。
+ * 不要用 new Date().toISOString().slice(0, 10)：那是 UTC 日期，东八区 00:00~08:00 会得到昨天。
+ */
+export function todayStr(): string {
+  return formatDate(new Date())
+}
+
+/**
+ * xlsx（cellDates: true）读出的日期单元格 → YYYY-MM-DD。
+ * SheetJS 在东八区会把 Excel 的 0 点日期读成「前一天 23:59:17」（历史时区偏移），
+ * 直接取本地年月日或 toISOString 都会少一天；加 12 小时再取本地日期即可抵消任意小偏移。
+ */
+export function excelDateToYmd(d: Date): string {
+  return formatDate(new Date(d.getTime() + 12 * 3600 * 1000))
+}

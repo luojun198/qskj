@@ -35,6 +35,8 @@ export const CASHIER_PERMISSION_RULES: Array<{ re: RegExp; perm: string; alsoPer
   // P2-12：账户余额表 / 资金收支汇总表菜单挂在 cashier:journal 下，ACD 4AD 映射 cashier:report，两码都放行
   { re: /^\/cashier\/daily-report/,      perm: 'cashier:report', alsoPerms: ['cashier:journal'] },
   { re: /^\/cashier\/summary-report/,    perm: 'cashier:report', alsoPerms: ['cashier:journal'] },
+  // 出纳报表改造：统一报表接口（余额表 / 多维汇总 / 辅助项目收支 / 筛选元数据）
+  { re: /^\/cashier\/report(\/|$)/,      perm: 'cashier:report', alsoPerms: ['cashier:journal'] },
   // 其余（journal、accounts、attachments）默认需出纳日记账权限
   { re: /^\/cashier\//,                  perm: 'cashier:journal' },
 ]

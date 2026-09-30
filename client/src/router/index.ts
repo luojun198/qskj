@@ -90,6 +90,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '会计科目', icon: 'Notebook', parent: '基础设置' },
       },
       {
+        path: 'base/account-reference-check',
+        name: 'AccountReferenceCheck',
+        component: () => import('@/views/base/AccountReferenceCheck.vue'),
+        meta: { title: '科目设置检查', parent: '基础设置' },
+      },
+      {
         path: 'base/account-set-info',
         name: 'AccountSetInfo',
         component: () => import('@/views/base/AccountSetInfo.vue'),
@@ -453,6 +459,12 @@ const routes: RouteRecordRaw[] = [
         name: 'CashFlowSummary',
         component: () => import('@/views/cashier/CashFlowSummary.vue'),
         meta: { title: '资金收支汇总表', icon: 'DataLine', parent: '出纳管理' },
+      },
+      {
+        path: 'cashier/aux-summary',
+        name: 'CashierAuxSummary',
+        component: () => import('@/views/cashier/AuxCashSummary.vue'),
+        meta: { title: '辅助项目收支表', icon: 'DataLine', parent: '出纳管理' },
       },
       {
         path: 'cashier/document-query',
@@ -1056,6 +1068,12 @@ const routes: RouteRecordRaw[] = [
         name: 'ScmDocFieldDefs',
         component: () => import('@/views/scm/DocFieldDefs.vue'),
         meta: { title: '单据自定义字段', parent: '供应链' },
+      },
+      {
+        path: 'scm/docs/import',
+        name: 'ScmDocImport',
+        component: () => import('@/views/scm/DocImport.vue'),
+        meta: { title: '单据批量导入', parent: '供应链' },
       },
       {
         path: 'scm/docs/new',

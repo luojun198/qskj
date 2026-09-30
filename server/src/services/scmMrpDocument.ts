@@ -1,3 +1,4 @@
+import { todayStr } from '../utils/localDate.js'
 import type Database from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
 import { computeIssueSuggestion, computePushedQty } from './scmProduction.js'
@@ -537,7 +538,7 @@ export function calculateMrpDocument(db: Database.Database, aid: string, mrpId: 
       const needDate = needDates[0] || null
       const leadDays = Number(item.lead_time_days) || 0
       const suggestedOrderDate = needDate
-        ? new Date(new Date(`${needDate}T00:00:00`).getTime() - leadDays * 86400000).toISOString().slice(0, 10)
+        ? new Date(new Date(`${needDate}T00:00:00Z`).getTime() - leadDays * 86400000).toISOString().slice(0, 10)
         : null
       resultRows.push({
         item_code: code, qty: suggestQty, supplier_code: rootOverride.get(code)?.supplier_code || item.supplier_code || '', source_type: sourceType,
@@ -641,7 +642,7 @@ export function createMrpDocument(db: Database.Database, aid: string, user: stri
   db.transaction(() => {
     db.prepare(`INSERT INTO scm_doc
       (id,account_set_id,doc_type,doc_no,doc_date,operator,maker,status,total_qty,total_amount,remark,field_values)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, aid, 'MRP', no, body.doc_date || new Date().toISOString().slice(0,10), user, user, 'draft', 0, 0, body.remark || null,
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, aid, 'MRP', no, body.doc_date || todayStr(), user, user, 'draft', 0, 0, body.remark || null,
         JSON.stringify({
           include_safety_stock: body.include_safety_stock !== false,
           demand_multiplier: demandMultiplier(body),
@@ -665,7 +666,7 @@ export function generateShortageFromMrp(db: Database.Database, aid: string, mrpI
   db.transaction(() => {
     db.prepare(`INSERT INTO scm_doc
       (id,account_set_id,doc_type,doc_no,doc_date,operator,maker,status,source_doc_id,total_qty,total_amount,remark,field_values)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, aid, 'MR', no, new Date().toISOString().slice(0,10), user, user, 'draft', mrpId,
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, aid, 'MR', no, todayStr(), user, user, 'draft', mrpId,
         r6(results.reduce((sum,row)=>sum+Number(row.qty),0)), 0, `由MRP计算单 ${mrp.doc_no} 生成`, JSON.stringify({ mrp_precalculated: true }))
     const insert = db.prepare(`INSERT INTO scm_doc_line
       (id,account_set_id,doc_id,seq,item_code,warehouse_code,qty,price,amount,source_line_id,remark,field_values,supplier_code,source_type)

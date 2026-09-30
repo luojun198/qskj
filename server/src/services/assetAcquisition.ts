@@ -7,7 +7,9 @@
  *
  * P0-1：分录经 assetVoucherBuilder 统一落库，借方固定资产科目按资产部门带出辅助核算项。
  */
+import { todayStr } from '../utils/localDate.js'
 import type { Database } from 'better-sqlite3'
+import { fallbackOriginalAccount } from './assetAccountResolver.js'
 import {
   insertAssetVoucher,
   loadAssetAuxContext,
@@ -45,7 +47,7 @@ export function generatePurchaseVoucher(params: {
           .get(accountSetId, asset.category_code)
       : null
   ) as any
-  const debitCode = assetCat?.account_code || '1601'
+  const debitCode = assetCat?.account_code || fallbackOriginalAccount(db, accountSetId)
   const creditCode = creditAccount || '1001'
 
   const accounts = resolveAccounts(db, accountSetId, [debitCode, creditCode], '购置')
@@ -56,7 +58,7 @@ export function generatePurchaseVoucher(params: {
   const voucherDate =
     asset.acquire_date && /^\d{4}-\d{2}-\d{2}$/.test(asset.acquire_date)
       ? asset.acquire_date
-      : new Date().toISOString().slice(0, 10)
+      : todayStr()
   const year = parseInt(voucherDate.split('-')[0])
   const month = parseInt(voucherDate.split('-')[1])
 

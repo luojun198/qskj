@@ -207,7 +207,7 @@
         <el-form-item label="项目编码" required>
           <el-input v-model="itemForm.code" disabled />
         </el-form-item>
-        <el-form-item label="项目名称" required><el-input v-model="itemForm.name" /></el-form-item>
+        <el-form-item label="名称" required><el-input v-model="itemForm.name" /></el-form-item>
         <el-form-item label="状态">
           <el-select v-model="itemForm.status" style="width: 100%">
             <el-option label="进行中" value="active" />
@@ -895,7 +895,7 @@ function onPageSizeChange(size: number) {
 function openCategoryForm(type: 'add' | 'edit', row?: any) {
   if (type === 'edit' && !row?.id) return
   router.push(type === 'add'
-    ? { name: 'ProjectCategoryNew' }
+    ? { name: 'ProjectCategoryNew', query: { _n: String(Date.now()) } } // 一次性标记：每次点「新增类别」都重新初始化表单，不复用被缓存的旧页面
     : { name: 'ProjectCategoryEdit', params: { id: row.id } })
 }
 
@@ -1065,7 +1065,7 @@ async function handleSaveItem(continueAdd = false) {
 
     if (exactDuplicate) {
       showError(
-        `项目名称已存在，不允许存盘。编码：${exactDuplicate.code}；名称：${exactDuplicate.name}`
+        `名称已存在，不允许存盘。编码：${exactDuplicate.code}；名称：${exactDuplicate.name}`
       )
       return
     }

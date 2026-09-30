@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { getDb } from '../db/index.js'
 import { authMiddleware, AuthRequest, operationLog, AppError } from '../middleware/index.js'
 import { AccountService } from '../services/accountService.js'
+import { auditNonLeafReferences, normalizeNonLeafReferences } from '../services/accountReferences.js'
 import { batchAccountsImportAsync } from '../services/baseBatchAsync.js'
 import {
   getAccountRealtimeBalance,
@@ -67,6 +68,23 @@ router.get('/accounts/:id/usage', (req: AuthRequest, res) => {
   res.json({ code: 0, data: { ...usage, childrenCount } })
 })
 
+// 全局检测：设置类引用指向了有下级科目（父科目）的项目
+router.get('/accounts/reference-check', (req: AuthRequest, res) => {
+  const issues = auditNonLeafReferences(getDb(), req.accountSetId || '')
+  res.json({ code: 0, data: { issues, count: issues.length } })
+})
+
+// 一键修复：全部改指各自的第一个末级子科目
+router.post('/accounts/reference-check/fix', operationLog('修复科目引用', '基础设置'), (req: AuthRequest, res) => {
+  const db = getDb()
+  try {
+    const result = db.transaction(() => normalizeNonLeafReferences(db, req.accountSetId || ''))()
+    res.json({ code: 0, message: result.total ? `已改指 ${result.total} 项设置` : '没有需要修复的设置', data: result })
+  } catch (error: any) {
+    res.status(400).json({ code: 400, message: error.message || '修复失败' })
+  }
+})
+
 router.post('/accounts', operationLog('新增科目', '基础设置'), (req: AuthRequest, res) => {
   const {
     code,
@@ -99,7 +117,7 @@ router.post('/accounts', operationLog('新增科目', '基础设置'), (req: Aut
   }
 
   try {
-    const id = service.createAccount({
+    const created = service.createAccountDetailed({
       account_set_id: req.accountSetId || '',
       code,
       name,
@@ -118,7 +136,16 @@ router.post('/accounts', operationLog('新增科目', '基础设置'), (req: Aut
       no_negative,
       migrate_from_parent,
     })
-    res.json({ code: 0, message: '创建成功', data: { id } })
+    const repointed = created.repointed
+    res.json({
+      code: 0,
+      message: '创建成功',
+      data: {
+        id: created.id,
+        // 原指向父科目的设置已自动改指本科目，前端据此提示
+        repointed: repointed ? { to: created.repointedTo, total: repointed.total, items: repointed.items } : null,
+      },
+    })
   } catch (error: any) {
     res.status(400).json({ code: 400, message: error.message || '创建科目失败' })
   }
@@ -484,10 +511,12 @@ router.post('/accounts/repair-hierarchy', operationLog('修复科目层级', '�
   const service = new AccountService(db)
   try {
     const result = service.repairAccountHierarchy(req.accountSetId || '')
+    // 层级修复会让原末级科目变成父科目，指向它们的设置一并改指第一个子科目
+    const refs = db.transaction(() => normalizeNonLeafReferences(db, req.accountSetId || ''))()
     res.json({
       code: 0,
-      message: `已校验 ${result.total} 个科目，修复 ${result.updated} 个`,
-      data: result,
+      message: `已校验 ${result.total} 个科目，修复 ${result.updated} 个${refs.total ? `，并将 ${refs.total} 项设置改指末级科目` : ''}`,
+      data: { ...result, repointed: refs },
     })
   } catch (error: any) {
     res.status(400).json({ code: 400, message: error.message || '修复科目层级失败' })

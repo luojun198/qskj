@@ -23,6 +23,7 @@
       <el-button type="primary" plain @click="reloadFromFirstPage" size="small"><el-icon><Search /></el-icon>查询</el-button>
       <FilterClearButton size="small" @clear="resetFilters" />
       <el-button type="primary" size="small" :loading="creating" @mouseenter="preloadDocFormNow" @focus="preloadDocFormNow" @pointerdown="preloadDocFormNow" @click="handleCreate"><el-icon><Plus /></el-icon>{{ createBtnLabel }}</el-button>
+      <el-button v-if="canImportDocs" size="small" @click="router.push({ path: '/scm/docs/import', query: { doc_type: propType } })">批量导入</el-button>
       <el-button v-if="propType === 'SOa'" size="small" @click="openSalesOrderRelations"><el-icon><Connection /></el-icon>订单关联表</el-button>
       <template v-if="selection.length">
         <el-divider direction="vertical" />
@@ -110,6 +111,7 @@ const route  = useRoute()
 const router = useRouter()
 
 const propType = computed(() => (route.query.doc_type as string) || '')
+const canImportDocs = computed(() => ['IS', 'OI', 'OO', 'PI', 'PR', 'PO', 'PQ', 'SO', 'SR', 'SOa', 'SQ'].includes(propType.value) && hasPermission('scm:import'))
 // 预收/预付款单：仅显示未关联任何应收/应付源单的收付款单（payment_mode=advance）
 const propAdvance = computed(() => (route.query.payment_mode as string) === 'advance')
 

@@ -1,3 +1,5 @@
+import { todayStr } from '../utils/localDate.js'
+import { firstNonLeafError } from '../services/accountReferences.js'
 import { Router } from 'express'
 import { v4 as uuidv4 } from 'uuid'
 import { getDb } from '../db/index.js'
@@ -123,6 +125,10 @@ router.put('/scm/params', operationLog('保存供应链参数', '供应链'), (r
   for (const p of params) {
     if (!SCM_PARAM_KEYS.includes(p.param_key)) continue
     const val = String(p.param_value ?? '')
+    if (p.param_key.startsWith('scm:acc_')) {
+      const leafErr = firstNonLeafError(db, asid(req), [[val, '供应链科目参数']])
+      if (leafErr) return res.status(400).json({ code: 400, message: leafErr })
+    }
     if (p.param_key === 'scm:costing_method' && val && !VALID_COSTING.includes(val)) {
       return res.status(400).json({ code: 400, message: '计价方式无效' })
     }
@@ -397,6 +403,8 @@ function syncItemUnits(db: ReturnType<typeof getDb>, aid: string, itemCode: stri
 router.post('/scm/items', operationLog('物料新增', '供应链'), (req: AuthRequest, res) => {
   const db = getDb(); const b = req.body
   if (!b.code || !b.name) return res.status(400).json({ code: 400, message: '编号和名称不能为空' })
+  const itemLeafErr = firstNonLeafError(db, asid(req), [[b.inv_account, '存货科目'], [b.sale_account, '销售收入科目']])
+  if (itemLeafErr) return res.status(400).json({ code: 400, message: itemLeafErr })
   if (db.prepare('SELECT id FROM scm_item WHERE account_set_id=? AND code=?').get(asid(req), b.code)) {
     return res.status(409).json({ code: 409, message: '物料编号已存在' })
   }
@@ -454,6 +462,8 @@ router.put('/scm/items/:id', operationLog('物料修改', '供应链'), (req: Au
   const db = getDb(); const b = req.body; const aid = asid(req)
   const ex = db.prepare('SELECT id, code FROM scm_item WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
   if (!ex) return res.status(404).json({ code: 404, message: '物料不存在' })
+  const itemLeafErr = firstNonLeafError(db, aid, [[b.inv_account, '存货科目'], [b.sale_account, '销售收入科目']])
+  if (itemLeafErr) return res.status(400).json({ code: 400, message: itemLeafErr })
 
   let primaryUnitCode = b.primary_unit_code
   if (!primaryUnitCode && b.unit) {
@@ -542,6 +552,8 @@ router.get('/scm/partners', (req: AuthRequest, res) => {
 router.post('/scm/partners', operationLog('往来单位新增', '供应链'), (req: AuthRequest, res) => {
   const db = getDb(); const b = req.body
   if (!b.code || !b.name) return res.status(400).json({ code: 400, message: '编号和名称不能为空' })
+  const partnerLeafErr = firstNonLeafError(db, asid(req), [[b.ar_account, '应收科目'], [b.ap_account, '应付科目']])
+  if (partnerLeafErr) return res.status(400).json({ code: 400, message: partnerLeafErr })
   if (db.prepare('SELECT id FROM scm_partner WHERE account_set_id=? AND code=?').get(asid(req), b.code)) {
     return res.status(409).json({ code: 409, message: '往来单位编号已存在' })
   }
@@ -565,6 +577,8 @@ router.put('/scm/partners/:id', operationLog('往来单位修改', '供应链'),
   const db = getDb(); const b = req.body
   const ex = db.prepare('SELECT id FROM scm_partner WHERE id=? AND account_set_id=?').get(req.params.id, asid(req))
   if (!ex) return res.status(404).json({ code: 404, message: '往来单位不存在' })
+  const partnerLeafErr = firstNonLeafError(db, asid(req), [[b.ar_account, '应收科目'], [b.ap_account, '应付科目']])
+  if (partnerLeafErr) return res.status(400).json({ code: 400, message: partnerLeafErr })
   db.prepare(`UPDATE scm_partner SET name=?,short_name=?,partner_type=?,ar_account=?,ap_account=?,credit_limit=?,tax_rate=?,region_code=?,
     contact=?,phone=?,address=?,bank_name=?,bank_account=?,tax_no=?,salesman=?,remark=?,enabled=?,
     ship_address=?,ship_phone=?,ship_contact=?,province=?,city=?,county=?,country=?,payment_type=?,credit_days=?,qq=?,email=?,wechat=?,is_outsource=?,price_level=?,updated_at=datetime('now') WHERE id=?`).run(
@@ -928,7 +942,7 @@ router.post('/scm/stock/ledger/export', async (req: AuthRequest, res) => {
     const summaryValues = defs.map(([key], index) => index === 0 ? '合计' : (result.summary as any)[key] ?? null)
     const buffer = await buildStyledXlsxBuffer({ sheetName: '物料收发明细账', title: '物料收发明细账',
       subtitle: '按已审核库存移动计算期初、本期收发和逐笔结存', columns, rows, summaryValues, stripe: true })
-    const fileName = `物料收发明细账_${new Date().toISOString().slice(0, 10)}.xlsx`
+    const fileName = `物料收发明细账_${todayStr()}.xlsx`
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`)
     res.send(buffer)
@@ -965,7 +979,7 @@ router.post('/scm/report/outsource/execution/export', async (req: AuthRequest, r
     const rows = result.rows.map(row => defs.map(([key]) => row[key] ?? null))
     const buffer = await buildStyledXlsxBuffer({ sheetName: '委外执行及结存', title: '委外执行及结存表',
       subtitle: '理论结存=已审核委外发料−退料−已完工标准耗用；加工费应付按价税合计', columns, rows, stripe: true })
-    const fileName = `委外执行及结存表_${new Date().toISOString().slice(0, 10)}.xlsx`
+    const fileName = `委外执行及结存表_${todayStr()}.xlsx`
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`)
     res.send(buffer)
@@ -1005,7 +1019,7 @@ router.post('/scm/report/production/execution/export', async (req: AuthRequest, 
     const rows = result.rows.map((row: any) => defs.map(([key]) => row[key] ?? null))
     const buffer = await buildStyledXlsxBuffer({ sheetName: '生产执行及在制结存', title: '生产执行及在制结存表',
       subtitle: '料在制=已领料成本−Σ(完工+报废)×每件料成本；人工制费在制=已审核报工累计−已吸收；在制为工单级口径', columns, rows, stripe: true })
-    const fileName = `生产执行及在制结存表_${new Date().toISOString().slice(0, 10)}.xlsx`
+    const fileName = `生产执行及在制结存表_${todayStr()}.xlsx`
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`)
     res.send(buffer)
@@ -1038,7 +1052,7 @@ async function sendXlsx(res: any, opts: { sheetName: string; title: string; subt
   const columns: ExportColumnSpec[] = opts.defs.map(([, label, type]) => ({ label, width: type === 'text' ? 18 : 14, align: type === 'number' ? 'right' : 'left', type }))
   const rows = opts.rows.map((row: any) => opts.defs.map(([key]) => row[key] ?? null))
   const buffer = await buildStyledXlsxBuffer({ sheetName: opts.sheetName, title: opts.title, subtitle: opts.subtitle, columns, rows, stripe: true })
-  const fileName = `${opts.fileBase}_${new Date().toISOString().slice(0, 10)}.xlsx`
+  const fileName = `${opts.fileBase}_${todayStr()}.xlsx`
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
   res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`)
   res.send(buffer)

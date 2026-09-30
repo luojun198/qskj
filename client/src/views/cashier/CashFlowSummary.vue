@@ -1,197 +1,148 @@
 <template>
   <div class="page page-summary">
-    <div class="filter-row" style="padding:12px 16px 0">
-      <el-date-picker v-model="dateRange[0]" type="date" value-format="YYYY-MM-DD" placeholder="开始日期" class="filter-ctl--md" @change="load" />
-      <span>至</span>
-      <el-date-picker v-model="dateRange[1]" type="date" value-format="YYYY-MM-DD" placeholder="结束日期" class="filter-ctl--md" @change="load" />
-      <el-select v-model="currency" placeholder="币种" class="filter-ctl--xs" @change="load">
-        <el-option v-for="c in currencies" :key="c" :label="c" :value="c" />
+    <CashierReportFilter
+      ref="filterRef"
+      v-model="filter"
+      mode="detail"
+      allow-all-currencies
+      :loading="loading"
+      @query="load"
+      @clear="handleClear"
+    />
+
+    <!-- 汇总维度：任意有序组合（点选顺序 = 分组层级顺序），最多 4 个 -->
+    <div class="dim-row">
+      <span class="dim-label">汇总维度</span>
+      <el-select
+        v-model="groupBy"
+        multiple collapse-tags collapse-tags-tooltip
+        :multiple-limit="4"
+        placeholder="选择汇总维度（按选择顺序分层）"
+        class="dim-select"
+        @change="load"
+      >
+        <el-option-group label="基础维度">
+          <el-option v-for="d in baseDims" :key="d.value" :label="d.label" :value="d.value" />
+        </el-option-group>
+        <el-option-group v-if="auxDims.length" label="辅助项目（对方科目的辅助核算）">
+          <el-option v-for="d in auxDims" :key="d.value" :label="d.label" :value="d.value" />
+        </el-option-group>
       </el-select>
-      <el-select v-model="groupBy" placeholder="分组维度" class="filter-ctl--md" @change="load">
-        <el-option label="按月份" value="month" />
-        <el-option label="按结算方式" value="settle_type" />
-        <el-option label="按对方科目" value="counter_account" />
-      </el-select>
-      <el-button type="primary" @click="load"><el-icon><Search /></el-icon>查询</el-button>
-      <FilterClearButton @clear="handleClearFilters" />
-      <el-button plain :disabled="!rows.length" @click="handleExport"><el-icon><Download /></el-icon>导出</el-button>
-      <el-button plain :disabled="!rows.length" @click="handlePrint"><el-icon><Printer /></el-icon>打印</el-button>
+      <el-button-group>
+        <el-button v-for="p in presets" :key="p.label" size="small" @click="applyPreset(p.dims)">{{ p.label }}</el-button>
+        <el-button v-if="auxDims.length" size="small" @click="applyPreset(auxDims.slice(0, 4).map(d => d.value))">按全部辅助类别</el-button>
+        <el-button v-if="auxDims.length" size="small" @click="applyPreset(['account', ...auxDims.slice(0, 3).map(d => d.value)])">科目 → 辅助类别</el-button>
+      </el-button-group>
     </div>
 
-    <div v-if="rows.length" class="report-body">
-      <h4 class="report-title">
-        资金收支汇总表
-        <span class="subtitle">（期间：{{ dateRange?.[0] || '起' }} 至 {{ dateRange?.[1] || '止' }}　单位：人民币元）</span>
-      </h4>
-
-      <el-table ref="tableRef" :data="rows" size="small" class="compact-data-table" border stripe show-summary :summary-method="summarize" @header-dragend="onDragEnd">
-        <el-table-column :label="groupColumnLabel" prop="group_name" min-width="150" :width="widths.group_name">
-          <template #default="{ row }">
-            <span v-if="groupBy === 'month'">{{ row.group_code }}</span>
-            <span v-else>{{ row.group_code === 'N/A' ? '未指定' : `${row.group_code} ${row.group_name}` }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="收入金额" prop="income" :width="cw('income', 160)" align="right">
-          <template #default="{ row }"><span v-if="row.income" class="debit">{{ fmt(row.income) }}</span></template>
-        </el-table-column>
-        <el-table-column label="支出金额" prop="expense" :width="cw('expense', 160)" align="right">
-          <template #default="{ row }"><span v-if="row.expense" class="credit">{{ fmt(row.expense) }}</span></template>
-        </el-table-column>
-        <el-table-column label="收支净额" prop="net_amount" :width="cw('net_amount', 160)" align="right">
-          <template #default="{ row }">
-            <span :class="{ debit: row.income - row.expense >= 0, credit: row.income - row.expense < 0 }">
-              {{ fmt(row.income - row.expense) }}
-            </span>
-          </template>
-        </el-table-column>
-      </el-table>
-
-      <div class="summary-section">
-        <div class="summary-card">
-          <span class="s-label">总收入</span>
-          <span class="s-value debit">¥{{ fmt(totalIncome) }}</span>
-        </div>
-        <div class="summary-card">
-          <span class="s-label">总支出</span>
-          <span class="s-value credit">¥{{ fmt(totalExpense) }}</span>
-        </div>
-        <div class="summary-card">
-          <span class="s-label">总净额</span>
-          <span class="s-value" :class="{ debit: netFlow >= 0, credit: netFlow < 0 }">
-            ¥{{ fmt(netFlow) }}
-          </span>
-        </div>
-      </div>
-    </div>
-
-    <el-empty v-else-if="!loading" description="暂无数据" />
+    <CashierSummaryResult
+      :report="report"
+      title="资金收支汇总表"
+      :subtitle="subtitle"
+      :unit-label="unitLabel"
+      :dim-label="dimLabel"
+      :export-params="toReportPayload(filter)"
+      :export-file-name="`资金收支汇总表_${filter.dateRange?.[0] || ''}_${filter.dateRange?.[1] || ''}.xlsx`"
+      :filter-api="filterApi"
+      @drill="drill"
+      @filter-change="load"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-// P2-7：默认日期用本地时间（此前 toISOString 取 UTC，东八区 0~8 点会落到前一天）
-import { formatDate } from '@/utils/format'
-import { ref, computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Search, Printer, Download } from '@element-plus/icons-vue'
-import { cashierApi } from '@/api/cashier'
-import { exportStyledTable, type ExportColumnDef } from '@/utils/exportStyledExcel'
-import { useListColumnWidth } from '@/composables/useColumnWidthMemory'
-import FilterClearButton from '@/components/common/FilterClearButton.vue'
-import { useFilterClear } from '@/composables/useFilterClear'
+import { cashierApi, type CashierSummaryNode, type CashierSummaryReport } from '@/api/cashier'
+import CashierReportFilter from '@/components/cashier/CashierReportFilter.vue'
+import CashierSummaryResult from '@/components/cashier/CashierSummaryResult.vue'
+import { useCashierSummaryFilters } from '@/composables/useCashierSummaryFilters'
+import {
+  ALL_CURRENCIES,
+  applyDrillPath,
+  defaultCashierFilter,
+  describeFilter,
+  filterFromRouteQuery,
+  filterToRouteQuery,
+  toReportPayload,
+  type CashierReportFilterState,
+} from '@/utils/cashierReportFilter'
 
-const { tableRef, colWidth, onDragEnd, widths } = useListColumnWidth('cashier_cashflow_summary')
-function cw(key: string, fallback: number) { return colWidth(key, fallback) }
+const DIM_LABELS: Record<string, string> = {
+  account: '科目', currency: '币种', year: '年度', month: '月份', day: '日期', settle_type: '结算方式', counter_account: '对方科目',
+}
+const baseDims = Object.entries(DIM_LABELS).map(([value, label]) => ({ value, label }))
+const presets: Array<{ label: string; dims: string[] }> = [
+  { label: '按月份', dims: ['month'] },
+  { label: '按科目', dims: ['account'] },
+  { label: '科目 → 月份', dims: ['account', 'month'] },
+  { label: '对方科目', dims: ['counter_account'] },
+  { label: '结算方式', dims: ['settle_type'] },
+  { label: '按日（日报）', dims: ['day'] },
+]
 
-const today = formatDate(new Date())
-const dateRange = ref<[string, string]>([`${today.slice(0, 8)}01`, today])
-const groupBy = ref<'counter_account' | 'settle_type' | 'month'>('month')
-const currency = ref('RMB')
-const currencies = ref<string[]>(['RMB'])
-const rows = ref<any[]>([])
+const router = useRouter()
+const filterRef = ref<InstanceType<typeof CashierReportFilter>>()
+const filter = ref<CashierReportFilterState>(filterFromRouteQuery(router.currentRoute.value.query) || defaultCashierFilter())
+// 平铺视图下维度列的表头筛选：映射到上方统一筛选状态，改动后重新汇总
+const filterApi = useCashierSummaryFilters(filter, () => filterRef.value as any)
+const groupBy = ref<string[]>(['month'])
+const report = ref<CashierSummaryReport | null>(null)
 const loading = ref(false)
-const { clearFilters } = useFilterClear([dateRange], {
-  defaults: { groupBy: 'month', currency: 'RMB' }
+
+const auxDims = computed(() =>
+  (filterRef.value?.meta.aux_categories || []).map(c => ({ value: `aux:${c.id}`, label: `辅助·${c.name}` }))
+)
+function dimLabel(dim: string): string {
+  if (dim.startsWith('aux:')) {
+    const cat = filterRef.value?.meta.aux_categories.find(c => c.id === dim.slice(4))
+    return `辅助·${cat?.name || dim.slice(4)}`
+  }
+  return DIM_LABELS[dim] || dim
+}
+
+const accountNames = computed(() => Object.fromEntries((filterRef.value?.accounts || []).map(a => [a.code, `${a.code} ${a.name}`])))
+const currencyLabel = computed(() => (filter.value.currency === ALL_CURRENCIES ? '全部（折本位币）' : filter.value.currency || filterRef.value?.baseCurrency || 'RMB'))
+const subtitle = computed(() => describeFilter(filter.value, { accounts: accountNames.value, currencyLabel: currencyLabel.value }))
+const unitLabel = computed(() => {
+  const base = report.value?.base_currency || filterRef.value?.baseCurrency || 'RMB'
+  return filter.value.currency === ALL_CURRENCIES ? `${base}（本位币折算）` : (filter.value.currency || base)
 })
 
-/** 清空筛选条件并恢复默认查询 */
-function handleClearFilters() {
-  clearFilters()
+function applyPreset(dims: string[]) {
+  groupBy.value = [...dims]
   load()
 }
 
-const groupColumnLabel = computed(() => {
-  if (groupBy.value === 'month') return '月份'
-  if (groupBy.value === 'settle_type') return '结算方式'
-  if (groupBy.value === 'counter_account') return '对方科目'
-  return '分组项目'
-})
-
-const totalIncome = computed(() => rows.value.reduce((sum, r) => sum + (r.income || 0), 0))
-const totalExpense = computed(() => rows.value.reduce((sum, r) => sum + (r.expense || 0), 0))
-const netFlow = computed(() => totalIncome.value - totalExpense.value)
-
-const fmt = (v: number) =>
-  (v ?? 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-
-function summarize({ columns }: any) {
-  const sums: string[] = []
-  columns.forEach((col: any, i: number) => {
-    if (i === 0) sums[0] = '合计'
-    else if (col.property === 'income') sums[i] = fmt(totalIncome.value)
-    else if (col.property === 'expense') sums[i] = fmt(totalExpense.value)
-    else if (col.property === 'net_amount') sums[i] = fmt(netFlow.value)
-    else sums[i] = ''
-  })
-  return sums
-}
-
-onMounted(async () => {
-  const curRes = await cashierApi.getCurrencies().catch(() => null)
-  if (curRes && curRes.code === 0 && Array.isArray(curRes.data) && curRes.data.length) {
-    currencies.value = curRes.data
-    if (!currencies.value.includes(currency.value)) currency.value = currencies.value[0]
-  }
-  await load()
-})
-
 async function load() {
+  if (!groupBy.value.length) return ElMessage.warning('请至少选择一个汇总维度')
   loading.value = true
   try {
-    const res = await cashierApi.getCashFlowSummary({
-      start_date: dateRange.value?.[0],
-      end_date: dateRange.value?.[1],
-      currency: currency.value,
-      group_by: groupBy.value
-    })
-    if ((res as any).code === 0) {
-      rows.value = (res as any).data
-    }
-  } finally {
-    loading.value = false
-  }
+    const res = await cashierApi.reportSummary({ ...toReportPayload(filter.value), group_by: groupBy.value })
+    if (res.code === 0) report.value = res.data
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.message || e?.message || '汇总失败')
+  } finally { loading.value = false }
 }
 
-function handlePrint() { window.print() }
-
-async function handleExport() {
-  if (!rows.value.length) return ElMessage.warning('暂无数据可导出')
-
-  const columns: ExportColumnDef<any>[] = [
-    { 
-      label: groupColumnLabel.value, 
-      width: 200, 
-      value: r => groupBy.value === 'month' ? r.group_code : (r.group_code === 'N/A' ? '未指定' : `${r.group_code} ${r.group_name}`) 
-    },
-    { label: '收入金额', width: 140, align: 'right', type: 'amount', value: r => r.income || '' },
-    { label: '支出金额', width: 140, align: 'right', type: 'amount', value: r => r.expense || '' },
-    { label: '收支净额', width: 140, align: 'right', type: 'amount', value: r => (r.income || 0) - (r.expense || 0) },
-  ]
-
-  const summaryValues = ['合计', totalIncome.value, totalExpense.value, netFlow.value]
-  
-  await exportStyledTable({
-    fileName: `资金收支汇总表_${dateRange.value?.[0]||''}至${dateRange.value?.[1]||''}.xlsx`,
-    sheetName: '资金收支汇总表',
-    title: '资金收支汇总表',
-    subtitle: `期间：${dateRange.value?.[0]||'起'} 至 ${dateRange.value?.[1]||'止'}　（单位：人民币元）`,
-    columns,
-    rows: rows.value,
-    summaryValues,
-  })
+function handleClear() {
+  filter.value = defaultCashierFilter()
+  groupBy.value = ['month']
+  load()
 }
+
+/** 钻取：把分组路径叠加到当前筛选条件，进入单据综合查询 */
+function drill(node: CashierSummaryNode) {
+  router.push({ path: '/cashier/document-query', query: filterToRouteQuery(applyDrillPath(filter.value, node.path)) })
+}
+
+onMounted(load)
 </script>
 
 <style scoped>
 .page-summary { display: flex; flex-direction: column; height: 100%; }
-.filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.report-body { flex: 1; overflow: auto; padding: 16px; }
-.report-title { margin: 0 0 12px; font-size: var(--cw-text-xl); text-align: center; }
-.subtitle { font-size: 12px; color: var(--el-text-color-secondary); }
-.summary-section { display: flex; gap: 16px; margin-top: 12px; justify-content: flex-end; }
-.summary-card { text-align: center; padding: 8px 20px; border-radius: 6px; background: var(--el-fill-color-lighter); }
-.s-label { display: block; font-size: 12px; color: var(--el-text-color-secondary); }
-.s-value { font-size: 18px; font-weight: 700; }
-.debit { color: #409eff; }
-.credit { color: #f56c6c; }
+.dim-row { display: flex; align-items: center; gap: 8px; padding: 4px 16px 0; flex-wrap: wrap; }
+.dim-label { font-size: 12px; color: var(--el-text-color-secondary); }
+.dim-select { width: 360px; max-width: 100%; }
 </style>

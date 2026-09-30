@@ -5,6 +5,7 @@
  * 校验规则集中在 validateImportRow，前端预校验（逐行标红）与后端最终把关共用，
  * 避免两处规则漂移。
  */
+import { excelDateToYmd } from '../utils/localDate.js'
 import type { Database } from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
 
@@ -93,7 +94,7 @@ function num(v: unknown): number | undefined | null {
 export function normalizeDate(v: unknown): string | undefined | null {
   if (v == null || v === '') return undefined
   if (v instanceof Date && !Number.isNaN(v.getTime())) {
-    return v.toISOString().slice(0, 10)
+    return excelDateToYmd(v)
   }
   const s = str(v)
   if (!s) return undefined

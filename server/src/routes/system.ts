@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { firstNonLeafError } from '../services/accountReferences.js'
 import { v4 as uuidv4 } from 'uuid'
 import bcrypt from 'bcryptjs'
 import { readdirSync, readFileSync, existsSync, mkdirSync } from 'fs'
@@ -1331,6 +1332,11 @@ router.put(
   (req: AuthRequest, res) => {
     const { items } = req.body
     const db = getDb()
+
+    // 转入科目必须是末级（转出科目允许父科目，取数时会展开到末级）
+    const toLeafErr = firstNonLeafError(db, req.accountSetId || '',
+      (Array.isArray(items) ? items : []).map((it: any) => [it?.toCode, '转入科目'] as [string, string]))
+    if (toLeafErr) return res.status(400).json({ code: 400, message: toLeafErr })
 
     // 先删除当前账套旧的配置项
     db.prepare('DELETE FROM transfer_items WHERE account_set_id = ?').run(req.accountSetId)

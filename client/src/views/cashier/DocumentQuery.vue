@@ -1,75 +1,118 @@
 <template>
   <div class="page page-document-query">
-    <div class="filter-row" style="padding:0 16px 8px">
-      <el-select
-        v-model="filters.account_codes"
-        multiple
-        collapse-tags
-        collapse-tags-tooltip
-        clearable
-        filterable
-        placeholder="科目（可多选）"
-        class="filter-ctl--lg"
-      >
-        <el-option v-for="a in accounts" :key="a.code" :label="`${a.code} ${a.name}`" :value="a.code" />
-      </el-select>
-      <el-select v-model="filters.currency" clearable placeholder="币种" class="filter-ctl--xs">
-        <el-option v-for="c in currencies" :key="c" :label="c" :value="c" />
-      </el-select>
-      <el-date-picker
-        v-model="dateRange"
-        type="daterange"
-        value-format="YYYY-MM-DD"
-        start-placeholder="开始日期"
-        end-placeholder="结束日期"
-        class="filter-ctl--lg"
-      />
-      <el-input v-model="filters.summary" placeholder="摘要" clearable class="filter-ctl--sm" @keyup.enter="handleQuery" />
-      <el-input v-model="filters.counter_unit" placeholder="对方单位" clearable class="filter-ctl--sm" @keyup.enter="handleQuery" />
-      <el-select v-model="filters.reconciled" clearable placeholder="对账状态" class="filter-ctl--sm">
-        <el-option label="已对账" :value="1" />
-        <el-option label="未对账" :value="0" />
-      </el-select>
-      <el-select v-model="filters.has_voucher" clearable placeholder="关联凭证" class="filter-ctl--sm">
-        <el-option label="已生成" :value="1" />
-        <el-option label="未生成" :value="0" />
-      </el-select>
-      <el-button type="primary" @click="handleQuery"><el-icon><Search /></el-icon>查询</el-button>
-      <FilterClearButton @clear="handleClearFilters" />
-      <el-divider direction="vertical" />
-      <el-button plain :disabled="!rows.length" @click="handleExport"><el-icon><Download /></el-icon>导出</el-button>
+    <CashierReportFilter
+      ref="filterRef"
+      v-model="filter"
+      mode="detail"
+      allow-all-currencies
+      :loading="loading"
+      @query="handleQuery"
+      @clear="handleClear"
+    />
+
+    <div class="toolbar-row">
+      <el-button plain :disabled="!rows.length" @click="handleExport"><el-icon><Download /></el-icon>导出全部</el-button>
       <el-button plain :disabled="!rows.length" @click="handlePrint"><el-icon><Printer /></el-icon>打印</el-button>
+      <span class="tip">共 {{ total }} 条；合计按全部筛选结果计算，不受分页影响</span>
     </div>
 
     <!-- 流水表格 -->
     <div ref="tableContainerRef" class="table-container">
-      <el-table ref="tableRef" :data="rows" :height="tableHeight" border stripe size="small" class="compact-data-table" v-loading="loading" @header-dragend="onDragEnd">
-        <el-table-column label="科目名称" column-key="account_name" :width="cw('account_name', 140)" show-overflow-tooltip>
-          <template #default="{ row }">{{ getAccountName(row.account_code) }}</template>
+      <el-table
+        ref="tableRef"
+        :data="rows"
+        :height="tableHeight"
+        border stripe size="small" class="compact-data-table"
+        v-loading="loading"
+        show-summary
+        :summary-method="summarize"
+        @header-dragend="onDragEnd"
+      >
+        <el-table-column label="科目名称" prop="account_name" :width="cw('account_name', 150)" show-overflow-tooltip>
+          <template #header>
+            <CashierHeaderFilter label="科目名称" kind="options" :options="accountOptions"
+              :model-value="filter.accountCodes" @update:model-value="(v: any) => setFilter({ accountCodes: v })" @change="handleQuery" />
+          </template>
+          <template #default="{ row }">{{ row.account_code }} {{ row.account_name }}</template>
         </el-table-column>
+        <el-table-column v-if="showCurrency" label="币种" prop="currency" :width="cw('currency', 60)" align="center" />
         <el-table-column label="日期" prop="biz_date" :width="cw('biz_date', 100)" />
-        <el-table-column label="摘要" prop="summary" min-width="160" :width="widths.summary" show-overflow-tooltip />
-        <el-table-column label="结算方式" prop="settle_type" :width="cw('settle_type', 90)" show-overflow-tooltip>
-          <template #default="{ row }">{{ getSettleTypeName(row.settle_type) }}</template>
+        <el-table-column label="摘要" prop="summary" min-width="160" :width="widths.summary" show-overflow-tooltip>
+          <template #header>
+            <CashierHeaderFilter label="摘要" kind="text"
+              :model-value="filter.summary" @update:model-value="(v: any) => setFilter({ summary: v })" @change="handleQuery" />
+          </template>
         </el-table-column>
-        <el-table-column label="票据号" prop="bill_no" :width="cw('bill_no', 110)" show-overflow-tooltip />
-        <el-table-column label="对方单位" prop="counter_unit" :width="cw('counter_unit', 140)" show-overflow-tooltip />
+        <el-table-column label="结算方式" prop="settle_type" :width="cw('settle_type', 90)" show-overflow-tooltip>
+          <template #header>
+            <CashierHeaderFilter label="结算方式" kind="options" :options="settleOptions"
+              :model-value="filter.settleTypes" @update:model-value="(v: any) => setFilter({ settleTypes: v })" @change="handleQuery" />
+          </template>
+          <template #default="{ row }">{{ row.settle_type_name || row.settle_type || '' }}</template>
+        </el-table-column>
+        <el-table-column label="票据号" prop="bill_no" :width="cw('bill_no', 110)" show-overflow-tooltip>
+          <template #header>
+            <CashierHeaderFilter label="票据号" kind="text"
+              :model-value="filter.billNo" @update:model-value="(v: any) => setFilter({ billNo: v })" @change="handleQuery" />
+          </template>
+        </el-table-column>
+        <el-table-column label="对方单位" prop="counter_unit" :width="cw('counter_unit', 140)" show-overflow-tooltip>
+          <template #header>
+            <CashierHeaderFilter label="对方单位" kind="text"
+              :model-value="filter.counterUnit" @update:model-value="(v: any) => setFilter({ counterUnit: v })" @change="handleQuery" />
+          </template>
+        </el-table-column>
+        <el-table-column label="对方科目" prop="counter_account" :width="cw('counter_account', 150)" show-overflow-tooltip>
+          <template #header>
+            <CashierHeaderFilter label="对方科目" kind="options" :options="counterOptions"
+              :model-value="filter.counterAccounts" @update:model-value="(v: any) => setFilter({ counterAccounts: v })" @change="handleQuery" />
+          </template>
+          <template #default="{ row }">{{ row.counter_account ? `${row.counter_account} ${row.counter_account_name || ''}` : '' }}</template>
+        </el-table-column>
+        <!-- 辅助项目按类别动态拆列（部门一列、人员一列…）；列取自当前筛选结果里出现过的类别 -->
+        <el-table-column
+          v-for="col in auxColumns"
+          :key="`aux_${col.id}`"
+          :label="col.name"
+          :column-key="`aux_${col.id}`"
+          :width="cw(`aux_${col.id}`, 110)"
+          show-overflow-tooltip
+        >
+          <template #header>
+            <CashierHeaderFilter :label="col.name" kind="remote" :loader="(kw: string) => loadAuxItemOptions(col.id, kw)"
+              :model-value="auxItemIdsOf(filter, col.id)" @update:model-value="(v: any) => setFilter(withAuxItemIds(filter, col.id, v))" @change="handleQuery" />
+          </template>
+          <template #default="{ row }">{{ row.aux_values?.[col.id] || '' }}</template>
+        </el-table-column>
         <el-table-column label="借方(收入)" prop="debit" :width="cw('debit', 120)" align="right">
           <template #default="{ row }"><span v-if="row.debit" class="debit">{{ fmt(row.debit) }}</span></template>
         </el-table-column>
         <el-table-column label="贷方(支出)" prop="credit" :width="cw('credit', 120)" align="right">
           <template #default="{ row }"><span v-if="row.credit" class="credit">{{ fmt(row.credit) }}</span></template>
         </el-table-column>
-        <el-table-column label="已对账" column-key="reconciled" :width="cw('reconciled', 70)" align="center">
-          <template #default="{ row }">
-            <el-icon v-if="row.reconciled" color="#67c23a"><CircleCheck /></el-icon>
-          </template>
+        <el-table-column v-if="showCurrency" label="借方(本位币)" prop="base_debit" :width="cw('base_debit', 120)" align="right">
+          <template #default="{ row }">{{ row.base_debit ? fmt(row.base_debit) : '' }}</template>
         </el-table-column>
-        <el-table-column label="关联凭证" column-key="voucher" :width="cw('voucher', 120)" show-overflow-tooltip>
+        <el-table-column v-if="showCurrency" label="贷方(本位币)" prop="base_credit" :width="cw('base_credit', 120)" align="right">
+          <template #default="{ row }">{{ row.base_credit ? fmt(row.base_credit) : '' }}</template>
+        </el-table-column>
+        <el-table-column label="已对账" prop="reconciled" :width="cw('reconciled', 80)" align="center">
+          <template #header>
+            <CashierHeaderFilter label="已对账" kind="options" :multiple="false" :options="reconcileOptions"
+              :model-value="filter.reconciled" @update:model-value="(v: any) => setFilter({ reconciled: v === undefined || v === '' ? undefined : Number(v) as 0 | 1 })" @change="handleQuery" />
+          </template>
+          <template #default="{ row }"><el-icon v-if="row.reconciled" color="#67c23a"><CircleCheck /></el-icon></template>
+        </el-table-column>
+        <el-table-column label="关联凭证" prop="voucher" :width="cw('voucher', 150)" show-overflow-tooltip>
+          <template #header>
+            <CashierHeaderFilter label="关联凭证" kind="options" :options="voucherOptions"
+              :model-value="filter.voucherStatus" @update:model-value="(v: any) => setFilter({ voucherStatus: v })" @change="handleQuery" />
+          </template>
           <template #default="{ row }">
-            <span v-if="row.voucher_no" style="color:var(--el-color-primary)">
-              {{ row.voucher_year }}-{{ String(row.voucher_month).padStart(2,'0') }} #{{ row.voucher_no }}
-            </span>
+            <template v-if="row.voucher_no">
+              <span style="color:var(--el-color-primary)">{{ row.voucher_year }}-{{ String(row.voucher_month).padStart(2,'0') }} #{{ row.voucher_no }}</span>
+              <el-tag v-if="row.voucher_status" size="small" :type="statusTag(row.voucher_status)" class="vs-tag">{{ statusLabel(row.voucher_status) }}</el-tag>
+            </template>
           </template>
         </el-table-column>
       </el-table>
@@ -85,216 +128,231 @@
         />
       </div>
     </div>
+
+    <HiprintDialog
+      v-model="printVisible"
+      template-type="ledger"
+      template-key="cashier:document-query"
+      title="出纳单据综合查询"
+      :get-print-html="buildPrintHtml"
+      default-paper="A4"
+      default-orientation="landscape"
+      :use-templates="false"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-// P2-7：默认日期用本地时间（此前 toISOString 取 UTC，东八区 0~8 点会落到前一天）
-import { formatDate } from '@/utils/format'
-import { ref, computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Search, Printer, Download, ArrowUp, ArrowDown, CircleCheck } from '@element-plus/icons-vue'
-import { cashierApi } from '@/api/cashier'
-import FilterClearButton from '@/components/common/FilterClearButton.vue'
+import { CircleCheck, Download, Printer } from '@element-plus/icons-vue'
+import { cashierApi, type AuxColumn, type CashierSearchRow } from '@/api/cashier'
+import CashierReportFilter from '@/components/cashier/CashierReportFilter.vue'
+import CashierHeaderFilter from '@/components/cashier/CashierHeaderFilter.vue'
+import { loadAuxItemOptions } from '@/composables/useCashierHeaderFilters'
+import HiprintDialog from '@/components/print/HiprintDialog.vue'
+import { buildTablePrintHtml } from '@/utils/printTemplateHiprint'
+import { exportStyledTableViaSource, type ExportColumnDef } from '@/utils/exportStyledExcel'
 import { useFillHeightTable } from '@/composables/useFillHeightTable'
 import { useColumnWidthMemory } from '@/composables/useColumnWidthMemory'
-import { exportStyledTable, type ExportColumnDef } from '@/utils/exportStyledExcel'
+import { formatDate } from '@/utils/format'
+import {
+  ALL_CURRENCIES,
+  defaultCashierFilter,
+  describeFilter,
+  filterFromRouteQuery,
+  toReportPayload,
+  toSearchParams,
+  auxItemIdsOf,
+  withAuxItemIds,
+  VOUCHER_STATUS_OPTIONS,
+  type CashierReportFilterState,
+} from '@/utils/cashierReportFilter'
 
 const { tableRef, containerRef: tableContainerRef, tableHeight } = useFillHeightTable()
 const { colWidth, onDragEnd, widths, bindTable } = useColumnWidthMemory('cashier_document_query')
 function cw(key: string, fallback: number) { return colWidth(key, fallback) }
 bindTable(tableRef)
 
-const accounts = ref<{ code: string; name: string; is_cash: number; is_bank: number }[]>([])
-const cashAccounts = computed(() => accounts.value.filter(a => a.is_cash))
-const bankAccounts = computed(() => accounts.value.filter(a => a.is_bank && !a.is_cash))
-  const settleTypes = ref<{ code: string; name: string }[]>([])
-  const currencies = ref<string[]>(['RMB'])
+const router = useRouter()
+const filterRef = ref<InstanceType<typeof CashierReportFilter>>()
+// 从汇总表 / 余额表钻取进来时，路由 query.f 带着完整筛选条件
+const filter = ref<CashierReportFilterState>(filterFromRouteQuery(router.currentRoute.value.query) || defaultCashierFilter())
 
-function getCurrentMonthRange(): [string, string] {
-  const now = new Date()
-  const year = now.getFullYear()
-  const month = String(now.getMonth() + 1).padStart(2, '0')
-  const date = String(now.getDate()).padStart(2, '0')
-  return [`${year}-${month}-01`, `${year}-${month}-${date}`]
-}
-
-const dateRange = ref<[string, string] | null>(getCurrentMonthRange())
-const showAdvanced = ref(false)
 const loading = ref(false)
-const rows = ref<any[]>([])
+const rows = ref<CashierSearchRow[]>([])
 const page = ref(1)
 const pageSize = ref(100)
 const total = ref(0)
+const totals = ref({ income: 0, expense: 0, count: 0 })
+const mode = ref<'single' | 'all'>('single')
+const printVisible = ref(false)
+const printRows = ref<CashierSearchRow[]>([])
+const auxColumns = ref<AuxColumn[]>([])
 
-const filters = ref({
-  account_codes: [] as string[],
-  currency: '',
-  summary: '',
-  settle_types: [] as string[],
-  bill_no: '',
-  counter_unit: '',
-  counter_account: '',
-  amount_direction: 'all',
-  min_amount: undefined as number | undefined,
-  max_amount: undefined as number | undefined,
-  reconciled: undefined as number | undefined,
-  has_voucher: undefined as number | undefined,
+const showCurrency = computed(() => mode.value === 'all')
+
+// ── 表头筛选：与上方筛选条共用同一份 filter，服务端筛选全部结果 ──
+function setFilter(part: Partial<CashierReportFilterState>) {
+  filter.value = { ...filter.value, ...part }
+}
+const accountOptions = computed(() => (filterRef.value?.accounts || []).map(a => ({ value: a.code, label: `${a.code} ${a.name}` })))
+const settleOptions = computed(() => {
+  const dict = filterRef.value?.settleTypes || []
+  const known = new Set(dict.map(t => t.code))
+  const extra = (filterRef.value?.meta.settle_types || []).filter(t => t.code && !known.has(t.code))
+  return [...dict, ...extra].map(t => ({ value: t.code, label: t.name }))
 })
+const counterOptions = computed(() => (filterRef.value?.meta.counter_accounts || []).map(a => ({ value: a.code, label: `${a.code} ${a.name}` })))
+const reconcileOptions = [{ value: 1, label: '已对账' }, { value: 0, label: '未对账' }]
+const voucherOptions = VOUCHER_STATUS_OPTIONS.map(o => ({ value: o.value as string, label: o.label }))
+const fmt = (v: number) => (v === 0 ? '0.00' : (v ?? 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))
 
-const activeFilterCount = computed(() => {
-  let count = 0
-  if (filters.value.account_codes?.length > 0) count++
-  if (filters.value.currency) count++
-  if (dateRange.value?.length) count++
-  if (filters.value.settle_types?.length > 0) count++
-  if (filters.value.bill_no) count++
-  if (filters.value.counter_unit) count++
-  if (filters.value.counter_account) count++
-  if (filters.value.min_amount !== undefined || filters.value.max_amount !== undefined) count++
-  if (filters.value.reconciled !== undefined) count++
-  if (filters.value.has_voucher !== undefined) count++
-  return count
-})
+const STATUS_LABEL: Record<string, string> = { draft: '草稿', audited: '已审核', posted: '已记账' }
+const statusLabel = (s: string) => STATUS_LABEL[s] || s
+const statusTag = (s: string) => (s === 'posted' ? 'success' : s === 'audited' ? 'warning' : 'info')
 
-const getAccountName = (code: string) => {
-  const acc = accounts.value.find(a => a.code === code)
-  return acc ? `${code} ${acc.name}` : code
-}
-
-const getSettleTypeName = (code: string) => {
-  const t = settleTypes.value.find(x => x.code === code)
-  return t ? t.name : code
-}
-
-const fmt = (v: number) => v === 0 ? '0.00' : v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-
-onMounted(async () => {
-  const [accRes, stRes, curRes] = await Promise.all([
-    cashierApi.getAccounts(),
-    cashierApi.getSettleTypes(),
-    cashierApi.getCurrencies().catch(() => null),
-  ])
-  if (accRes.code === 0) accounts.value = accRes.data
-  if (stRes.code === 0) settleTypes.value = stRes.data
-  if (curRes && curRes.code === 0 && Array.isArray(curRes.data) && curRes.data.length) currencies.value = curRes.data
-  await loadData()
-})
-
-function resetFilters() {
-  dateRange.value = null
-  filters.value = {
-    account_codes: [],
-    currency: '',
-    summary: '',
-    settle_types: [],
-    bill_no: '',
-    counter_unit: '',
-    counter_account: '',
-    amount_direction: 'all',
-    min_amount: undefined,
-    max_amount: undefined,
-    reconciled: undefined,
-    has_voucher: undefined,
-  }
-}
-
-async function handleClearFilters() {
-  resetFilters()
-  await handleQuery()
-}
-
-async function handleQuery() {
-  page.value = 1
-  await loadData()
+/** 不选币种 = 本位币（后端口径，与其它出纳报表一致）；要看全部请选「全部（折本位币）」 */
+function effectiveFilter(): CashierReportFilterState {
+  return filter.value
 }
 
 async function loadData() {
   loading.value = true
   try {
-    const res = await cashierApi.searchJournals({
-      ...filters.value,
-      account_codes: filters.value.account_codes?.length ? filters.value.account_codes.join(',') : undefined,
-      settle_types: filters.value.settle_types?.length ? filters.value.settle_types.join(',') : undefined,
-      start_date: dateRange.value?.[0] || undefined,
-      end_date: dateRange.value?.[1] || undefined,
-      page: page.value,
-      page_size: pageSize.value,
-    })
-    if ((res as any).code === 0) {
-      rows.value = (res as any).data.list
-      total.value = (res as any).data.total
+    const res = await cashierApi.searchJournals({ ...toSearchParams(effectiveFilter()), page: page.value, page_size: pageSize.value })
+    if (res.code === 0) {
+      rows.value = res.data.list
+      total.value = res.data.total
+      totals.value = res.data.totals
+      mode.value = res.data.currency_mode
+      auxColumns.value = res.data.aux_columns || []
     }
-  } finally {
-    loading.value = false
-  }
+  } finally { loading.value = false }
 }
 
-function handlePrint() { window.print() }
+async function handleQuery() { page.value = 1; await loadData() }
+async function handleClear() { filter.value = defaultCashierFilter(); await handleQuery() }
+
+function summarize({ columns }: any) {
+  return columns.map((col: any, i: number) => {
+    if (i === 0) return `合计（${totals.value.count} 笔）`
+    if (col.property === 'debit') return fmt(mode.value === 'all' ? 0 : totals.value.income)
+    if (col.property === 'credit') return fmt(mode.value === 'all' ? 0 : totals.value.expense)
+    if (col.property === 'base_debit') return fmt(totals.value.income)
+    if (col.property === 'base_credit') return fmt(totals.value.expense)
+    return ''
+  })
+}
+
+const accountNames = computed(() => Object.fromEntries((filterRef.value?.accounts || []).map(a => [a.code, `${a.code} ${a.name}`])))
+const currencyLabel = computed(() => (filter.value.currency === ALL_CURRENCIES ? '全部（折本位币）' : filter.value.currency || filterRef.value?.baseCurrency || 'RMB'))
+const subtitle = computed(() => describeFilter(filter.value, { accounts: accountNames.value, currencyLabel: currencyLabel.value }))
+
+async function handlePrint() {
+  // 打印最多取前 2000 条（一页的服务端上限）；超出时提示
+  loading.value = true
+  try {
+    const res = await cashierApi.searchJournals({ ...toSearchParams(effectiveFilter()), page: 1, page_size: 2000 })
+    if (res.code !== 0) return
+    printRows.value = res.data.list
+    if (res.data.total > 2000) ElMessage.warning(`共 ${res.data.total} 条，打印仅包含前 2000 条，请缩小筛选范围`)
+    printVisible.value = true
+  } finally { loading.value = false }
+}
+
+function buildPrintHtml() {
+  const all = mode.value === 'all'
+  const columns: any[] = [
+    { label: '科目', render: (r: CashierSearchRow) => `${r.account_code} ${r.account_name || ''}` },
+    ...(all ? [{ label: '币种', align: 'center', render: (r: CashierSearchRow) => r.currency }] : []),
+    { label: '日期', render: (r: CashierSearchRow) => r.biz_date },
+    { label: '摘要', render: (r: CashierSearchRow) => r.summary || '' },
+    { label: '结算方式', render: (r: CashierSearchRow) => r.settle_type_name || r.settle_type || '' },
+    { label: '对方科目', render: (r: CashierSearchRow) => (r.counter_account ? `${r.counter_account} ${r.counter_account_name || ''}` : '') },
+    ...auxColumns.value.map(c => ({ label: c.name, render: (r: CashierSearchRow) => r.aux_values?.[c.id] || '' })),
+    { label: '借方(收入)', align: 'right', render: (r: CashierSearchRow) => (r.debit ? fmt(r.debit) : '') },
+    { label: '贷方(支出)', align: 'right', render: (r: CashierSearchRow) => (r.credit ? fmt(r.credit) : '') },
+    ...(all ? [
+      { label: '借方(本位币)', align: 'right', render: (r: CashierSearchRow) => (r.base_debit ? fmt(r.base_debit) : '') },
+      { label: '贷方(本位币)', align: 'right', render: (r: CashierSearchRow) => (r.base_credit ? fmt(r.base_credit) : '') },
+    ] : []),
+    { label: '凭证', render: (r: CashierSearchRow) => (r.voucher_no ? `${r.voucher_year}-${String(r.voucher_month).padStart(2, '0')} #${r.voucher_no}` : '') },
+  ]
+  const footer = columns.map((c, i) => {
+    if (i === 0) return `合计（${totals.value.count} 笔）`
+    if (c.label === (all ? '借方(本位币)' : '借方(收入)')) return fmt(totals.value.income)
+    if (c.label === (all ? '贷方(本位币)' : '贷方(支出)')) return fmt(totals.value.expense)
+    return ''
+  })
+  return buildTablePrintHtml<CashierSearchRow>({
+    title: '出纳单据综合查询',
+    subtitle: `${subtitle.value}　单位：${all ? '本位币折算' : currencyLabel.value}`,
+    rows: printRows.value,
+    columns,
+    monochrome: true,
+    fitToPage: true,
+    footer,
+  })
+}
 
 async function handleExport() {
   if (!rows.value.length) return ElMessage.warning('暂无数据可导出')
-  
+  const all = mode.value === 'all'
   const columns: ExportColumnDef<any>[] = [
-    { label: '科目名称', width: 160, value: r => getAccountName(r.account_code) },
-    { label: '日期', width: 100, value: r => r.biz_date },
-    { label: '摘要', width: 160, value: r => r.summary || '' },
-    { label: '结算方式', width: 90, value: r => getSettleTypeName(r.settle_type) || '' },
-    { label: '票据号', width: 110, value: r => r.bill_no || '' },
-    { label: '对方单位', width: 140, value: r => r.counter_unit || '' },
-    { label: '借方(收入)', width: 120, align: 'right', type: 'amount', value: r => r.debit || '' },
-    { label: '贷方(支出)', width: 120, align: 'right', type: 'amount', value: r => r.credit || '' },
-    { label: '已对账', width: 70, align: 'center', value: r => (r.reconciled ? '是' : '') },
-    { label: '关联凭证', width: 120, value: r => (r.voucher_no ? `${r.voucher_year}-${String(r.voucher_month).padStart(2, '0')} ${r.voucher_no}` : '') },
+    { key: 'account_code', label: '科目编码', width: 100 },
+    { key: 'account_name', label: '科目名称', width: 150 },
+    ...(all ? [{ key: 'currency', label: '币种', width: 60, align: 'center' }] as ExportColumnDef<any>[] : []),
+    { key: 'biz_date', label: '日期', width: 100 },
+    { key: 'summary', label: '摘要', width: 180 },
+    { key: 'settle_type', label: '结算方式', width: 90 },
+    { key: 'bill_no', label: '票据号', width: 110 },
+    { key: 'counter_unit', label: '对方单位', width: 140 },
+    { key: 'counter_account', label: '对方科目', width: 160 },
+    ...auxColumns.value.map(c => ({ key: `aux:${c.id}`, label: c.name, width: 120 })) as ExportColumnDef<any>[],
+    { key: 'debit', label: '借方(收入)', width: 120, align: 'right', type: 'amount' },
+    { key: 'credit', label: '贷方(支出)', width: 120, align: 'right', type: 'amount' },
+    ...(all ? [
+      { key: 'base_debit', label: '借方(本位币)', width: 120, align: 'right', type: 'amount' },
+      { key: 'base_credit', label: '贷方(本位币)', width: 120, align: 'right', type: 'amount' },
+    ] as ExportColumnDef<any>[] : []),
+    { key: 'reconciled', label: '已对账', width: 70, align: 'center' },
+    { key: 'voucher', label: '关联凭证', width: 120 },
+    { key: 'voucher_status', label: '凭证状态', width: 80 },
   ]
-  
-  // 评审 P2：未限定币种时结果可能混有外币，原币直接相加没有意义——多币种时改按本位币金额合计并标明
-  const mixed = new Set(rows.value.map(r => (r as any).currency || '')).size > 1
-  const pick = (r: any, f: 'debit' | 'credit') =>
-    mixed ? Number(r[f === 'debit' ? 'base_debit' : 'base_credit'] ?? r[f]) || 0 : Number(r[f]) || 0
-  const totalDebit = rows.value.reduce((sum, r) => sum + pick(r, 'debit'), 0)
-  const totalCredit = rows.value.reduce((sum, r) => sum + pick(r, 'credit'), 0)
-  const summaryValues = [mixed ? '合计（本位币）' : '合计', '', '', '', '', '', totalDebit, totalCredit, '', '']
-
-  await exportStyledTable({
+  // 汇总行：金额列放全量合计
+  const summaryValues = columns.map((c, i) => {
+    if (i === 0) return `合计（${totals.value.count} 笔）`
+    if (c.key === (all ? 'base_debit' : 'debit')) return totals.value.income
+    if (c.key === (all ? 'base_credit' : 'credit')) return totals.value.expense
+    return ''
+  })
+  await exportStyledTableViaSource({
     fileName: `单据综合查询_${formatDate(new Date())}.xlsx`,
     sheetName: '单据查询',
-    title: `出纳单据综合查询`,
+    title: '出纳单据综合查询',
+    subtitle: `${subtitle.value}　共 ${total.value} 条`,
     columns,
-    rows: rows.value,
+    source: { type: 'cashierSearch', params: toReportPayload(effectiveFilter()) },
     summaryValues,
   })
 }
+
+onMounted(async () => {
+  // 等筛选组件拿到本位币后再查询（组件 onMounted 已发起请求，这里只需下一拍）
+  await Promise.resolve()
+  await loadData()
+})
 </script>
 
 <style scoped>
 .page-document-query { display: flex; flex-direction: column; height: 100%; }
-
-.filter-panel-wrap { width: 100%; margin-bottom: 8px; }
-.filter-bar-compact { display: flex; align-items: center; gap: 6px; min-height: 28px; }
-.filter-toggle-btn { flex-shrink: 0; padding: 0 4px !important; height: 26px !important; font-size: 12px !important; color: #48484a !important; font-weight: 600; }
-.filter-toggle-btn .el-icon { margin-right: 2px; }
-.filter-active-badge { margin-left: 4px; }
-.filter-active-badge :deep(.el-badge__content) { height: 16px; line-height: 16px; padding: 0 5px; font-size: 11px; }
-.filter-keyword-inline { flex: 1; min-width: 140px; max-width: 360px; }
-.filter-keyword-inline :deep(.el-input__wrapper) { min-height: 26px !important; }
-.filter-bar-actions { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; margin-left: auto; }
-.filter-bar-actions :deep(.el-button) { height: 26px; padding: 0 10px; font-size: 12px; }
-.filter-panel-expanded { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(0, 0, 0, 0.06); }
-.filter-group-row { display: flex; align-items: flex-start; gap: 6px; padding: 3px 0; }
-.filter-group-label { flex-shrink: 0; width: 44px; font-size: 11px; font-weight: 600; color: #6e6e73; line-height: 26px; text-align: right; }
-.filter-group-body { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; flex: 1; min-width: 0; }
-.filter-control--xs { width: 96px; }
-.filter-control--sm { width: 112px; }
-.filter-control--md { width: 140px; }
-.filter-control--lg { width: 220px; max-width: 100%; }
-.separator { margin: 0 4px; }
-
-.toolbar { display: flex; align-items: center; gap: 12px; padding-top: 4px; border-top: 1px dashed var(--el-border-color-lighter); margin-top: 4px; }
-.result-count { font-size: 12px; color: var(--el-text-color-secondary); margin-left: auto; }
-
-.table-container { flex: 1; display: flex; flex-direction: column; overflow: hidden; padding: 12px 16px; }
+.toolbar-row { display: flex; align-items: center; gap: 12px; padding: 4px 16px 0; }
+.tip { font-size: 12px; color: var(--el-text-color-placeholder); }
+.table-container { flex: 1; display: flex; flex-direction: column; overflow: hidden; padding: 8px 16px 12px; }
 .pagination-wrapper { margin-top: 12px; display: flex; justify-content: flex-end; }
 .debit { color: #409eff; }
 .credit { color: #f56c6c; }
+.vs-tag { margin-left: 6px; }
 </style>

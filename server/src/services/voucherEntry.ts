@@ -612,6 +612,29 @@ export function resolveQuantityFields(entry: VoucherEntryInput): {
 }
 
 /**
+ * 分录科目必须是末级科目（有下级科目的父科目不能直接记账）。
+ *
+ * 前端选择器已过滤父科目，但后端是最终防线：资产、进销存、出纳等自动生成路径不经前端，
+ * 余额表按末级汇总父科目，直接记在父科目上的金额不会出现在任何报表里，造成试算不平。
+ */
+export function validateVoucherEntriesLeafAccount(
+  db: Database,
+  accountSetId: string,
+  entries: Array<{ account_id?: string | null; account_code?: string | null }>
+): string | null {
+  const stmt = db.prepare(
+    `SELECT code, name FROM accounts a WHERE a.id = ? AND a.account_set_id = ?
+       AND EXISTS (SELECT 1 FROM accounts c WHERE c.parent_id = a.id)`
+  )
+  for (const entry of entries) {
+    if (!entry.account_id) continue
+    const parent = stmt.get(entry.account_id, accountSetId) as { code: string; name: string } | undefined
+    if (parent) return `科目【${parent.code} ${parent.name}】有下级科目，不能直接记账，请选择末级科目`
+  }
+  return null
+}
+
+/**
  * 数量核算科目分录校验。
  *
  * 规则（对应需求「必须输入数量，金额单价 2 选 1 输入」）：

@@ -167,6 +167,7 @@ function disableFutureMonth(date: Date): boolean {
   const now = new Date()
   return date.getFullYear() * 100 + date.getMonth() > now.getFullYear() * 100 + now.getMonth()
 }
+import { todayStr } from '@/utils/format'
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, ArrowLeft, Select, Check } from '@element-plus/icons-vue'
@@ -202,7 +203,7 @@ async function loadList() {
 }
 
 function openCreateDialog() {
-  createForm.value = { name: '', inventory_date: new Date().toISOString().slice(0, 10), remark: '', generate_voucher: false }
+  createForm.value = { name: '', inventory_date: todayStr(), remark: '', generate_voucher: false }
   createVisible.value = true
 }
 

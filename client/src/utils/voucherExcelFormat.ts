@@ -4,6 +4,7 @@
  * 首行为表头（必填列带 *），一行一条分录；列定义来自服务端 /voucher/excel-import/columns，
  * 转出写出的文件可直接在「转入」页回导。
  */
+import { todayStr, excelDateToYmd } from './format'
 import type { VoucherExcelColumn } from '@/api/voucherExcel'
 
 function parseAuxData(raw: unknown): Record<string, { id?: string; name?: string }> {
@@ -105,7 +106,7 @@ export async function downloadVoucherExcelTemplate(columns: VoucherExcelColumn[]
       case 'voucher_type':
         return '记账凭证'
       case 'voucher_date':
-        return new Date().toISOString().slice(0, 10)
+        return todayStr()
       case 'summary':
         return '示例行，导入前请删除'
       case 'account_code':
@@ -153,7 +154,7 @@ export async function parseVoucherExcelFile(file: File, columns: VoucherExcelCol
       if (!key) return
       const v = arr[i]
       if (v instanceof Date) {
-        obj[key] = `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, '0')}-${String(v.getDate()).padStart(2, '0')}`
+        obj[key] = excelDateToYmd(v)
       } else {
         obj[key] = v
       }

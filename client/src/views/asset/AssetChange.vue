@@ -452,6 +452,7 @@
 </template>
 
 <script setup lang="ts">
+import { todayStr } from '@/utils/format'
 import { confirmRenumberAfterDelete } from '@/composables/useRenumberPrompt'
 
 /** P1-20：变动 / 处置 / 盘点日期不得晚于当前月份（与后端同口径） */
@@ -487,7 +488,7 @@ const history = ref<AssetChangeRow[]>([])
 const submitting = ref(false)
 const activeKind = ref<AssetChangeKind>('original_value')
 
-const today = () => new Date().toISOString().slice(0, 10)
+const today = () => todayStr()
 
 const form = reactive<{
   change_date: string

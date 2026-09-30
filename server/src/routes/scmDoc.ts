@@ -4,6 +4,7 @@
  * scm_doc(头)+scm_doc_line(明细)+scm_doc_type(类型配置)，pjlb 区分类型。
  * 审核/反审核触发库存移动（scm_stock_move），计价引擎在 services/scmCosting。
  */
+import { todayStr } from '../utils/localDate.js'
 import { Router, type Response } from 'express'
 import { v4 as uuidv4 } from 'uuid'
 import { getDb } from '../db/index.js'
@@ -49,6 +50,7 @@ import { buildPurchaseReceiptDraftGroups, purchaseOrderPushSourceSql } from '../
 import { getStatementExternalOrderNos, getStatementSalesOrderNos } from '../services/scmStatementSalesOrder.js'
 import { getPurchaseReceiptOrderNosByLine, getSalesDispatchOrderNosByLine } from '../services/scmSalesDispatchOrderNumbers.js'
 import { executeBatchAtomically, normalizeBatchIds, validateBatchPushDocuments, validateProductionPlanBatchAction } from '../services/scmBatchDocuments.js'
+import { IMPORT_COLUMNS, IMPORT_DOC_TYPES, buildImportDocs } from '../services/scmDocImport.js'
 import { applyAuditDefaultWarehouses, inspectAuditDefaultWarehouses } from '../services/scmAuditDefaultWarehouse.js'
 import { normalizePaging } from '../utils/paging.js'
 import { docExchangeRate, getScmBaseCurrency, isScmBaseCurrency, normalizeScmCurrency, resolveScmExchangeRate, toBase } from '../services/scmCurrency.js'
@@ -149,6 +151,16 @@ router.use((req: AuthRequest, res, next) => {
     return next()                        // 读类型/取号：任意已登录放行
   } else if (p === '/scm/docs/seed') {
     needAny = ['scm:import']
+  } else if (p === '/scm/docs/import/columns') {
+    return next()
+  } else if (p.startsWith('/scm/docs/import')) {
+    // 批量导入/逐张审核：导入按 body.doc_type 所属业务域 + 导入权限；审核在 handler 内按单据域逐张校验
+    if (p === '/scm/docs/import/audit-batch') needAction = 'scm:audit'
+    else {
+      const cat = CODE_CATEGORY[String(req.body?.doc_type || '')]
+      needAny = cat ? [CATEGORY_PERM[cat]] : ['scm:import']
+      needAction = 'scm:import'
+    }
   } else if (p.startsWith('/scm/sales-order-relations')) {
     needAny = ['scm:sale']
   } else if (p.startsWith('/scm/docs')) {
@@ -1053,7 +1065,8 @@ router.get('/scm/docs/:id/cost-detail', (req: AuthRequest, res) => {
 })
 
 
-router.post('/scm/docs', operationLog('供应链单据新增', '供应链'), (req: AuthRequest, res) => {
+// 新增单据（导出供批量导入复用，导入时按张调用）
+const createDocHandler = (req: AuthRequest, res: Response) => {
   const db = getDb(); const b = req.body
   if (!b.doc_type) return res.status(400).json({ code: 400, message: '单据类型不能为空' })
   const paymentErr = validatePaymentData(db, asid(req), b, b.lines, req.accountScope)
@@ -1101,7 +1114,8 @@ router.post('/scm/docs', operationLog('供应链单据新增', '供应链'), (re
     return docNo
   })
   res.json({ code: 0, data: { id: docId, doc_no: docNo } })
-})
+}
+router.post('/scm/docs', operationLog('供应链单据新增', '供应链'), createDocHandler)
 
 router.put('/scm/docs/:id', operationLog('供应链单据修改', '供应链'), (req: AuthRequest, res) => {
   const db = getDb(); const b = req.body
@@ -3085,7 +3099,7 @@ router.post('/scm/report/production/cost/export', async (req: AuthRequest, res) 
     const rows = result.rows.map((row: any) => defs.map(([key]) => row[key] ?? null))
     const buffer = await buildStyledXlsxBuffer({ sheetName: '工单成本明细', title: '工单成本明细表',
       subtitle: '料成本 = Σ(领料+补料−退料)；人工/制费 = 已审核报工 + 工序委外加工费；已结转成品成本 = 完工/不良品/结案结转 + 已吸收人工制费', columns, rows, stripe: true })
-    const fileName = `工单成本明细表_${new Date().toISOString().slice(0, 10)}.xlsx`
+    const fileName = `工单成本明细表_${todayStr()}.xlsx`
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`)
     res.send(buffer)
@@ -4830,6 +4844,108 @@ router.post('/scm/docs/batch-actions', operationLog('供应链单据批量操作
     const failed = error instanceof BatchActionHttpError && error.docId ? byId.get(error.docId) : null
     return res.status(status).json({ code: status, message: `${failed?.doc_no ? `单据 ${failed.doc_no}：` : ''}${error?.message || '批量操作失败'}` })
   }
+})
+
+// ══ 单据 Excel 批量导入 + 逐张批量审核 ══════════════════════════════════════
+const MAX_IMPORT_ROWS = 5000
+
+/** 以指定 body 内部调用单据 handler（与 invokeDocHandler 相同，但可替换请求体） */
+function invokeDocHandlerWithBody(handler: InternalDocHandler, req: AuthRequest, id: string, body: any): any {
+  let statusCode = 200
+  let payload: any
+  const response = {
+    status(code: number) { statusCode = code; return this },
+    json(b: any) { payload = b; return this },
+  } as unknown as Response
+  const internalReq = Object.assign(Object.create(Object.getPrototypeOf(req)), req, {
+    params: { ...req.params, id }, body,
+  }) as AuthRequest
+  handler(internalReq, response)
+  if (statusCode >= 400 || (payload && payload.code !== 0)) {
+    throw new BatchActionHttpError(statusCode, payload?.message || '操作失败', id)
+  }
+  return payload?.data
+}
+
+router.get('/scm/docs/import/columns', (_req: AuthRequest, res) => {
+  res.json({ code: 0, data: { doc_types: IMPORT_DOC_TYPES, columns: IMPORT_COLUMNS, max_rows: MAX_IMPORT_ROWS } })
+})
+
+function readImportBody(req: AuthRequest): { docType: string; rows: any[] } | { error: string } {
+  const docType = String(req.body?.doc_type || '')
+  const rows = req.body?.rows
+  if (!Array.isArray(rows) || !rows.length) return { error: '没有可导入的数据行' }
+  if (rows.length > MAX_IMPORT_ROWS) return { error: `一次最多导入 ${MAX_IMPORT_ROWS} 行，请拆分文件` }
+  return { docType, rows }
+}
+
+router.post('/scm/docs/import/validate', (req: AuthRequest, res) => {
+  const body = readImportBody(req)
+  if ('error' in body) return res.status(400).json({ code: 400, message: body.error })
+  const { docs, issues } = buildImportDocs(getDb(), asid(req), body.docType, body.rows)
+  res.json({ code: 0, data: {
+    doc_count: docs.length, line_count: docs.reduce((s, d) => s + d.lines.length, 0),
+    issues,
+    docs: docs.slice(0, 200).map(d => ({ group_no: d.group_no, doc_date: d.doc_date, partner_name: d.partner_name,
+      warehouse_code: d.warehouse_code, line_count: d.lines.length, total_qty: d.total_qty, total_amount: d.total_amount, rows: d.rows })),
+  } })
+})
+
+router.post('/scm/docs/import', operationLog('供应链单据批量导入', '供应链'), (req: AuthRequest, res) => {
+  const body = readImportBody(req)
+  if ('error' in body) return res.status(400).json({ code: 400, message: body.error })
+  const { docs, issues } = buildImportDocs(getDb(), asid(req), body.docType, body.rows)
+  if (issues.length && !req.body?.skip_invalid) {
+    return res.status(400).json({ code: 400, message: `存在 ${issues.length} 处校验问题，请修正后重新导入`, data: { issues } })
+  }
+  const created: any[] = []
+  const failed: Array<{ group_no: string; rows: number[]; message: string }> = []
+  for (const d of docs) {
+    try {
+      const data = invokeDocHandlerWithBody(createDocHandler, req, '', {
+        doc_type: d.doc_type, doc_date: d.doc_date || undefined, partner_code: d.partner_code,
+        warehouse_code: d.warehouse_code, remark: d.remark || null, lines: d.lines,
+      })
+      created.push({ id: data.id, doc_no: data.doc_no, group_no: d.group_no, total_amount: d.total_amount, rows: d.rows })
+    } catch (e: any) {
+      failed.push({ group_no: d.group_no, rows: d.rows, message: e?.message || '保存失败' })
+    }
+  }
+  res.json({ code: 0, data: { created, failed, issues } })
+})
+
+/**
+ * 逐张批量审核：每张单据独立事务，失败的回滚并汇总原因，不影响其它单据。
+ * 与 /scm/docs/batch-actions（整批原子、上限 30）互补，用于导入后大批量生效。
+ */
+router.post('/scm/docs/import/audit-batch', operationLog('供应链单据逐张批量审核', '供应链'), (req: AuthRequest, res) => {
+  const db = getDb(); const aid = asid(req)
+  const ids = Array.isArray(req.body?.ids) ? Array.from(new Set(req.body.ids.map((v: any) => String(v || '').trim()).filter(Boolean))) as string[] : []
+  if (!ids.length) return res.status(400).json({ code: 400, message: '至少选择一张单据' })
+  if (ids.length > 200) return res.status(400).json({ code: 400, message: '一次最多审核 200 张，请分批提交' })
+  const ph = ids.map(() => '?').join(',')
+  const docs = db.prepare(`SELECT id,doc_no,doc_type,status FROM scm_doc WHERE account_set_id=? AND id IN (${ph})`).all(aid, ...ids) as any[]
+  const byId = new Map(docs.map(d => [d.id, d]))
+  const succeeded: Array<{ id: string; doc_no: string }> = []
+  const failed: Array<{ id: string; doc_no: string; message: string }> = []
+  const body = { apply_item_default_warehouses: !!req.body?.apply_item_default_warehouses }
+  for (const id of ids) {
+    const doc = byId.get(id)
+    if (!doc) { failed.push({ id, doc_no: '', message: '单据不存在或不属于当前账套' }); continue }
+    if (!req.permissions?.includes('*')) {
+      const perm = CATEGORY_PERM[CODE_CATEGORY[doc.doc_type]]
+      if (!perm || !req.permissions?.includes(perm)) { failed.push({ id, doc_no: doc.doc_no, message: '无此业务域操作权限' }); continue }
+    }
+    if (doc.doc_type === 'MRP') { failed.push({ id, doc_no: doc.doc_no, message: 'MRP 计算单不支持此批量审核' }); continue }
+    if (doc.status === 'audited') { failed.push({ id, doc_no: doc.doc_no, message: '已审核，已跳过' }); continue }
+    try {
+      db.transaction(() => invokeDocHandlerWithBody(auditDocHandler, req, id, body))()
+      succeeded.push({ id, doc_no: doc.doc_no })
+    } catch (e: any) {
+      failed.push({ id, doc_no: doc.doc_no, message: e?.message || '审核失败' })
+    }
+  }
+  res.json({ code: 0, data: { succeeded, failed } })
 })
 
 // ══ 生产模块增强 Phase 1：工作中心 / 工艺路线 / 生产报工 ══════════════════════

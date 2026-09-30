@@ -96,7 +96,7 @@
           @navigate="handleNavigate"
         />
       </div>
-      <el-form :model="form" label-width="100px" size="small">
+      <el-form :model="form" label-width="100px" size="small" @keydown.ctrl.enter.prevent="!editId && !saving && handleSave(true)">
         <div class="form-sector">
           <div class="form-sector-title">资产基本信息</div>
           <el-row :gutter="16">
@@ -258,7 +258,8 @@
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="handleSave">确认保存</el-button>
+        <el-button v-if="!editId" :loading="saving" @click="handleSave(true)">保存并新增 (Ctrl+Enter)</el-button>
+        <el-button type="primary" :loading="saving" @click="handleSave()">确认保存</el-button>
       </template>
     </el-dialog>
 
@@ -387,6 +388,7 @@
 </template>
 
 <script setup lang="ts">
+import { todayStr } from '@/utils/format'
 import { confirmRenumberAfterDelete } from '@/composables/useRenumberPrompt'
 
 /** P1-20：变动 / 处置 / 盘点日期不得晚于当前月份（与后端同口径） */
@@ -428,7 +430,7 @@ const batchVisible = ref(false)
 const batchSubmitting = ref(false)
 const batchKind = ref<'dept' | 'status'>('dept')
 const batchForm = reactive({
-  change_date: new Date().toISOString().slice(0, 10),
+  change_date: todayStr(),
   dept_code: '',
   status_code: '',
   remark: '',
@@ -437,7 +439,7 @@ const batchForm = reactive({
 function openBatchChange(kind: 'dept' | 'status') {
   if (!selection.value.length) return ElMessage.warning('请先勾选要变动的资产')
   batchKind.value = kind
-  batchForm.change_date = new Date().toISOString().slice(0, 10)
+  batchForm.change_date = todayStr()
   batchForm.dept_code = ''
   batchForm.status_code = ''
   batchForm.remark = ''
@@ -570,6 +572,17 @@ async function handleQuery() {
 async function openAdd() {
   editId.value = null
   valueLockReason.value = null
+  await resetAddForm()
+  dialogVisible.value = true
+}
+
+/** 保存并新增时沿用的字段：同一批资产通常类别、用途、部门、折旧设置都一样，只需改编号 / 名称 / 原值 */
+const CARRY_OVER_KEYS = [
+  'category_code', 'purpose_code', 'dept_code', 'status_code', 'acquire_date', 'start_depr_date',
+  'depr_method', 'use_months', 'use_years', 'salvage_rate', 'generate_voucher', 'credit_account',
+] as const
+
+async function resetAddForm(carry?: Record<string, any>) {
   form.value = {
     original_value: 0,
     // AS-P0-1：残值率统一小数口径（0.05 表示 5%），与服务端/导入一致
@@ -582,7 +595,9 @@ async function openAdd() {
     generate_voucher: false,
     credit_account: '1001',
   } as any
-  dialogVisible.value = true
+  if (carry) {
+    for (const k of CARRY_OVER_KEYS) if (carry[k] !== undefined) (form.value as any)[k] = carry[k]
+  }
   // 自动生成资产编号（可手动修改）
   try {
     const res = await fixedAssetApi.getNextAssetNo()
@@ -663,7 +678,7 @@ function calcSalvage() {
   form.value.salvage_value = Math.round(ov * rate * 100) / 100
 }
 
-async function handleSave() {
+async function handleSave(keepOpen = false) {
   if (!form.value.asset_no || !form.value.asset_name) return ElMessage.warning('请填写资产编号和名称')
   if (!form.value.category_code) return ElMessage.warning('请选择资产类别')
   if (!form.value.purpose_code) return ElMessage.warning('请选择资产用途')
@@ -694,8 +709,14 @@ async function handleSave() {
         ElMessage.success('保存成功')
       }
     }
-    dialogVisible.value = false
-    handleQuery()
+    if (keepOpen && !editId.value) {
+      // 保存并新增：保留弹窗，沿用类别 / 用途 / 部门 / 折旧设置，清空编号、名称、原值
+      await resetAddForm({ ...form.value })
+      handleQuery()
+    } else {
+      dialogVisible.value = false
+      handleQuery()
+    }
   } finally {
     saving.value = false
   }
@@ -750,7 +771,7 @@ const disposePreviewGainLoss = computed(() => {
 
 function openDispose(row: AssetCard) {
   disposeAsset.value = row
-  const today = new Date().toISOString().slice(0, 10)
+  const today = todayStr()
   disposeForm.value = {
     change_type_code: '',
     scrap_date: today,

@@ -62,6 +62,14 @@
       </div>
     </div>
     <AccountScopeAlert />
+    <el-alert
+      v-if="directPostingParents.length"
+      type="error"
+      show-icon
+      :closable="false"
+      style="margin-bottom: 8px"
+      :title="`科目 ${directPostingParents.join('、')} 有下级科目，但凭证直接记在了它本身上，这部分金额未计入本表，合计可能借贷不平。请把相关凭证改记到末级科目。`"
+    />
 
     <div v-if="!initialLoaded && loading" class="skeleton-table">
       <div v-for="i in 8" :key="i" class="skeleton skeleton-row" />
@@ -273,6 +281,7 @@
 </template>
 
 <script setup lang="ts">
+import { todayStr } from '@/utils/format'
 import { ref, computed, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useDrillDownNavigate } from '@/composables/useDrillDownNavigate'
@@ -301,6 +310,9 @@ import { useRacedQuery } from '@/composables/useRacedQuery'
 const { drillDown } = useDrillDownNavigate()
 const { accountSetName } = storeToRefs(useUserStore())
 const list = ref<any[]>([])
+const directPostingParents = computed(() =>
+  list.value.filter(r => r.direct_posting_lost).map(r => `${r.account_code} ${r.account_name || ''}`.trim())
+)
 /**
  * 数据里出现过的最深级次。按级次过滤后接口只返回 ≤N 级，不能直接拿当前列表算「底层」，
  * 否则展开到 2 级时会被误判为已到底；页面默认按底层加载，首屏就能拿到真实深度。
@@ -595,7 +607,7 @@ async function exportData() {
   const dateRange =
     filters.value.start_date && filters.value.end_date
       ? `${filters.value.start_date}_${filters.value.end_date}`
-      : new Date().toISOString().split('T')[0]
+      : todayStr()
   const summaryRows = getSummaryAccountRows(list.value, accountLevel.value)
 
   await exportStyledTable({

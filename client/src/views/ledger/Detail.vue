@@ -282,6 +282,7 @@
 </template>
 
 <script setup lang="ts">
+import { todayStr } from '@/utils/format'
 import { monthEndDate } from '@/utils/monthEnd'
 import { ref, onMounted, onActivated, computed, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
@@ -856,7 +857,7 @@ async function handleBatchConfirm(accountIds: string[]) {
       const dateRange =
         filters.value.start_date && filters.value.end_date
           ? `${filters.value.start_date}_${filters.value.end_date}`
-          : new Date().toISOString().split('T')[0]
+          : todayStr()
       await exportStyledWorkbook(`明细账批量_${dateRange}.xlsx`, sheets)
       ElMessage.success(`已导出 ${sheets.length} 个科目`)
       batchDialogVisible.value = false
@@ -1171,7 +1172,7 @@ async function exportData() {
   const dateRange =
     filters.value.start_date && filters.value.end_date
       ? `${filters.value.start_date}_${filters.value.end_date}`
-      : new Date().toISOString().split('T')[0]
+      : todayStr()
 
   const subtitleParts = [
     account ? `${account.code} ${account.name}` : '',

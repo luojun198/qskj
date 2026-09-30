@@ -527,6 +527,10 @@ import {
   up as cashierJournalCoverIndexUp,
   down as cashierJournalCoverIndexDown,
 } from './migrations/20260925_cashier_journal_cover_index.js'
+import {
+  up as cashierJournalAuxUp,
+  down as cashierJournalAuxDown,
+} from './migrations/20260930_cashier_journal_aux.js'
 
 /**
  * 迁移示例：添加新字段
@@ -2362,5 +2366,11 @@ export const migrations: Migration[] = [
     name: 'cashier_journal_cover_index',
     up: cashierJournalCoverIndexUp,
     down: cashierJournalCoverIndexDown,
+  },
+  {
+    version: 153,
+    name: 'cashier_journal_aux',
+    up: cashierJournalAuxUp,
+    down: cashierJournalAuxDown,
   },
 ]

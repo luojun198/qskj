@@ -110,6 +110,7 @@
 </template>
 
 <script setup lang="ts">
+import { excelDateToYmd } from '@/utils/format'
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
@@ -208,7 +209,7 @@ async function onFilePicked(file: any) {
     keyByIndex.forEach((key, i) => {
       if (!key) return
       const v = arr[i]
-      obj[key] = v instanceof Date ? v.toISOString().slice(0, 10) : v
+      obj[key] = v instanceof Date ? excelDateToYmd(v) : v
     })
     // 整行为空则跳过（Excel 常见的尾部空行）
     if (Object.values(obj).every(v => v == null || String(v).trim() === '')) continue

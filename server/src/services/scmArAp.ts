@@ -8,6 +8,7 @@
  * 采购/销售发票（RP/RS）审核时：有来源单据的校正该单暂估额（不新增，避免双计），
  *   独立录入的新挂一条。见 applyInvoice / reverseInvoice。
  */
+import { todayStr } from '../utils/localDate.js'
 import type Database from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
 import { assertCashierPeriodOpen, normalizeBizDate, parseBizDate } from './cashierPeriodClosing.js'
@@ -72,7 +73,7 @@ function assertCashierWritable(db: Database.Database, accountSetId: string, docD
 
 /** 到期日：单据显式 due_date 优先；否则 doc_date + 账期天数（单据 credit_days 优先，其次往来单位 credit_days）。UTC 计算避免时区漂移。 */
 export function computeDueDate(doc: any, partner: any): string {
-  const base = String(doc?.doc_date || new Date().toISOString().slice(0, 10)).slice(0, 10)
+  const base = String(doc?.doc_date || todayStr()).slice(0, 10)
   if (doc?.due_date) return String(doc.due_date).slice(0, 10)
   const days = Number(doc?.credit_days) || Number(partner?.credit_days) || 0
   if (!days) return base
@@ -640,7 +641,7 @@ export function verifyArAp(db: Database.Database, accountSetId: string, params: 
     (id, account_set_id, partner_code, verify_no, verify_date, in_log_id, out_log_id, amount, created_by, created_at)
     VALUES (?,?,?,?,?,?,?,?,?, datetime('now'))`)
   const verifyNo = nextVerifyNo(db, accountSetId)
-  const verifyDate = params.verify_date || new Date().toISOString().slice(0, 10)
+  const verifyDate = params.verify_date || todayStr()
   const run = db.transaction(() => {
     for (const m of valid) {
       const amt = r2(m.amount)

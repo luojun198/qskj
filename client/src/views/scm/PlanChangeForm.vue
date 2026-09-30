@@ -103,6 +103,7 @@
 </template>
 
 <script setup lang="ts">
+import { todayStr } from '@/utils/format'
 import { computed, defineAsyncComponent, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -119,7 +120,7 @@ const plan = ref<any>(null); const change = ref<any>(null)
 const warehouses = ref<any[]>([])
 const issued = ref<Record<string, number>>({})
 const reportedProducts = ref<Set<string>>(new Set())
-const form = ref({ change_date: new Date().toISOString().slice(0, 10), reason: '', remark: '' })
+const form = ref({ change_date: todayStr(), reason: '', remark: '' })
 const head = ref<any>({})
 const products = ref<any[]>([])
 const currentProduct = ref<any>(null)

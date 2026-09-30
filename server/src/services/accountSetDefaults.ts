@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from 'uuid'
 import type Database from 'better-sqlite3'
 import { ensureDefaultPrintTemplateForAccountSet } from './printTemplateDefaults.js'
+import { ASSET_ACCOUNT_SPECS, descendToLeaf, resolveAssetAccount } from './assetAccountResolver.js'
 
 const START_DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 
@@ -319,17 +320,14 @@ export function ensureBaseCurrency(
  */
 export function resolveDeprExpenseAccount(db: Database.Database, accountSetId: string, parentCode: string): string {
   if (!hasTable(db, 'accounts')) return parentCode
-  const children = db.prepare(
-    "SELECT code, name FROM accounts WHERE account_set_id=? AND code LIKE ? AND code <> ? ORDER BY code"
-  ).all(accountSetId, `${parentCode}%`, parentCode) as Array<{ code: string; name: string }>
-  if (children.length === 0) return parentCode
-  const codes = new Set(children.map(c => c.code))
-  const leaves = children.filter(c => ![...codes].some(o => o !== c.code && o.startsWith(c.code)))
-  const named = leaves.find(c => /折旧/.test(c.name || ''))
-  return (named || leaves[0] || children[0]).code
+  return descendToLeaf(db, accountSetId, parentCode, ['折旧'])
 }
 
-export function ensureDefaultAssetDicts(db: Database.Database, accountSetId: string, specificType?: string) {
+/** 一键预设的结果：未能在本账套找到的科目，由界面提示用户手工设置 */
+export interface DefaultAssetDictsResult { unresolved: string[] }
+
+export function ensureDefaultAssetDicts(db: Database.Database, accountSetId: string, specificType?: string): DefaultAssetDictsResult {
+  const unresolved = new Set<string>()
   // 1. 预设资产状态
   if ((!specificType || specificType === 'status') && hasTable(db, 'fixed_asset_status')) {
     const statusCount = (db.prepare('SELECT COUNT(*) as c FROM fixed_asset_status WHERE account_set_id=?').get(accountSetId) as any).c
@@ -364,13 +362,31 @@ export function ensureDefaultAssetDicts(db: Database.Database, accountSetId: str
   if ((!specificType || specificType === 'category') && hasTable(db, 'fixed_asset_category')) {
     const catCount = (db.prepare('SELECT COUNT(*) as c FROM fixed_asset_category WHERE account_set_id=?').get(accountSetId) as any).c
     if (catCount === 0) {
-      const insCat = db.prepare('INSERT INTO fixed_asset_category (id, account_set_id, code, name, salvage_rate, account_code, depr_account_code, clearing_account_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      const withImpairment = !!db.prepare("SELECT 1 FROM pragma_table_info('fixed_asset_category') WHERE name='impairment_account_code'").get()
+      const insCat = db.prepare(
+        `INSERT INTO fixed_asset_category (id, account_set_id, code, name, salvage_rate, account_code, depr_account_code, clearing_account_code${withImpairment ? ', impairment_account_code' : ''}) VALUES (?, ?, ?, ?, ?, ?, ?, ?${withImpairment ? ', ?' : ''})`
+      )
       // AS-P0-1：残值率统一小数口径（5% = 0.05），此前预设写百分数 5，会被消费端当小数乘出 5 倍残值
-      insCat.run(uuidv4(), accountSetId, '01', '房屋及建筑物', 0.05, '1601', '1602', '1606')
-      insCat.run(uuidv4(), accountSetId, '02', '机器设备', 0.05, '1601', '1602', '1606')
-      insCat.run(uuidv4(), accountSetId, '03', '运输工具', 0.05, '1601', '1602', '1606')
-      insCat.run(uuidv4(), accountSetId, '04', '电子设备', 0.05, '1601', '1602', '1606')
-      insCat.run(uuidv4(), accountSetId, '05', '办公家具', 0.05, '1601', '1602', '1606')
+      // 科目一律按「名称」定位根科目再下探到最底层末级：不同会计制度编码不同，不能写死 1601/1602/1606；
+      // 找不到就留空并提示，不写不存在的编码。
+      const pick = (label: string, spec: Parameters<typeof resolveAssetAccount>[2]): string | null => {
+        const r = resolveAssetAccount(db, accountSetId, spec)
+        if (!r) unresolved.add(label)
+        return r ? r.code : null
+      }
+      const cats: Array<[string, string, string[]]> = [
+        ['01', '房屋及建筑物', ['房屋', '建筑']], ['02', '机器设备', ['机器']], ['03', '运输工具', ['运输']],
+        ['04', '电子设备', ['电子', '一般设备', '通用', '办公设备']], ['05', '办公家具', ['家具', '办公', '其它', '其他']],
+      ]
+      const accum = pick('累计折旧科目', ASSET_ACCOUNT_SPECS.accum)
+      const clearing = pick('固定资产清理科目', ASSET_ACCOUNT_SPECS.clearing)
+      const impairment = pick('固定资产减值准备科目', ASSET_ACCOUNT_SPECS.impairment)
+      for (const [code, name, hints] of cats) {
+        const original = pick('固定资产科目', ASSET_ACCOUNT_SPECS.original(hints))
+        const args: any[] = [uuidv4(), accountSetId, code, name, 0.05, original, accum, clearing]
+        if (withImpairment) args.push(impairment)
+        insCat.run(...args)
+      }
     }
   }
 
@@ -380,10 +396,15 @@ export function ensureDefaultAssetDicts(db: Database.Database, accountSetId: str
     if (purpCount === 0) {
       const insPurp = db.prepare('INSERT INTO fixed_asset_purpose (id, account_set_id, code, name, expense_account) VALUES (?, ?, ?, ?, ?)')
       // 管理用 → 管理费用下的折旧末级；经营用 → 销售费用下的折旧末级；生产用 → 制造费用下的折旧末级
-      // （此前配的是父科目，且生产用错配 5001 生产成本）
-      insPurp.run(uuidv4(), accountSetId, '01', '管理用', resolveDeprExpenseAccount(db, accountSetId, '6602'))
-      insPurp.run(uuidv4(), accountSetId, '02', '经营用', resolveDeprExpenseAccount(db, accountSetId, '6601'))
-      insPurp.run(uuidv4(), accountSetId, '03', '生产用', resolveDeprExpenseAccount(db, accountSetId, '5101'))
+      // 按科目名称定位（事业单位制度为「单位管理费用」等），下探到最底层；找不到留空
+      const expense = (label: string, names: string[], codes: string[]): string | null => {
+        const r = resolveAssetAccount(db, accountSetId, ASSET_ACCOUNT_SPECS.depreciationExpense(names, codes))
+        if (!r) unresolved.add(label)
+        return r ? r.code : null
+      }
+      insPurp.run(uuidv4(), accountSetId, '01', '管理用', expense('管理用折旧费用科目', ['管理费用', '单位管理费用'], ['6602']))
+      insPurp.run(uuidv4(), accountSetId, '02', '经营用', expense('经营用折旧费用科目', ['销售费用', '业务活动费用'], ['6601']))
+      insPurp.run(uuidv4(), accountSetId, '03', '生产用', expense('生产用折旧费用科目', ['制造费用'], ['5101']))
     }
   }
   // 5. 预设使用部门
@@ -400,4 +421,5 @@ export function ensureDefaultAssetDicts(db: Database.Database, accountSetId: str
       insDept.run(uuidv4(), accountSetId, '07', '采购部')
     }
   }
+  return { unresolved: [...unresolved] }
 }

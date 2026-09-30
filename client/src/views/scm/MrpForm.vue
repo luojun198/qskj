@@ -123,6 +123,7 @@
 </template>
 
 <script setup lang="ts">
+import { todayStr } from '@/utils/format'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -142,7 +143,7 @@ const myTabKey = tabsStore.activeKey
 const isNew=computed(()=>route.name==='ScmMrpNew'), isView=computed(()=>route.name==='ScmMrpView')
 const editable=computed(()=>isNew.value || (!isView.value && doc.value.status==='draft'))
 const loading=ref(false), saving=ref(false), calculating=ref(false), optionsLoading=ref(false)
-const doc=ref<any>({ doc_date:new Date().toISOString().slice(0,10), status:'draft', remark:'', field_values:{} })
+const doc=ref<any>({ doc_date:todayStr(), status:'draft', remark:'', field_values:{} })
 const includeSafetyStock=ref(true), showAdjustments=ref(false), demandMultiplier=ref(100), adjustmentsDirty=ref(false), itemTargetQty=ref<Record<string,number>>({}), sourceRefs=ref<MrpSourceRef[]>([]), sourceSummaries=ref<MrpSourceSummary[]>([]), sources=ref<Array<MrpSourceDetail & { extra_qty: number }>>([]), lines=ref<MrpResultLine[]>([])
 const shortageDoc=ref<any>(null), sourceKind=ref<MrpSourceKind>('sales_order'), sourceKeyword=ref(''), sourceOptions=ref<MrpSourceOption[]>([])
 const selectedLabels=ref(new Map<string,string>())

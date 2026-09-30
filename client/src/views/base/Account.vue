@@ -1,5 +1,17 @@
 <template>
   <div class="page account-page">
+    <el-alert
+      v-if="refIssueCount > 0"
+      type="error"
+      show-icon
+      :closable="false"
+      class="ref-alert"
+    >
+      <template #title>
+        有 {{ refIssueCount }} 项设置（资产类别、系统参数、物料/往来科目等）指向了有下级的科目，生成凭证时会出错。
+        <el-button link type="primary" @click="router.push('/base/account-reference-check')">查看并一键修复</el-button>
+      </template>
+    </el-alert>
     <div class="page-header account-header">
       <div class="account-title">
         <h3>会计科目</h3>
@@ -350,6 +362,7 @@
 
 <script setup lang="ts">
 import { ref, computed, shallowRef, onMounted, onActivated, onBeforeUnmount, nextTick } from 'vue'
+import { useRouter } from 'vue-router'
 import type { UploadFile } from 'element-plus'
 import {
   Upload,
@@ -380,7 +393,7 @@ import { aggregateImportIssuesAsync } from '@/utils/spreadsheetImportReport'
 import { yieldToMain } from '@/utils/asyncChunk'
 import { useAccountTree } from '@/composables/useAccountTree'
 import { useAccountForm } from '@/composables/useAccountForm'
-import { showSuccess, showError, showOperationError } from '@/composables/useMessage'
+import { showSuccess, showError, showInfo, showOperationError } from '@/composables/useMessage'
 import { useDeleteConfirm } from '@/composables/useConfirm'
 import { useColumnWidthMemory } from '@/composables/useColumnWidthMemory'
 import { useOperationHistory } from '@/composables/useOperationHistory'
@@ -964,8 +977,12 @@ async function handleSave(options?: { keepOpen?: boolean }) {
       payload.level = expectedLevel
     }
     if (dialogType.value === 'add') {
-      await request.post('/base/accounts', payload)
+      const createRes: any = await request.post('/base/accounts', payload)
       showSuccess('科目新增成功')
+      const repointed = createRes?.data?.repointed
+      if (repointed?.total) {
+        showInfo(`原指向上级科目的 ${repointed.total} 项设置已自动改指 ${repointed.to}（${repointed.items.map((i: any) => i.label).slice(0, 3).join('、')}${repointed.items.length > 3 ? ' 等' : ''}）`, 6000)
+      }
       addRecord('create', '会计科目', `新增科目：${form.value.code} ${form.value.name}`)
       useBaseDataStore().invalidate()
       await fetchData()
@@ -1342,7 +1359,21 @@ async function handleTaskCompleted() {
   await fetchData()
 }
 
-onMounted(fetchData)
+const router = useRouter()
+const refIssueCount = ref(0)
+async function loadRefIssueCount() {
+  try {
+    const res: any = await request.get('/base/accounts/reference-check', { skipErrorToast: true } as any)
+    refIssueCount.value = Number(res?.data?.count || 0)
+  } catch {
+    refIssueCount.value = 0
+  }
+}
+
+onMounted(() => {
+  void fetchData()
+  void loadRefIssueCount()
+})
 onActivated(() => load())
 </script>
 
@@ -1765,4 +1796,5 @@ onActivated(() => load())
 .account-quick-filter-popper .el-select-dropdown__item.is-selected:hover {
   background: rgba(0, 122, 255, 0.12) !important;
 }
+.ref-alert { margin-bottom: 8px; }
 </style>

@@ -242,17 +242,28 @@ export function resolveAccounts(
   codes: Array<string | null | undefined>,
   scene: string
 ): Map<string, ResolvedAccount> {
+  const hasParentCol = (db.prepare("SELECT 1 AS ok FROM pragma_table_info('accounts') WHERE name='parent_id'").get() as any)?.ok === 1
   const stmt = db.prepare(
-    'SELECT id, code, name FROM accounts WHERE account_set_id=? AND code=? LIMIT 1'
+    `SELECT id, code, name,
+            ${hasParentCol ? 'EXISTS (SELECT 1 FROM accounts c WHERE c.parent_id = accounts.id)' : '0'} AS has_child
+     FROM accounts WHERE account_set_id=? AND code=? LIMIT 1`
   )
   const map = new Map<string, ResolvedAccount>()
   const missing: string[] = []
+  const nonLeaf: string[] = []
   for (const raw of codes) {
     const code = (raw || '').trim()
     if (!code || map.has(code)) continue
-    const row = stmt.get(accountSetId, code) as ResolvedAccount | undefined
-    if (row) map.set(code, row)
-    else missing.push(code)
+    const row = stmt.get(accountSetId, code) as (ResolvedAccount & { has_child: number }) | undefined
+    if (!row) missing.push(code)
+    else if (row.has_child) nonLeaf.push(`${row.code} ${row.name}`)
+    else map.set(code, { id: row.id, code: row.code, name: row.name })
+  }
+  // 非末级科目不能直接记账：余额表按末级汇总父科目，直接记在父科目上的金额会被丢掉，导致试算不平
+  if (nonLeaf.length > 0) {
+    throw new Error(
+      `以下科目有下级科目，不能直接记账，无法生成${scene}凭证：${[...new Set(nonLeaf)].join('、')}。请在「资产类别」中改用末级科目。`
+    )
   }
   if (missing.length > 0) {
     throw new Error(

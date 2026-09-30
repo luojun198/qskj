@@ -233,6 +233,7 @@
 </template>
 
 <script setup lang="ts">
+import { todayStr } from '@/utils/format'
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Plus, Back } from '@element-plus/icons-vue'
@@ -285,7 +286,7 @@ const assetLoading = ref(false)
 const pickedAsset = ref<AssetCard | null>(null)
 const pickedOutstanding = ref(false)
 
-const today = () => new Date().toISOString().slice(0, 10)
+const today = () => todayStr()
 
 const form = reactive({
   asset_id: '',

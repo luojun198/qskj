@@ -49,7 +49,7 @@ describe('AccountService', () => {
         id TEXT PRIMARY KEY, account_id TEXT, account_code TEXT, account_name TEXT
       );
       CREATE TABLE account_balances (
-        id TEXT PRIMARY KEY, account_set_id TEXT, account_id TEXT, year INTEGER, period INTEGER
+        id TEXT PRIMARY KEY, account_set_id TEXT, account_id TEXT, account_code TEXT, account_name TEXT, year INTEGER, period INTEGER
       );
     `)
 

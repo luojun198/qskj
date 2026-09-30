@@ -113,7 +113,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onActivated, onMounted, ref } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import type { FormInstance, FormRules } from 'element-plus'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -266,7 +266,37 @@ onBeforeRouteLeave(async () => {
   } catch { return false }
 })
 
-onMounted(initialize)
+// 页面被标签页 keep-alive 缓存：再次进入时不会重新挂载，会残留上次填写 / 保存后的旧表单。
+// 这里在被激活时判断「是不是一次新的进入」——新增页带着新的一次性标记（query._n）、编辑的类别变了、
+// 或上次已保存离开——是则重新初始化；仅是切换标签回来（标记不变）则保留未保存的输入。
+let lastNonce = ''
+let loadedKey = ''
+let firstActivation = true
+
+function currentKey() {
+  return isEdit.value ? `edit:${categoryId.value}` : 'new'
+}
+
+async function startFresh() {
+  allowLeave.value = false
+  lastNonce = String(route.query._n || '')
+  loadedKey = currentKey()
+  await initialize()
+  formRef.value?.clearValidate()
+}
+
+onMounted(() => {
+  lastNonce = String(route.query._n || '')
+  loadedKey = currentKey()
+  void initialize()
+})
+
+onActivated(() => {
+  // 首次挂载时 onActivated 也会触发，已由 onMounted 初始化，跳过
+  if (firstActivation) { firstActivation = false; return }
+  const nonce = String(route.query._n || '')
+  if (allowLeave.value || nonce !== lastNonce || loadedKey !== currentKey()) void startFresh()
+})
 </script>
 
 <style scoped>

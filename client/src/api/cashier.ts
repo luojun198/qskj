@@ -82,7 +82,12 @@ export interface JournalRow {
   voucher_no: number | null
   balance?: number
   base_balance?: number
+  /** 对方科目名称 / 按辅助类别拆开的值 { 类别id: 项目名 }（页面一个类别一列） */
+  counter_account_name?: string | null
+  aux_values?: Record<string, string>
 }
+
+export interface AuxColumn { id: string; code: string; name: string }
 
 export interface JournalResult {
   opening: number
@@ -98,6 +103,12 @@ export interface JournalResult {
   total?: number
   page?: number
   pageSize?: number
+  /** 当前筛选结果里出现过的辅助类别，按类别动态生成列 */
+  aux_columns?: AuxColumn[]
+  /** 带表头明细筛选时：rows / total 只含命中行，balance 仍是完整流水里的真实余额；下面是命中行的合计 */
+  filtered?: boolean
+  filteredTotalDebit?: number
+  filteredTotalCredit?: number
   /** 评审 P2：同科目同区间、币种与科目核算币种不一致而未显示的存量行数 */
   otherCurrencyCount?: number
 }
@@ -183,6 +194,75 @@ export interface CashierPeriodMonth {
   canClose: boolean
   canReopen: boolean
   blockReason: string | null
+}
+
+// ── 出纳报表类型 ──────────────────────────────────────────────────────
+export interface CashierBalanceRow {
+  account_code: string
+  account_name: string
+  currency: string
+  opening: number
+  income: number
+  expense: number
+  closing: number
+  income_base: number
+  expense_base: number
+  closing_base: number
+  base_estimated: boolean
+  count: number
+  unreconciled_count: number
+  unreconciled_net: number
+}
+export interface CashierBalanceReport {
+  base_currency: string
+  currency_mode: 'single' | 'all'
+  rows: CashierBalanceRow[]
+  totals: Array<{ currency: string; opening: number; income: number; expense: number; closing: number; count: number }>
+  total_base: { income: number; expense: number; closing: number }
+  empty_accounts: number
+}
+export interface CashierSummaryNode {
+  level: number
+  dimension: string
+  key: string
+  name: string
+  income: number
+  expense: number
+  net: number
+  count: number
+  income_ratio: number
+  expense_ratio: number
+  path: Array<{ dimension: string; key: string }>
+  children?: CashierSummaryNode[]
+}
+export interface CashierSummaryReport {
+  base_currency: string
+  currency_mode: 'single' | 'all'
+  group_by: string[]
+  root: CashierSummaryNode
+  truncated: boolean
+}
+export interface CashierReportFilterMeta {
+  aux_categories: Array<{ id: string; code: string; name: string; journal_count: number; item_count: number }>
+  settle_types: Array<{ code: string; name: string; count: number }>
+  counter_accounts: Array<{ code: string; name: string; count: number }>
+}
+export interface CashierSearchRow extends JournalRow {
+  account_name?: string
+  base_debit?: number
+  base_credit?: number
+  settle_type_name?: string | null
+  counter_account_name?: string | null
+  aux_text?: string | null
+  voucher_status?: string | null
+}
+export interface CashierSearchResult {
+  list: CashierSearchRow[]
+  total: number
+  totals: { income: number; expense: number; count: number }
+  currency_mode: 'single' | 'all'
+  base_currency: string
+  aux_columns: AuxColumn[]
 }
 
 export const cashierApi = {
@@ -324,7 +404,7 @@ export const cashierApi = {
 
   // 出纳单据综合查询
   searchJournals: (params: any) =>
-    request.get<{ list: JournalRow[]; total: number }>('/cashier/journal/search', { params }),
+    request.get<CashierSearchResult>('/cashier/journal/search', { params }),
 
   // 出纳日报 / 账户余额表
   getDailyReport: (start_date: string, end_date: string, currency?: string) =>
@@ -333,6 +413,16 @@ export const cashierApi = {
   // 资金收支汇总表
   getCashFlowSummary: (params: { start_date?: string; end_date?: string; currency?: string; group_by: 'counter_account' | 'settle_type' | 'month' }) =>
     request.get<any[]>('/cashier/summary-report', { params }),
+
+  // ── 出纳报表（统一过滤；辅助项目 = 流水对方科目的辅助核算） ─────────────────────
+  reportBalance: (data: Record<string, unknown>) =>
+    request.post<CashierBalanceReport>('/cashier/report/balance', data),
+  reportSummary: (data: Record<string, unknown>) =>
+    request.post<CashierSummaryReport>('/cashier/report/summary', data, { skipErrorToast: true }),
+  reportAuxSummary: (data: Record<string, unknown>) =>
+    request.post<CashierSummaryReport>('/cashier/report/aux-summary', data, { skipErrorToast: true }),
+  reportFilterMeta: () =>
+    request.get<CashierReportFilterMeta>('/cashier/report/filter-meta'),
 
   // 出纳初始化（FIX-264：已记账出纳凭证自动反记账后删除、出纳结账月份一并清除）
   resetPreview: () =>

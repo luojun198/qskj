@@ -145,6 +145,7 @@
 </template>
 
 <script setup lang="ts">
+import { todayStr } from '@/utils/format'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, Plus } from '@element-plus/icons-vue'
@@ -160,7 +161,7 @@ const loading = ref(false)
 const saving = ref(false)
 const plans = ref<any[]>([])
 const form = reactive<any>({
-  qc_no: '', qc_type: 'IQC', qc_date: new Date().toISOString().slice(0, 10), result: 'pass',
+  qc_no: '', qc_type: 'IQC', qc_date: todayStr(), result: 'pass',
   source_doc_type: '', source_doc_id: '', source_doc_no: '', inspector: '', remark: '', status: 'draft', lines: [],
 })
 

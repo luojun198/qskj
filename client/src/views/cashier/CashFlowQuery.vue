@@ -27,16 +27,67 @@
       <span>本期收入：<b class="debit">{{ fmt(journalResult.totalDebit) }}</b></span>
       <span>本期支出：<b class="credit">{{ fmt(journalResult.totalCredit) }}</b></span>
       <span>期末余额：<b>{{ fmt(journalResult.closing) }}</b></span>
+      <template v-if="journalResult.filtered">
+        <el-divider direction="vertical" />
+        <span class="filtered-tip">
+          已筛选 {{ journalResult.total }} 笔：收入 <b class="debit">{{ fmt(journalResult.filteredTotalDebit ?? 0) }}</b>
+          支出 <b class="credit">{{ fmt(journalResult.filteredTotalCredit ?? 0) }}</b>
+          （余额列为完整流水里的真实余额）
+        </span>
+      </template>
+      <el-button v-if="detailCount" link type="primary" @click="clearDetail">已筛选 {{ detailCount }} 项 · 清除</el-button>
     </div>
 
     <!-- 流水表格 -->
     <div ref="tableContainerRef" class="table-container">
       <el-table ref="tableRef" :data="rows" :height="tableHeight" border stripe size="small" class="compact-data-table" :row-class-name="rowClassName" @header-dragend="onDragEnd">
         <el-table-column label="日期" prop="biz_date" :width="cw('biz_date', 100)" />
-        <el-table-column label="摘要" prop="summary" :width="cw('summary', 140)" show-overflow-tooltip />
-        <el-table-column label="结算方式" prop="settle_type" :width="cw('settle_type', 90)" />
-        <el-table-column label="票据号" prop="bill_no" :width="cw('bill_no', 110)" show-overflow-tooltip />
-        <el-table-column label="对方单位" prop="counter_unit" :width="cw('counter_unit', 120)" show-overflow-tooltip />
+        <el-table-column label="摘要" prop="summary" :width="cw('summary', 140)" show-overflow-tooltip>
+          <template #header>
+            <CashierHeaderFilter label="摘要" kind="text"
+              :model-value="detail.summary" @update:model-value="(v: any) => setDetail({ summary: v })" @change="handleSearch" />
+          </template>
+        </el-table-column>
+        <el-table-column label="结算方式" prop="settle_type" :width="cw('settle_type', 90)">
+          <template #header>
+            <CashierHeaderFilter label="结算方式" kind="options" :options="settleOptions"
+              :model-value="detail.settleTypes" @update:model-value="(v: any) => setDetail({ settleTypes: v })" @change="handleSearch" />
+          </template>
+        </el-table-column>
+        <el-table-column label="票据号" prop="bill_no" :width="cw('bill_no', 110)" show-overflow-tooltip>
+          <template #header>
+            <CashierHeaderFilter label="票据号" kind="text"
+              :model-value="detail.billNo" @update:model-value="(v: any) => setDetail({ billNo: v })" @change="handleSearch" />
+          </template>
+        </el-table-column>
+        <el-table-column label="对方单位" prop="counter_unit" :width="cw('counter_unit', 120)" show-overflow-tooltip>
+          <template #header>
+            <CashierHeaderFilter label="对方单位" kind="text"
+              :model-value="detail.counterUnit" @update:model-value="(v: any) => setDetail({ counterUnit: v })" @change="handleSearch" />
+          </template>
+        </el-table-column>
+        <el-table-column label="对方科目" prop="counter_account" :width="cw('counter_account', 150)" show-overflow-tooltip>
+          <template #header>
+            <CashierHeaderFilter label="对方科目" kind="options" :options="counterOptions"
+              :model-value="detail.counterAccounts" @update:model-value="(v: any) => setDetail({ counterAccounts: v })" @change="handleSearch" />
+          </template>
+          <template #default="{ row }">{{ row.counter_account ? `${row.counter_account} ${row.counter_account_name || ''}` : '' }}</template>
+        </el-table-column>
+        <!-- 辅助项目按类别动态拆列（部门一列、人员一列…）；列取自当前筛选结果里出现过的类别 -->
+        <el-table-column
+          v-for="col in auxColumns"
+          :key="`aux_${col.id}`"
+          :label="col.name"
+          :column-key="`aux_${col.id}`"
+          :width="cw(`aux_${col.id}`, 110)"
+          show-overflow-tooltip
+        >
+          <template #header>
+            <CashierHeaderFilter :label="col.name" kind="remote" :loader="(kw: string) => loadAuxItemOptions(col.id, kw)"
+              :model-value="auxItemIdsOf(detail, col.id)" @update:model-value="(v: any) => setDetail(withAuxItemIds(detail, col.id, v))" @change="handleSearch" />
+          </template>
+          <template #default="{ row }">{{ row.aux_values?.[col.id] || '' }}</template>
+        </el-table-column>
         <el-table-column label="借方(收入)" prop="debit" :width="cw('debit', 120)" align="right">
           <template #default="{ row }"><span v-if="row.debit" class="debit">{{ fmt(row.debit) }}</span></template>
         </el-table-column>
@@ -46,12 +97,20 @@
         <el-table-column label="余额" prop="balance" :width="cw('balance', 120)" align="right">
           <template #default="{ row }">{{ fmt(row.balance ?? 0) }}</template>
         </el-table-column>
-        <el-table-column label="已对账" :width="cw('reconciled', 70)" align="center">
+        <el-table-column label="已对账" :width="cw('reconciled', 80)" align="center">
+          <template #header>
+            <CashierHeaderFilter label="已对账" kind="options" :multiple="false" :options="reconcileOptions"
+              :model-value="detail.reconciled" @update:model-value="(v: any) => setDetail({ reconciled: v === undefined || v === '' ? undefined : Number(v) as 0 | 1 })" @change="handleSearch" />
+          </template>
           <template #default="{ row }">
             <el-icon v-if="row.reconciled" color="#67c23a"><CircleCheck /></el-icon>
           </template>
         </el-table-column>
         <el-table-column label="关联凭证" :width="cw('voucher_no', 110)">
+          <template #header>
+            <CashierHeaderFilter label="关联凭证" kind="options" :options="voucherOptions"
+              :model-value="detail.voucherStatus" @update:model-value="(v: any) => setDetail({ voucherStatus: v })" @change="handleSearch" />
+          </template>
           <template #default="{ row }">
             <span v-if="row.voucher_no">
               {{ row.voucher_year }}-{{ String(row.voucher_month).padStart(2,'0') }} #{{ row.voucher_no }}
@@ -85,6 +144,18 @@ import { cashierApi, type JournalResult } from '@/api/cashier'
 import { useFillHeightTable } from '@/composables/useFillHeightTable'
 import { useListColumnWidth } from '@/composables/useColumnWidthMemory'
 import FilterClearButton from '@/components/common/FilterClearButton.vue'
+import CashierHeaderFilter from '@/components/cashier/CashierHeaderFilter.vue'
+import { loadAuxItemOptions } from '@/composables/useCashierHeaderFilters'
+import {
+  VOUCHER_STATUS_OPTIONS,
+  auxItemIdsOf,
+  defaultCashierFilter,
+  journalDetailCount,
+  toJournalDetailParams,
+  toReportPayload,
+  withAuxItemIds,
+  type CashierReportFilterState,
+} from '@/utils/cashierReportFilter'
 import { useFilterClear } from '@/composables/useFilterClear'
 import { exportStyledTableViaSource, type ExportColumnDef } from '@/utils/exportStyledExcel'
 import { useRoute } from 'vue-router'
@@ -99,6 +170,19 @@ const accounts = ref<{ code: string; name: string; is_cash: number; is_bank: num
 const cashAccounts = computed(() => accounts.value.filter(a => a.is_cash))
 const bankAccounts = computed(() => accounts.value.filter(a => a.is_bank && !a.is_cash))
 const journalResult = ref<JournalResult | null>(null)
+const auxColumns = computed(() => journalResult.value?.aux_columns ?? [])
+
+// ── 表头明细筛选：服务端筛选全部结果；逐行余额仍是完整流水里的真实余额 ──
+const detail = ref<CashierReportFilterState>(defaultCashierFilter())
+const detailCount = computed(() => journalDetailCount(detail.value))
+function setDetail(part: Partial<CashierReportFilterState>) { detail.value = { ...detail.value, ...part } }
+function clearDetail() { detail.value = defaultCashierFilter(); handleSearch() }
+const settleTypes = ref<Array<{ code: string; name: string }>>([])
+const counterAccountMeta = ref<Array<{ code: string; name: string }>>([])
+const settleOptions = computed(() => settleTypes.value.map(t => ({ value: t.code, label: t.name })))
+const counterOptions = computed(() => counterAccountMeta.value.map(a => ({ value: a.code, label: `${a.code} ${a.name}` })))
+const reconcileOptions = [{ value: 1, label: '已对账' }, { value: 0, label: '未对账' }]
+const voucherOptions = VOUCHER_STATUS_OPTIONS.map(o => ({ value: o.value as string, label: o.label }))
 const page = ref(1)
 const pageSize = ref(100)
 const rows = computed(() => {
@@ -133,6 +217,7 @@ const { clearFilters } = useFilterClear([filters])
 function handleClearFilters() {
   const currentAccount = filters.value.account_code || accounts.value[0]?.code || ''
   clearFilters()
+  detail.value = defaultCashierFilter()
   filters.value.account_code = currentAccount
   filters.value.currency = 'RMB'
   handleSearch()
@@ -141,6 +226,14 @@ function handleClearFilters() {
 const fmt = (v: number) => v === 0 ? '0.00' : v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
 onMounted(async () => {
+  // 表头筛选的选项：结算方式字典 + 流水里出现过的结算方式 / 对方科目
+  void Promise.all([cashierApi.getSettleTypes().catch(() => null), cashierApi.reportFilterMeta().catch(() => null)]).then(([st, meta]) => {
+    const dict = st?.code === 0 ? (st.data as any[]) : []
+    const known = new Set(dict.map((t: any) => t.code))
+    const extra = meta?.code === 0 ? meta.data.settle_types.filter(t => t.code && !known.has(t.code)) : []
+    settleTypes.value = [...dict, ...extra].map((t: any) => ({ code: t.code, name: t.name }))
+    if (meta?.code === 0) counterAccountMeta.value = meta.data.counter_accounts
+  })
   const res = await cashierApi.getAccounts()
   const curRes = await cashierApi.getCurrencies().catch(() => null)
   if (curRes && curRes.code === 0 && Array.isArray(curRes.data) && curRes.data.length) {
@@ -179,6 +272,7 @@ async function handleQuery() {
     end_date: filters.value.end_date || undefined,
     page: page.value,
     page_size: pageSize.value,
+    ...toJournalDetailParams(detail.value),
   })
   if (res.code === 0) journalResult.value = res.data
 }
@@ -198,13 +292,15 @@ async function handleExport() {
     { key: 'settle_type', label: '结算方式', width: 90 },
     { key: 'bill_no', label: '票据号', width: 110 },
     { key: 'counter_unit', label: '对方单位', width: 140 },
+    { key: 'counter_account', label: '对方科目', width: 160 },
+    ...auxColumns.value.map(c => ({ key: `aux:${c.id}`, label: c.name, width: 120 })) as ExportColumnDef<any>[],
     { key: 'debit', label: '借方(收入)', width: 120, align: 'right', type: 'amount' },
     { key: 'credit', label: '贷方(支出)', width: 120, align: 'right', type: 'amount' },
     { key: 'balance', label: '余额', width: 120, align: 'right', type: 'amount' },
     { key: 'reconciled', label: '已对账', width: 70, align: 'center' },
     { key: 'voucher', label: '关联凭证', width: 120 },
   ]
-  const summaryValues = ['', '', '', '', '', jr.totalDebit, jr.totalCredit, jr.closing, '', '']
+  const summaryValues = [...Array(6 + auxColumns.value.length).fill(''), jr.totalDebit, jr.totalCredit, jr.closing, '', '']
   await exportStyledTableViaSource({
     fileName: `出纳流水账_${filters.value.account_code}_${range || '全部'}.xlsx`,
     sheetName: '出纳流水账',
@@ -214,6 +310,8 @@ async function handleExport() {
     source: {
       type: 'cashierJournal',
       params: {
+        // 带着表头筛选导出：只导命中行，余额仍是完整流水里的真实余额（放最前，账户 / 日期 / 币种以下面为准）
+        ...toReportPayload(detail.value),
         account_code: filters.value.account_code,
         currency: filters.value.currency || undefined,
         start_date: filters.value.start_date || undefined,
@@ -227,6 +325,7 @@ async function handleExport() {
 
 <style scoped>
 .page-flow-query { display: flex; flex-direction: column; height: 100%; }
+.filtered-tip { color: var(--el-color-primary); font-size: 12px; }
 .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .balance-summary { display: flex; gap: 24px; padding: 6px 16px; background: var(--el-fill-color-lighter); font-size: var(--cw-text-base); }
 .balance-summary b { font-weight: 600; }

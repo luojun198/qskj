@@ -304,6 +304,7 @@
 </template>
 
 <script setup lang="ts">
+import { todayStr } from '@/utils/format'
 import { ref, computed, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { Printer, Search, Download } from '@element-plus/icons-vue'
@@ -546,7 +547,7 @@ async function exportData() {
   const dateRange =
     filters.value.start_date && filters.value.end_date
       ? `${filters.value.start_date}_${filters.value.end_date}`
-      : new Date().toISOString().split('T')[0]
+      : todayStr()
 
   await exportStyledTable({
     fileName: `外币余额表_${dateRange}.xlsx`,

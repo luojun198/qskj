@@ -57,6 +57,7 @@
 </template>
 
 <script setup lang="ts">
+import { todayStr } from '@/utils/format'
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Search, Printer, Setting } from '@element-plus/icons-vue'
@@ -432,7 +433,7 @@ async function exportStatement() {
     return ''
   })
   await exportStyledTable({
-    fileName: `${titlePrefix}_${partnerCode.value || '全部'}_${new Date().toISOString().slice(0, 10)}.xlsx`,
+    fileName: `${titlePrefix}_${partnerCode.value || '全部'}_${todayStr()}.xlsx`,
     sheetName: titlePrefix,
     title: titlePrefix,
     subtitle: `${partnerLabelName}：${partner ? `${partner.code} ${partner.name}` : '全部往来单位'}    对账期间：${startDate.value || '起始'} ~ ${endDate.value || '至今'}    期初余额：${fmt(opening.value)}`,

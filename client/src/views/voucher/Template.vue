@@ -103,6 +103,7 @@
 </template>
 
 <script setup lang="ts">
+import { todayStr } from '@/utils/format'
 import { ref, computed, onMounted } from 'vue'
 import { Refresh, Plus } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
@@ -244,7 +245,7 @@ async function handleEdit(row: any) {
       id: template.id,
       voucher_type_id: template.voucher_type_id || '',
       voucher_no: template.template_no,
-      voucher_date: new Date().toISOString().split('T')[0],
+      voucher_date: todayStr(),
       remark: template.remark || '',
       entries: template.entries || [],
     }

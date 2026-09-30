@@ -52,6 +52,7 @@
 </template>
 
 <script setup lang="ts">
+import { todayStr } from '@/utils/format'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useReloadOnActivated } from '@/composables/useReloadOnActivated'
 import { useRoute, useRouter } from 'vue-router'
@@ -75,7 +76,7 @@ const routeFilters = () => ({
   partner_code: queryValue(route.query.partner_code),
 })
 const filters = ref(routeFilters())
-const now = new Date(); const first = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`; const today = now.toISOString().slice(0, 10)
+const now = new Date(); const first = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`; const today = todayStr()
 const isDirectFullHistory = computed(() => queryValue(route.query.full_history) === '1')
 const dateRange = ref<string[] | null>(isDirectFullHistory.value ? [] : [first, today]); const sortOrder = ref<'asc' | 'desc'>('asc')
 const hasDateRange = computed(() => Array.isArray(dateRange.value) && dateRange.value.length === 2)

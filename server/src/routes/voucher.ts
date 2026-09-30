@@ -38,6 +38,7 @@ import {
   validateVoucherEntriesCashFlow,
   validateVoucherEntriesForeignCurrency,
   validateVoucherEntriesQuantity,
+  validateVoucherEntriesLeafAccount,
   validateVoucherEntryAmounts,
   VOUCHER_ENTRY_INSERT_SQL,
   VOUCHER_NO_SEQ_SQL,
@@ -449,6 +450,11 @@ router.post(
         return res.status(400).json({ code: 400, message: quantityError })
       }
 
+      const leafError = validateVoucherEntriesLeafAccount(db, req.accountSetId || '', entries)
+      if (leafError) {
+        return res.status(400).json({ code: 400, message: leafError })
+      }
+
       const insertScopeError = assertVoucherEntriesInAccountScope(
         req.accountScope || { bypass: true, restricted: false, allowedAccountIds: new Set() },
         entries.map((e: VoucherEntryInput) => e.account_id)
@@ -697,6 +703,11 @@ router.post(
     const quantityError = validateVoucherEntriesQuantity(db, req.accountSetId || '', entries)
     if (quantityError) {
       return res.status(400).json({ code: 400, message: quantityError })
+    }
+
+    const leafError = validateVoucherEntriesLeafAccount(db, req.accountSetId || '', entries)
+    if (leafError) {
+      return res.status(400).json({ code: 400, message: leafError })
     }
 
     const scopeError = assertVoucherEntriesInAccountScope(
@@ -1480,6 +1491,11 @@ router.put(
       return res.status(400).json({ code: 400, message: quantityError })
     }
 
+    const leafError = validateVoucherEntriesLeafAccount(db, req.accountSetId || '', entries)
+    if (leafError) {
+      return res.status(400).json({ code: 400, message: leafError })
+    }
+
     const updateDuplicateWarnings = findDuplicateEntries(entries)
     const updateDuplicateWarning =
       updateDuplicateWarnings.length > 0
@@ -1721,6 +1737,11 @@ router.put(
     const quantityError = validateVoucherEntriesQuantity(db, req.accountSetId || '', entries)
     if (quantityError) {
       return res.status(400).json({ code: 400, message: quantityError })
+    }
+
+    const leafError = validateVoucherEntriesLeafAccount(db, req.accountSetId || '', entries)
+    if (leafError) {
+      return res.status(400).json({ code: 400, message: leafError })
     }
 
     const { debitTotal } = calculateVoucherTotals(entries)

@@ -514,6 +514,7 @@
 </template>
 
 <script setup lang="ts">
+import { todayStr } from '@/utils/format'
 import { ref, shallowRef, computed, onMounted, watch, nextTick } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useDrillDownNavigate } from '@/composables/useDrillDownNavigate'
@@ -1292,7 +1293,7 @@ async function exportData() {
     const dateRange =
       filters.value.start_date && filters.value.end_date
         ? `${filters.value.start_date}_${filters.value.end_date}`
-        : new Date().toISOString().split('T')[0]
+        : todayStr()
 
     await exportStyledTableViaServer({
       fileName: `${pageTitle.value}_${dateRange}.xlsx`,

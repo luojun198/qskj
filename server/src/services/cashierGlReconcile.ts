@@ -7,6 +7,7 @@
  * - 分录被删 / 凭证反记账 / 金额被改（与快照不符）/ 出纳行被改，批次自动失效（pruneStaleMatches）。
  * - cashier_journal.reconciled 为「已与总账对上」冗余标志，随批次维护。
  */
+import { todayStr } from '../utils/localDate.js'
 import type Database from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
 import { getCashierAccountCurrency, getCashierBaseCurrency } from './cashierQuery.js'
@@ -426,7 +427,7 @@ export function getPeriodSummary(s: Scope, start?: string, end?: string) {
   const g = sumGlEntries(s, { start, end })
   const gu = sumGlEntries(s, { start, end, matched: false })
   // 未指定截止日：余额算到「今天」与两侧最晚业务日期中较晚者，保证与明细口径一致
-  let asOf = end || new Date().toISOString().slice(0, 10)
+  let asOf = end || todayStr()
   if (!end) {
     const { currency, foreign } = scopeCurrency(s)
     const cMax = (s.db.prepare('SELECT MAX(biz_date) d FROM cashier_journal WHERE account_set_id=? AND account_code=? AND currency=?' + (start ? ' AND biz_date>=?' : ''))

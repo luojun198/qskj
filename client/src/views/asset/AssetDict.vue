@@ -356,8 +356,13 @@ async function handleInit(type: string) {
       { type: 'info', confirmButtonText: '确定预设' }
     )
     initializing.value = true
-    await fixedAssetApi.initDict(type)
-    ElMessage.success('初始化成功')
+    const res: any = await fixedAssetApi.initDict(type)
+    const unresolved: string[] = res?.data?.unresolved || []
+    if (unresolved.length) {
+      ElMessage.warning({ message: `预设完成，但本账套中未找到以下科目，已留空，请手工设置：${unresolved.join('、')}`, duration: 8000 })
+    } else {
+      ElMessage.success('初始化成功')
+    }
     reload()
   } catch (e: any) {
     if (e !== 'cancel') {

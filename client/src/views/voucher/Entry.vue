@@ -242,6 +242,7 @@
 </template>
 
 <script setup lang="ts">
+import { todayStr } from '@/utils/format'
 import { ref, computed, watch, onMounted, onActivated, nextTick, shallowRef } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -2056,7 +2057,7 @@ async function loadTemplateAndCreate(templateId: string) {
       id: '',
       voucher_type_id: template.voucher_type_id || '',
       voucher_no: '',
-      voucher_date: new Date().toISOString().split('T')[0],
+      voucher_date: todayStr(),
       remark: template.remark || '',
       entries: template.entries || [],
     }

@@ -81,6 +81,7 @@
 </template>
 
 <script setup lang="ts">
+import { todayStr } from '@/utils/format'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft } from '@element-plus/icons-vue'
@@ -101,7 +102,7 @@ const routingLines = ref<any[]>([])
 const existingReports = ref<any[]>([])
 const form = reactive<any>({
   id: '', report_no: '', product_id: '', item_code: '', process_name: '', work_center_code: '',
-  work_hours: 0, qty: 0, scrap_qty: 0, report_date: new Date().toISOString().slice(0, 10), remark: '',
+  work_hours: 0, qty: 0, scrap_qty: 0, report_date: todayStr(), remark: '',
 })
 
 const fmt = (v: any) => (Number(v) || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })

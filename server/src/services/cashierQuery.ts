@@ -177,18 +177,23 @@ export function getInitBalance(accountSetId: string, accountCode: string, curren
 }
 
 /** 出纳科目涉及到的币别（本位币排第一），供前端币种切换；CNY 并入 RMB 不重复列出 */
-export function listCashierCurrencies(accountSetId: string): string[] {
+export function listCashierCurrencies(accountSetId: string, scope?: AccountScopeContext): string[] {
   const db = getDb()
   const base = getCashierBaseCurrency(db, accountSetId)
+  // 科目授权：受限用户只看到其授权科目涉及的币种（此前该接口不过滤，会泄露未授权科目的币种）
+  const jc: string[] = ['account_set_id=?', "currency IS NOT NULL", "currency<>''"]
+  const jp: any[] = [accountSetId]
+  appendCashierCodeScopeCondition(scope, accountSetId, 'account_code', jc, jp)
   const rows = db.prepare(`
     SELECT DISTINCT currency FROM (
-      SELECT currency FROM cashier_journal WHERE account_set_id=? AND currency IS NOT NULL AND currency<>''
+      SELECT currency FROM cashier_journal WHERE ${jc.join(' AND ')}
       UNION
-      SELECT currency FROM cashier_init_balance WHERE account_set_id=? AND currency IS NOT NULL AND currency<>''
+      SELECT currency FROM cashier_init_balance WHERE ${jc.join(' AND ')}
     ) ORDER BY currency
-  `).all(accountSetId, accountSetId) as Array<{ currency: string }>
-  // FIX-260：并入币种主数据（启用的外币），否则没有外币流水前下拉里永远选不到 USD
-  const hasCurrencies = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='currencies'").get()
+  `).all(...jp, ...jp) as Array<{ currency: string }>
+  // FIX-260：并入币种主数据（启用的外币），否则没有外币流水前下拉里永远选不到 USD；受限用户不并入主数据
+  const restricted = !!scope && !scope.bypass && scope.restricted
+  const hasCurrencies = !restricted && !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='currencies'").get()
   const master = hasCurrencies
     ? (db.prepare('SELECT code FROM currencies WHERE account_set_id=? AND is_enabled=1 ORDER BY sort_order, code').all(accountSetId) as Array<{ code: string }>)
     : []
@@ -319,6 +324,81 @@ export function searchJournals(params: {
   return { list, total }
 }
 
+export interface AuxColumn { id: string; code: string; name: string }
+
+/**
+ * 给流水行挂上「按辅助类别拆开的值」：aux_values = { 类别id: 项目显示名 }，页面据此一个类别一列。
+ * 项目显示名取项目名称，项目已被删除时回退为 id。只处理传入的行（当前页），按 id 分批取。
+ */
+export function attachAuxValues(db: any, rows: Array<{ id: string }>): void {
+  if (!rows.length) return
+  const hasAux = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='cashier_journal_aux'").get()
+  const values = new Map<string, Record<string, string>>()
+  if (hasAux) {
+    const ids = rows.map(r => r.id)
+    const CHUNK = 500
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const part = ids.slice(i, i + CHUNK)
+      const list = db.prepare(`
+        SELECT ax.journal_id AS jid, ax.category_id AS cid, COALESCE(ai.name, ax.item_id) AS item
+        FROM cashier_journal_aux ax
+        LEFT JOIN aux_items ai ON ai.id = ax.item_id
+        WHERE ax.journal_id IN (${part.map(() => '?').join(',')})
+      `).all(...part) as Array<{ jid: string; cid: string; item: string }>
+      for (const x of list) {
+        const m = values.get(x.jid) || {}
+        m[x.cid] = x.item
+        values.set(x.jid, m)
+      }
+    }
+  }
+  for (const r of rows as any[]) r.aux_values = values.get(r.id) || {}
+}
+
+/**
+ * 当前筛选结果「全集」里出现过的辅助类别（不是仅当前页），页面据此动态生成列，翻页时列不跳变。
+ * @param existsSql 形如 `SELECT 1 FROM cashier_journal j WHERE j.id = ax.journal_id AND <筛选条件>`，
+ *                  由调用方按自己的过滤口径拼好（必须用 ax.journal_id 关联）
+ * 按类别逐个 EXISTS，命中即停，类别少时开销很小。
+ */
+export function listAuxColumns(db: any, accountSetId: string, existsSql: string, params: any[]): AuxColumn[] {
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='cashier_journal_aux'").get()) return []
+  return db.prepare(`
+    SELECT c.id, c.code, c.name
+    FROM aux_categories c
+    WHERE c.account_set_id = ?
+      AND EXISTS (SELECT 1 FROM cashier_journal_aux ax WHERE ax.category_id = c.id AND ax.account_set_id = ? AND EXISTS (${existsSql}))
+    ORDER BY c.sort_order, c.code
+  `).all(accountSetId, accountSetId, ...params) as AuxColumn[]
+}
+
+/**
+ * 给流水行补展示字段：对方科目名称、辅助项目（按类别 aux_values + 兼容的合并文本 aux_text）。
+ * 只处理当前页行（≤1000），按 id 批量取，不逐行查询。
+ */
+export function enrichJournalRows(db: any, accountSetId: string, rows: JournalRow[]): void {
+  if (!rows.length) return
+  const codes = [...new Set(rows.map(r => r.counter_account).filter(Boolean))] as string[]
+  const nameOf = new Map<string, string>()
+  if (codes.length) {
+    const found = db.prepare(`SELECT code, name FROM accounts WHERE account_set_id=? AND code IN (${codes.map(() => '?').join(',')})`)
+      .all(accountSetId, ...codes) as Array<{ code: string; name: string }>
+    for (const a of found) nameOf.set(a.code, a.name)
+  }
+  attachAuxValues(db, rows)
+  const catName = new Map<string, string>()
+  // 只在确实有辅助数据时才读类别名（老库 / 精简库可能没有辅助类别表）
+  if ((rows as any[]).some(r => r.aux_values && Object.keys(r.aux_values).length)) {
+    const cats = db.prepare('SELECT id, name FROM aux_categories WHERE account_set_id=?').all(accountSetId) as Array<{ id: string; name: string }>
+    for (const c of cats) catName.set(c.id, c.name)
+  }
+  for (const r of rows as any[]) {
+    r.counter_account_name = r.counter_account ? nameOf.get(r.counter_account) || null : null
+    const parts = Object.entries(r.aux_values as Record<string, string>).map(([cid, item]) => `${catName.get(cid) || cid}:${item}`)
+    r.aux_text = parts.length ? parts.join('；') : null
+  }
+}
+
 export function listJournal(params: {
   accountSetId: string
   accountCode: string
@@ -344,6 +424,8 @@ export function listJournal(params: {
   pageSize: number
   /** 评审 P2：同科目、同区间但币种与科目核算币种不一致的存量行数（这些行不在本视图内，前端据此提示） */
   otherCurrencyCount: number
+  /** 当前筛选结果里出现过的辅助类别（页面按类别动态拆列） */
+  aux_columns: AuxColumn[]
 } {
   const db = getDb()
   const { accountSetId, accountCode } = params
@@ -418,6 +500,7 @@ export function listJournal(params: {
     running += r.debit - r.credit
     r.balance = running
   }
+  enrichJournalRows(db, accountSetId, rows)
 
   // 评审 P2：币种跟科目走后，科目改过币种 / 迁移前录入的行按币种过滤不再显示，此前完全无提示
   // FIX-325：<> 用不上索引，改写为两段范围，走 (账套, 科目, 币种) 索引
@@ -429,8 +512,15 @@ export function listJournal(params: {
     .prepare(`SELECT COUNT(*) n FROM cashier_journal WHERE ${otherConds.join(' AND ')}`)
     .get(...otherParams) as { n: number }).n
 
+  const auxColumns = listAuxColumns(
+    db, accountSetId,
+    `SELECT 1 FROM cashier_journal j WHERE j.id = ax.journal_id AND ${rowConds.map(c => `j.${c}`).join(' AND ')}`,
+    rowParams
+  )
+
   return {
     otherCurrencyCount,
+    aux_columns: auxColumns,
     opening: periodOpening,
     rows,
     closing,

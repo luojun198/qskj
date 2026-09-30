@@ -4,6 +4,7 @@
  * GET  /api/acd-export/cashier-asset         → 下载 ZIP，内含各表 GBK txt
  * GET  /api/acd-export/cashier-asset/preview → JSON 预览（行数统计，不下载）
  */
+import { todayStr } from '../utils/localDate.js'
 import { Router } from 'express'
 import { deflate } from 'zlib'
 import { promisify } from 'util'
@@ -57,7 +58,7 @@ router.get('/acd-export/cashier-asset', async (req: AuthRequest, res) => {
     return res.status(500).json({ code: 500, message: e?.message || 'ACD 导出失败' })
   }
 
-  const filename = encodeURIComponent(`${setName}_出纳固资_${new Date().toISOString().slice(0,10)}.acd`)
+  const filename = encodeURIComponent(`${setName}_出纳固资_${todayStr()}.acd`)
   res.setHeader('Content-Type', 'application/octet-stream')
   res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${filename}`)
   res.send(acdBuf)

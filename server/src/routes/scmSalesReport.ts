@@ -1,3 +1,4 @@
+import { todayStr } from '../utils/localDate.js'
 import { Router } from 'express'
 import { v4 as uuidv4 } from 'uuid'
 import { getDb } from '../db/index.js'
@@ -111,7 +112,7 @@ router.post('/scm/report/sales/custom-export', async (req: AuthRequest, res) => 
       summaryValues,
       stripe: true,
     })
-    const fileName = `销售自定义报表_${new Date().toISOString().slice(0, 10)}.xlsx`
+    const fileName = `销售自定义报表_${todayStr()}.xlsx`
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`)
     res.send(buffer)
@@ -164,7 +165,7 @@ router.post('/scm/report/sales/fixed-export', async (req: AuthRequest, res) => {
       summaryValues,
       stripe: true,
     })
-    const fileName = `${title}_${new Date().toISOString().slice(0, 10)}.xlsx`
+    const fileName = `${title}_${todayStr()}.xlsx`
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`)
     res.send(buffer)
@@ -216,7 +217,7 @@ router.post('/scm/report/purchase/custom-export', async (req: AuthRequest, res) 
       summaryValues,
       stripe: true,
     })
-    const fileName = `采购自定义报表_${new Date().toISOString().slice(0, 10)}.xlsx`
+    const fileName = `采购自定义报表_${todayStr()}.xlsx`
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`)
     res.send(buffer)
@@ -271,7 +272,7 @@ router.post('/scm/report/purchase/fixed-export', async (req: AuthRequest, res) =
       summaryValues,
       stripe: true,
     })
-    const fileName = `${title}_${new Date().toISOString().slice(0, 10)}.xlsx`
+    const fileName = `${title}_${todayStr()}.xlsx`
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`)
     res.send(buffer)

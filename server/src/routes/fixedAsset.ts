@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { firstNonLeafError } from '../services/accountReferences.js'
 import { v4 as uuidv4 } from 'uuid'
 import { getDb } from '../db/index.js'
 import { authMiddleware, AuthRequest, operationLog } from '../middleware/index.js'
@@ -196,6 +197,10 @@ router.put('/asset/params', operationLog('保存资产参数', '固定资产'), 
   for (const p of params) {
     if (!ASSET_PARAM_KEYS.includes(p.param_key)) continue
     const val = String(p.param_value ?? '')
+    if (/^asset:.*_account$/.test(p.param_key)) {
+      const leafErr = firstNonLeafError(db, req.accountSetId || '', [[val, '资产科目参数']])
+      if (leafErr) return res.status(400).json({ code: 400, message: leafErr })
+    }
     // 折旧起始期间格式校验：空（清除）或 YYYY-MM
     if (p.param_key === 'asset:depr_start_period' && val && !/^\d{4}-\d{2}$/.test(val)) {
       return res.status(400).json({ code: 400, message: '折旧起始期间格式应为 YYYY-MM' })
@@ -281,8 +286,9 @@ router.post('/asset/dict/init/:type', operationLog('固定资产字典初始化'
   const type = req.params.type
   if (!DICT_TABLES[type]) return res.status(400).json({ code: 400, message: '未知字典类型' })
   try {
-    ensureDefaultAssetDicts(getDb(), req.accountSetId || '', type)
-    res.json({ code: 0, data: { ok: true } })
+    const result = ensureDefaultAssetDicts(getDb(), req.accountSetId || '', type)
+    // unresolved：本账套里找不到的科目，已留空，前端提示用户手工设置
+    res.json({ code: 0, data: { ok: true, unresolved: result.unresolved } })
   } catch (e: any) {
     res.status(500).json({ code: 500, message: e.message })
   }
@@ -327,6 +333,10 @@ router.post('/asset/dict/:type', operationLog('固定资产字典新增', '固�
   if (table === 'fixed_asset_category' && categoryRate === false) {
     return res.status(400).json({ code: 400, message: '残值率必须是大于等于 0 且小于 1 的小数（如 0.05 表示 5%）' })
   }
+  const leafErr = firstNonLeafError(db, req.accountSetId || '', table === 'fixed_asset_category'
+    ? [[account_code, '固定资产科目'], [depr_account_code, '累计折旧科目'], [impairment_account_code, '减值准备科目'], [clearing_account_code, '清理科目']]
+    : table === 'fixed_asset_purpose' ? [[expense_account, '折旧费用科目']] : [])
+  if (leafErr) return res.status(400).json({ code: 400, message: leafErr })
   if (table === 'fixed_asset_category') {
     db.prepare(`INSERT INTO fixed_asset_category (id,account_set_id,code,name,salvage_rate,account_code,depr_account_code,impairment_account_code,clearing_account_code) VALUES (?,?,?,?,?,?,?,?,?)`)
       .run(id, req.accountSetId, code, name, categoryRate === false ? null : categoryRate, account_code ?? null, depr_account_code ?? null, impairment_account_code ?? null, clearing_account_code ?? null)
@@ -365,6 +375,10 @@ router.put('/asset/dict/:type/:id', operationLog('固定资产字典修改', '�
     depr_account_code, impairment_account_code, clearing_account_code,
     depreciable, expense_account, direction 
   } = req.body
+  const leafErr = firstNonLeafError(db, req.accountSetId || '', table === 'fixed_asset_category'
+    ? [[account_code, '固定资产科目'], [depr_account_code, '累计折旧科目'], [impairment_account_code, '减值准备科目'], [clearing_account_code, '清理科目']]
+    : table === 'fixed_asset_purpose' ? [[expense_account, '折旧费用科目']] : [])
+  if (leafErr) return res.status(400).json({ code: 400, message: leafErr })
   if (table === 'fixed_asset_category') {
     const categoryRate = parseCategorySalvageRate(salvage_rate)
     if (categoryRate === false) {

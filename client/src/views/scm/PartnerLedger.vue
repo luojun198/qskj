@@ -110,6 +110,7 @@
 </template>
 
 <script setup lang="ts">
+import { todayStr } from '@/utils/format'
 import { ref, computed, onMounted, onActivated } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Search } from '@element-plus/icons-vue'
@@ -153,7 +154,7 @@ const isAll = computed(() => !partnerCode.value)
 const isDetailPage = computed(() => route.name === 'ScmPartnerLedgerDetail')
 // 余额表（非明细账）且未选往来单位 → 显示「按往来单位汇总」视图
 const isSummaryView = computed(() => !isDetailPage.value && !partnerCode.value)
-const today = new Date().toISOString().slice(0, 10)
+const today = todayStr()
 
 // 往来单位下拉随应收/应付类型联动：客户/供应商分别过滤，双向及未分类单位两边均保留。
 function partnerBusinessRole(partner: any): 'customer' | 'supplier' | 'both' {

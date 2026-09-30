@@ -60,6 +60,7 @@
 </template>
 
 <script setup lang="ts">
+import { todayStr } from '@/utils/format'
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -73,7 +74,7 @@ const planIdParam = computed(() => String(route.params.planId || ''))
 const loading = ref(false); const saving = ref(false)
 const plan = ref<any>(null); const count = ref<any>(null)
 const rows = ref<any[]>([]); const history = ref<any[]>([])
-const form = ref({ count_date: new Date().toISOString().slice(0, 10), remark: '' })
+const form = ref({ count_date: todayStr(), remark: '' })
 const readonly = computed(() => count.value?.status === 'audited')
 const num = (v: any) => { const n = Number(v) || 0; return Number.isInteger(n) ? String(n) : n.toFixed(4).replace(/\.?0+$/, '') }
 const diffOf = (row: any) => Math.round(((Number(row.counted_qty) || 0) - (Number(row.book_qty) || 0)) * 1e6) / 1e6

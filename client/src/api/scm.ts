@@ -509,6 +509,13 @@ export const scmApi = {
   genVoucher: (id: string) => request.post<{ voucher_id: string; voucher_no: string; entry_count: number }>(`/scm/docs/${id}/gen-voucher`, {}),
   batchDocActions: (data: { action: 'audit' | 'unaudit' | 'delete' | 'gen_voucher'; ids: string[]; apply_item_default_warehouses?: boolean }) =>
     request.post<{ processed: number; action: string; results: any[] }>('/scm/docs/batch-actions', data, { skipErrorToast: true }),
+  importDocColumns: () => request.get<{ doc_types: string[]; columns: Array<{ key: string; label: string; required?: boolean; note?: string }>; max_rows: number }>('/scm/docs/import/columns'),
+  importDocValidate: (data: { doc_type: string; rows: any[] }) =>
+    request.post<{ doc_count: number; line_count: number; issues: Array<{ row: number; group_no: string; message: string }>; docs: any[] }>('/scm/docs/import/validate', data, { skipErrorToast: true }),
+  importDocs: (data: { doc_type: string; rows: any[]; skip_invalid?: boolean }) =>
+    request.post<{ created: Array<{ id: string; doc_no: string; group_no: string; total_amount: number }>; failed: Array<{ group_no: string; message: string }>; issues: any[] }>('/scm/docs/import', data, { skipErrorToast: true }),
+  auditDocsOneByOne: (data: { ids: string[]; apply_item_default_warehouses?: boolean }) =>
+    request.post<{ succeeded: Array<{ id: string; doc_no: string }>; failed: Array<{ id: string; doc_no: string; message: string }> }>('/scm/docs/import/audit-batch', data, { skipErrorToast: true }),
   batchPushPurchase: (ids: string[]) =>
     request.post<{ created: number; docs: Array<{ id: string; doc_no: string; partner_code: string | null; currency: string }> }>('/scm/docs/batch-push-purchase', { ids }),
 

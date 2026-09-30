@@ -1040,6 +1040,7 @@
 </template>
 
 <script setup lang="ts">
+import { todayStr } from '@/utils/format'
 import { ref, computed, watch, onMounted, onActivated, onDeactivated, onBeforeUnmount, nextTick, defineAsyncComponent, onErrorCaptured } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -1484,7 +1485,7 @@ onMounted(() => { nextTick(calcTableMaxHeight); window.addEventListener('resize'
 onBeforeUnmount(() => window.removeEventListener('resize', calcTableMaxHeight))
 
 const form = ref<Record<string, any>>({
-  doc_type: '', doc_no: '', doc_date: new Date().toISOString().slice(0, 10),
+  doc_type: '', doc_no: '', doc_date: todayStr(),
   warehouse_code: '', partner_code: '', operator: '', remark: '', status: 'draft', bom_id: '', source_doc_id: '', plan_id: '',
   biz_person: '', dept_code: '', payment_type: '', settle_account: '', invoice_type: '', invoice_no: '', invoice_date: '',
   contract_no: '', currency: 'CNY', exchange_rate: 1, discount_rate: null, expect_date: '', credit_days: null,
@@ -2183,7 +2184,7 @@ async function loadMeta() {
 // 重置为空白表单
 function resetForm() {
   form.value = {
-    doc_type: '', doc_no: '', doc_date: new Date().toISOString().slice(0, 10),
+    doc_type: '', doc_no: '', doc_date: todayStr(),
     warehouse_code: '', partner_code: '', operator: '', remark: '', status: 'draft', bom_id: '', source_doc_id: '', plan_id: '',
   biz_person: '', dept_code: '', payment_type: '', settle_account: '', invoice_type: '', invoice_no: '', invoice_date: '',
   contract_no: '', currency: 'CNY', exchange_rate: 1, discount_rate: null, expect_date: '', credit_days: null,

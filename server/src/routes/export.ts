@@ -58,7 +58,7 @@ router.post('/styled-xlsx', async (req: AuthRequest, res) => {
       return res.status(403).json({ code: 403, message: '无此操作权限' })
     }
     const leafKeys = collectLeafKeys(columns)
-    const badKey = leafKeys.find(key => !key || !exportSource.keys.includes(key))
+    const badKey = leafKeys.find(key => !key || !(exportSource.keys.includes(key) || exportSource.keyPrefixes?.some(p => key.startsWith(p))))
     if (badKey !== undefined || leafKeys.some(key => !key)) {
       return res.status(400).json({ code: 400, message: `列定义缺少 key 或 key 不受支持：${badKey ?? '(空)'}` })
     }

@@ -1618,6 +1618,11 @@ export function accumulateParentBalances(list: any[], codeLengths: number[]): an
       // 第一次遇到该父科目时，清零其原有值（避免父科目自身有凭证条目导致重复计算）
       if (!zeroedParents.has(parent.account_code)) {
         zeroedParents.add(parent.account_code)
+        // 父科目自身有发生额属违规挂账，清零后报表不含这部分金额，标记出来让前端提示试算可能不平
+        if (Math.abs(parent.current_debit || 0) > 0.005 || Math.abs(parent.current_credit || 0) > 0.005
+          || Math.abs(parent.year_debit || 0) > 0.005 || Math.abs(parent.year_credit || 0) > 0.005) {
+          parent.direct_posting_lost = true
+        }
         parent.init_balance = 0
         parent.current_debit = 0
         parent.current_credit = 0

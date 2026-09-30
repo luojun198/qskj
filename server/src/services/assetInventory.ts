@@ -1,6 +1,7 @@
 /**
  * 固定资产盘点服务
  */
+import { todayStr } from '../utils/localDate.js'
 import type { Database } from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
 import {
@@ -325,7 +326,7 @@ function completeInventoryInner(params: {
   const invDate: string =
     typeof inv.inventory_date === 'string' && /^\d{4}-\d{2}-\d{2}/.test(inv.inventory_date)
       ? inv.inventory_date.slice(0, 10)
-      : new Date().toISOString().slice(0, 10)
+      : todayStr()
   assertPeriodOpen(db, accountSetId, parseInt(invDate.split('-')[0]), parseInt(invDate.split('-')[1]))
   // P1-20：盘点日期不得晚于当前月份
   assertNotAfterCurrentPeriod(parseInt(invDate.split('-')[0]), parseInt(invDate.split('-')[1]), '盘点日期')
@@ -640,7 +641,7 @@ function generateInventoryVoucher(params: {
   const voucherDate: string =
     typeof inventory.inventory_date === 'string' && /^\d{4}-\d{2}-\d{2}/.test(inventory.inventory_date)
       ? inventory.inventory_date.slice(0, 10)
-      : new Date().toISOString().slice(0, 10)
+      : todayStr()
   const year = parseInt(voucherDate.split('-')[0])
   const month = parseInt(voucherDate.split('-')[1])
 

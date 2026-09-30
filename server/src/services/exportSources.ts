@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3'
 import { buildChronologicalQuery } from './ledgerQuery.js'
-import { listJournal } from './cashierQuery.js'
+import { enrichJournalRows, listJournal } from './cashierQuery.js'
+import { buildJournalWhere, getBalanceReport, getSummaryReport, hasJournalDetailFilter, parseReportFilterParams, searchJournalsReport, type SummaryNode } from './cashierReport.js'
 import type { AccountScopeContext } from './accountAuthorization.js'
 
 /**
@@ -28,6 +29,8 @@ export interface ExportSource {
   permissions: readonly string[]
   /** 支持的列 key */
   keys: readonly string[]
+  /** 支持的动态列 key 前缀（如辅助类别列 `aux:<类别id>`）；不在 keys 里的列 key 必须以其中之一开头才放行 */
+  keyPrefixes?: readonly string[]
   /** 行数（用于上限保护），可比实际输出行少（不含小计行） */
   count(ctx: ExportSourceContext, params: Record<string, unknown>): number
   /** 按 keys 顺序产出单元格行 */
@@ -203,21 +206,48 @@ const CASHIER_JOURNAL_KEYS = [
 function cashierJournalFilters(ctx: ExportSourceContext, params: Record<string, unknown>) {
   const accountCode = str(params.account_code)
   if (!accountCode) throw new Error('缺少出纳科目')
-  return { accountCode, currency: str(params.currency), startDate: str(params.start_date), endDate: str(params.end_date) }
+  return {
+    accountCode, currency: str(params.currency), startDate: str(params.start_date), endDate: str(params.end_date),
+    // 表头明细筛选（与页面 /cashier/journal 同一份参数解析）
+    detail: parseReportFilterParams(params, ctx.accountSetId, ctx.accountScope),
+  }
+}
+
+/** 命中表头明细筛选的流水 id（只在带筛选时计算）；导出仍逐行累计完整流水的余额，只输出命中行 */
+function cashierJournalMatchingIds(
+  ctx: ExportSourceContext,
+  f: ReturnType<typeof cashierJournalFilters>,
+  currency: string
+): Set<string> | null {
+  if (!hasJournalDetailFilter(f.detail)) return null
+  const where = buildJournalWhere(
+    ctx.db,
+    { ...f.detail, accountSetId: ctx.accountSetId, accountCodes: undefined, currency: undefined },
+    { skipDate: true, skipCurrency: true }
+  )
+  const join = where.needVoucherJoin ? 'LEFT JOIN vouchers v ON v.id = j.voucher_id' : ''
+  const dateSql = `${f.startDate ? ' AND j.biz_date >= ?' : ''}${f.endDate ? ' AND j.biz_date <= ?' : ''}`
+  const rows = ctx.db.prepare(
+    `SELECT j.id FROM cashier_journal j ${join}
+     WHERE j.account_code = ? AND j.currency = ?${dateSql} AND ${where.conds.join(' AND ')}`
+  ).all(f.accountCode, currency, ...(f.startDate ? [f.startDate] : []), ...(f.endDate ? [f.endDate] : []), ...where.params) as Array<{ id: string }>
+  return new Set(rows.map(r => r.id))
 }
 
 const cashierJournalSource: ExportSource = {
   permissions: ['cashier:journal'],
   keys: CASHIER_JOURNAL_KEYS,
+  keyPrefixes: ['aux:'],
   count(ctx, params) {
     const f = cashierJournalFilters(ctx, params)
     const r = listJournalPage(ctx, f, 1, 1)
-    return r.total
+    return cashierJournalMatchingIds(ctx, f, r.currency)?.size ?? r.total
   },
   async *rows(ctx, params, keys) {
     const f = cashierJournalFilters(ctx, params)
     const first = listJournalPage(ctx, f, 1, 1)
     const currency = first.currency
+    const matching = cashierJournalMatchingIds(ctx, f, currency)
     let running = first.opening
     const settleNames = new Map(
       (ctx.db.prepare('SELECT code, name FROM settle_type WHERE account_set_id = ?').all(ctx.accountSetId) as any[]).map(r => [r.code, r.name])
@@ -237,8 +267,11 @@ const cashierJournalSource: ExportSource = {
     )
     let n = 0
     for (const { d } of days) {
-      for (const r of dayStmt.all(ctx.accountSetId, f.accountCode, currency, d) as any[]) {
+      const dayRows = dayStmt.all(ctx.accountSetId, f.accountCode, currency, d) as any[]
+      enrichJournalRows(ctx.db, ctx.accountSetId, dayRows)
+      for (const r of dayRows) {
         running += (Number(r.debit) || 0) - (Number(r.credit) || 0)
+        if (matching && !matching.has(r.id)) continue   // 余额照常累计，只输出命中行
         yield keys.map(key => {
           switch (key) {
             case 'settle_type': return r.settle_type ? settleNames.get(r.settle_type) || r.settle_type : ''
@@ -251,7 +284,7 @@ const cashierJournalSource: ExportSource = {
             case 'balance': return Math.round(running * 100) / 100
             case 'reconciled': return r.reconciled ? '是' : ''
             case 'voucher': return r.voucher_no ? `${r.voucher_year}-${String(r.voucher_month).padStart(2, '0')} ${r.voucher_no}` : ''
-            default: return r[key] ?? ''
+            default: return key.startsWith('aux:') ? (r.aux_values?.[key.slice(4)] ?? '') : (r[key] ?? '')
           }
         })
         n += 1
@@ -274,7 +307,128 @@ function listJournalPage(ctx: ExportSourceContext, f: ReturnType<typeof cashierJ
   })
 }
 
+
+// ── 出纳报表改造：综合查询 / 余额表 / 多维汇总（全量、服务端流式，含辅助列） ─────────────────
+
+const CASHIER_SEARCH_KEYS = [
+  'account_code', 'account_name', 'biz_date', 'currency', 'summary', 'settle_type', 'bill_no', 'counter_unit',
+  'counter_account', 'debit', 'credit', 'base_debit', 'base_credit', 'reconciled', 'voucher', 'voucher_status',
+] as const
+
+const VOUCHER_STATUS_LABEL: Record<string, string> = { draft: '草稿', audited: '已审核', posted: '已记账' }
+
+const cashierSearchSource: ExportSource = {
+  permissions: ['cashier:journal', 'cashier:report'],
+  keys: CASHIER_SEARCH_KEYS,
+  keyPrefixes: ['aux:'],
+  count(ctx, params) {
+    const f = parseReportFilterParams(params, ctx.accountSetId, ctx.accountScope)
+    return searchJournalsReport(ctx.db, f, 1, 1).total
+  },
+  async *rows(ctx, params, keys) {
+    const f = parseReportFilterParams(params, ctx.accountSetId, ctx.accountScope)
+    const PAGE = 2000
+    for (let page = 1; ; page++) {
+      const r = searchJournalsReport(ctx.db, f, page, PAGE)
+      for (const row of r.list) {
+        yield keys.map(key => {
+          switch (key) {
+            case 'account_code': return row.account_code
+            case 'account_name': return row.account_name
+            case 'settle_type': return row.settle_type_name || row.settle_type || ''
+            case 'counter_account': return row.counter_account ? `${row.counter_account}${row.counter_account_name ? ' ' + row.counter_account_name : ''}` : ''
+            case 'debit': return Number(row.debit) || ''
+            case 'credit': return Number(row.credit) || ''
+            case 'base_debit': return Number(row.base_debit) || ''
+            case 'base_credit': return Number(row.base_credit) || ''
+            case 'reconciled': return row.reconciled ? '是' : ''
+            case 'voucher': return row.voucher_no ? `${row.voucher_year}-${String(row.voucher_month).padStart(2, '0')} ${row.voucher_no}` : ''
+            case 'voucher_status': return row.voucher_status ? (VOUCHER_STATUS_LABEL[row.voucher_status] || row.voucher_status) : ''
+            default: return key.startsWith('aux:') ? (row.aux_values?.[key.slice(4)] ?? '') : ((row as any)[key] ?? '')
+          }
+        })
+      }
+      if (page * PAGE >= r.total || r.list.length === 0) break
+      await new Promise<void>(resolve => setImmediate(resolve))
+    }
+  },
+}
+
+const CASHIER_BALANCE_KEYS = [
+  'account_code', 'account_name', 'currency', 'opening', 'income', 'expense', 'closing',
+  'income_base', 'expense_base', 'closing_base', 'count', 'unreconciled_count', 'unreconciled_net',
+] as const
+
+function balanceFor(ctx: ExportSourceContext, params: Record<string, unknown>) {
+  const f = parseReportFilterParams(params, ctx.accountSetId, ctx.accountScope)
+  if (!f.startDate || !f.endDate) throw new Error('日期区间不能为空')
+  return getBalanceReport(ctx.db, f as any, { includeZero: flag(params.include_zero) })
+}
+
+const cashierBalanceSource: ExportSource = {
+  permissions: ['cashier:report', 'cashier:journal'],
+  keys: CASHIER_BALANCE_KEYS,
+  count: (ctx, params) => balanceFor(ctx, params).rows.length,
+  async *rows(ctx, params, keys) {
+    for (const r of balanceFor(ctx, params).rows) {
+      yield keys.map(key => {
+        const v = (r as any)[key]
+        return typeof v === 'number' ? v : (v ?? '')
+      })
+    }
+  },
+}
+
+/** 汇总树展开成带层级的行：分组行（最底层）+ 各级小计 + 合计。dim_N 列放第 N 级名称 */
+const CASHIER_SUMMARY_KEYS = ['dim_0', 'dim_1', 'dim_2', 'dim_3', 'income', 'expense', 'net', 'count', 'income_ratio', 'expense_ratio'] as const
+
+function flattenSummary(root: SummaryNode, depth: number): Array<Record<string, string | number>> {
+  const out: Array<Record<string, string | number>> = []
+  const cell = (n: SummaryNode, names: string[], label?: string) => {
+    const row: Record<string, string | number> = {
+      income: n.income, expense: n.expense, net: n.net, count: n.count,
+      income_ratio: Math.round(n.income_ratio * 10000) / 100, expense_ratio: Math.round(n.expense_ratio * 10000) / 100,
+    }
+    names.forEach((name, i) => { row[`dim_${i}`] = name })
+    if (label) row[`dim_${Math.max(0, names.length - 1)}`] = label
+    return row
+  }
+  const walk = (n: SummaryNode, names: string[]) => {
+    const here = [...names, n.name]
+    if (n.children?.length) {
+      n.children.forEach(c => walk(c, here))
+      if (here.length < depth) out.push(cell(n, here, `${n.name} 小计`))
+    } else {
+      out.push(cell(n, here))
+    }
+  }
+  root.children?.forEach(c => walk(c, []))
+  out.push(cell(root, [''], '合计'))
+  return out
+}
+
+function summaryFor(ctx: ExportSourceContext, params: Record<string, unknown>) {
+  const f = parseReportFilterParams(params, ctx.accountSetId, ctx.accountScope)
+  const groupBy = Array.isArray(params.group_by) ? (params.group_by as unknown[]).map(String) : []
+  return getSummaryReport(ctx.db, f, groupBy)
+}
+
+const cashierSummarySource: ExportSource = {
+  permissions: ['cashier:report', 'cashier:journal'],
+  keys: CASHIER_SUMMARY_KEYS,
+  count: (ctx, params) => flattenSummary(summaryFor(ctx, params).root, (params.group_by as unknown[] | undefined)?.length || 1).length,
+  async *rows(ctx, params, keys) {
+    const rep = summaryFor(ctx, params)
+    for (const row of flattenSummary(rep.root, rep.group_by.length)) {
+      yield keys.map(key => row[key] ?? '')
+    }
+  },
+}
+
 export const EXPORT_SOURCES: Record<string, ExportSource> = {
   chronological: chronologicalSource,
   cashierJournal: cashierJournalSource,
+  cashierSearch: cashierSearchSource,
+  cashierBalance: cashierBalanceSource,
+  cashierSummary: cashierSummarySource,
 }

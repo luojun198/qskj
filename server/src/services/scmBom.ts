@@ -6,12 +6,13 @@
  * - 替代料：同一 `sub_group` 内的行互为替代，`sub_priority` 最小（或未填）的是主料，其余按优先级依次替代。
  *   需求 / 用料按主料展开；主料库存不足时，`substituteStock` 给出同组替代料可用库存供 MRP 净需求抵扣与领料建议。
  */
+import { todayStr } from '../utils/localDate.js'
 import type Database from 'better-sqlite3'
 
 export interface BomHead { id: string; code: string; version?: string | null }
 
 export function pickActiveBom(db: Database.Database, aid: string, itemCode: string, asOf?: string | null): BomHead | null {
-  const d = String(asOf || '').slice(0, 10) || new Date().toISOString().slice(0, 10)
+  const d = String(asOf || '').slice(0, 10) || todayStr()
   return (db.prepare(`SELECT id, code, version FROM scm_bom
     WHERE account_set_id=? AND item_code=? AND status='active'
       AND (effective_date IS NULL OR effective_date='' OR substr(effective_date,1,10) <= ?)

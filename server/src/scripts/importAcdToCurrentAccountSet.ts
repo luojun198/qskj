@@ -30,6 +30,7 @@ import {
   upsertExchangeRate,
 } from '../services/currencyService.js'
 import { rebuildAccountBalances } from '../services/accountBalanceRebuild.js'
+import { normalizeNonLeafReferences } from '../services/accountReferences.js'
 import { importCashierTables, importFixedAssetTables } from './importAcdCashierAsset.js'
 import { importSupplyChainFromAcd } from '../services/importAcdSupplyChain.js'
 
@@ -4586,6 +4587,8 @@ async function runImport(options: Options): Promise<ImportStats> {
     execute()
   } else {
     db.transaction(execute)()
+    // 导入的设置（资产类别/参数/转账项…）可能指向有下级的科目，统一改指第一个末级子科目
+    db.transaction(() => normalizeNonLeafReferences(db, accountSet.id))()
     stats.accountBalanceRows = rebuildAccountBalances(db, accountSet.id).rows
   }
 
@@ -4666,6 +4669,7 @@ export async function importAcdToAccountSet(
   }
 
   db.transaction(execute)()
+  db.transaction(() => normalizeNonLeafReferences(db, accountSet.id))()
   importVouchers(accountSet.id, tables, stats, false, { batched: true, batchSize: 150 })
   db.transaction(() => importVoucherTemplates(accountSet.id, tables, stats, false))()
   importAcdUsers(accountSet.id, tables, stats, false)
@@ -4801,6 +4805,7 @@ export function importAcdTemplateToAccountSet(
   }
 
   db.transaction(execute)()
+  db.transaction(() => normalizeNonLeafReferences(db, accountSet.id))()
 
   return stats
 }

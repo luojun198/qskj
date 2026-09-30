@@ -2,6 +2,12 @@ import Database from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
 import { buildWhereClause, SqlParam } from './baseValidation.js'
 import { getAccountReportTemplateBlockReason } from './accountDeleteGuard.js'
+import {
+  findAccountReferences,
+  inheritAccountScopes,
+  repointAccountReferences,
+  type RepointResult,
+} from './accountReferences.js'
 import { DEFAULT_LIST_LIMIT, MAX_LIST_ALL, MAX_LIST_LIMIT } from '../utils/listLimits.js'
 import {
   findDirectParentCodeByPrefix,
@@ -439,6 +445,14 @@ export class AccountService {
    * 创建会计科目
    */
   createAccount(params: CreateAccountParams): string {
+    return this.createAccountDetailed(params).id
+  }
+
+  /**
+   * 创建会计科目并返回改指摘要：父科目新增第一个子科目时，
+   * 指向该父科目的设置（资产类别、系统参数、物料/往来科目、凭证模板…）自动改指这个子科目。
+   */
+  createAccountDetailed(params: CreateAccountParams): { id: string; repointed: RepointResult | null; repointedTo?: string } {
     const config = this.getAccountCodeConfig(params.account_set_id)
     const parent = params.parent_id
       ? this.getParentAccount(params.parent_id, params.account_set_id)
@@ -493,6 +507,8 @@ export class AccountService {
     // 判定是否需要把父科目数据迁移到本次新建的「第一个子科目」：
     // 父科目从末级变为非末级后不能再记账/挂期初，其数据/会计属性应由第一个子科目继承。
     let shouldMigrateFromParent = false
+    let isFirstChild = false
+    let repointed: RepointResult | null = null
     if (parent) {
       const existingChildCount =
         (
@@ -500,7 +516,7 @@ export class AccountService {
             .prepare('SELECT COUNT(*) as cnt FROM accounts WHERE parent_id = ?')
             .get(parent.id) as { cnt: number } | undefined
         )?.cnt || 0
-      const isFirstChild = existingChildCount === 0
+      isFirstChild = existingChildCount === 0
       shouldMigrateFromParent =
         isFirstChild && (params.migrate_from_parent === true || this.accountHasMigratableData(parent))
     }
@@ -538,10 +554,20 @@ export class AccountService {
       if (parent && shouldMigrateFromParent) {
         this.migrateFromParent(id, parent, params.code, params.name)
       }
+
+      // 设置类引用（资产类别、系统参数、物料/往来科目、凭证模板…）：指向父科目的一律改指第一个子科目，
+      // 不论父科目有无数据——父科目有了下级就不能再被引用记账。出纳等数据类引用仅在分录随之迁移时同步。
+      if (parent && isFirstChild) {
+        repointed = repointAccountReferences(this.db, params.account_set_id, parent.code, params.code, {
+          includeData: shouldMigrateFromParent,
+        })
+        inheritAccountScopes(this.db, params.account_set_id, parent.id, id)
+      }
     })
     doCreate()
 
-    return id
+    const result = repointed as RepointResult | null
+    return { id, repointed: result && result.total > 0 ? result : null, repointedTo: params.code }
   }
 
   /**
@@ -594,9 +620,10 @@ export class AccountService {
     }
 
     // 3. 迁移科目余额（过账汇总）
+    // account_code / account_name 一并同步：自动转账等按编码取数，只改 id 会取不到
     this.db
-      .prepare('UPDATE account_balances SET account_id = ? WHERE account_id = ?')
-      .run(newAccountId, parentId)
+      .prepare('UPDATE account_balances SET account_id = ?, account_code = ?, account_name = ? WHERE account_id = ?')
+      .run(newAccountId, code, name, parentId)
 
     // 4. 迁移年初余额与辅助年初明细（aux_item_id='' 与 !='' 全部）
     this.db
@@ -882,6 +909,12 @@ export class AccountService {
     )
     if (reportBlock) {
       throw new Error(reportBlock)
+    }
+
+    const refs = findAccountReferences(this.db, account.account_set_id, account.code)
+    if (refs.length > 0) {
+      const desc = refs.slice(0, 5).map(r => `${r.label}（${r.count}）`).join('、')
+      throw new Error(`该科目被以下设置引用，无法删除：${desc}${refs.length > 5 ? ' 等' : ''}。请先改用其他科目`)
     }
 
     this.db.prepare('DELETE FROM accounts WHERE id = ?').run(id)

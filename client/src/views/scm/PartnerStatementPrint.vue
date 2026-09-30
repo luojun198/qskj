@@ -71,6 +71,7 @@
 </template>
 
 <script setup lang="ts">
+import { todayStr } from '@/utils/format'
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Back, Printer } from '@element-plus/icons-vue'
@@ -143,7 +144,7 @@ const opening = ref(0)
 const closing = ref(0)
 const detail = ref<any[]>([])
 const partners = ref<ScmPartner[]>([])
-const today = new Date().toISOString().slice(0, 10)
+const today = todayStr()
 
 const partnerCode = computed(() => (route.query.partner_code as string) || '')
 const startDate = computed(() => (route.query.start_date as string) || '')

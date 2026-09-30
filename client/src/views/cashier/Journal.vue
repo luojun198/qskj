@@ -159,7 +159,7 @@
           @navigate="handleNavigate"
         />
       </div>
-      <el-form :model="form" label-width="74px" size="small">
+      <el-form :model="form" label-width="74px" size="small" @keydown.ctrl.enter.prevent="!editRow && !saving && handleSave(true)">
         <el-row :gutter="15">
           <el-col :span="6">
             <el-form-item label="日期" required>
@@ -338,7 +338,8 @@
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="handleSave">保存</el-button>
+        <el-button v-if="!editRow" :loading="saving" @click="handleSave(true)">保存并新增 (Ctrl+Enter)</el-button>
+        <el-button type="primary" :loading="saving" @click="handleSave()">保存</el-button>
       </template>
     </el-dialog>
 
@@ -1050,13 +1051,18 @@ async function handleQuery() {
 
 function openAddDialog() {
   editRow.value = null
-  form.value = { biz_date: formatDate(new Date()), debit: 0, credit: 0 }
+  resetAddForm()
+  dialogVisible.value = true
+  loadDefaultRate()
+}
+
+/** 清空录入表单；「保存并新增」时沿用上一笔的日期，方便连续录同一天的流水 */
+function resetAddForm(keepDate?: string) {
+  form.value = { biz_date: keepDate || formatDate(new Date()), debit: 0, credit: 0 }
   counterAuxSelections.value = {}
   attachments.value = []
   queuedFiles.value = []
   rateTouched.value = false
-  dialogVisible.value = true
-  loadDefaultRate()
 }
 // FIX-260：新增外币流水时改日期 → 重新取该期间默认汇率（用户手改过则保留）
 watch(() => form.value.biz_date, () => { if (dialogVisible.value && !editRow.value) loadDefaultRate() })
@@ -1108,7 +1114,7 @@ async function quickAddSettleType() {
   } catch { /* 取消 */ }
 }
 
-async function handleSave() {
+async function handleSave(keepOpen = false) {
   if (!form.value.biz_date) return ElMessage.warning('请填写日期')
   if (!form.value.debit && !form.value.credit) return ElMessage.warning('借方或贷方金额不能同时为零')
   if (form.value.debit && form.value.credit) return ElMessage.warning('借方和贷方不能同时有值')
@@ -1131,8 +1137,16 @@ async function handleSave() {
       await cashierApi.uploadJournalAttachments(journalId, queuedFiles.value)
     }
 
-    dialogVisible.value = false
-    handleQuery()
+    if (keepOpen && !editRow.value) {
+      // 保存并新增：保留弹窗，清空表单（沿用日期），列表在后台刷新
+      ElMessage.success('已保存，可继续录入')
+      resetAddForm(form.value.biz_date)
+      loadDefaultRate()
+      handleQuery()
+    } else {
+      dialogVisible.value = false
+      handleQuery()
+    }
   } finally {
     saving.value = false
   }

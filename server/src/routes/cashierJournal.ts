@@ -1,4 +1,7 @@
 import { Router } from 'express'
+import { getBalanceReport, getReportFilterMeta, getSummaryReport, hasJournalDetailFilter, listJournalFiltered, parseReportFilterParams, searchJournalsReport } from '../services/cashierReport.js'
+import { syncJournalAux } from '../services/cashierJournalAux.js'
+import { firstNonLeafError } from '../services/accountReferences.js'
 import { parseAmountFilter } from '../utils/amountUtils.js'
 import { v4 as uuidv4 } from 'uuid'
 import fs from 'fs/promises'
@@ -162,6 +165,10 @@ router.put('/cashier/params', operationLog('保存出纳参数', '出纳管理')
   const upsert = db.prepare('INSERT OR REPLACE INTO system_params (id, account_set_id, param_key, param_value) VALUES (?, ?, ?, ?)')
   for (const p of params) {
     if (!CASHIER_PARAM_KEYS.includes(p.param_key)) continue
+    if (p.param_key === 'cashier:default_counter_account') {
+      const leafErr = firstNonLeafError(db, req.accountSetId || '', [[String(p.param_value ?? ''), '默认对方科目']])
+      if (leafErr) return res.status(400).json({ code: 400, message: leafErr })
+    }
     const existing = db.prepare('SELECT id FROM system_params WHERE account_set_id=? AND param_key=?').get(req.accountSetId, p.param_key) as any
     upsert.run(existing?.id || uuidv4(), req.accountSetId, p.param_key, p.param_value ?? '')
   }
@@ -255,7 +262,7 @@ router.get('/cashier/accounts', (req: AuthRequest, res) => {
 
 // ── 出纳币别列表（含本位币，供前端币种切换） ────────────
 router.get('/cashier/currencies', (req: AuthRequest, res) => {
-  res.json({ code: 0, data: listCashierCurrencies(req.accountSetId || '') })
+  res.json({ code: 0, data: listCashierCurrencies(req.accountSetId || '', req.accountScope) })
 })
 
 // ── 期初余额 ─────────────────────────────────────────────
@@ -369,7 +376,7 @@ router.get('/cashier/journal', (req: AuthRequest, res) => {
   const { account_code, currency, start_date, end_date, page, page_size } = req.query as Record<string, string>
   if (!account_code) return res.status(400).json({ code: 400, message: '科目编码不能为空' })
   if (!scopeGuard(req, res, [account_code])) return
-  const result = listJournal({
+  const listParams = {
     accountSetId: req.accountSetId || '',
     accountCode: account_code,
     currency: currency || undefined,
@@ -378,8 +385,15 @@ router.get('/cashier/journal', (req: AuthRequest, res) => {
     // FIX-326：一律分页（未传按第 1 页、每页 100 条，上限 1000）；导出走 /export/styled-xlsx 的 cashierJournal 数据源
     page: page !== undefined ? Number(page) : undefined,
     pageSize: page_size !== undefined ? Number(page_size) : undefined,
-  })
-  res.json({ code: 0, data: result })
+  }
+  // 表头明细筛选（摘要 / 结算方式 / 票据号 / 对方单位 / 对方科目 / 辅助项目 / 凭证状态 / 对账状态）：
+  // 只列出命中行，逐行余额仍是完整流水里的真实余额，期初 / 期末不变
+  const detail = parseReportFilter(req, req.query as Record<string, any>)
+  if (hasJournalDetailFilter(detail)) {
+    const base = listJournal({ ...listParams, page: 1, pageSize: 1 })
+    return res.json({ code: 0, data: listJournalFiltered(getDb(), listParams, detail, base) })
+  }
+  res.json({ code: 0, data: listJournal(listParams) })
 })
 
 // ── FIX-260：录入弹窗默认汇率（币种跟科目走） ──────────────
@@ -445,6 +459,7 @@ router.post(
       bank_account || null, unit_code || null,
       counter_aux_item_id || null, (req as any).user?.name || null
     )
+    syncJournalAux(db, req.accountSetId || '', id, counter_aux_item_id)
     res.json({ code: 0, data: { id, currency: fx.currency, exchange_rate: fx.rate } })
   }
 )
@@ -542,6 +557,7 @@ router.put(
       settle_type, bill_no, counter_unit, counter_account, bank_name, bank_account,
       ...auxParam, id
     )
+    if (auxProvided) syncJournalAux(db, req.accountSetId || '', id, req.body.counter_aux_item_id)
     res.json({ code: 0, data: { ok: true } })
   }
 )
@@ -941,27 +957,70 @@ router.post(
 
 router.get('/cashier/journal/search', (req: AuthRequest, res) => {
   const query = req.query as any
-  const data = searchJournals({
-    accountSetId: req.accountSetId || '',
-    accountCodes: query.account_codes ? query.account_codes.split(',') : undefined,
-    currency: query.currency || undefined,
-    startDate: query.start_date || undefined,
-    endDate: query.end_date || undefined,
-    summary: query.summary || undefined,
-    settleTypes: query.settle_types ? query.settle_types.split(',') : undefined,
-    billNo: query.bill_no || undefined,
-    counterUnit: query.counter_unit || undefined,
-    counterAccount: query.counter_account || undefined,
-    amountDirection: query.amount_direction as 'all' | 'income' | 'expense' || undefined,
-    minAmount: parseAmountFilter(query.min_amount),
-    maxAmount: parseAmountFilter(query.max_amount),
-    reconciled: query.reconciled ? Number(query.reconciled) as 0|1 : undefined,
-    hasVoucher: query.has_voucher ? Number(query.has_voucher) as 0|1 : undefined,
-    page: query.page ? Number(query.page) : undefined,
-    pageSize: query.page_size ? Number(query.page_size) : undefined,
-    scope: req.accountScope,
+  const filter = parseReportFilter(req, {
+    account_codes: query.account_codes ? String(query.account_codes).split(',') : undefined,
+    currency: query.currency,
+    start_date: query.start_date,
+    end_date: query.end_date,
+    summary: query.summary,
+    settle_types: query.settle_types ? String(query.settle_types).split(',') : undefined,
+    bill_no: query.bill_no,
+    counter_unit: query.counter_unit,
+    counter_accounts: query.counter_account ? [String(query.counter_account)] : (query.counter_accounts ? String(query.counter_accounts).split(',') : undefined),
+    amount_direction: query.amount_direction,
+    min_amount: query.min_amount,
+    max_amount: query.max_amount,
+    reconciled: query.reconciled,
+    voucher_status: query.voucher_status ? String(query.voucher_status).split(',') : undefined,
+    aux: query.aux,
+    // 兼容旧参数：has_voucher=1 → 已有凭证（任意状态）；0 → 无凭证
+    has_voucher: query.has_voucher,
   })
+  const data = searchJournalsReport(getDb(), filter, query.page ? Number(query.page) : 1, query.page_size ? Number(query.page_size) : 100)
   res.json({ code: 0, data })
+})
+
+// ── 出纳报表（统一过滤：科目 / 币种 / 对方科目 / 结算方式 / 辅助项目 / 凭证状态 …） ──────────
+
+/** 请求里的 snake_case 过滤条件 → CashierReportFilter（body 优先，extra 为 GET 路由已解析的参数） */
+function parseReportFilter(req: AuthRequest, extra?: Record<string, any>) {
+  const merged: Record<string, any> = { ...(extra || {}), ...((req.method !== 'GET' && req.body) || {}) }
+  return parseReportFilterParams(merged, req.accountSetId || '', req.accountScope)
+}
+
+router.post('/cashier/report/balance', (req: AuthRequest, res) => {
+  const f = parseReportFilter(req)
+  if (!f.startDate || !f.endDate) return res.status(400).json({ code: 400, message: '日期区间不能为空' })
+  const data = getBalanceReport(getDb(), f as any, { includeZero: req.body?.include_zero === true })
+  res.json({ code: 0, data })
+})
+
+router.post('/cashier/report/summary', (req: AuthRequest, res) => {
+  const f = parseReportFilter(req)
+  const groupBy: string[] = Array.isArray(req.body?.group_by) ? req.body.group_by.map((x: any) => String(x)) : []
+  try {
+    res.json({ code: 0, data: getSummaryReport(getDb(), f, groupBy) })
+  } catch (e: any) {
+    res.status(400).json({ code: 400, message: e.message || '汇总失败' })
+  }
+})
+
+// 辅助项目收支表：选一个辅助类别，以项目为行；expand_by_account 时再按科目展开
+router.post('/cashier/report/aux-summary', (req: AuthRequest, res) => {
+  const f = parseReportFilter(req)
+  const categoryId = String(req.body?.category_id || '')
+  if (!categoryId) return res.status(400).json({ code: 400, message: '请选择辅助核算类别' })
+  const groupBy = [`aux:${categoryId}`, ...(req.body?.expand_by_account ? ['account'] : [])]
+  try {
+    res.json({ code: 0, data: getSummaryReport(getDb(), f, groupBy) })
+  } catch (e: any) {
+    res.status(400).json({ code: 400, message: e.message || '汇总失败' })
+  }
+})
+
+// 动态筛选元数据：流水里实际出现过的辅助类别 / 结算方式 / 对方科目（辅助项目本身走 /base/aux-items 懒加载）
+router.get('/cashier/report/filter-meta', (req: AuthRequest, res) => {
+  res.json({ code: 0, data: getReportFilterMeta(getDb(), req.accountSetId || '', req.accountScope) })
 })
 
 // 按 id 查单条日记账（生成凭证拦截弹窗「补全」按钮打开分录用）

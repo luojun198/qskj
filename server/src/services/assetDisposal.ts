@@ -4,6 +4,7 @@
  * 处理资产减少（出售/报废/损毁/盘亏/捐赠等），可选生成清理凭证
  */
 import type { Database } from 'better-sqlite3'
+import { fallbackOriginalAccount } from './assetAccountResolver.js'
 import { v4 as uuidv4 } from 'uuid'
 import {
   insertAssetVoucher,
@@ -226,7 +227,7 @@ function generateDisposalVoucher(params: VoucherGenParams): string {
     ? db.prepare('SELECT account_code, depr_account_code, clearing_account_code, impairment_account_code FROM fixed_asset_category WHERE account_set_id=? AND code=?').get(accountSetId, asset.category_code)
     : null) as any
 
-  const assetAccountCode = assetCat?.account_code || '1601'
+  const assetAccountCode = assetCat?.account_code || fallbackOriginalAccount(db, accountSetId)
   const actualAccumAccount = assetCat?.depr_account_code || accumAccount || '1602'
   const actualClearingAccount = assetCat?.clearing_account_code || clearingAccount || '1606'
 

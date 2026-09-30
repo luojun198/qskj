@@ -1088,7 +1088,7 @@ import {
   Collection,
   QuestionFilled,
 } from '@element-plus/icons-vue'
-import { formatAmount } from '@/utils/format'
+import { formatAmount, formatDate } from '@/utils/format'
 import { accountNeedsCashFlowItem, isAuxCategoryExcludedFromAccount } from '@/utils/accountCashFlow'
 import { formatAccountFullPath } from '@/utils/accountPathDisplay'
 import { accountDisplayMode } from '@/utils/accountDisplayPreference'
@@ -1193,12 +1193,13 @@ function disabledVoucherDate(date: Date): boolean {
 const voucherDateWarning = computed(() => {
   const d = props.form.voucher_date
   if (!d) return ''
-  const dateObj = new Date(d)
-  if (isNaN(dateObj.getTime())) return ''
+  if (isNaN(new Date(d).getTime())) return ''
+  // 按 YYYY-MM-DD 字符串比较：new Date('YYYY-MM-DD') 解析为 UTC 零点（东八区=当日 08:00），
+  // 与本地零点的月末比较会让"月末当天"误报；toISOString 又会把本地月末显示成前一天
   const now = new Date()
-  const maxDate = new Date(now.getFullYear(), now.getMonth() + 1, 0)
-  if (dateObj > maxDate) {
-    return `凭证日期不能超过当月（${maxDate.toISOString().slice(0, 10)}）`
+  const maxStr = formatDate(new Date(now.getFullYear(), now.getMonth() + 1, 0))
+  if (d.slice(0, 10) > maxStr) {
+    return `凭证日期不能超过当月（${maxStr}）`
   }
   if (props.accountSetStartDate && d < props.accountSetStartDate) {
     return `凭证日期（${d}）不能早于账套启用日期（${props.accountSetStartDate}）`

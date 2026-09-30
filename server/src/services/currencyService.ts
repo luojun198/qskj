@@ -1,4 +1,5 @@
 import { getDb } from '../db/index.js'
+import { assertLeafAccountCode } from './accountReferences.js'
 import { v4 as uuidv4 } from 'uuid'
 import { upsertAccountSetSystemParam } from './accountSetDefaults.js'
 
@@ -420,6 +421,7 @@ export function saveCurrencySettings(
       .prepare(`SELECT id FROM accounts WHERE account_set_id = ? AND code = ? LIMIT 1`)
       .get(accountSetId, code) as { id?: string } | undefined
     if (!acc?.id) throw new Error(`汇兑损益科目 ${code} 不存在`)
+    assertLeafAccountCode(db, accountSetId, code, '汇兑损益科目')
   }
   upsertAccountSetSystemParam(db, accountSetId, EXCHANGE_GAIN_PARAM_KEY, code, '汇兑损益科目')
   return getCurrencySettings(accountSetId)

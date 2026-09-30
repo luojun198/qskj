@@ -129,6 +129,7 @@
 </template>
 
 <script setup lang="ts">
+import { todayStr } from '@/utils/format'
 import { computed, defineComponent, h, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { Download, Search } from '@element-plus/icons-vue'
@@ -305,7 +306,7 @@ async function exportExcel() {
   try {
     const blob = await (isPurchase.value ? scmApi.exportPurchaseCustom(config.value) : scmApi.exportSalesCustom(config.value))
     const url = URL.createObjectURL(blob)
-    const link = document.createElement('a'); link.href = url; link.download = `${reportName.value}自定义报表_${new Date().toISOString().slice(0, 10)}.xlsx`; link.click()
+    const link = document.createElement('a'); link.href = url; link.download = `${reportName.value}自定义报表_${todayStr()}.xlsx`; link.click()
     URL.revokeObjectURL(url)
   } finally { exporting.value = false }
 }

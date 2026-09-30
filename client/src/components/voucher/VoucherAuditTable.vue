@@ -76,7 +76,11 @@ const props = withDefaults(defineProps<Props>(), {
   hasMore: false,
 })
 
-const { containerRef } = useFillHeightTable()
+// 查询 / 审核页：容器由 .page 的 flex 布局撑满（见 common.css），不要再写死像素高度，
+// 否则汇总条出现、页签切换后高度不会重算，表格下方会出现大片空白。
+// 仅弹窗预览（无 .page flex 上下文）才需要按视口测量高度。
+const containerRef =
+  props.mode === 'preview' ? useFillHeightTable().containerRef : ref<HTMLElement>()
 // 表头被拖选自动滚动时与表体错位 → 强制回同步
 useVirtualTableHeaderScrollSync(containerRef)
 
