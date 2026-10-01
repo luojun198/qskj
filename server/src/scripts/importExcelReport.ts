@@ -1,6 +1,7 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import { getDb } from '../db/index.js'
+import { isDirectScriptRun } from '../utils/isDirectScriptRun.js'
 import { v4 as uuidv4 } from 'uuid'
 import { fileURLToPath } from 'url'
 
@@ -328,6 +329,6 @@ async function main() {
 }
 
 // 如果是直接运行此脚本
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isDirectScriptRun('importExcelReport')) {
   main()
 }

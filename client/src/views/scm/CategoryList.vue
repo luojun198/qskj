@@ -96,7 +96,7 @@ onMounted(load)
 </script>
 
 <style scoped>
-.scm-cat-page { display: flex; flex-direction: column; height: 100%; padding: 12px 16px; }
+.scm-cat-page { display: flex; flex-direction: column; height: 100%; padding: var(--page-pad); }
 .cat-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
 .cat-title { font-size: var(--cw-text-lg); font-weight: 600; margin-right: 4px; }
 .cat-hint { margin-left: auto; font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }

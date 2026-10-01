@@ -61,8 +61,8 @@
       </el-radio-group>
     </div>
 
-    <div class="page-body">
-      <el-table ref="tableRef" :data="tableData" v-loading="loading" border stripe size="small" class="compact-data-table" max-height="calc(100vh - 230px)" :row-class-name="rowClass" @row-dblclick="handleView" @header-dragend="onDragEnd" @selection-change="handleSelectionChange">
+    <div class="page-body page-table-fill">
+      <el-table ref="tableRef" :data="tableData" v-loading="loading" border stripe size="small" class="compact-data-table" height="100%" :row-class-name="rowClass" @row-dblclick="handleView" @header-dragend="onDragEnd" @selection-change="handleSelectionChange">
         <el-table-column type="selection" width="44" fixed="left" :selectable="isSelectableScmDoc" />
         <el-table-column v-for="column in orderedVisibleColumns" :key="column.key" :label="column.label" :column-key="column.key"
           :prop="docColumnProp(column.key)" :width="docColumnWidth(column.key)" :min-width="docColumnMinWidth(column.key)"
@@ -637,13 +637,13 @@ async function runBatchAction(action: keyof typeof ACTION_LABEL) {
 </script>
 
 <style scoped>
-.scm-doc-page { padding: 12px 16px; }
+.scm-doc-page { padding: var(--page-pad); height: 100%; }
 /* 合计行（表体最后一行）：加粗 + 浅底，水平滚动条落在其下方 */
 .scm-doc-page :deep(.doc-line-summary) { font-weight: 600; }
 .scm-doc-page :deep(.doc-line-summary td.el-table__cell) { background: var(--el-fill-color-light); }
 
 .filter-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
 .total-hint { font-size: var(--cw-text-base); color: var(--el-text-color-secondary); margin-left: auto; }
-.doc-type-tabs { margin-bottom: 8px; }
+.doc-type-tabs { margin-bottom: var(--block-gap); }
 .selection-hint { font-size: var(--cw-text-base); color: var(--el-color-primary); white-space: nowrap; }
 </style>

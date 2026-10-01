@@ -113,7 +113,7 @@ onActivated(() => { load() })
 </script>
 
 <style scoped>
-.wr-page { display: flex; flex-direction: column; height: 100%; padding: 12px 16px; gap: 8px; }
+.wr-page { display: flex; flex-direction: column; height: 100%; padding: var(--page-pad); gap: var(--block-gap); }
 .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .filter-row .title { font-weight: 600; }
 .filter-row .hint { margin-left: auto; font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }

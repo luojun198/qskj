@@ -31,7 +31,7 @@
 
 /* ========== 顶栏 - 现代极简风 ========== */
 .header {
-  height: 60px;
+  height: var(--layout-header-h, 40px);
   background: rgba(255, 255, 255, 0.9);
   backdrop-filter: blur(10px);
   border-bottom: 1px solid rgba(18, 199, 174, 0.15);
@@ -39,7 +39,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 24px;
+  padding: 0 16px;
   position: sticky;
   top: 0;
   z-index: 100;
@@ -80,7 +80,7 @@
 .header-right {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-shrink: 0;
   margin-left: auto;
 }
@@ -90,9 +90,9 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 34px;
-  padding: 0 12px 0 8px;
-  border-radius: 10px;
+  min-height: 28px;
+  padding: 0 10px 0 5px;
+  border-radius: 8px;
   background: #ffffff;
   border: 1px solid rgba(18, 199, 174, 0.15);
   box-shadow: 0 2px 8px rgba(18, 199, 174, 0.04);
@@ -108,9 +108,9 @@
 
 .info-chip__icon,
 .info-chip__avatar {
-  width: 24px;
-  height: 24px;
-  border-radius: 7px;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -170,9 +170,9 @@
 .header-actions {
   display: flex;
   align-items: center;
-  gap: 5px;
-  padding: 5px 6px;
-  border-radius: 14px;
+  gap: 3px;
+  padding: 1px 3px;
+  border-radius: 10px;
   background: linear-gradient(180deg, #ffffff 0%, #f8f9fb 100%);
   border: 1px solid rgba(44, 62, 80, 0.1);
   box-shadow:
@@ -190,7 +190,7 @@
 
 .header-actions__divider {
   width: 1px;
-  height: 22px;
+  height: 16px;
   margin: 0 2px;
   background: linear-gradient(
     180deg,
@@ -204,11 +204,11 @@
 .header-action-btn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  height: 34px;
-  padding: 0 10px 0 4px;
+  gap: 5px;
+  height: 26px;
+  padding: 0 8px 0 3px;
   border: 1px solid transparent;
-  border-radius: 10px;
+  border-radius: 8px;
   background: transparent;
   color: var(--cw-ink-primary);
   font-size: var(--cw-text-sm);
@@ -224,9 +224,9 @@
 }
 
 .header-action-btn__icon {
-  width: 26px;
-  height: 26px;
-  border-radius: 8px;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -235,8 +235,8 @@
 }
 
 .header-action-btn__icon svg {
-  width: 14px;
-  height: 14px;
+  width: 13px;
+  height: 13px;
 }
 
 .header-action-btn__label {
@@ -469,7 +469,7 @@ html.cw-light-mode .header-action-btn--perf:hover:not(:disabled) {
 .el-main.main {
   flex: 1 1 0;
   min-height: 0;
-  padding: 8px;
+  padding: var(--layout-main-pad, 6px);
   background: #f5f5f7;
   overflow-x: hidden;
   overflow-y: auto;
@@ -632,15 +632,15 @@ html.cw-light-mode .header-action-btn--perf:hover:not(:disabled) {
   }
 
   .header-action-btn {
-    width: 34px;
-    height: 34px;
+    width: 28px;
+    height: 28px;
     padding: 0;
     justify-content: center;
   }
 
   .header-action-btn__icon {
-    width: 28px;
-    height: 28px;
+    width: 22px;
+    height: 22px;
   }
 
   .main {

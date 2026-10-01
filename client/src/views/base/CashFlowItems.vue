@@ -286,14 +286,14 @@ onMounted(async () => {
 
 <style scoped>
 .page {
-  padding: 16px;
+  padding: var(--page-pad);
 }
 
 .page-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 12px;
+  margin-bottom: var(--block-gap);
 }
 .page-title {
   display: flex;

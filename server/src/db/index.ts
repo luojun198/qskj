@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3'
 import type { Database as DatabaseType } from 'better-sqlite3'
 import { readFileSync, existsSync, mkdirSync } from 'fs'
-import { resolve, dirname, basename, join } from 'path'
+import { resolve, dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 import { v4 as uuidv4 } from 'uuid'
 import dotenv from 'dotenv'
@@ -9,6 +9,7 @@ import { PRESET_ROLES } from './permissions.js'
 import { ensureUserRoleLink } from '../services/userRoleLinks.js'
 import { ensureDynamicReportSchema } from './ensureDynamicReportSchema.js'
 import { ensureVoucherFts } from '../services/voucherFts.js'
+import { getDeployDir } from '../utils/runtimePaths.js'
 
 // ES module 的 import 会在模块求值前提升，server/src/index.ts 的 dotenv.config()
 // 可能在本模块顶层常量求值后才执行，导致 DB_PATH/DB_DIR 等环境变量读不到。
@@ -34,34 +35,9 @@ import { ensureVoucherFts } from '../services/voucherFts.js'
 const MODULE_FILE = fileURLToPath(import.meta.url)
 const MODULE_DIR = dirname(MODULE_FILE)
 const SERVER_SRC_DIR = resolve(MODULE_DIR, '..')
-const SERVER_ROOT_DIR = resolve(SERVER_SRC_DIR, '..')
-const PROJECT_ROOT_DIR = resolve(SERVER_ROOT_DIR, '..')
 
-// 便携部署：process.execPath = deploy/node/node.exe，DB 在 deploy/data/
-// pkg 部署：process.pkg 标识，DB 在 exe 同目录/data/
-// 开发环境：使用项目根目录
-export function getDeployDir(): string {
-  const execPath = process.execPath || ''
-  const isPkg = !!(process as any).pkg
-
-  if (isPkg) {
-    // pkg exe: deploy/cw-finance.exe → deploy/
-    return dirname(execPath)
-  }
-
-  // 检查是否是便携部署（deploy/node/node.exe）
-  // 通过检查 execPath 的父目录名是否为 'node' 来判断
-  const parentDir = dirname(execPath)
-  const parentDirName = basename(parentDir)
-  
-  if (execPath.endsWith('node.exe') && parentDirName === 'node') {
-    // 便携 Node.js: deploy/node/node.exe → deploy/
-    return dirname(parentDir)
-  }
-
-  // 开发环境：使用项目根目录
-  return PROJECT_ROOT_DIR
-}
+// 部署根目录：便携 Node / pkg / 打包产物 / 源码运行统一由 utils/runtimePaths.ts 判定
+export { getDeployDir }
 
 const DEPLOY_DIR = getDeployDir()
 const DB_DIR = process.env.DB_DIR || resolve(DEPLOY_DIR, 'data')
@@ -396,17 +372,15 @@ export function closeAndResetDb() {
 export function initDatabase(): DatabaseType {
   const database = getDb()
 
-  let schemaPath: string
-  if (process.env.SCHEMA_DIR) {
-    schemaPath = resolve(process.env.SCHEMA_DIR, 'schema.sql')
-  } else if ((process as any).pkg) {
-    schemaPath = resolve(DEPLOY_DIR, 'server', 'schema.sql')
-  } else if ((process.execPath || '').endsWith('node.exe')) {
-    // portable Node.js: schema.sql is in deploy/server/schema.sql
-    schemaPath = resolve(DEPLOY_DIR, 'server', 'schema.sql')
-  } else {
-    schemaPath = resolve(SERVER_SRC_DIR, 'db', 'schema.sql')
-  }
+  // 按存在性依次查找，不按「是不是 node.exe」猜运行环境（系统 Node 跑打包产物时会猜错）：
+  // 部署包 deploy/server/schema.sql → 源码 server/src/db/schema.sql（开发 / npm start）
+  const schemaCandidates = [
+    ...(process.env.SCHEMA_DIR ? [resolve(process.env.SCHEMA_DIR, 'schema.sql')] : []),
+    resolve(DEPLOY_DIR, 'server', 'schema.sql'),
+    resolve(SERVER_SRC_DIR, 'db', 'schema.sql'),
+    resolve(DEPLOY_DIR, 'server', 'src', 'db', 'schema.sql'),
+  ]
+  const schemaPath = schemaCandidates.find(p => existsSync(p)) || schemaCandidates[0]
 
   const schema = readFileSync(schemaPath, 'utf-8')
   database.exec(schema)

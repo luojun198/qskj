@@ -69,7 +69,7 @@ onActivated(load)
 </script>
 
 <style scoped>
-.pcl-page { display: flex; flex-direction: column; height: 100%; padding: 12px 16px; gap: 8px; }
+.pcl-page { display: flex; flex-direction: column; height: 100%; padding: var(--page-pad); gap: var(--block-gap); }
 .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .filter-row .title { font-weight: 600; }
 .filter-row .hint { margin-left: auto; font-size: 12px; color: var(--el-text-color-secondary); }

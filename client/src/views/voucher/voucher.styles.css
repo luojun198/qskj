@@ -1,6 +1,6 @@
 /* 凭证列表页（录入 / 审核 / 查询）紧凑布局 */
 .voucher-list-page {
-  padding: 8px 12px !important;
+  padding: var(--page-pad) !important;
   height: 100%;
   min-height: 0;
   overflow: hidden;
@@ -156,6 +156,97 @@
   font-size: 11.5px;
   line-height: 1;
   letter-spacing: 0.2px;
+}
+
+/* ========== 单行工具栏（查询 / 审核页）：图标在左、文字在右，28px 高，参照金蝶 ========== */
+.gl-toolbar-card--inline {
+  padding: 3px 6px;
+  margin-bottom: var(--block-gap, 6px);
+}
+
+.gl-toolbar-card--inline .gl-toolbar {
+  gap: 2px;
+}
+
+.gl-toolbar-card--inline .gl-tool-btn {
+  flex-direction: row;
+  gap: 4px;
+  min-width: 0;
+  height: var(--ctl-row-height, 28px);
+  padding: 0 7px;
+  flex-shrink: 0;
+}
+
+.gl-toolbar-card--inline .gl-tool-btn__icon {
+  height: 15px;
+}
+
+.gl-toolbar-card--inline .gl-tool-btn__label {
+  font-size: var(--cw-text-sm, 12px);
+}
+
+/* 同行的筛选卡：去掉自身内边距与边框，工具条高度 = 控件高度 */
+.voucher-list-page .gl-toolbar-card--inline .voucher-filter-card {
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.voucher-list-page .gl-toolbar-card--inline .voucher-filter-card .el-card__body {
+  padding: 0 !important;
+}
+
+/* 下拉组：分体按钮主体 + 箭头 */
+.gl-tool-group {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.gl-tool-group .el-dropdown {
+  display: inline-flex;
+}
+
+.gl-tool-group__caret {
+  color: var(--wb-text-3, #94a3b8);
+  margin-left: 1px;
+}
+
+.gl-tool-group.is-split .gl-tool-group__main {
+  padding-right: 4px;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.gl-tool-group__trigger.is-caret-only {
+  padding: 0 4px;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.gl-tool-group.is-split:hover .gl-tool-btn:not(:disabled) {
+  border-color: var(--mint-200, #a7f3d0);
+}
+
+.gl-tool-menu .el-dropdown-menu__item {
+  gap: 6px;
+  font-size: var(--cw-text-sm, 12px);
+}
+
+.gl-tool-menu__icon {
+  color: var(--mint-600, #059669);
+}
+
+.gl-tool-menu .is-disabled .gl-tool-menu__icon {
+  color: inherit;
+}
+
+.gl-tool-menu__item--forward .gl-tool-menu__icon {
+  color: var(--el-color-primary, #409eff);
+}
+
+.gl-tool-menu__item--reverse .gl-tool-menu__icon {
+  color: var(--el-color-danger, #f56c6c);
 }
 
 /* 批量正向 / 逆向操作着色（凭证管理页） */

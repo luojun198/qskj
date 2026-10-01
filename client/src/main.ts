@@ -12,6 +12,7 @@ import { permission } from './directives/permission'
 import { registerDynamicIcons } from './config/iconRegistry'
 import { setupMessageBoxDefaults } from './plugins/messageBoxDefaults'
 import { applyPerformanceMode } from './utils/performanceMode'
+import { setupChunkReload, isChunkLoadError, reloadOnceForChunkError } from './utils/chunkReload'
 
 function bootstrap() {
   const app = createApp(App)
@@ -22,8 +23,11 @@ function bootstrap() {
   app.directive('permission', permission)
   app.use(pinia)
   app.use(router)
+  setupChunkReload(router)
   setupMessageBoxDefaults()
   app.config.errorHandler = (err, instance, info) => {
+    // 异步组件（defineAsyncComponent）分块加载失败同样按升级后旧分块处理
+    if (isChunkLoadError(err) && reloadOnceForChunkError()) return
     console.error('VUE_GLOBAL_ERROR:', err, info)
   }
   app.mount('#app')

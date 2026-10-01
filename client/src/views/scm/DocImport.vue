@@ -291,7 +291,7 @@ async function auditAll() {
 </script>
 
 <style scoped>
-.page-doc-import { display: flex; flex-direction: column; gap: 12px; padding: 12px 16px; }
+.page-doc-import { display: flex; flex-direction: column; gap: var(--block-gap); padding: var(--page-pad); }
 .import-header { display: flex; align-items: center; justify-content: space-between; }
 .import-header__left { display: flex; align-items: center; gap: 12px; }
 .import-header__left h3 { margin: 0; }

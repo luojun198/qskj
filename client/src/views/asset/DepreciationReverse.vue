@@ -211,7 +211,7 @@ onMounted(load)
 .dr-header__sep { margin: 0 8px; color: var(--el-text-color-placeholder); }
 .dr-header__title { font-size: var(--cw-text-lg); font-weight: 600; }
 .dr-header__right { display: flex; align-items: center; gap: 8px; }
-.dr-body { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; padding: 12px 16px 16px; }
+.dr-body { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; padding: var(--block-gap) 0 0; }
 .dr-rules { margin-bottom: 12px; line-height: 1.6; }
 .dr-section-title {
   font-size: var(--cw-text-base); font-weight: 600; color: var(--el-text-color-primary);

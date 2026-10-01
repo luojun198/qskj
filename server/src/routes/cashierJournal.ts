@@ -51,6 +51,7 @@ import {
   manualMatch, pruneStaleMatches,
 } from '../services/cashierGlReconcile.js'
 import type { Database } from 'better-sqlite3'
+import { getUploadsDir, resolveUploadFile } from '../utils/runtimePaths.js'
 
 
 /**
@@ -604,7 +605,7 @@ router.delete(
     // 清理附件
     const attachments = db.prepare('SELECT filename FROM cashier_attachments WHERE journal_id = ?').all(id) as any[]
     for (const a of attachments) {
-      const filePath = path.join(process.cwd(), 'uploads', 'attachments', path.basename(a.filename))
+      const filePath = resolveUploadFile('attachments', path.basename(a.filename))
       await fs.unlink(filePath).catch(() => {})
     }
     db.prepare('DELETE FROM cashier_attachments WHERE journal_id = ?').run(id)
@@ -1100,7 +1101,7 @@ router.post(
       return res.status(400).json({ code: 400, message: e?.message || '出纳初始化失败', data: { backup: backupFile } })
     }
     for (const a of attachmentFiles) {
-      const filePath = path.join(process.cwd(), 'uploads', 'attachments', path.basename(a.filename))
+      const filePath = resolveUploadFile('attachments', path.basename(a.filename))
       await fs.unlink(filePath).catch(() => {})
     }
     res.json({ code: 0, data: { ok: true, backup: backupFile, ...result } })
@@ -1132,7 +1133,7 @@ router.post(
       return res.status(400).json({ code: 400, message: e.message })
     }
 
-    const uploadDir = path.join(process.cwd(), 'uploads', 'attachments')
+    const uploadDir = getUploadsDir('attachments')
     await fs.mkdir(uploadDir, { recursive: true })
 
     const files = req.files as Express.Multer.File[]
@@ -1225,7 +1226,7 @@ router.delete(
       }
 
       const safeFilename = path.basename(attachment.filename)
-      const filePath = path.join(process.cwd(), 'uploads', 'attachments', safeFilename)
+      const filePath = resolveUploadFile('attachments', safeFilename)
       
       await fs.unlink(filePath).catch(err => {
         console.warn(`物理文件删除失败: ${filePath}`, err)

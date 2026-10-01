@@ -98,35 +98,9 @@ import backupRoutes from './routes/backup.js'
 import licenseRoutes from './routes/license.js'
 import { licenseMiddleware } from './middleware/licenseMiddleware.js'
 
-// 便携部署：process.execPath = deploy/node/node.exe，client/dist 在 deploy/client/dist/
-// pkg 部署：process.pkg 标识，client/dist 在 exe 同目录/client/dist/
-// 开发环境：client/dist 在项目根目录 client/dist/
-function getExeDir(): string {
-  if ((process as any).pkg) {
-    // pkg exe: deploy/cw-finance.exe → deploy/
-    return dirname(process.execPath)
-  }
-  // 便携 Node.js: execPath = deploy/node/node.exe
-  // 系统安装的 Node.js: execPath = C:\Program Files\nodejs\node.exe
-  // 区分方式：execPath 的父目录名是 "node" 则为便携式
-  const execPath = process.execPath || ''
-  const execDir = dirname(execPath)
-  if (execPath.endsWith('node.exe') && basename(execDir).toLowerCase() === 'node') {
-    return dirname(execDir)
-  }
-  // 开发：arg = server/src/index.ts
-  const arg = process.argv[1]
-  if (arg) {
-    // tsx dev: arg = server/src/index.ts → server/src → server → cw/
-    // bundle:  arg = server/dist/bundle.cjs → server/dist → server → cw/
-    const scriptDir = dirname(arg)
-    const serverDir = dirname(scriptDir)
-    return dirname(serverDir)
-  }
-  return process.cwd()
-}
-
-const EXE_DIR = getExeDir()
+// 部署根目录（client/dist、BUILD_STAMP.json 所在处），与数据 / 上传目录同一套判定
+// （见 utils/runtimePaths.ts；原先按 argv[1] 往上数三级，系统 Node 跑部署包时会算到部署目录的上一级）
+const EXE_DIR = getDeployDir()
 
 const app = express()
 // 当前分支(cw0523)独立端口 3105，与原项目 cw(3005)可同时运行
@@ -327,6 +301,13 @@ app.use(
     },
   })
 )
+
+// 打包产物（带哈希的分块）找不到时直接 404，不能落到下面的 SPA fallback：
+// 否则升级后旧页面请求旧分块会拿到 200 的 index.html，浏览器只报 MIME 错误、页面白屏，
+// 前端也无从判断「该刷新了」（见 client/src/utils/chunkReload.ts）
+app.get('/assets/*', (_req, res) => {
+  res.status(404).end()
+})
 
 // SPA fallback: 所有非API路由返回 index.html
 app.get('*', (req, res, next) => {

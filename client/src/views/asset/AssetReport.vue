@@ -605,7 +605,7 @@ onMounted(async () => {
 
 <style scoped>
 .page-asset-report { display: flex; flex-direction: column; height: 100%; }
-.report-tabs { flex: 1; display: flex; flex-direction: column; padding: 0 16px; overflow: hidden; }
+.report-tabs { flex: 1; display: flex; flex-direction: column; padding: 0; overflow: hidden; }
 .report-tabs :deep(.el-tabs__content) { flex: 1; overflow: auto; padding-top: 8px; }
 .filter-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
 .filter-hint { font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }

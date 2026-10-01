@@ -37,7 +37,7 @@ defineProps<{
   display: flex;
   flex-direction: column;
   height: 100%;
-  padding: 14px 18px;
+  padding: var(--page-pad);
   background: var(--surface-canvas, #f3faf9);
 }
 
@@ -45,9 +45,7 @@ defineProps<{
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 12px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--border-subtle);
+  margin-bottom: var(--block-gap);
   background: transparent;
   flex-shrink: 0;
 }
@@ -59,13 +57,13 @@ defineProps<{
 .filter-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 12px 16px;
+  gap: 8px;
+  padding: var(--filter-row-pad);
   background: var(--surface-card);
-  border-radius: var(--radius-lg);
+  border-radius: 8px;
   border: 1px solid var(--border-subtle);
   box-shadow: var(--shadow-xs);
-  margin-bottom: 12px;
+  margin-bottom: var(--block-gap);
   flex-wrap: wrap;
 }
 

@@ -53,6 +53,7 @@ import { syncCashierVoucherNos } from '../services/cashierQuery.js'
 import fs from 'fs/promises'
 import path from 'path'
 import multer from 'multer'
+import { getUploadsDir, resolveUploadFile } from '../utils/runtimePaths.js'
 
 const router = Router()
 
@@ -1839,7 +1840,7 @@ router.post(
       return res.status(404).json({ code: 404, message: '凭证不存在' })
     }
 
-    const uploadDir = path.join(process.cwd(), 'uploads', 'attachments')
+    const uploadDir = getUploadsDir('attachments')
     await fs.mkdir(uploadDir, { recursive: true })
 
     // 阶段 1：先把全部文件写到磁盘，任一失败即清理已写入的物理文件
@@ -1985,7 +1986,7 @@ router.delete(
       if (!safeFilename || safeFilename === '.' || safeFilename === '..') {
         return res.status(400).json({ code: 400, message: '附件文件名无效' })
       }
-      const filePath = path.join(process.cwd(), 'uploads', 'attachments', safeFilename)
+      const filePath = resolveUploadFile('attachments', safeFilename)
 
       // 物理文件可能已不存在（DB/文件不一致时），删除失败不阻塞 DB 记录清理
       await fs.unlink(filePath).catch(err => {

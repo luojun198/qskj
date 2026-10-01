@@ -1,26 +1,28 @@
 <template>
   <div class="page scm-unit-page">
-    <div class="list-toolbar" style="margin-bottom:8px">
+    <div class="list-toolbar" style="margin-bottom:var(--block-gap)">
       <el-button type="primary" size="small" @click="openAdd"><el-icon><Plus /></el-icon>新增计量单位</el-button>
     </div>
-    <el-table ref="tableRef" :data="list" v-loading="loading" border stripe size="small" max-height="calc(100vh - 240px)" class="compact-data-table" @header-dragend="onDragEnd">
-      <el-table-column label="编号" prop="code" :width="cw('code', 120)" />
-      <el-table-column label="名称" prop="name" min-width="160" :width="widths.name" />
-      <el-table-column label="状态" column-key="status" :width="cw('status', 80)" align="center">
-        <template #default="{ row }">
-          <el-tag :type="row.enabled ? 'success' : 'info'" size="small">
-            {{ row.enabled ? '启用' : '停用' }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="备注" prop="remark" min-width="160" :width="widths.remark" show-overflow-tooltip />
-      <el-table-column label="操作" column-key="操作" :width="cw('操作', 120)" fixed="right">
-        <template #default="{ row }">
-          <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
-          <el-button link type="danger" size="small" @click="handleDelete(row)">删除</el-button>
-        </template>
-      </el-table-column>
-    </el-table>
+    <div class="page-table-fill">
+      <el-table ref="tableRef" :data="list" v-loading="loading" border stripe size="small" height="100%" class="compact-data-table" @header-dragend="onDragEnd">
+        <el-table-column label="编号" prop="code" :width="cw('code', 120)" />
+        <el-table-column label="名称" prop="name" min-width="160" :width="widths.name" />
+        <el-table-column label="状态" column-key="status" :width="cw('status', 80)" align="center">
+          <template #default="{ row }">
+            <el-tag :type="row.enabled ? 'success' : 'info'" size="small">
+              {{ row.enabled ? '启用' : '停用' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="备注" prop="remark" min-width="160" :width="widths.remark" show-overflow-tooltip />
+        <el-table-column label="操作" column-key="操作" :width="cw('操作', 120)" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
+            <el-button link type="danger" size="small" @click="handleDelete(row)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
 
     <el-dialog v-model="dialogVisible" :title="editId ? '编辑计量单位' : '新增计量单位'" width="440px" draggable @keydown="onDialogKeydown">
       <el-form :model="form" label-width="80px" size="small">
@@ -120,6 +122,6 @@ onMounted(load)
 </script>
 
 <style scoped>
-.scm-unit-page { padding: 12px 16px; }
+.scm-unit-page { padding: var(--page-pad); height: 100%; }
 .filter-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 </style>

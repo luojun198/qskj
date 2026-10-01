@@ -103,6 +103,7 @@ declare module 'vue' {
     EmptyState: typeof import('./components/EmptyState.vue')['default']
     ExportProgressOverlay: typeof import('./components/export/ExportProgressOverlay.vue')['default']
     FilterClearButton: typeof import('./components/common/FilterClearButton.vue')['default']
+    GlToolbarButtons: typeof import('./components/voucher/GlToolbarButtons.vue')['default']
     HiprintDesigner: typeof import('./components/print/HiprintDesigner.vue')['default']
     HiprintDialog: typeof import('./components/print/HiprintDialog.vue')['default']
     ItemBatchPicker: typeof import('./components/scm/ItemBatchPicker.vue')['default']

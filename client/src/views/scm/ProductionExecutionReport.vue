@@ -136,7 +136,7 @@ onMounted(load)
 </script>
 
 <style scoped>
-.prod-exec-page { height: 100%; display: flex; flex-direction: column; padding: 12px 16px; gap: 10px; }
+.prod-exec-page { height: 100%; display: flex; flex-direction: column; padding: var(--page-pad); gap: var(--block-gap); }
 .report-header { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--el-border-color-lighter); padding-bottom: 8px; }
 .report-header__left { display: flex; align-items: center; gap: 8px; }
 .report-header__note { font-size: 12px; color: var(--el-text-color-secondary); }

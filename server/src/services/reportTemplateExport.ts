@@ -2,6 +2,7 @@ import { existsSync, readdirSync } from 'fs'
 import { basename, join, resolve } from 'path'
 import ExcelJS from 'exceljs'
 import type { Database } from 'better-sqlite3'
+import { getUploadsDir } from '../utils/runtimePaths.js'
 import type { AccountScopeContext } from './accountAuthorization.js'
 import { executeTemplateSheets } from './reportTemplateExecutor.js'
 import { loadReportTemplateExcelSource } from './reportTemplatePersistence.js'
@@ -119,7 +120,9 @@ export function resolveUploadedTemplatePath(sourceFile: string | null | undefine
   if (!fileName) return null
 
   const cwd = process.cwd()
+  // 新位置（部署根目录/uploads）在前；cwd 两项兼容旧版按 cwd 存放的上传副本
   const uploadRoots = [
+    getUploadsDir('report-templates'),
     join(cwd, 'uploads', 'report-templates'),
     resolve(cwd, '..', 'uploads', 'report-templates'),
   ]

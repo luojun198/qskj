@@ -177,6 +177,6 @@ async function handleSave() {
 </script>
 
 <style scoped>
-.page { padding: 16px; display: flex; flex-direction: column; height: 100%; box-sizing: border-box; }
+.page { padding: var(--page-pad); display: flex; flex-direction: column; height: 100%; box-sizing: border-box; }
 .toolbar { margin-bottom: 12px; }
 </style>

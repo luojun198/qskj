@@ -188,7 +188,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .tabs-bar {
-  display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 10px;
+  display: flex; align-items: center; gap: 8px; height: var(--layout-tabs-h, 32px); padding: 0 8px;
   background: var(--el-bg-color); border-bottom: 1px solid var(--el-border-color-light); flex-shrink: 0;
 }
 .tabs-bar__primary { display: flex; align-items: center; gap: 6px; overflow: hidden; height: 100%; flex: 1; min-width: 0; }
@@ -196,7 +196,7 @@ onBeforeUnmount(() => {
 .tabs-bar__actions:empty { display: none; }
 .tab-item {
   display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; min-width: 0; max-width: 180px;
-  height: 28px; padding: 0 10px; border-radius: 14px; cursor: pointer; user-select: none;
+  height: 24px; padding: 0 10px; border-radius: 12px; cursor: pointer; user-select: none;
   font-size: var(--cw-text-base); color: var(--el-text-color-regular); overflow: hidden;
   background: var(--el-fill-color-light); border: 1px solid transparent; transition: background .12s, color .12s, border-color .12s;
 }
@@ -212,7 +212,7 @@ onBeforeUnmount(() => {
 .tab-item__close svg, .tabs-more-item__close svg { width: 9px; height: 9px; }
 .tabs-more-btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 5px; flex-shrink: 0;
-  height: 28px; padding: 0 10px; border: 1px solid var(--el-border-color); border-radius: 14px;
+  height: 24px; padding: 0 10px; border: 1px solid var(--el-border-color); border-radius: 12px;
   background: var(--el-bg-color); color: var(--el-text-color-regular); font-size: 12px; cursor: pointer;
 }
 .tabs-more-btn:hover, .tabs-more-btn.has-hidden { color: var(--el-color-primary); border-color: var(--el-color-primary-light-5); background: var(--el-color-primary-light-9); }

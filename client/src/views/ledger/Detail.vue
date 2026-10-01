@@ -1285,11 +1285,11 @@ onActivated(() => {
 }
 
 .page {
-  padding: 16px;
+  padding: var(--page-pad);
 }
 
 .page-header {
-  margin-bottom: 16px;
+  margin-bottom: var(--block-gap);
 }
 
 .page-header h2 {

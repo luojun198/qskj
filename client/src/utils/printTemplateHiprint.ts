@@ -14,6 +14,8 @@ import {
 } from '@/utils/hiprintVoucherProvider'
 // 以 URL 形式拿到 print-lock.css：hiprint 浏览器打印时要从 <link media="print"> 复制样式进打印 iframe
 import printLockCssUrl from 'vue-plugin-hiprint/dist/print-lock.css?url'
+// print-lock.css 原文：浏览器打印时内联进打印 iframe（见 hiprintBrowserPrintOptions）
+import printLockCssRaw from 'vue-plugin-hiprint/dist/print-lock.css?raw'
 
 type HiprintModule = typeof import('vue-plugin-hiprint')
 
@@ -49,10 +51,16 @@ function ensurePrintLockLink() {
 const HIPRINT_PRINT_OVERRIDE_CSS =
   '<style>.hiprint-printElement-table thead{background:transparent!important}</style>'
 
-/** 传给 `tp.print(data, options, printOptions)` 第三参的浏览器打印选项 */
+/**
+ * 传给 `tp.print(data, options, printOptions)` 第三参的浏览器打印选项。
+ *
+ * print-lock.css 全文以内联 <style> 经 styleHandler 带进打印 iframe：hiprint 只复制
+ * href 含 `print-lock.css` 的 link，而生产构建会把文件名加哈希（`print-lock-xxxx.css`），
+ * 匹配不上 → iframe 里没有表格边框样式，部署环境打印凭证无网格线（开发环境不加哈希，看不出来）。
+ */
 export function hiprintBrowserPrintOptions() {
   ensurePrintLockLink()
-  return { styleHandler: () => HIPRINT_PRINT_OVERRIDE_CSS }
+  return { styleHandler: () => `<style>${printLockCssRaw}</style>` + HIPRINT_PRINT_OVERRIDE_CSS }
 }
 
 /** 懒加载并初始化 hiprint（全局只初始化一次） */

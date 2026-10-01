@@ -51,7 +51,7 @@ onMounted(load)
 </script>
 
 <style scoped>
-.scm-rpt-page { display: flex; flex-direction: column; height: 100%; padding: 12px 16px; }
+.scm-rpt-page { display: flex; flex-direction: column; height: 100%; padding: var(--page-pad); }
 .rpt-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
 .rpt-title { font-size: var(--cw-text-lg); font-weight: 600; margin-right: 4px; }
 .rpt-sub { font-size: 12px; color: var(--el-text-color-secondary); }

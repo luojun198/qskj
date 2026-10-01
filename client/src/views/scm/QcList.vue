@@ -88,7 +88,7 @@ onActivated(load)
 </script>
 
 <style scoped>
-.qc-page { display: flex; flex-direction: column; height: 100%; padding: 12px 16px; gap: 8px; }
+.qc-page { display: flex; flex-direction: column; height: 100%; padding: var(--page-pad); gap: var(--block-gap); }
 .filter-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .filter-row .title { font-weight: 600; }
 .bad { color: var(--el-color-danger); font-weight: 600; }

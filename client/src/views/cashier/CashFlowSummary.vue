@@ -142,7 +142,7 @@ onMounted(load)
 
 <style scoped>
 .page-summary { display: flex; flex-direction: column; height: 100%; }
-.dim-row { display: flex; align-items: center; gap: 8px; padding: 4px 16px 0; flex-wrap: wrap; }
+.dim-row { display: flex; align-items: center; gap: 8px; padding: 0; flex-wrap: wrap; }
 .dim-label { font-size: 12px; color: var(--el-text-color-secondary); }
 .dim-select { width: 360px; max-width: 100%; }
 </style>

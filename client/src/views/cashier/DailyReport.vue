@@ -262,9 +262,9 @@ onMounted(load)
 
 <style scoped>
 .page-daily { display: flex; flex-direction: column; height: 100%; }
-.toolbar-row { display: flex; align-items: center; gap: 12px; padding: 4px 16px 0; }
+.toolbar-row { display: flex; align-items: center; gap: 12px; padding: 0; }
 .tip { font-size: 12px; color: var(--el-text-color-placeholder); }
-.report-body { flex: 1; overflow: auto; padding: 8px 16px 16px; }
+.report-body { flex: 1; overflow: auto; padding: var(--block-gap) 0 0; }
 .report-title { margin: 0 0 10px; font-size: var(--cw-text-xl); text-align: center; }
 .subtitle { font-size: 12px; color: var(--el-text-color-secondary); font-weight: 400; }
 .report-alert { margin-bottom: 8px; }

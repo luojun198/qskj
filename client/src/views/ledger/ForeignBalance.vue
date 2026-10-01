@@ -724,7 +724,7 @@ onMounted(async () => {
 
 <style scoped>
 .page {
-  padding: 16px;
+  padding: var(--page-pad);
 }
 
 .page-header {

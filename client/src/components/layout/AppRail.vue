@@ -110,7 +110,8 @@ function shortLabel(title: string): string {
 }
 
 .app-rail__logo {
-  height: 60px;
+  /* 与顶栏同高，保持左上角对齐 */
+  height: var(--layout-header-h, 40px);
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -123,8 +124,8 @@ function shortLabel(title: string): string {
 }
 
 .app-rail__logo-img {
-  width: 36px;
-  height: 36px;
+  width: 30px;
+  height: 30px;
   border-radius: 50%;
   background: transparent;
   object-fit: contain;

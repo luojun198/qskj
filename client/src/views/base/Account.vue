@@ -1380,7 +1380,7 @@ onActivated(() => load())
 <style scoped>
 .page {
   height: calc(100vh - 60px);
-  padding: 12px;
+  padding: var(--page-pad);
   display: flex;
   flex-direction: column;
   overflow: hidden;

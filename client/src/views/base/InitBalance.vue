@@ -2419,7 +2419,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .page {
   height: 100%;
-  padding: 12px;
+  padding: var(--page-pad);
   display: flex;
   flex-direction: column;
   overflow: hidden;

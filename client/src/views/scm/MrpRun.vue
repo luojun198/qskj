@@ -100,5 +100,5 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.mrp-list-page{display:flex;flex-direction:column;height:100%;padding:14px 18px;gap:12px}.page-header{display:flex;align-items:center;justify-content:space-between}.page-header h2{margin:0;font-size: var(--cw-text-lg);font-weight:600}.sub{margin-top:4px;color:var(--el-text-color-secondary);font-size: var(--cw-text-base)}.filters{display:flex;gap:8px}
+.mrp-list-page{display:flex;flex-direction:column;height:100%;padding:var(--page-pad);gap:var(--block-gap)}.page-header{display:flex;align-items:center;justify-content:space-between}.page-header h2{margin:0;font-size: var(--cw-text-lg);font-weight:600}.sub{margin-top:4px;color:var(--el-text-color-secondary);font-size: var(--cw-text-base)}.filters{display:flex;gap:8px}
 </style>

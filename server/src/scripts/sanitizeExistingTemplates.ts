@@ -14,9 +14,8 @@
  * 幂等：再次运行不会破坏已净化模板。
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
-import { basename } from 'node:path'
 import { getDb } from '../db/index.js'
+import { isDirectScriptRun } from '../utils/isDirectScriptRun.js'
 import {
   loadReportTemplateExcelSource,
   saveReportTemplateExcelSource,
@@ -126,9 +125,7 @@ async function run() {
   )
 }
 
-const entryScript = process.argv[1] ? basename(process.argv[1]) : ''
-const thisScript = basename(fileURLToPath(import.meta.url))
-if (entryScript === thisScript) {
+if (isDirectScriptRun('sanitizeExistingTemplates')) {
   run().catch(error => {
     console.error('[sanitize-templates] 运行失败：', error)
     process.exit(1)

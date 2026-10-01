@@ -68,6 +68,7 @@ import {
 } from '../services/assetReportQuery.js'
 import { ensureDefaultAssetDicts } from '../services/accountSetDefaults.js'
 import { createPreReinitializeBackup } from '../services/systemReinitialize.js'
+import { getUploadsDir, resolveUploadFile } from '../utils/runtimePaths.js'
 
 // ── 资产卡片附件上传配置（与出纳附件同口径：30MB / 10 个 / 图片·PDF·Office）──
 const ALLOWED_ASSET_ATTACHMENT_MIMES = [
@@ -1095,7 +1096,7 @@ router.post(
       .get(assetId, accountSetId)
     if (!asset) return res.status(404).json({ code: 404, message: '资产不存在' })
 
-    const uploadDir = path.join(process.cwd(), 'uploads', 'attachments')
+    const uploadDir = getUploadsDir('attachments')
     await fsp.mkdir(uploadDir, { recursive: true })
 
     const writtenPaths: string[] = []
@@ -1176,12 +1177,7 @@ router.delete(
       if (!attachment) return res.status(404).json({ code: 404, message: '附件不存在' })
 
       // basename 防目录穿越
-      const filePath = path.join(
-        process.cwd(),
-        'uploads',
-        'attachments',
-        path.basename(attachment.filename)
-      )
+      const filePath = resolveUploadFile('attachments', path.basename(attachment.filename))
       await fsp.unlink(filePath).catch(err => {
         console.warn(`物理文件删除失败: ${filePath}`, err)
       })

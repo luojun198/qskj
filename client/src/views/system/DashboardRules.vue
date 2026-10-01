@@ -341,7 +341,7 @@ onMounted(loadData)
 
 <style scoped>
 .rules-page { min-height: 100%; padding: 20px; background: var(--el-bg-color-page); }
-.page-header { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 16px; }
+.page-header { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: var(--block-gap); }
 .page-header__left { display: flex; align-items: flex-start; gap: 12px; }
 .page-header h2, .section-title h3, .rule-card h4 { margin: 0; }
 .page-header p, .section-title p, .rule-card p { margin: 6px 0 0; color: var(--el-text-color-secondary); font-size: var(--cw-text-base); }

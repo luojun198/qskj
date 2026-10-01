@@ -484,7 +484,7 @@ onActivated(() => { void tryRestoreVoucherModal() })
 </script>
 
 <style scoped>
-.aux-multi-column-page { padding: 12px 16px 8px; min-width: 1180px; }
+.aux-multi-column-page { padding: var(--page-pad); min-width: 1180px; }
 .aux-multi-column-header { align-items: flex-start; gap: 12px; margin-bottom: 8px; }
 .aux-multi-column-title-wrap { display: flex; align-items: baseline; gap: 12px; flex: 0 0 auto; padding-top: 5px; }
 .aux-multi-column-title-wrap h3 { margin: 0; white-space: nowrap; }

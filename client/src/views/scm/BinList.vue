@@ -10,7 +10,7 @@
       <span class="cat-hint">共 {{ rows.length }} 个库位（参考用，不参与库存结存）</span>
     </div>
     <div class="cat-body">
-      <el-table :data="rows" v-loading="loading" border stripe size="small" max-height="calc(100vh - 200px)">
+      <el-table :data="rows" v-loading="loading" border stripe size="small" height="100%">
         <el-table-column type="index" label="序号" width="48" align="center" />
         <el-table-column label="仓库" min-width="150" show-overflow-tooltip>
           <template #default="{ row }">{{ row.warehouse_name || row.warehouse_code }}</template>
@@ -70,8 +70,8 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.scm-cat-page { display: flex; flex-direction: column; height: 100%; padding: 12px 16px; }
-.cat-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
+.scm-cat-page { display: flex; flex-direction: column; height: 100%; padding: var(--page-pad); }
+.cat-bar { display: flex; align-items: center; gap: 10px; margin-bottom: var(--block-gap); flex-wrap: wrap; }
 .cat-title { font-size: var(--cw-text-lg); font-weight: 600; margin-right: 4px; }
 .cat-hint { margin-left: auto; font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }
 .cat-body { flex: 1; min-height: 0; }

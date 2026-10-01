@@ -668,7 +668,7 @@ onActivated(() => reloadContentColumnWidths())
 
 <style scoped>
 .page {
-  padding: 10px 12px;
+  padding: var(--page-pad);
   height: calc(100vh - 60px);
   display: flex;
   flex-direction: column;

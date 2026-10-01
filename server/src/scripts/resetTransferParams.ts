@@ -8,6 +8,7 @@
  */
 
 import { getDb } from '../db/index.js'
+import { isDirectScriptRun } from '../utils/isDirectScriptRun.js'
 import { v4 as uuidv4 } from 'uuid'
 
 // 默认结转损益配置
@@ -57,7 +58,7 @@ export function listTransferParams(accountSetId: string): any[] {
 }
 
 // 如果直接运行此脚本
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isDirectScriptRun('resetTransferParams')) {
   async function main() {
     try {
       const db = getDb()

@@ -563,7 +563,7 @@ onMounted(async () => {
 
 <style scoped>
 .page {
-  padding: 16px;
+  padding: var(--page-pad);
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
@@ -573,7 +573,7 @@ onMounted(async () => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 12px;
+  margin-bottom: var(--block-gap);
   flex-shrink: 0;
 }
 

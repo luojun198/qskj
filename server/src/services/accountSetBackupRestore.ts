@@ -9,6 +9,7 @@ import {
   syncAccountSetStartDate,
 } from './accountSetDefaults.js'
 import { cleanupAccountSetCascade } from './accountSetCleanup.js'
+import { getUploadsDir } from '../utils/runtimePaths.js'
 
 export type BackupScopeType = 'full' | 'single_account_set'
 
@@ -730,7 +731,7 @@ function safeAttachmentFilename(filename: unknown): string | null {
 export function restoreAttachmentFilesFromBackup(sourceDb: Database.Database): number {
   if (!tableExists(sourceDb, BACKUP_ATTACHMENT_TABLE)) return 0
 
-  const uploadDir = join(process.cwd(), 'uploads', 'attachments')
+  const uploadDir = getUploadsDir('attachments')
   if (!existsSync(uploadDir)) {
     mkdirSync(uploadDir, { recursive: true })
   }

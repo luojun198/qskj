@@ -1,6 +1,6 @@
 /* 页面容器统一风格 - flex 布局；默认随内容增高，由主内容区整体滚动 */
 .page {
-  padding: 16px;
+  padding: var(--page-pad);
   min-height: 100%;
   height: auto;
   max-height: none;
@@ -23,7 +23,7 @@
   flex-wrap: nowrap;
   gap: 12px;
   min-width: 0;
-  margin-bottom: 16px;
+  margin-bottom: var(--block-gap);
   flex-shrink: 0;
   position: relative;
   z-index: 12;
@@ -102,6 +102,15 @@
   flex-shrink: 0;
 }
 
+/* 区间日期框（daterange / datetimerange / monthrange）不随行拉伸：
+   Element Plus 把 .el-input__wrapper 类直接挂在区间选择器根节点上，
+   该类自带 flex-grow: 1（本意是撑满普通输入框内部），导致区间日期框放进 flex 工具行时
+   吞掉整行剩余宽度，页面写的 width: 240px 失效（实测单据列表 455px、生产日报 1223px）。
+   这里取消拉伸，宽度以页面设置 / 组件默认值为准；需要撑满时写 width: 100% 仍然有效。 */
+.el-date-editor.el-range-editor {
+  flex-grow: 0;
+}
+
 /* 筛选控件宽度工具类（替代内联 style="width: XXXpx"） */
 .filter-ctl--xs {
   width: 96px;
@@ -173,6 +182,17 @@
 :root {
   /* 行高统一值，便于后续整体调整 */
   --ctl-row-height: 28px;
+
+  /* ========== 紧凑密度变量（参照金蝶星辰：上下菜单栏紧凑，数据区尽量大） ==========
+     全站外框与页面留白统一从这里取值，改一处全站生效。
+     数据行 30px / 控件 28px 已与金蝶一致，不再压缩（再小金额难以辨认）。 */
+  --layout-header-h: 40px;     /* 顶栏（原 60px） */
+  --layout-tabs-h: 32px;       /* 多页签栏（原 38px） */
+  --layout-main-pad: 6px;      /* 主内容区内边距（原 8px） */
+  --page-pad: 6px 10px;        /* .page 内边距（原 16px / 12px / 10px 12px 混用） */
+  --page-pad-x: 10px;          /* 页面内二级容器需要水平留白时使用 */
+  --block-gap: 6px;            /* 页头 / 筛选行 / 表格等区块之间的间距（原 8~16px） */
+  --filter-row-pad: 4px 8px;   /* 筛选行内边距（原 14px 16px / 8px 10px） */
 }
 
 .page-header,
@@ -240,16 +260,16 @@
   height: var(--ctl-row-height) !important;
 }
 
-/* 顶部多标签栏右侧的页面操作位（Teleport 投递的「列设置」等按钮）：与标签项同高 28px */
+/* 顶部多标签栏右侧的页面操作位（Teleport 投递的「列设置」等按钮）：与标签项同高 24px */
 .tabs-bar__actions {
-  --el-component-size: var(--ctl-row-height);
-  --el-component-size-small: var(--ctl-row-height);
-  --el-component-size-large: var(--ctl-row-height);
-  --el-button-size: var(--ctl-row-height);
+  --el-component-size: 24px;
+  --el-component-size-small: 24px;
+  --el-component-size-large: 24px;
+  --el-button-size: 24px;
 }
 
 .tabs-bar__actions .el-button {
-  height: var(--ctl-row-height);
+  height: 24px;
   padding-top: 0;
   padding-bottom: 0;
   font-size: var(--cw-text-sm);
@@ -440,9 +460,9 @@
   background: rgba(255, 255, 255, 0.8);
   backdrop-filter: saturate(180%) blur(20px);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
-  padding: 14px 16px;
-  border-radius: 14px;
-  margin-bottom: 16px;
+  padding: var(--filter-row-pad);
+  border-radius: 8px;
+  margin-bottom: var(--block-gap);
   border: 1px solid rgba(0, 0, 0, 0.06);
 }
 
@@ -467,6 +487,18 @@
 .page > .pagination,
 .page > div:has(> .el-pagination) {
   flex-shrink: 0;
+}
+
+/* 页面级提示条（数据校验、口径说明等）：紧凑单行，避免占去一整块高度 */
+.page > .el-alert,
+.page-list__body > .el-alert,
+.page-list-embedded__body > .el-alert {
+  padding: 4px 10px;
+  margin-bottom: var(--block-gap) !important;
+}
+
+.page > .el-alert .el-alert__title {
+  line-height: 20px;
 }
 
 /* 主表格填满剩余高度，表头由 Element Plus 内置固定（:height 像素值） */
@@ -1745,12 +1777,12 @@
 /* 含紧凑数据表的页面：页边距、标题、筛选栏与主按钮收紧（减轻「头重脚轻」） */
 .page:has(.compact-data-table),
 .page:has(.el-table):not(:has(.paper-table)) {
-  padding: 10px 12px;
+  padding: var(--page-pad);
 }
 
 .page:has(.compact-data-table) > .page-header,
 .page:has(.el-table):not(:has(.paper-table)) > .page-header {
-  margin-bottom: 8px;
+  margin-bottom: var(--block-gap);
   gap: 8px;
   align-items: center;
 }
@@ -1763,9 +1795,9 @@
 }
 
 .page:has(.compact-data-table) .filter-row {
-  padding: 8px 10px !important;
-  margin-bottom: 8px !important;
-  border-radius: 10px !important;
+  padding: var(--filter-row-pad) !important;
+  margin-bottom: var(--block-gap) !important;
+  border-radius: 8px !important;
   gap: 6px !important;
 }
 

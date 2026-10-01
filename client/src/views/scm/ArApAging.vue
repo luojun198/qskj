@@ -102,7 +102,7 @@ onMounted(load)
 </script>
 
 <style scoped>
-.scm-aging-page { display: flex; flex-direction: column; height: 100%; padding: 12px 16px; }
+.scm-aging-page { display: flex; flex-direction: column; height: 100%; padding: var(--page-pad); }
 .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
 .filter-row .lbl { font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }
 .total-hint { margin-left: auto; font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }

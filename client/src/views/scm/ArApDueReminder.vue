@@ -132,7 +132,7 @@ onMounted(() => { load(); loadCredit() })
 </script>
 
 <style scoped>
-.scm-due-page { display: flex; flex-direction: column; height: 100%; padding: 12px 16px; gap: 8px; }
+.scm-due-page { display: flex; flex-direction: column; height: 100%; padding: var(--page-pad); gap: var(--block-gap); }
 .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .filter-row .lbl { font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }
 .total-hint { margin-left: auto; font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }

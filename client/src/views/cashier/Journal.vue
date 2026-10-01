@@ -1,6 +1,6 @@
 <template>
   <div class="page page-cashier-journal">
-    <div class="filter-row" style="margin-bottom:8px">
+    <div class="filter-row">
       <el-select
         v-model="filters.account_code"
         filterable
@@ -34,18 +34,6 @@
       <el-button type="danger" plain :loading="deletingVouchers" @click="handleDeleteCashierVouchers"><el-icon><Delete /></el-icon>删除凭证</el-button>
       <el-button plain @click="showColSetting = true"><el-icon><Setting /></el-icon>列设置</el-button>
       <el-button type="primary" @click="openAddDialog"><el-icon><Plus /></el-icon>录入日记账</el-button>
-    </div>
-    <!-- 期初/期末余额摘要 -->
-    <div v-if="journalResult" class="balance-summary">
-      <span>期初余额：<b>{{ fmt(journalResult.opening) }}</b></span>
-      <span>本期借方：<b class="debit">{{ fmt(journalResult.totalDebit) }}</b></span>
-      <span>本期贷方：<b class="credit">{{ fmt(journalResult.totalCredit) }}</b></span>
-      <span>期末余额：<b>{{ fmt(journalResult.closing) }}</b></span>
-      <template v-if="isForeignAccount">
-        <el-divider direction="vertical" />
-        <span>本位币借方：<b class="debit">{{ fmt(journalResult.totalBaseDebit ?? 0) }}</b></span>
-        <span>本位币贷方：<b class="credit">{{ fmt(journalResult.totalBaseCredit ?? 0) }}</b></span>
-      </template>
     </div>
     <!-- 评审 P2：币种与科目不一致的存量流水不在本视图内，此前被静默隐藏 -->
     <el-alert
@@ -135,7 +123,19 @@
       </el-table>
     </div>
     <!-- FIX-253：服务端分页；期初 / 合计 / 期末仍是整个区间的口径 -->
+    <!-- 底部状态栏：左侧期初 / 本期 / 期末余额摘要，右侧分页（参照金蝶，省去顶部单独一行） -->
     <div v-if="journalResult" class="journal-pagination">
+      <div class="balance-summary">
+        <span>期初余额：<b>{{ fmt(journalResult.opening) }}</b></span>
+        <span>本期借方：<b class="debit">{{ fmt(journalResult.totalDebit) }}</b></span>
+        <span>本期贷方：<b class="credit">{{ fmt(journalResult.totalCredit) }}</b></span>
+        <span>期末余额：<b>{{ fmt(journalResult.closing) }}</b></span>
+        <template v-if="isForeignAccount">
+          <el-divider direction="vertical" />
+          <span>本位币借方：<b class="debit">{{ fmt(journalResult.totalBaseDebit ?? 0) }}</b></span>
+          <span>本位币贷方：<b class="credit">{{ fmt(journalResult.totalBaseCredit ?? 0) }}</b></span>
+        </template>
+      </div>
       <el-pagination
         v-model:current-page="page"
         v-model:page-size="pageSize"
@@ -1555,13 +1555,14 @@ async function handleExport() {
 <style scoped>
 .page-cashier-journal { display: flex; flex-direction: column; height: 100%; }
 .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.balance-summary { display: flex; gap: 24px; padding: 6px 16px; background: var(--el-fill-color-lighter); font-size: var(--cw-text-base); }
+.balance-summary { display: flex; align-items: center; gap: 18px; min-width: 0; overflow-x: auto; white-space: nowrap; font-size: var(--cw-text-base); }
 .balance-summary b { font-weight: 600; }
 .currency-tag { height: 28px; line-height: 26px; font-weight: 600; }
 .debit { color: #409eff; }
 .credit { color: #f56c6c; }
-.table-container { flex: 1; overflow: hidden; padding: 0 16px 8px; }
-.journal-pagination { display: flex; justify-content: flex-end; padding: 4px 16px 8px; }
+.table-container { flex: 1; overflow: hidden; }
+.journal-pagination { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 4px; }
+.journal-pagination .el-pagination { flex-shrink: 0; margin-left: auto; }
 :deep(.parent-option) { color: #c0c4cc; font-style: italic; }
 
 .journal-attachments-section {

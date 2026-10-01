@@ -1,5 +1,6 @@
 import winston from 'winston'
 import { join } from 'path'
+import { getDeployDir } from './runtimePaths.js'
 
 /**
  * 结构化日志系统
@@ -37,7 +38,7 @@ const consoleFormat = winston.format.combine(
 )
 
 // 创建日志目录
-const logsDir = join(process.cwd(), 'logs')
+const logsDir = join(getDeployDir(), 'logs')
 
 // 创建 logger 实例
 const logger = winston.createLogger({

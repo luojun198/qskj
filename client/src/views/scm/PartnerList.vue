@@ -14,28 +14,30 @@
       </el-button>
     </div>
 
-    <el-table ref="tableRef" :data="list" v-loading="loading" border stripe size="small" max-height="calc(100vh - 260px)" class="compact-data-table" @header-dragend="onDragEnd">
-      <el-table-column label="编号" prop="code" :width="cw('code', 110)" />
-      <el-table-column label="名称" prop="name" min-width="180" :width="widths.name" show-overflow-tooltip />
-      <el-table-column label="属性" column-key="partner_type" :width="cw('partner_type', 100)" align="center">
-        <template #default="{ row }">
-          <el-tag v-if="row.partner_type === 'supplier'" type="warning" size="small">供应商</el-tag>
-          <el-tag v-else-if="row.partner_type === 'customer'" type="success" size="small">客户</el-tag>
-          <el-tag v-else type="info" size="small">双向</el-tag>
-          <el-tag v-if="row.is_outsource === 1" type="danger" size="small" effect="plain" style="margin-left:4px">委外厂</el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="应收科目" prop="ar_account" :width="cw('ar_account', 100)" />
-      <el-table-column label="应付科目" prop="ap_account" :width="cw('ap_account', 100)" />
-      <el-table-column label="业务员" prop="salesman" :width="cw('salesman', 90)" />
-      <el-table-column label="电话" prop="phone" min-width="120" :width="widths.phone" show-overflow-tooltip />
-      <el-table-column label="操作" column-key="操作" :width="cw('操作', 120)" fixed="right">
-        <template #default="{ row }">
-          <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
-          <el-button link type="danger" size="small" @click="handleDelete(row)">删除</el-button>
-        </template>
-      </el-table-column>
-    </el-table>
+    <div class="page-table-fill">
+      <el-table ref="tableRef" :data="list" v-loading="loading" border stripe size="small" height="100%" class="compact-data-table" @header-dragend="onDragEnd">
+        <el-table-column label="编号" prop="code" :width="cw('code', 110)" />
+        <el-table-column label="名称" prop="name" min-width="180" :width="widths.name" show-overflow-tooltip />
+        <el-table-column label="属性" column-key="partner_type" :width="cw('partner_type', 100)" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.partner_type === 'supplier'" type="warning" size="small">供应商</el-tag>
+            <el-tag v-else-if="row.partner_type === 'customer'" type="success" size="small">客户</el-tag>
+            <el-tag v-else type="info" size="small">双向</el-tag>
+            <el-tag v-if="row.is_outsource === 1" type="danger" size="small" effect="plain" style="margin-left:4px">委外厂</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="应收科目" prop="ar_account" :width="cw('ar_account', 100)" />
+        <el-table-column label="应付科目" prop="ap_account" :width="cw('ap_account', 100)" />
+        <el-table-column label="业务员" prop="salesman" :width="cw('salesman', 90)" />
+        <el-table-column label="电话" prop="phone" min-width="120" :width="widths.phone" show-overflow-tooltip />
+        <el-table-column label="操作" column-key="操作" :width="cw('操作', 120)" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
+            <el-button link type="danger" size="small" @click="handleDelete(row)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
 
     <PartnerDialog v-model="dialogVisible" :row="editRow" :default-type="propType" @saved="load" />
   </div>
@@ -106,7 +108,7 @@ onMounted(load)
 </script>
 
 <style scoped>
-.scm-partner-page { padding: 12px 16px; }
+.scm-partner-page { padding: var(--page-pad); height: 100%; }
 .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
 .partner-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
 .partner-add-btn { margin-left: auto; }

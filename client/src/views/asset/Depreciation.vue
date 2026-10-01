@@ -533,7 +533,7 @@ onMounted(() => {
 <style scoped>
 .page-asset-depr { display: flex; flex-direction: column; height: 100%; }
 .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.depr-tabs { flex: 1; display: flex; flex-direction: column; padding: 0 16px; overflow: hidden; }
+.depr-tabs { flex: 1; display: flex; flex-direction: column; padding: 0; overflow: hidden; }
 .depr-tabs :deep(.el-tabs__content) { flex: 1; overflow: hidden; }
 .summary-bar { display: flex; gap: 24px; padding: 6px 0 8px; font-size: var(--cw-text-base); }
 .summary-bar b { font-weight: 600; }

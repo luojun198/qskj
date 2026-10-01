@@ -12,9 +12,8 @@
  *
  * 实现见 services/accountBalanceRebuild.ts（与 ACD 导入共用同一口径）。幂等，可重复运行。
  */
-import { fileURLToPath } from 'node:url'
-import { basename } from 'node:path'
 import { getDb } from '../db/index.js'
+import { isDirectScriptRun } from '../utils/isDirectScriptRun.js'
 import { rebuildAccountBalances } from '../services/accountBalanceRebuild.js'
 
 type AccountSetRow = { id: string; name: string }
@@ -47,9 +46,7 @@ async function run() {
   console.log('[rebuild-balances] 完成')
 }
 
-const entryScript = process.argv[1] ? basename(process.argv[1]) : ''
-const thisScript = basename(fileURLToPath(import.meta.url))
-if (entryScript === thisScript) {
+if (isDirectScriptRun('rebuildAccountBalances')) {
   run().catch(err => {
     console.error('[rebuild-balances] 运行失败：', err)
     process.exit(1)

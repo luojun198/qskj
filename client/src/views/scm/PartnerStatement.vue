@@ -452,7 +452,7 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.scm-statement-page { display: flex; flex-direction: column; height: 100%; padding: 12px 16px; }
+.scm-statement-page { display: flex; flex-direction: column; height: 100%; padding: var(--page-pad); }
 .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
 .total-hint { margin-left: auto; font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }
 .page-body { flex: 1; min-height: 0; }

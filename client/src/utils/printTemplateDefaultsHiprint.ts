@@ -52,6 +52,14 @@ function flattenEntryAux(e: VoucherPrintData['entries'][number]): Record<string,
   return row
 }
 
+// 凭证字号：voucher_no 已自带类型字（如「结-004」）时原样显示，不再拼凭证类型全称；
+// 仅纯序号时才补类型首字
+function formatVoucherNoText(voucherNo?: string, voucherType?: string): string {
+  const no = (voucherNo || '').trim()
+  if (no.includes('-')) return no
+  return `${(voucherType || '记').charAt(0)}-${no}`
+}
+
 export function voucherToHiprintData(v: VoucherPrintData): Record<string, unknown> {
   const entries = (v.pageEntries || v.entries || []).map(e => ({
     summary: e.summary || '',
@@ -72,7 +80,7 @@ export function voucherToHiprintData(v: VoucherPrintData): Record<string, unknow
   return {
     doc_title: '记 账 凭 证',
     account_set_name: v.account_set_name || '',
-    voucher_no_text: `${v.voucher_type || '记'}-${v.voucher_no || ''}`,
+    voucher_no_text: formatVoucherNoText(v.voucher_no, v.voucher_type),
     date_text: v.date || '',
     attachments_text: v.attachments ? `附单据 ${v.attachments} 张` : '',
     entries,

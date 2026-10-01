@@ -1675,15 +1675,15 @@ onMounted(async () => {
 
 <style scoped>
 .page {
-  padding: 16px;
+  padding: var(--page-pad);
 }
 
 .page-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 16px;
-  padding: 12px 16px;
+  margin-bottom: var(--block-gap);
+  padding: var(--filter-row-pad);
   background-color: #fff;
   border-radius: 4px;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);

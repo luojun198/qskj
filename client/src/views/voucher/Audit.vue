@@ -1,23 +1,9 @@
 <template>
   <div class="page voucher-list-page">
-    <!-- 顶部功能工具栏（与凭证录入页同款） -->
-    <div class="wb-card gl-toolbar-card">
+    <!-- 顶部功能工具栏：单行按钮 + 下拉组（参照金蝶） -->
+    <div class="wb-card gl-toolbar-card gl-toolbar-card--inline">
       <div class="gl-toolbar">
-        <button
-          v-for="btn in glToolbarButtons"
-          :key="btn.key"
-          type="button"
-          class="gl-tool-btn"
-          :class="{ 'is-disabled': btn.disabled, [`gl-tool-btn--${btn.tone}`]: !!btn.tone }"
-          :disabled="btn.disabled"
-          :title="btn.tooltip || btn.name"
-          @click="btn.action"
-        >
-          <span class="gl-tool-btn__icon">
-            <component :is="btn.icon" :size="17" :stroke-width="1.8" />
-          </span>
-          <span class="gl-tool-btn__label">{{ btn.name }}</span>
-        </button>
+        <GlToolbarButtons :buttons="glToolbarButtons" :groups="glToolbarGroups" />
         <AccountDisplayModeSwitch class="gl-toolbar-account-display" />
         <VoucherFilterBar
           class="gl-toolbar-filter"
@@ -164,11 +150,13 @@ import {
   Settings2,
   FilePen,
   ArrowLeft,
+  MoreHorizontal,
 } from 'lucide-vue-next'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '@/api/request'
 import VoucherAuditTable from '@/components/voucher/VoucherAuditTable.vue'
 import VoucherFilterBar from '@/components/voucher/VoucherFilterBar.vue'
+import GlToolbarButtons, { type GlToolbarButton, type GlToolbarGroup } from '@/components/voucher/GlToolbarButtons.vue'
 import BatchAuditDialog from '@/components/voucher/BatchAuditDialog.vue'
 import VoucherEntryDialogHost from '@/components/voucher/VoucherEntryDialogHost.vue'
 import VoucherHiprintDialog from '@/components/print/VoucherHiprintDialog.vue'
@@ -832,16 +820,15 @@ function handleReturn() {
   }
 }
 
-// 顶部功能工具栏（与凭证录入 / 查询页同款排版；批量操作全部放到这里）
-const glToolbarButtons = computed(() => [
-  {
-    key: 'save',
-    name: '另存',
-    icon: Download,
-    tooltip: '导出为 Excel 文件',
-    disabled: exporting.value,
-    action: exportData,
-  },
+// 顶部功能工具栏下拉组：审核 / 打印为分体按钮（主体直接执行第一项），其余低频操作收进「更多」
+const glToolbarGroups: Record<string, GlToolbarGroup> = {
+  audit: { label: '审核', split: true },
+  print: { label: '打印', split: true },
+  more: { label: '更多', icon: MoreHorizontal },
+}
+
+// 顶部功能工具栏（批量操作全部放到这里；group 决定收进哪个下拉）
+const glToolbarButtons = computed<GlToolbarButton[]>(() => [
   {
     key: 'refresh',
     name: '刷新',
@@ -859,6 +846,7 @@ const glToolbarButtons = computed(() => [
   },
   {
     key: 'batch-audit',
+    group: 'audit',
     name: '批审核',
     icon: CheckCheck,
     tooltip: `批量审核勾选的凭证${batchHint.value}`,
@@ -868,6 +856,7 @@ const glToolbarButtons = computed(() => [
   },
   {
     key: 'batch-post',
+    group: 'audit',
     name: '批记账',
     icon: BookCheck,
     tooltip: `批量记账勾选的凭证${batchHint.value}`,
@@ -877,6 +866,7 @@ const glToolbarButtons = computed(() => [
   },
   {
     key: 'batch-unaudit',
+    group: 'audit',
     name: '批反审',
     icon: FileX,
     tooltip: `批量反审核勾选的凭证${batchHint.value}`,
@@ -886,6 +876,7 @@ const glToolbarButtons = computed(() => [
   },
   {
     key: 'batch-unpost',
+    group: 'audit',
     name: '批反记账',
     icon: BookX,
     tooltip: canUnpostVoucher.value
@@ -897,13 +888,39 @@ const glToolbarButtons = computed(() => [
   },
   {
     key: 'batch-ops',
+    group: 'audit',
     name: '批操作',
     icon: ListChecks,
     tooltip: '按日期 / 类型范围批量审核、记账（Ctrl+E）',
     action: () => (batchAuditVisible.value = true),
   },
   {
+    key: 'print',
+    group: 'print',
+    name: '打印',
+    icon: Printer,
+    tooltip: '打印勾选的凭证',
+    disabled: !selected.value.length,
+    action: handlePrint,
+  },
+  {
+    key: 'batch-print',
+    group: 'print',
+    name: '连打',
+    icon: Layers,
+    tooltip: '连续打印（批量打印）',
+    action: () => (batchPrintVisible.value = true),
+  },
+  {
+    key: 'entry',
+    name: '录入',
+    icon: FilePen,
+    tooltip: '跳转凭证录入',
+    action: () => router.push('/voucher/entry'),
+  },
+  {
     key: 'reverse',
+    group: 'more',
     name: '反冲',
     icon: Undo2,
     tooltip: reverseTooltip.value || '凭证红字冲销',
@@ -913,6 +930,7 @@ const glToolbarButtons = computed(() => [
   },
   {
     key: 'turn-template',
+    group: 'more',
     name: '转出',
     icon: ExternalLink,
     tooltip: '保存为凭证模版',
@@ -920,33 +938,21 @@ const glToolbarButtons = computed(() => [
     action: handleTurnTemplate,
   },
   {
-    key: 'print',
-    name: '打印',
-    icon: Printer,
-    tooltip: '打印勾选的凭证',
-    disabled: !selected.value.length,
-    action: handlePrint,
-  },
-  {
-    key: 'batch-print',
-    name: '连打',
-    icon: Layers,
-    tooltip: '连续打印（批量打印）',
-    action: () => (batchPrintVisible.value = true),
+    key: 'save',
+    group: 'more',
+    name: '另存',
+    icon: Download,
+    tooltip: '导出为 Excel 文件',
+    disabled: exporting.value,
+    action: exportData,
   },
   {
     key: 'columns',
+    group: 'more',
     name: '列设置',
     icon: Settings2,
     tooltip: '设置显示列',
     action: () => (columnDialogVisible.value = true),
-  },
-  {
-    key: 'entry',
-    name: '录入',
-    icon: FilePen,
-    tooltip: '跳转凭证录入',
-    action: () => router.push('/voucher/entry'),
   },
   {
     key: 'return',

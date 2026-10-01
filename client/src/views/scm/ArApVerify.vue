@@ -330,7 +330,7 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.scm-verify-page { display: flex; flex-direction: column; height: 100%; padding: 12px 16px; gap: 8px; }
+.scm-verify-page { display: flex; flex-direction: column; height: 100%; padding: var(--page-pad); gap: var(--block-gap); }
 .filter-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .hint { margin-left: auto; font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }
 .hint .adv { color: var(--el-color-warning); }

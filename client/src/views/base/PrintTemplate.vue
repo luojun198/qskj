@@ -231,7 +231,7 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  padding: 16px 20px 12px;
+  padding: var(--filter-row-pad);
   border-bottom: 1px solid var(--el-border-color-lighter);
 }
 

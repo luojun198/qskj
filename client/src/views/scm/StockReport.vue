@@ -73,6 +73,6 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.scm-report-page { padding: 12px 16px; }
+.scm-report-page { padding: var(--page-pad); }
 .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
 </style>

@@ -22,97 +22,99 @@
         <el-switch v-model="splitBatch" size="small" @change="onSplitBatchChange" />
       </span>
     </div>
-    <el-table ref="tableRef" :data="tableData" v-loading="loading" border stripe size="small" class="compact-data-table" max-height="calc(100vh - 240px)"
-      :row-class-name="rowClass" empty-text="暂无库存（可通过采购入库/期初库存产生）"
-      @row-dblclick="openStockLedger" @header-dragend="onDragEnd">
-      <template v-for="column in orderedVisibleColumns" :key="column.key">
-      <el-table-column v-if="column.key === 'warehouse'" label="仓库" column-key="warehouse" :width="cw('warehouse', 130)">
-        <template #default="{ row }">{{ row.warehouse_code }} {{ row.warehouse_name || '' }}</template>
-      </el-table-column>
-      <el-table-column v-else-if="column.key === 'item_code'" label="物料编号" prop="item_code" :width="cw('item_code', 120)" />
-      <el-table-column v-else-if="column.key === 'item_name'" label="名称" prop="item_name" min-width="140" :width="widths.item_name" show-overflow-tooltip />
-      <el-table-column v-else-if="column.key === 'spec'" label="规格" prop="spec" :width="cw('spec', 120)" show-overflow-tooltip />
-      <el-table-column v-else-if="column.key === 'unit'" label="单位" prop="unit" :width="cw('unit', 70)" />
-      <el-table-column v-else-if="column.key === 'batch_no'" label="批号" prop="batch_no" :width="cw('batch_no', 130)" show-overflow-tooltip />
-      <el-table-column v-else-if="column.key === 'produce_date'" label="生产日期" prop="produce_date" :width="cw('produce_date', 110)" />
-      <el-table-column v-else-if="column.key === 'expire_date'" label="到期日" prop="expire_date" :width="cw('expire_date', 130)">
-        <template #default="{ row }">
-          <span v-if="row.expire_date">
-            {{ row.expire_date }}
-            <el-tag v-if="row.days_to_expire != null" :type="row.days_to_expire < 0 ? 'danger' : (row.days_to_expire <= 30 ? 'warning' : 'info')" size="small" effect="plain" style="margin-left:4px">
-              {{ row.days_to_expire < 0 ? '已过期' : row.days_to_expire + '天' }}
-            </el-tag>
-          </span>
-          <span v-else>—</span>
+    <div class="page-table-fill">
+      <el-table ref="tableRef" :data="tableData" v-loading="loading" border stripe size="small" class="compact-data-table" height="100%"
+        :row-class-name="rowClass" empty-text="暂无库存（可通过采购入库/期初库存产生）"
+        @row-dblclick="openStockLedger" @header-dragend="onDragEnd">
+        <template v-for="column in orderedVisibleColumns" :key="column.key">
+        <el-table-column v-if="column.key === 'warehouse'" label="仓库" column-key="warehouse" :width="cw('warehouse', 130)">
+          <template #default="{ row }">{{ row.warehouse_code }} {{ row.warehouse_name || '' }}</template>
+        </el-table-column>
+        <el-table-column v-else-if="column.key === 'item_code'" label="物料编号" prop="item_code" :width="cw('item_code', 120)" />
+        <el-table-column v-else-if="column.key === 'item_name'" label="名称" prop="item_name" min-width="140" :width="widths.item_name" show-overflow-tooltip />
+        <el-table-column v-else-if="column.key === 'spec'" label="规格" prop="spec" :width="cw('spec', 120)" show-overflow-tooltip />
+        <el-table-column v-else-if="column.key === 'unit'" label="单位" prop="unit" :width="cw('unit', 70)" />
+        <el-table-column v-else-if="column.key === 'batch_no'" label="批号" prop="batch_no" :width="cw('batch_no', 130)" show-overflow-tooltip />
+        <el-table-column v-else-if="column.key === 'produce_date'" label="生产日期" prop="produce_date" :width="cw('produce_date', 110)" />
+        <el-table-column v-else-if="column.key === 'expire_date'" label="到期日" prop="expire_date" :width="cw('expire_date', 130)">
+          <template #default="{ row }">
+            <span v-if="row.expire_date">
+              {{ row.expire_date }}
+              <el-tag v-if="row.days_to_expire != null" :type="row.days_to_expire < 0 ? 'danger' : (row.days_to_expire <= 30 ? 'warning' : 'info')" size="small" effect="plain" style="margin-left:4px">
+                {{ row.days_to_expire < 0 ? '已过期' : row.days_to_expire + '天' }}
+              </el-tag>
+            </span>
+            <span v-else>—</span>
+          </template>
+        </el-table-column>
+        <el-table-column v-else-if="column.key === 'qty'" label="数量" prop="qty" :width="cw('qty', 110)" align="right">
+          <template #default="{ row }">
+            <span :class="{ 'negative-number': isNegative(row.qty) }">{{ fmt(row.qty) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column v-else-if="column.key === 'unshipped_sales_qty'" label="销售未出货" prop="unshipped_sales_qty" :width="cw('unshipped_sales_qty', 120)" align="right">
+          <template #header>
+            销售未出货
+            <el-tooltip content="已审核销售订单中尚未下推发货的数量" placement="top">
+              <el-icon style="margin-left: 4px; cursor: help"><InfoFilled /></el-icon>
+            </el-tooltip>
+          </template>
+          <template #default="{ row }">
+            <span :style="{ color: row.unshipped_sales_qty > 0 ? '#e6a23c' : 'inherit' }">
+              {{ fmt(row.unshipped_sales_qty) }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column v-else-if="column.key === 'unreceived_purchase_qty'" label="采购未入库" prop="unreceived_purchase_qty" :width="cw('unreceived_purchase_qty', 120)" align="right">
+          <template #header>
+            采购未入库
+            <el-tooltip content="已审核采购订单中尚未下推入库的数量" placement="top">
+              <el-icon style="margin-left: 4px; cursor: help"><InfoFilled /></el-icon>
+            </el-tooltip>
+          </template>
+          <template #default="{ row }">
+            <span :style="{ color: row.unreceived_purchase_qty > 0 ? '#e6a23c' : 'inherit' }">
+              {{ fmt(row.unreceived_purchase_qty) }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column v-else-if="column.key === 'unissued_plan_qty'" label="计划未领用" prop="unissued_plan_qty" :width="cw('unissued_plan_qty', 120)" align="right">
+          <template #header>
+            计划未领用
+            <el-tooltip content="已审核生产/委外计划按BOM应领材料 − 已领材料" placement="top">
+              <el-icon style="margin-left: 4px; cursor: help"><InfoFilled /></el-icon>
+            </el-tooltip>
+          </template>
+          <template #default="{ row }">
+            <span :style="{ color: row.unissued_plan_qty > 0 ? '#e6a23c' : 'inherit' }">
+              {{ fmt(row.unissued_plan_qty) }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column v-else-if="column.key === 'unfinished_plan_qty'" label="计划未入库" prop="unfinished_plan_qty" :width="cw('unfinished_plan_qty', 120)" align="right">
+          <template #header>
+            计划未入库
+            <el-tooltip content="已审核生产/委外计划的计划数 − 已完工入库数" placement="top">
+              <el-icon style="margin-left: 4px; cursor: help"><InfoFilled /></el-icon>
+            </el-tooltip>
+          </template>
+          <template #default="{ row }">
+            <span :style="{ color: row.unfinished_plan_qty > 0 ? '#e6a23c' : 'inherit' }">
+              {{ fmt(row.unfinished_plan_qty) }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column v-else-if="column.key === 'amount'" label="金额" prop="amount" :width="cw('amount', 120)" align="right">
+          <template #default="{ row }">
+            <span :class="{ 'negative-number': isNegative(row.amount) }">{{ fmt(row.amount) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column v-else-if="column.key === 'avg_cost'" label="平均成本" prop="avg_cost" :width="cw('avg_cost', 110)" align="right">
+          <template #default="{ row }">{{ row.__summary ? '' : fmt(row.avg_cost, 4) }}</template>
+        </el-table-column>
         </template>
-      </el-table-column>
-      <el-table-column v-else-if="column.key === 'qty'" label="数量" prop="qty" :width="cw('qty', 110)" align="right">
-        <template #default="{ row }">
-          <span :class="{ 'negative-number': isNegative(row.qty) }">{{ fmt(row.qty) }}</span>
-        </template>
-      </el-table-column>
-      <el-table-column v-else-if="column.key === 'unshipped_sales_qty'" label="销售未出货" prop="unshipped_sales_qty" :width="cw('unshipped_sales_qty', 120)" align="right">
-        <template #header>
-          销售未出货
-          <el-tooltip content="已审核销售订单中尚未下推发货的数量" placement="top">
-            <el-icon style="margin-left: 4px; cursor: help"><InfoFilled /></el-icon>
-          </el-tooltip>
-        </template>
-        <template #default="{ row }">
-          <span :style="{ color: row.unshipped_sales_qty > 0 ? '#e6a23c' : 'inherit' }">
-            {{ fmt(row.unshipped_sales_qty) }}
-          </span>
-        </template>
-      </el-table-column>
-      <el-table-column v-else-if="column.key === 'unreceived_purchase_qty'" label="采购未入库" prop="unreceived_purchase_qty" :width="cw('unreceived_purchase_qty', 120)" align="right">
-        <template #header>
-          采购未入库
-          <el-tooltip content="已审核采购订单中尚未下推入库的数量" placement="top">
-            <el-icon style="margin-left: 4px; cursor: help"><InfoFilled /></el-icon>
-          </el-tooltip>
-        </template>
-        <template #default="{ row }">
-          <span :style="{ color: row.unreceived_purchase_qty > 0 ? '#e6a23c' : 'inherit' }">
-            {{ fmt(row.unreceived_purchase_qty) }}
-          </span>
-        </template>
-      </el-table-column>
-      <el-table-column v-else-if="column.key === 'unissued_plan_qty'" label="计划未领用" prop="unissued_plan_qty" :width="cw('unissued_plan_qty', 120)" align="right">
-        <template #header>
-          计划未领用
-          <el-tooltip content="已审核生产/委外计划按BOM应领材料 − 已领材料" placement="top">
-            <el-icon style="margin-left: 4px; cursor: help"><InfoFilled /></el-icon>
-          </el-tooltip>
-        </template>
-        <template #default="{ row }">
-          <span :style="{ color: row.unissued_plan_qty > 0 ? '#e6a23c' : 'inherit' }">
-            {{ fmt(row.unissued_plan_qty) }}
-          </span>
-        </template>
-      </el-table-column>
-      <el-table-column v-else-if="column.key === 'unfinished_plan_qty'" label="计划未入库" prop="unfinished_plan_qty" :width="cw('unfinished_plan_qty', 120)" align="right">
-        <template #header>
-          计划未入库
-          <el-tooltip content="已审核生产/委外计划的计划数 − 已完工入库数" placement="top">
-            <el-icon style="margin-left: 4px; cursor: help"><InfoFilled /></el-icon>
-          </el-tooltip>
-        </template>
-        <template #default="{ row }">
-          <span :style="{ color: row.unfinished_plan_qty > 0 ? '#e6a23c' : 'inherit' }">
-            {{ fmt(row.unfinished_plan_qty) }}
-          </span>
-        </template>
-      </el-table-column>
-      <el-table-column v-else-if="column.key === 'amount'" label="金额" prop="amount" :width="cw('amount', 120)" align="right">
-        <template #default="{ row }">
-          <span :class="{ 'negative-number': isNegative(row.amount) }">{{ fmt(row.amount) }}</span>
-        </template>
-      </el-table-column>
-      <el-table-column v-else-if="column.key === 'avg_cost'" label="平均成本" prop="avg_cost" :width="cw('avg_cost', 110)" align="right">
-        <template #default="{ row }">{{ row.__summary ? '' : fmt(row.avg_cost, 4) }}</template>
-      </el-table-column>
-      </template>
-    </el-table>
+      </el-table>
+    </div>
     <ColumnSettingsDialog v-model="columnDialogVisible" :columns="columnSettings" @update:columns="updateColumns" @reset="resetColumns" />
   </div>
 </template>
@@ -300,7 +302,7 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.scm-stock-page { padding: 12px 16px; }
+.scm-stock-page { padding: var(--page-pad); height: 100%; }
 .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
 .filter-dim { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; }
 .filter-dim__label { font-size: var(--cw-text-base); color: var(--el-text-color-regular); }

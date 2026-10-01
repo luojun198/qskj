@@ -14,7 +14,7 @@
 .report-page {
   display: flex;
   flex-direction: column;
-  padding: 14px 18px 18px;
+  padding: var(--page-pad);
   background: var(--surface-canvas, #f3faf9);
 }
 
@@ -202,7 +202,7 @@
 .cash-flow-page {
   display: flex;
   flex-direction: column;
-  padding: 14px 18px 18px;
+  padding: var(--page-pad);
   background: var(--surface-canvas);
 }
 

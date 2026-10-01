@@ -1,42 +1,32 @@
 <template>
-  <div class="fixed-report-page">
-    <header class="page-header">
-      <div>
-        <div class="eyebrow">{{ tradeName }}报表 · {{ scopeText }}</div>
-        <h2>{{ currentTitle }}</h2>
-        <p>{{ reportDescription }}</p>
-      </div>
+  <div class="page fixed-report-page">
+    <!-- 顶部单行：左侧报表切换，右侧操作（参照金蝶，去掉原深色横幅） -->
+    <div class="rpt-topbar">
+      <nav class="report-tabs">
+        <button v-for="item in meta?.reports || fallbackReports" :key="item.code" :class="{ active: item.code === reportCode }" :title="item.code === reportCode ? reportDescription : item.title" @click="router.push(item.path)">
+          {{ item.title }}
+        </button>
+        <button @click="router.push(`/scm/report/buysell?kind=${reportType}`)">自定义查询</button>
+      </nav>
       <div class="header-actions">
         <el-button @click="resetFilters(); queryReport(true)">清空</el-button>
         <el-button :loading="exporting" @click="exportReport"><el-icon><Download /></el-icon>导出</el-button>
         <el-button type="primary" :loading="loading" @click="queryReport(true)"><el-icon><Search /></el-icon>查询</el-button>
       </div>
-    </header>
+    </div>
 
-    <nav class="report-tabs">
-      <button v-for="item in meta?.reports || fallbackReports" :key="item.code" :class="{ active: item.code === reportCode }" @click="router.push(item.path)">
-        {{ item.title }}
-      </button>
-      <button @click="router.push(`/scm/report/buysell?kind=${reportType}`)">自定义查询</button>
-    </nav>
-
+    <!-- 筛选：常用条件一行；其余条件点「更多条件」在下方展开 -->
     <section class="filter-card">
-      <div class="filter-grid">
-        <label class="filter-item wide"><span>{{ isOrderTracking ? '订单日期（可选）' : '业务日期' }}</span><el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" start-placeholder="开始日期" end-placeholder="结束日期" style="width:100%" /></label>
-        <label v-if="isOrderTracking" class="filter-item wide"><span>预计到货日期（可选）</span><el-date-picker v-model="expectDateRange" type="daterange" value-format="YYYY-MM-DD" start-placeholder="开始日期" end-placeholder="结束日期" style="width:100%" /></label>
-        <label class="filter-item"><span>币种（必选）</span><el-select v-model="filters.currency" filterable><el-option value="ALL" label="全部币种（折本位币）" /><el-option v-for="o in options.currencies" :key="o.value" :label="o.label" :value="o.value" /></el-select></label>
+      <div class="filter-line rpt-bar">
+        <label class="filter-item wide"><span>{{ isOrderTracking ? '订单日期' : '业务日期' }}</span><el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" start-placeholder="开始日期" end-placeholder="结束日期" style="width:240px" /></label>
+        <label v-if="isOrderTracking" class="filter-item wide"><span>预计到货</span><el-date-picker v-model="expectDateRange" type="daterange" value-format="YYYY-MM-DD" start-placeholder="开始日期" end-placeholder="结束日期" style="width:240px" /></label>
+        <label class="filter-item"><span>币种</span><el-select v-model="filters.currency" filterable><el-option value="ALL" label="全部币种（折本位币）" /><el-option v-for="o in options.currencies" :key="o.value" :label="o.label" :value="o.value" /></el-select></label>
         <label class="filter-item"><span>{{ partnerLabel }}</span><el-select v-model="filters.partner_codes" multiple filterable collapse-tags clearable><el-option v-for="o in options.partners" :key="o.value" :label="o.label" :value="o.value" /></el-select></label>
         <label class="filter-item"><span>产品</span><el-select v-model="filters.item_codes" multiple filterable collapse-tags clearable><el-option v-for="o in options.items" :key="o.value" :label="o.label" :value="o.value" /></el-select></label>
-        <label class="filter-item"><span>产品分类</span><el-select v-model="filters.category_codes" multiple filterable collapse-tags clearable><el-option v-for="o in options.categories" :key="o.value" :label="o.label" :value="o.value" /></el-select></label>
-        <label class="filter-item"><span>{{ personLabel }}</span><el-select v-model="filters.biz_persons" multiple filterable collapse-tags clearable><el-option v-for="o in options.biz_people" :key="o.value" :label="o.label" :value="o.value" /></el-select></label>
-        <label class="filter-item"><span>部门</span><el-select v-model="filters.dept_codes" multiple filterable collapse-tags clearable><el-option v-for="o in options.departments" :key="o.value" :label="o.label" :value="o.value" /></el-select></label>
-        <label class="filter-item"><span>仓库</span><el-select v-model="filters.warehouse_codes" multiple filterable collapse-tags clearable><el-option v-for="o in options.warehouses" :key="o.value" :label="o.label" :value="o.value" /></el-select></label>
-        <label v-if="!isOrderTracking" class="filter-item"><span>批次</span><el-select v-model="filters.batch_nos" multiple filterable collapse-tags clearable><el-option v-for="o in options.batches" :key="o.value" :label="o.label" :value="o.value" /></el-select></label>
-        <label v-if="!isOrderTracking" class="filter-item"><span>业务类型</span><el-select v-model="filters.source_types" multiple clearable><el-option v-for="o in options.source_types" :key="o.value" :label="o.label" :value="o.value" /></el-select></label>
-        <label v-else class="filter-item wide"><span>执行状态（清空后查看全部）</span><el-select v-model="filters.order_statuses" multiple collapse-tags clearable><el-option v-for="o in options.order_statuses" :key="o.value" :label="o.label" :value="o.value" /></el-select></label>
-      </div>
-
-      <div class="report-controls">
+        <el-button link type="primary" class="more-toggle" @click="showMoreFilters = !showMoreFilters">
+          更多条件<template v-if="moreFilterCount">（{{ moreFilterCount }}）</template>
+          <el-icon><component :is="showMoreFilters ? ArrowUp : ArrowDown" /></el-icon>
+        </el-button>
         <template v-if="['summary',analysisCode,'ranking'].includes(reportCode)">
           <span class="control-label">{{ reportCode === 'ranking' ? '排名对象' : '统计方式' }}</span>
           <el-select v-model="grouping" style="width:210px"><el-option v-for="o in groupingOptions" :key="o.value" :label="o.label" :value="o.value" /></el-select>
@@ -53,7 +43,15 @@
           <span class="control-label">{{ analysisAmountLabel }}区间</span><el-input-number v-model="analysisMin" :controls="false" placeholder="最小值" /><span>—</span><el-input-number v-model="analysisMax" :controls="false" placeholder="最大值" />
           <span class="control-label">{{ analysisRateLabel }}区间</span><el-input-number v-model="analysisRateMin" :controls="false" placeholder="最小%" /><span>—</span><el-input-number v-model="analysisRateMax" :controls="false" placeholder="最大%" />
         </template>
-        <span class="scope-note">{{ isOrderTracking ? '仅按明确的订单行 → 入库行 → 退货行关系统计' : '全部结果按当前账套、单一币种统计' }}</span>
+      </div>
+      <div v-show="showMoreFilters" class="filter-line filter-line--more rpt-bar">
+        <label class="filter-item"><span>产品分类</span><el-select v-model="filters.category_codes" multiple filterable collapse-tags clearable><el-option v-for="o in options.categories" :key="o.value" :label="o.label" :value="o.value" /></el-select></label>
+        <label class="filter-item"><span>{{ personLabel }}</span><el-select v-model="filters.biz_persons" multiple filterable collapse-tags clearable><el-option v-for="o in options.biz_people" :key="o.value" :label="o.label" :value="o.value" /></el-select></label>
+        <label class="filter-item"><span>部门</span><el-select v-model="filters.dept_codes" multiple filterable collapse-tags clearable><el-option v-for="o in options.departments" :key="o.value" :label="o.label" :value="o.value" /></el-select></label>
+        <label class="filter-item"><span>仓库</span><el-select v-model="filters.warehouse_codes" multiple filterable collapse-tags clearable><el-option v-for="o in options.warehouses" :key="o.value" :label="o.label" :value="o.value" /></el-select></label>
+        <label v-if="!isOrderTracking" class="filter-item"><span>批次</span><el-select v-model="filters.batch_nos" multiple filterable collapse-tags clearable><el-option v-for="o in options.batches" :key="o.value" :label="o.label" :value="o.value" /></el-select></label>
+        <label v-if="!isOrderTracking" class="filter-item"><span>业务类型</span><el-select v-model="filters.source_types" multiple clearable><el-option v-for="o in options.source_types" :key="o.value" :label="o.label" :value="o.value" /></el-select></label>
+        <label v-if="isOrderTracking" class="filter-item wide"><span>执行状态</span><el-select v-model="filters.order_statuses" multiple collapse-tags clearable><el-option v-for="o in options.order_statuses" :key="o.value" :label="o.label" :value="o.value" /></el-select></label>
       </div>
     </section>
 
@@ -67,11 +65,6 @@
     </section>
 
     <section class="result-card">
-      <div class="result-head">
-        <div><strong>{{ currentTitle }}</strong><span>{{ result.total.toLocaleString() }} {{ isOrderTracking ? '条订单明细' : reportCode === 'detail' ? '条明细' : '组结果' }}</span></div>
-        <span v-if="canDrill" class="drill-tip">双击任一行查看对应{{ tradeName }}明细</span>
-      </div>
-
       <div v-if="reportCode === 'ranking' || reportCode === 'trend'" ref="chartEl" class="chart" />
 
       <div class="table-zone" :class="{ 'with-chart': reportCode === 'ranking' || reportCode === 'trend' }">
@@ -87,7 +80,12 @@
         </el-table>
       </div>
       <footer class="result-footer">
-        <span>合计按全部过滤结果计算，不受当前分页影响</span>
+        <span class="result-meta">
+          <strong>{{ result.total.toLocaleString() }}</strong> {{ isOrderTracking ? '条订单明细' : reportCode === 'detail' ? '条明细' : '组结果' }}
+          <span class="sep">·</span>{{ scopeText }}
+          <span class="sep">·</span>合计按全部过滤结果计算，不受分页影响
+          <template v-if="canDrill"><span class="sep">·</span>双击行查看{{ tradeName }}明细</template>
+        </span>
         <el-pagination v-if="!['ranking','trend'].includes(reportCode)" v-model:current-page="page" v-model:page-size="pageSize" :page-sizes="[50,100,200,500]" :total="result.total" layout="total, sizes, prev, pager, next" @change="queryReport(false)" />
       </footer>
     </section>
@@ -97,7 +95,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Download, Search } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowUp, Download, Search } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import * as echarts from 'echarts'
 import { scmApi, type PurchaseFixedFilters, type PurchaseFixedReportCode, type PurchaseFixedReportMeta, type PurchaseFixedReportRequest, type PurchaseFixedReportResult, type SalesFixedFilters, type SalesFixedReportCode, type SalesFixedReportMeta, type SalesFixedReportRequest, type SalesFixedReportResult, type SalesTrendPeriod } from '@/api/scm'
@@ -125,6 +123,13 @@ const page = ref(1)
 const pageSize = ref(100)
 const sort = ref<Array<{ key: string; direction: 'asc' | 'desc' }>>([])
 const filters = ref<FixedFilters>({ currency: 'CNY' })
+// 「更多条件」展开状态及其中已生效的条件数（收起时也能看出有隐藏条件在起作用）
+const showMoreFilters = ref(false)
+const moreFilterCount = computed(() => {
+  const f = filters.value
+  const keys = ['category_codes', 'biz_persons', 'dept_codes', 'warehouse_codes', ...(isOrderTracking.value ? ['order_statuses'] : ['batch_nos', 'source_types'])] as const
+  return keys.filter(k => ((f as Record<string, unknown>)[k] as unknown[] | undefined)?.length).length
+})
 const result = ref<FixedResult>({ report_code: props.reportCode as any, mode: 'summary', columns: [], rows: [], summary: {}, total: 0, page: 1, page_size: 100, ignored_fields: [] })
 const chartEl = ref<HTMLElement | null>(null)
 let chart: echarts.ECharts | null = null
@@ -319,5 +324,55 @@ onBeforeUnmount(() => { window.removeEventListener('resize', resizeChart); chart
 </script>
 
 <style scoped>
-.fixed-report-page{height:calc(100vh - 92px);min-height:680px;display:flex;flex-direction:column;gap:12px;padding:16px;background:#f4f7fb;box-sizing:border-box;color:#172033}.page-header{display:flex;align-items:flex-start;justify-content:space-between;padding:18px 22px;background:linear-gradient(120deg,#0f2f57,#155e75);color:#fff;border-radius:12px;box-shadow:0 8px 24px rgba(15,47,87,.15)}.page-header h2{margin:4px 0 3px;font-size:var(--cw-text-xl)}.page-header p{margin:0;color:#cfe7ef;font-size: var(--cw-text-base)}.eyebrow{font-size:12px;letter-spacing:.08em;color:#8fe0de}.header-actions{display:flex;gap:8px}.report-tabs{display:flex;gap:6px;padding:6px;background:#fff;border:1px solid #e5eaf2;border-radius:10px;overflow-x:auto}.report-tabs button{padding:8px 16px;border:0;border-radius:7px;background:transparent;color:#526076;cursor:pointer;white-space:nowrap}.report-tabs button:hover{background:#eef4fb;color:#145da0}.report-tabs button.active{background:#145da0;color:#fff;box-shadow:0 3px 10px rgba(20,93,160,.2)}.filter-card,.result-card{background:#fff;border:1px solid #e2e8f0;border-radius:10px;box-shadow:0 2px 10px rgba(15,23,42,.04)}.filter-card{padding:14px 16px}.filter-grid{display:grid;grid-template-columns:repeat(5,minmax(150px,1fr));gap:10px 12px}.filter-item{display:flex;flex-direction:column;gap:5px;font-size:12px;color:#68758a}.filter-item.wide{grid-column:span 2}.report-controls{display:flex;align-items:center;gap:9px;min-height:36px;margin-top:12px;padding-top:12px;border-top:1px dashed #dbe3ed}.control-label{font-size:12px;color:#66758b;margin-left:6px}.scope-note{margin-left:auto;font-size:12px;color:#8491a3}.tracking-summary{display:grid;grid-template-columns:repeat(6,minmax(120px,1fr));gap:10px}.tracking-summary>div{display:flex;flex-direction:column;gap:4px;padding:10px 14px;background:#fff;border:1px solid #e2e8f0;border-radius:9px}.tracking-summary span{font-size:12px;color:#718096}.tracking-summary strong{font-size:19px;color:#173b61}.tracking-summary .warning strong{color:#dc2626}.result-card{min-height:0;flex:1;display:flex;flex-direction:column;overflow:hidden}.result-head,.result-footer{display:flex;align-items:center;justify-content:space-between;padding:10px 14px}.result-head{border-bottom:1px solid #e8edf4}.result-head strong{margin-right:12px}.result-head span,.result-footer,.drill-tip{color:#7c899b;font-size:12px}.chart{height:250px;border-bottom:1px solid #e8edf4}.table-zone{min-height:0;flex:1}.table-zone.with-chart{min-height:230px}.result-footer{border-top:1px solid #e8edf4}.negative{color:#dc2626;font-weight:600}.receipt-links{display:flex;gap:6px;flex-wrap:wrap}.rank-badge{display:inline-flex;justify-content:center;min-width:26px;padding:2px 7px;border-radius:12px;background:#eaf2ff;color:#1d4ed8;font-weight:700}.el-input-number{width:110px}@media(max-width:1300px){.filter-grid{grid-template-columns:repeat(4,minmax(150px,1fr))}.filter-item.wide{grid-column:span 2}.tracking-summary{grid-template-columns:repeat(3,1fr)}}@media(max-width:900px){.fixed-report-page{height:auto}.page-header{flex-direction:column;gap:12px}.filter-grid{grid-template-columns:repeat(2,minmax(140px,1fr))}.report-controls{flex-wrap:wrap}.scope-note{width:100%;margin-left:0}.tracking-summary{grid-template-columns:repeat(2,1fr)}.result-card{height:650px}.chart{height:220px}}
+/* 紧凑布局（参照金蝶）：报表切换 + 操作一行、常用筛选一行，表格填满剩余高度 */
+.fixed-report-page { height: 100%; min-height: 0; display: flex; flex-direction: column; gap: var(--block-gap); padding: var(--page-pad); box-sizing: border-box; color: #172033; }
+
+/* 顶部：报表切换页签 + 操作按钮 */
+.rpt-topbar { display: flex; align-items: center; gap: 12px; min-width: 0; flex-shrink: 0; }
+.report-tabs { display: flex; gap: 2px; min-width: 0; flex: 1 1 auto; overflow-x: auto; scrollbar-width: thin; }
+.report-tabs button { height: 28px; padding: 0 12px; border: 0; border-radius: 6px; background: transparent; color: #526076; font-size: var(--cw-text-base); cursor: pointer; white-space: nowrap; }
+.report-tabs button:hover { background: #eef4fb; color: #145da0; }
+.report-tabs button.active { background: var(--mint-500, #12c7ae); color: #fff; font-weight: 600; }
+.header-actions { display: flex; gap: 8px; flex-shrink: 0; --el-component-size: var(--ctl-row-height); }
+.header-actions .el-button { height: var(--ctl-row-height); }
+.header-actions .el-button + .el-button { margin-left: 0; }
+
+/* 筛选区 */
+.filter-card, .result-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; }
+.filter-card { flex-shrink: 0; padding: var(--filter-row-pad); }
+.filter-line { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; }
+.filter-line--more { margin-top: 6px; padding-top: 6px; border-top: 1px dashed #dbe3ed; }
+.filter-item { display: inline-flex; align-items: center; gap: 6px; font-size: var(--cw-text-sm); color: #68758a; white-space: nowrap; }
+.filter-item .el-select { width: 160px; }
+.filter-item.wide .el-select { width: 240px; }
+.more-toggle { font-size: var(--cw-text-sm); }
+.control-label { font-size: 12px; color: #66758b; }
+
+/* 订单跟踪汇总：单行小卡 */
+.tracking-summary { display: flex; flex-wrap: wrap; gap: 6px; flex-shrink: 0; }
+.tracking-summary > div { display: flex; align-items: baseline; gap: 8px; padding: 4px 12px; background: #fff; border: 1px solid #e2e8f0; border-radius: 6px; }
+.tracking-summary span { font-size: 12px; color: #718096; }
+.tracking-summary strong { font-size: 15px; color: #173b61; }
+.tracking-summary .warning strong { color: #dc2626; }
+
+/* 结果区：表格填满，底栏合并条数 / 口径说明 / 分页 */
+.result-card { min-height: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.chart { height: 250px; border-bottom: 1px solid #e8edf4; }
+.table-zone { min-height: 0; flex: 1; }
+.table-zone.with-chart { min-height: 230px; }
+.result-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 10px; border-top: 1px solid #e8edf4; color: #7c899b; font-size: 12px; }
+.result-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.result-meta strong { color: #172033; }
+.result-meta .sep { margin: 0 6px; color: #c0c8d4; }
+.negative { color: #dc2626; font-weight: 600; }
+.receipt-links { display: flex; gap: 6px; flex-wrap: wrap; }
+.rank-badge { display: inline-flex; justify-content: center; min-width: 26px; padding: 2px 7px; border-radius: 12px; background: #eaf2ff; color: #1d4ed8; font-weight: 700; }
+.el-input-number { width: 110px; }
+
+@media (max-width: 900px) {
+  .fixed-report-page { height: auto; }
+  .rpt-topbar { flex-direction: column; align-items: stretch; }
+  .result-card { height: 650px; }
+  .chart { height: 220px; }
+}
 </style>

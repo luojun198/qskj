@@ -86,7 +86,7 @@ onMounted(load)
 </script>
 
 <style scoped>
-.page-account-ref-check { display: flex; flex-direction: column; gap: 12px; padding: 12px 16px; }
+.page-account-ref-check { display: flex; flex-direction: column; gap: var(--block-gap); padding: var(--page-pad); }
 .check-header { display: flex; align-items: center; justify-content: space-between; }
 .check-header__left { display: flex; align-items: center; gap: 12px; }
 .check-header__left h3 { margin: 0; }

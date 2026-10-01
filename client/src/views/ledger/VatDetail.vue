@@ -464,7 +464,7 @@ onActivated(() => {
 
 <style scoped>
 .vat-detail-page {
-  padding: 12px 16px 8px;
+  padding: var(--page-pad);
   min-width: 1180px;
 }
 

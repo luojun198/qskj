@@ -331,8 +331,8 @@ async function handleExport() {
 .balance-summary b { font-weight: 600; }
 .debit { color: #409eff; }
 .credit { color: #f56c6c; }
-.table-container { flex: 1; overflow: hidden; padding: 0 16px 0; }
-.table-footer { padding: 4px 16px; font-size: 12px; color: var(--el-text-color-secondary); border-top: 1px solid var(--el-border-color-lighter); }
+.table-container { flex: 1; overflow: hidden; padding: 0; }
+.table-footer { padding: 4px 0; font-size: 12px; color: var(--el-text-color-secondary); border-top: 1px solid var(--el-border-color-lighter); }
 :deep(.opening-row) { background: var(--el-fill-color-light); font-style: italic; }
 :deep(.opening-row td) { color: var(--el-text-color-secondary); }
 </style>

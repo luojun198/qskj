@@ -220,7 +220,7 @@ onMounted(load)
 .cpc-header__title { font-size: var(--cw-text-lg); font-weight: 600; }
 .cpc-header__right { display: flex; align-items: center; gap: 8px; }
 .cpc-year { width: 96px; }
-.cpc-body { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; padding: 12px 16px 16px; }
+.cpc-body { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; padding: var(--block-gap) 0 0; }
 .cpc-rules { margin-bottom: 12px; line-height: 1.6; }
 .cpc-table { width: 100%; }
 .cpc-table :deep(.cpc-row--closed) { color: var(--el-text-color-secondary); }

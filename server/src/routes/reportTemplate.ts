@@ -15,6 +15,7 @@ import {
   updateReportTask,
   runWithProgress,
 } from '../services/reportTaskManager.js'
+import { getUploadsDir } from '../utils/runtimePaths.js'
 
 async function exportReportTemplateToBuffer(...args: any[]) {
   const module = await import('../services/reportTemplateExport.js')
@@ -62,7 +63,7 @@ function persistUploadedReportTemplate(params: {
   const ext = originalName.toLowerCase().endsWith('.xls') ? '.xls' : '.xlsx'
   const baseName = sanitizeReportTemplateFilePart(originalName.replace(/\.[^.]+$/, ''))
   const safeCode = sanitizeReportTemplateFilePart(reportCode)
-  const dir = join(process.cwd(), 'uploads', 'report-templates', sanitizeReportTemplateFilePart(accountSetId))
+  const dir = getUploadsDir('report-templates', sanitizeReportTemplateFilePart(accountSetId))
   mkdirSync(dir, { recursive: true })
   const fileName = `${safeCode}_${Date.now()}_${baseName}${ext}`
   const fullPath = join(dir, fileName)

@@ -348,9 +348,9 @@ onMounted(async () => {
 
 <style scoped>
 .page-document-query { display: flex; flex-direction: column; height: 100%; }
-.toolbar-row { display: flex; align-items: center; gap: 12px; padding: 4px 16px 0; }
+.toolbar-row { display: flex; align-items: center; gap: 12px; padding: 0; }
 .tip { font-size: 12px; color: var(--el-text-color-placeholder); }
-.table-container { flex: 1; display: flex; flex-direction: column; overflow: hidden; padding: 8px 16px 12px; }
+.table-container { flex: 1; display: flex; flex-direction: column; overflow: hidden; padding: var(--block-gap) 0 0; }
 .pagination-wrapper { margin-top: 12px; display: flex; justify-content: flex-end; }
 .debit { color: #409eff; }
 .credit { color: #f56c6c; }

@@ -87,7 +87,7 @@
 
     <!-- 新增/编辑弹窗 -->
     <el-dialog v-model="dialogVisible" :title="editId ? '编辑固定资产' : '新增固定资产'" width="800px" draggable :close-on-click-modal="false">
-      <div v-if="editId && navigationInfo" style="margin-bottom: 16px; border-bottom: 1px solid var(--el-border-color-lighter); padding-bottom: 12px;">
+      <div v-if="editId && navigationInfo" style="margin-bottom: 8px; border-bottom: 1px solid var(--el-border-color-lighter); padding-bottom: 6px;">
         <DialogNavigation
           :current="navigationInfo.current"
           :total="navigationInfo.total"
@@ -96,7 +96,7 @@
           @navigate="handleNavigate"
         />
       </div>
-      <el-form :model="form" label-width="100px" size="small" @keydown.ctrl.enter.prevent="!editId && !saving && handleSave(true)">
+      <el-form :model="form" label-width="100px" size="small" class="asset-form" @keydown.ctrl.enter.prevent="!editId && !saving && handleSave(true)">
         <div class="form-sector">
           <div class="form-sector-title">资产基本信息</div>
           <el-row :gutter="16">
@@ -187,8 +187,8 @@
             </el-col>
             <el-col :span="8">
               <el-form-item label="残值率">
-                <el-input-number v-model="form.salvage_rate" :precision="4" :step="0.01" :min="0" :max="0.9999" style="width:100%" @change="calcSalvage" />
-                <span class="tip-text">小数口径，0.05 表示 5%</span>
+                <!-- 口径提示放进悬停提示，避免在输入框下折出第二行 -->
+                <el-input-number v-model="form.salvage_rate" :precision="4" :step="0.01" :min="0" :max="0.9999" style="width:100%" title="小数口径，0.05 表示 5%" placeholder="0.05 = 5%" @change="calcSalvage" />
               </el-form-item>
             </el-col>
             <el-col :span="8">
@@ -250,7 +250,7 @@
             </el-col>
             <el-col :span="24">
               <el-form-item label="备注">
-                <el-input v-model="form.remark" type="textarea" :rows="2" />
+                <el-input v-model="form.remark" type="textarea" :autosize="{ minRows: 1, maxRows: 4 }" />
               </el-form-item>
             </el-col>
           </el-row>
@@ -823,18 +823,22 @@ async function handleDispose() {
 <style scoped>
 .page-asset-list { display: flex; flex-direction: column; height: 100%; }
 .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.table-container { flex: 1; overflow: hidden; padding: 0 16px 0; }
-.table-footer { padding: 8px 16px; display: flex; justify-content: flex-end; border-top: 1px solid var(--el-border-color-lighter); }
+.table-container { flex: 1; overflow: hidden; padding: 0; }
+.table-footer { padding: 4px 0; display: flex; justify-content: flex-end; border-top: 1px solid var(--el-border-color-lighter); }
 .dispose-info { margin-bottom: 4px; }
 .dispose-preview { display: flex; align-items: center; gap: 4px; padding: 8px 12px; background: var(--el-color-warning-light-9); border-radius: 4px; font-size: var(--cw-text-base); margin-top: 8px; }
 .tip-text { margin-left: 8px; font-size: 12px; color: var(--el-text-color-secondary); }
 .voucher-gen-area {
-  padding: 12px;
+  padding: 4px 8px;
   background: var(--ink-50);
   border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
-  margin-top: 8px;
+  margin-bottom: 8px;
 }
+.voucher-gen-area .el-form-item { margin-bottom: 0 !important; }
+.voucher-gen-area .el-form-item + .el-form-item { margin-top: 4px; }
+/* 新增 / 编辑资产弹窗：表单行距收紧（本表单无校验提示行，不会被遮挡） */
+.asset-form .el-form-item { margin-bottom: 8px !important; }
 .sector-tip {
   margin-left: 10px;
   color: var(--mint-700);

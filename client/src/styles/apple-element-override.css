@@ -421,7 +421,8 @@
 }
 
 .el-dialog__header {
-  padding: 16px 20px 12px !important;
+  /* 紧凑弹窗：头 / 体 / 脚留白收紧（原 16/20/12、20、12/20/16） */
+  padding: 10px 16px 8px !important;
   background: var(--white) !important;
   margin-right: 0 !important;
   border-bottom: 1px solid var(--border-subtle) !important;
@@ -435,20 +436,20 @@
   letter-spacing: 0 !important;
 }
 .el-dialog__body {
-  padding: 20px !important;
+  padding: 12px 16px !important;
   background: var(--white) !important;
 }
 
 .el-dialog__footer {
-  padding: 12px 20px 16px !important;
+  padding: 8px 16px 10px !important;
   background: var(--white) !important;
   border-top: 1px solid var(--border-subtle) !important;
 }
 
 /* —— 档案类表单板块 (Archive Form Sectors) —— */
 .form-sector {
-  margin-bottom: 16px;
-  padding-bottom: 14px;
+  margin-bottom: 8px;
+  padding-bottom: 4px;
   border-bottom: 1px dashed var(--border-subtle);
 }
 
@@ -464,7 +465,7 @@
   font-size: var(--cw-text-base);
   font-weight: 700;
   color: var(--mint-700);
-  margin-bottom: 12px;
+  margin-bottom: 8px;
   position: relative;
 }
 

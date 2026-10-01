@@ -1,21 +1,23 @@
 <template>
   <div class="page scm-wh-page">
-    <div class="list-toolbar" style="margin-bottom:8px">
+    <div class="list-toolbar" style="margin-bottom:var(--block-gap)">
       <el-button type="primary" size="small" @click="openAdd"><el-icon><Plus /></el-icon>新增仓库</el-button>
     </div>
-    <el-table ref="tableRef" :data="list" v-loading="loading" border stripe size="small" max-height="calc(100vh - 240px)" @header-dragend="onDragEnd">
-      <el-table-column label="编号" prop="code" :width="cw('code', 120)" />
-      <el-table-column label="名称" prop="name" min-width="160" :width="widths.name" />
-      <el-table-column label="属性" prop="attr" :width="cw('attr', 100)" />
-      <el-table-column label="负责人" prop="keeper" :width="cw('keeper', 120)" />
-      <el-table-column label="备注" prop="remark" min-width="160" :width="widths.remark" show-overflow-tooltip />
-      <el-table-column label="操作" column-key="操作" :width="cw('操作', 120)" fixed="right">
-        <template #default="{ row }">
-          <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
-          <el-button link type="danger" size="small" @click="handleDelete(row)">删除</el-button>
-        </template>
-      </el-table-column>
-    </el-table>
+    <div class="page-table-fill">
+      <el-table ref="tableRef" :data="list" v-loading="loading" border stripe size="small" height="100%" @header-dragend="onDragEnd">
+        <el-table-column label="编号" prop="code" :width="cw('code', 120)" />
+        <el-table-column label="名称" prop="name" min-width="160" :width="widths.name" />
+        <el-table-column label="属性" prop="attr" :width="cw('attr', 100)" />
+        <el-table-column label="负责人" prop="keeper" :width="cw('keeper', 120)" />
+        <el-table-column label="备注" prop="remark" min-width="160" :width="widths.remark" show-overflow-tooltip />
+        <el-table-column label="操作" column-key="操作" :width="cw('操作', 120)" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
+            <el-button link type="danger" size="small" @click="handleDelete(row)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
 
     <WarehouseDialog v-model="dialogVisible" :row="editRow" @saved="load" />
   </div>
@@ -52,6 +54,6 @@ onMounted(load)
 </script>
 
 <style scoped>
-.scm-wh-page { padding: 12px 16px; }
+.scm-wh-page { padding: var(--page-pad); height: 100%; }
 .filter-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 </style>

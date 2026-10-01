@@ -1,23 +1,9 @@
 <template>
   <div class="page voucher-list-page">
-    <!-- 顶部功能工具栏（与凭证录入页同款） -->
-    <div class="wb-card gl-toolbar-card">
+    <!-- 顶部功能工具栏：单行按钮 + 下拉组（参照金蝶） -->
+    <div class="wb-card gl-toolbar-card gl-toolbar-card--inline">
       <div class="gl-toolbar">
-        <button
-          v-for="btn in glToolbarButtons"
-          :key="btn.key"
-          type="button"
-          class="gl-tool-btn"
-          :class="{ 'is-disabled': btn.disabled }"
-          :disabled="btn.disabled"
-          :title="btn.tooltip || btn.name"
-          @click="btn.action"
-        >
-          <span class="gl-tool-btn__icon">
-            <component :is="btn.icon" :size="17" :stroke-width="1.8" />
-          </span>
-          <span class="gl-tool-btn__label">{{ btn.name }}</span>
-        </button>
+        <GlToolbarButtons :buttons="glToolbarButtons" :groups="glToolbarGroups" />
         <AccountDisplayModeSwitch class="gl-toolbar-account-display" />
         <VoucherFilterBar
           class="gl-toolbar-filter"
@@ -43,37 +29,6 @@
           @search-aux-items="searchAuxItems"
           @apply-scheme="handleApplyScheme"
         />
-      </div>
-    </div>
-
-    <div class="voucher-page-top">
-      <div class="voucher-load-status">
-        <span class="voucher-load-status__text">
-          共 <strong>{{ pagination.total }}</strong> 条凭证 · 已加载
-          <strong>{{ list.length }}</strong> 条
-          <template v-if="softCapReached">
-            （已加载较多，自动滚动已暂停，可点「继续加载」或改用导出）
-          </template>
-          <template v-else-if="hasMore">（继续下滚可加载更多）</template>
-        </span>
-        <el-button
-          v-if="softCapReached"
-          size="small"
-          plain
-          :loading="loading || loadingMore"
-          @click="handleContinueLoad"
-        >
-          继续加载
-        </el-button>
-        <el-button
-          v-else-if="hasMore"
-          size="small"
-          plain
-          :loading="loading || loadingMore"
-          @click="handleLoadRemaining"
-        >
-          加载剩余
-        </el-button>
       </div>
     </div>
 
@@ -124,6 +79,7 @@
     <div class="pagination-bar toolbar">
       <span class="pagination-text">
         共 {{ pagination.total }} 条 · 已加载 {{ list.length }} 条
+        <template v-if="softCapReached">（已加载较多，自动加载已暂停）</template>
       </span>
       <span class="pagination-text">每次加载</span>
       <el-select v-model="pagination.pageSize" style="width: 95px" @change="handlePageSizeChange">
@@ -206,12 +162,14 @@ import {
   Calculator,
   FilePen,
   ArrowLeft,
+  MoreHorizontal,
 } from 'lucide-vue-next'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getAssetVoucherLockMessage } from '@/utils/voucherSourceGuard'
 import BatchPrintDialog from '@/components/print/BatchPrintDialog.vue'
 import VoucherHiprintDialog from '@/components/print/VoucherHiprintDialog.vue'
 import VoucherFilterBar from '@/components/voucher/VoucherFilterBar.vue'
+import GlToolbarButtons, { type GlToolbarButton, type GlToolbarGroup } from '@/components/voucher/GlToolbarButtons.vue'
 import VoucherAuditTable from '@/components/voucher/VoucherAuditTable.vue'
 import VoucherEntryDialogHost from '@/components/voucher/VoucherEntryDialogHost.vue'
 import { useDeleteConfirm } from '@/composables/useConfirm'
@@ -602,16 +560,15 @@ function handleReturn() {
   }
 }
 
-// 顶部功能工具栏（与凭证录入页同款排版）
-const glToolbarButtons = computed(() => [
-  {
-    key: 'save',
-    name: '另存',
-    icon: Download,
-    tooltip: '导出为 Excel 文件',
-    disabled: exporting.value,
-    action: exportData,
-  },
+// 顶部功能工具栏下拉组：打印为分体按钮（主体直接打印），联查 / 更多收纳低频操作
+const glToolbarGroups: Record<string, GlToolbarGroup> = {
+  print: { label: '打印', split: true },
+  link: { label: '联查', icon: BookOpen },
+  more: { label: '更多', icon: MoreHorizontal },
+}
+
+// 顶部功能工具栏（group 决定收进哪个下拉）
+const glToolbarButtons = computed<GlToolbarButton[]>(() => [
   {
     key: 'refresh',
     name: '刷新',
@@ -636,14 +593,6 @@ const glToolbarButtons = computed(() => [
     action: handleViewSelected,
   },
   {
-    key: 'reverse',
-    name: '反冲',
-    icon: Undo2,
-    tooltip: reverseTooltip.value || '凭证红字冲销',
-    disabled: !canReverseSelected.value,
-    action: handleReverse,
-  },
-  {
     key: 'delete',
     name: '删除',
     icon: Trash2,
@@ -652,22 +601,8 @@ const glToolbarButtons = computed(() => [
     action: handleDeleteSelected,
   },
   {
-    key: 'turn-template',
-    name: '转出',
-    icon: ExternalLink,
-    tooltip: '保存为凭证模版',
-    disabled: !selectedVoucherId.value,
-    action: handleTurnTemplate,
-  },
-  {
-    key: 'batch-print',
-    name: '连打',
-    icon: Printer,
-    tooltip: '连续打印（批量打印）',
-    action: handleBatchPrint,
-  },
-  {
     key: 'hiprint',
+    group: 'print',
     name: '打印',
     icon: FileText,
     tooltip: '打印选中凭证',
@@ -675,11 +610,12 @@ const glToolbarButtons = computed(() => [
     action: handleHiprint,
   },
   {
-    key: 'columns',
-    name: '列设置',
-    icon: Settings2,
-    tooltip: '设置显示列',
-    action: () => (columnDialogVisible.value = true),
+    key: 'batch-print',
+    group: 'print',
+    name: '连打',
+    icon: Printer,
+    tooltip: '连续打印（批量打印）',
+    action: handleBatchPrint,
   },
   {
     key: 'entry',
@@ -690,6 +626,7 @@ const glToolbarButtons = computed(() => [
   },
   {
     key: 'detail-ledger',
+    group: 'link',
     name: '明细账',
     icon: BookOpen,
     tooltip: '跳转明细账',
@@ -697,10 +634,46 @@ const glToolbarButtons = computed(() => [
   },
   {
     key: 'summary-ledger',
+    group: 'link',
     name: '汇总',
     icon: Calculator,
     tooltip: '跳转凭证汇总表',
     action: () => router.push('/ledger/summary'),
+  },
+  {
+    key: 'reverse',
+    group: 'more',
+    name: '反冲',
+    icon: Undo2,
+    tooltip: reverseTooltip.value || '凭证红字冲销',
+    disabled: !canReverseSelected.value,
+    action: handleReverse,
+  },
+  {
+    key: 'turn-template',
+    group: 'more',
+    name: '转出',
+    icon: ExternalLink,
+    tooltip: '保存为凭证模版',
+    disabled: !selectedVoucherId.value,
+    action: handleTurnTemplate,
+  },
+  {
+    key: 'save',
+    group: 'more',
+    name: '另存',
+    icon: Download,
+    tooltip: '导出为 Excel 文件',
+    disabled: exporting.value,
+    action: exportData,
+  },
+  {
+    key: 'columns',
+    group: 'more',
+    name: '列设置',
+    icon: Settings2,
+    tooltip: '设置显示列',
+    action: () => (columnDialogVisible.value = true),
   },
   {
     key: 'return',
