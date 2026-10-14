@@ -11,6 +11,7 @@
         </el-tag>
       </div>
       <div class="pp-form-header__right">
+        <SaveAsButton doc :title="pageTitle" />
         <el-button size="small" @click="goBack">取消</el-button>
         <el-button type="primary" size="small" :loading="saving" :disabled="readonly" @click="handleSave">保存</el-button>
       </div>
@@ -62,14 +63,14 @@
         <span class="pp-lines-title">成品明细</span>
         <span class="pp-lines-summary">共 {{ form.products.filter((p:any) => p.item_code).length }} 个成品（末行空行直接选成品即可）</span>
       </div>
-      <el-table :data="form.products" border size="small" highlight-current-row :current-row-key="currentIndex"
+      <el-table v-col-width="'scm_ProductionPlanForm_1'" :data="form.products" border size="small" highlight-current-row :current-row-key="currentIndex"
         row-key="_k" @current-change="onCurrentProduct" class="compact-data-table pp-product-table" style="width:100%">
         <el-table-column label="序号" width="52" align="center">
           <template #default="{ $index }"><span :class="{ 'pp-cur': $index === currentIndex }">{{ $index + 1 }}</span></template>
         </el-table-column>
         <el-table-column label="成品物料" min-width="190">
           <template #default="{ row }">
-            <ItemPicker v-if="!readonly" v-model="row.item_code" placeholder="选择成品" @pick="(it:any) => onPickProduct(it, row)" />
+            <ItemPicker v-if="!readonly" v-model="row.item_code" placeholder="选择成品" :default-source="productSource" @pick="(it:any) => onPickProduct(it, row)" />
             <span v-else>{{ row.item_code }}</span>
           </template>
         </el-table-column>
@@ -127,7 +128,7 @@
         <el-button size="small" plain :disabled="readonly" :loading="smartWhLoading" @click="smartPickWarehouse" title="按当前库存为全部成品的用料自动分配领料仓库"><el-icon><MagicStick /></el-icon>智能选仓</el-button>
         <span class="pp-lines-summary">共 {{ currentProduct.lines.filter((l:any) => l.item_code).length }} 项</span>
       </div>
-      <el-table v-if="currentProduct" :data="currentProduct.lines" border size="small" :height="tableHeight" style="width:100%" @cell-click="handleCellClick" class="compact-data-table">
+      <el-table v-col-width="'scm_ProductionPlanForm_2'" v-if="currentProduct" :data="currentProduct.lines" border size="small" :height="tableHeight" style="width:100%" @cell-click="handleCellClick" class="compact-data-table">
         <el-table-column label="序号" width="52" align="center">
           <template #default="{ $index }">{{ $index + 1 }}</template>
         </el-table-column>
@@ -196,7 +197,7 @@ import { ref, computed, onMounted, defineAsyncComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft, Grid, MagicStick } from '@element-plus/icons-vue'
-import { scmApi } from '@/api/scm'
+import { scmApi, SOURCE_TYPES } from '@/api/scm'
 import { useAutoBlankRow } from '@/composables/useAutoBlankRow'
 import { hasSelectedMaterialLines, matchProductBoms, pickDefaultProductBom, shouldResetProductBom } from '@/utils/productionPlanBom'
 
@@ -236,6 +237,8 @@ useAutoBlankRow(
   { enabled: () => !readonly.value && !!currentProduct.value },
 )
 const boms = ref<any[]>([]); const warehouses = ref<any[]>([]); const partners = ref<any[]>([])
+/** 选成品默认「来源」：委外计划默认委外，生产计划默认自制（选择器里可切回全部） */
+const productSource = computed(() => (form.value.plan_type === 'outsource' ? 'outsource' : 'self'))
 const outsourcePartners = computed(() => partners.value.filter((p: any) => p.enabled !== 0 && p.is_outsource === 1))
 const whName = (code: string) => { const w = warehouses.value.find((x: any) => x.code === code); return w ? w.name : code }
 
@@ -326,6 +329,7 @@ async function onPickProduct(item: any, row: any) {
   row._resolved_item_code = nextCode
   // 委外计划：加工费单价 / 税率按物料档案默认带出（未填过时）
   if (form.value.plan_type === 'outsource' && !Number(row.process_fee)) { row.process_fee = Number(item.outsource_fee) || 0; if (!Number(row.process_tax_rate)) row.process_tax_rate = Number(item.outsource_tax_rate) || 0 }
+  applyProductDefaults(item, row)
   if (row.bom_id || hasSelectedMaterialLines(row.lines)) return
   // 选定成品后自动带出 BOM：唯一匹配直接带；多张时带默认那张（启用/版本新/编码小），并提示可改选
   const matched = matchProductBoms(await ensureBomsLoaded(), nextCode)
@@ -334,6 +338,27 @@ async function onPickProduct(item: any, row: any) {
   row.bom_id = bom.id
   await loadBomInto(row, bom.id)
   if (matched.length > 1) ElMessage.info(`成品 ${nextCode} 有 ${matched.length} 张 BOM，已带入 ${bom.code || ''}，可双击「BOM 模板」改选`)
+}
+
+/**
+ * 选成品后的智能带出（不覆盖已填值）：
+ *   - 成品仓：取物料默认仓库，没有则取表头已用的成品仓
+ *   - 委外厂：委外计划未选委外厂时，取物料档案的默认供应商（须是委外厂）
+ *   - 来源提示：物料档案来源与计划类型不符时提醒（不拦截）
+ */
+function applyProductDefaults(item: any, row: any) {
+  if (!row.fp_warehouse) row.fp_warehouse = item.default_warehouse_code || (form.value.products || []).find((p: any) => p !== row && p.fp_warehouse)?.fp_warehouse || ''
+  const isOut = form.value.plan_type === 'outsource'
+  if (isOut && !form.value.supplier_code && item.supplier_code && outsourcePartners.value.some((p: any) => p.code === item.supplier_code)) {
+    form.value.supplier_code = item.supplier_code
+    const p = outsourcePartners.value.find((x: any) => x.code === item.supplier_code)
+    ElMessage.info(`已按物料档案带出委外厂：${p ? `${p.code} ${p.name}` : item.supplier_code}`)
+  }
+  const expected = productSource.value
+  const actual = item.source_type || 'purchase'
+  if (actual !== expected && !(expected === 'self' && actual === 'assembly')) {
+    ElMessage.warning(`成品 ${item.code} 在物料档案中的来源是「${SOURCE_TYPES[actual] || actual}」，不是「${SOURCE_TYPES[expected]}」，请确认是否选对；MRP 会按物料档案来源下推`)
+  }
 }
 
 // BOM 模板：按成品行选择

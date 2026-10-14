@@ -1,5 +1,5 @@
 import type { ScmDoc } from '@/api/scm'
-import { hasTrace, isLocked, pushTarget } from '@/utils/scmDoc'
+import { docGeneratesVoucher, hasTrace, isLocked, pushTarget } from '@/utils/scmDoc'
 
 export const MAX_SCM_BATCH_SELECTION = 30
 
@@ -87,7 +87,9 @@ export function getDocBatchActionState(rows: ScmDoc[]): ScmDocBatchActionState {
     unaudit: nonMrp && audited && mrpUnlocked ? enabled() : disabled('反审核要求全部为未被MRP锁定的已审核单据'),
     delete: nonMrp && draft && unlocked ? enabled() : disabled('删除要求全部为未锁定草稿'),
     print: nonMrp && count > 0 ? enabled() : disabled('请先选择可打印单据'),
-    genVoucher: nonMrp && audited && all(rows, row => !row.voucher_id) ? enabled() : disabled('生成凭证要求全部已审核且尚未生成凭证'),
+    genVoucher: !all(rows, row => docGeneratesVoucher(row.doc_type))
+      ? disabled('订单 / 询价 / 报价类单据不生成凭证')
+      : audited && all(rows, row => !row.voucher_id) ? enabled() : disabled('生成凭证要求全部已审核且尚未生成凭证'),
     trace: single && hasTrace(one) ? enabled() : disabled('上下游仅支持存在关联的单张单据'),
     push: batchPushState(rows),
     mrp: batchMrpState(rows),
@@ -121,6 +123,7 @@ export function getProductionPlanBatchActionState(rows: ProductionPlanBatchRow[]
     edit: single && allStatus('draft') ? enabled() : disabled('编辑仅支持单张草稿'),
     order: single ? enabled() : disabled('工单仅支持单选'),
     delete: allStatus('draft') ? enabled() : disabled('批量删除要求全部为草稿'),
+    release: allStatus('draft') ? enabled() : disabled('批量审核要求全部为草稿计划'),
     unrelease: allStatus('released') && !blockedByDownstream && !blockedByMrp
       ? enabled()
       : disabled(blockedByMrp ? '存在已进入MRP的计划' : blockedByDownstream ? '存在下游单据' : '批量反审核要求全部为已审核计划'),

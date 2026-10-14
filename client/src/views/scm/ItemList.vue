@@ -9,15 +9,30 @@
       </div>
       <div class="item-toolbar toolbar">
         <!-- 筛选过滤 -->
-        <el-input
+        <el-autocomplete
+          :key="keywordAcKey"
           v-model="filters.keyword"
           class="item-search"
           size="small"
           clearable
           placeholder="搜索编号/名称"
+          :fetch-suggestions="fetchKeywordHistory"
+          :trigger-on-focus="true"
+          :debounce="0"
+          popper-class="item-search-history-popper"
           @input="onSearchInput"
           @clear="onSearchClear"
-        />
+          @select="onHistorySelect"
+          @keyup.enter="commitKeyword"
+          @blur="commitKeyword"
+        >
+          <template #default="{ item }">
+            <div v-if="item.isClear" class="history-clear" @click.stop.prevent="clearKeywordHistory">
+              清除搜索记录
+            </div>
+            <div v-else class="history-item">{{ item.value }}</div>
+          </template>
+        </el-autocomplete>
         <el-select
           v-model="filters.item_type"
           class="item-filter"
@@ -40,6 +55,12 @@
           <el-option label="目录" :value="0" />
         </el-select>
 
+        <el-select v-model="auditFilter" class="item-filter" size="small" clearable placeholder="审核" @change="load">
+          <el-option label="未审核" value="draft" />
+          <el-option label="已审核" value="audited" />
+        </el-select>
+        <el-checkbox v-model="showDisabled" size="small" @change="load">显示停用</el-checkbox>
+
         <!-- 一键 / 层级 展开收纳（仅树形模式有效，搜索模式禁用） -->
         <el-button-group class="level-actions">
           <el-button size="small" :disabled="hasSearch" @click="collapseAll">一键收纳</el-button>
@@ -61,6 +82,14 @@
           </template>
         </el-dropdown>
 
+        <!-- 第六份反馈：另存、导入模板、批量审核、停用 -->
+        <SaveAsButton :handler="exportAll" />
+        <el-button size="small" plain @click="router.push({ name: 'ScmMasterImport', query: { kind: 'items' } })"><el-icon><Upload /></el-icon>导入</el-button>
+        <el-button v-permission="'scm:master-audit'" size="small" type="success" plain :disabled="!selection.length" @click="batchAudit('audit')">审核</el-button>
+        <el-button v-permission="'scm:master-audit'" size="small" type="warning" plain :disabled="!selection.length" @click="batchAudit('unaudit')">反审核</el-button>
+        <el-button size="small" plain :disabled="!selection.length" @click="batchEnable(false)">停用</el-button>
+        <el-button size="small" plain :disabled="!selection.length" @click="batchEnable(true)">启用</el-button>
+
         <!-- 字段配置 -->
         <el-button size="small" plain @click="openFieldConfig">
           <el-icon><Setting /></el-icon>字段配置
@@ -68,6 +97,7 @@
 
         <!-- 列设置（投递到顶部多标签栏右侧） -->
         <Teleport v-if="ptActive" defer to="#tabbar-actions">
+          <MultiSortPanel :options="sortOptions" :model-value="effectiveSortKeys" :default-keys="DEFAULT_SORT_KEYS" @change="onSortChanged" />
           <el-button size="small" plain @click="columnDialogVisible = true"><el-icon><Setting /></el-icon>列设置</el-button>
         </Teleport>
       </div>
@@ -89,11 +119,14 @@
       :cell-style="{ padding: '0' }"
       :header-cell-style="{ padding: '4px 0' }"
       class="item-table compact-data-table"
+      :row-class-name="rowClass"
+      @selection-change="onSelectionChange"
       @expand-change="handleExpandChange"
       @current-change="handleCurrentChange"
       @row-dblclick="(row: any) => openEdit(row)"
       @header-dragend="onDragEnd"
     >
+      <el-table-column type="selection" width="40" fixed="left" />
       <el-table-column
         v-for="column in orderedVisibleColumns"
         :key="column.key"
@@ -113,9 +146,10 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="操作" column-key="actions" :width="colWidth('actions', 100)" fixed="right">
+      <el-table-column label="操作" column-key="actions" :width="colWidth('actions', 140)" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
+          <el-button link size="small" @click="toggleEnable(row)">{{ row.enabled === 0 ? '启用' : '停用' }}</el-button>
           <el-button link type="danger" size="small" @click="handleDelete(row)">删除</el-button>
         </template>
       </el-table-column>
@@ -134,10 +168,13 @@
       :cell-style="{ padding: '0' }"
       :header-cell-style="{ padding: '4px 0' }"
       class="item-table compact-data-table"
+      :row-class-name="rowClass"
+      @selection-change="onSelectionChange"
       @current-change="handleCurrentChange"
       @row-dblclick="(row: any) => openEdit(row)"
       @header-dragend="onDragEnd"
     >
+      <el-table-column type="selection" width="40" fixed="left" />
       <el-table-column
         v-for="column in orderedVisibleColumns"
         :key="column.key"
@@ -157,9 +194,10 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="操作" column-key="actions" :width="colWidth('actions', 100)" fixed="right">
+      <el-table-column label="操作" column-key="actions" :width="colWidth('actions', 140)" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
+          <el-button link size="small" @click="toggleEnable(row)">{{ row.enabled === 0 ? '启用' : '停用' }}</el-button>
           <el-button link type="danger" size="small" @click="handleDelete(row)">删除</el-button>
         </template>
       </el-table-column>
@@ -225,11 +263,15 @@
 import { ref, reactive, computed, onMounted, onActivated, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowDown, Setting } from '@element-plus/icons-vue'
+import { ArrowDown, Setting, Upload } from '@element-plus/icons-vue'
+import { exportStyledTable } from '@/utils/exportStyledExcel'
+import { exportDateStamp } from '@/utils/exportElTable'
 import { scmApi, ITEM_TYPES, type ScmItem, type ScmItemFieldDef } from '@/api/scm'
 import { useListColumnWidth } from '@/composables/useColumnWidthMemory'
 import { usePageToolbarTeleport } from '@/composables/usePageToolbarTeleport'
 import ColumnSettingsDialog from '@/components/common/ColumnSettingsDialog.vue'
+import MultiSortPanel from '@/components/common/MultiSortPanel.vue'
+import { loadSortKeys, normalizeSortKeys, saveSortKeys, serializeSortKeys, sameSortKeys, sortRows, type SortKey } from '@/utils/multiSort'
 import { loadColumnSettings, mergeColumnSettings, saveColumnSettings, serializeColumnSettings, type ColumnSetting } from '@/utils/columnSettings'
 
 const { ptActive } = usePageToolbarTeleport()
@@ -246,13 +288,12 @@ const filters = reactive<{ keyword: string; item_type: string; is_leaf: number |
   is_leaf: '',
 })
 
-// ── 查询条件记忆：下次打开还原上次的筛选（关键字/属性/性质）──
+// ── 查询条件记忆：下次打开还原上次的筛选（属性/性质；搜索关键字不记忆，每次打开为空）──
 const STORAGE_KEY_FILTERS = 'scm_item_filters'
 function loadFilters() {
   try {
     const o = JSON.parse(localStorage.getItem(STORAGE_KEY_FILTERS) || 'null')
     if (!o || typeof o !== 'object') return
-    if (typeof o.keyword === 'string') filters.keyword = o.keyword
     if (typeof o.item_type === 'string') filters.item_type = o.item_type
     if (o.is_leaf === 0 || o.is_leaf === 1 || o.is_leaf === '') filters.is_leaf = o.is_leaf
   } catch { /* ignore */ }
@@ -260,7 +301,7 @@ function loadFilters() {
 function saveFilters() {
   try {
     localStorage.setItem(STORAGE_KEY_FILTERS, JSON.stringify({
-      keyword: filters.keyword, item_type: filters.item_type, is_leaf: filters.is_leaf,
+      item_type: filters.item_type, is_leaf: filters.is_leaf,
     }))
   } catch { /* localStorage 不可用时忽略 */ }
 }
@@ -271,6 +312,15 @@ const currentRow = ref<ScmItem | null>(null)
 const { tableRef, onDragEnd, colWidth } = useListColumnWidth('scm_item')
 
 const hasSearch = computed(() => !!(filters.keyword || filters.item_type || filters.is_leaf !== ''))
+
+// 审核状态筛选 / 显示停用（默认不显示停用物料）
+const auditFilter = ref('')
+const showDisabled = ref(false)
+const statusOk = (r: any) => (showDisabled.value || r.enabled !== 0) && (!auditFilter.value || (r.audit_status || 'audited') === auditFilter.value)
+const statusFiltering = computed(() => !showDisabled.value || !!auditFilter.value)
+const selection = ref<ScmItem[]>([])
+function onSelectionChange(rows: ScmItem[]) { selection.value = rows }
+const rowClass = ({ row }: { row: any }) => (row.enabled === 0 ? 'row-disabled' : '')
 
 // activeFieldDefs：页面显示用（is_enabled=1 的字段）
 // 必须在 allColumnSettings 计算属性与 immediate watch 之前声明，否则存在 TDZ
@@ -290,6 +340,8 @@ const standardCols: ColumnSetting[] = [
   { key: 'barcode', label: '条码', visible: false },
   { key: 'short_code', label: '简码', visible: false },
   { key: 'is_asset', label: '资产', visible: true },
+  { key: 'audit_status', label: '审核', visible: true },
+  { key: 'enabled', label: '状态', visible: true },
   { key: 'remark', label: '备注', visible: false },
 ]
 
@@ -315,17 +367,93 @@ function updateColumns(columns: ColumnSetting[]) {
 }
 function resetColumns() { updateColumns(allColumnSettings.value.map(column => ({ ...column }))) }
 
-const ITEM_COLUMN_WIDTHS: Record<string, number> = { code: 140, name: 180, spec: 110, unit: 70, item_type: 90, is_leaf: 68, purchase_price: 90, sale_price: 90, barcode: 120, short_code: 100, is_asset: 52, remark: 150 }
+const ITEM_COLUMN_WIDTHS: Record<string, number> = { code: 140, name: 180, spec: 110, unit: 70, item_type: 90, is_leaf: 68, purchase_price: 90, sale_price: 90, barcode: 120, short_code: 100, is_asset: 52, audit_status: 70, enabled: 60, remark: 150 }
 function itemColumnWidth(key: string) { return colWidth(key, ITEM_COLUMN_WIDTHS[key] || 100) }
-function itemColumnAlign(key: string) { return ['purchase_price', 'sale_price'].includes(key) ? 'right' : ['is_leaf', 'is_asset'].includes(key) ? 'center' : undefined }
+function itemColumnAlign(key: string) { return ['purchase_price', 'sale_price'].includes(key) ? 'right' : ['is_leaf', 'is_asset', 'audit_status', 'enabled'].includes(key) ? 'center' : undefined }
 function itemColumnProp(key: string) { return key.startsWith('field_') ? `field_values.${key.slice(6)}` : key }
 function itemColumnText(row: any, key: string) {
   if (key === 'unit') return row.unit_name || row.unit
   if (key === 'item_type') return dynamicItemTypes.value[row.item_type] || row.item_type
+  if (key === 'audit_status') return row.audit_status === 'draft' ? '未审核' : '已审核'
+  if (key === 'enabled') return row.enabled === 0 ? '停用' : '启用'
   if (key.startsWith('field_')) return (row.field_values || {})[key.slice(6)]
   return row[key]
 }
+// ── 多级排序（第一排序 / 第二排序 / …）──
+// 搜索（扁平分页）模式走服务端排序；树形模式（一次取全量）在前端对每一层兄弟节点排序。
+const DEFAULT_SORT_KEYS: SortKey[] = [{ key: 'code', order: 'asc' }]
+const SORT_STORAGE_KEY = 'scm_item_sort'
+const sortOptions = computed(() => allColumnSettings.value.map(c => ({ key: c.key, label: c.label })))
+const sortKeysState = ref<SortKey[] | null>(null)
+const effectiveSortKeys = computed<SortKey[]>(() => {
+  const keys = normalizeSortKeys(sortKeysState.value ?? loadSortKeys(SORT_STORAGE_KEY) ?? [], sortOptions.value.map(o => o.key))
+  return keys.length ? keys : DEFAULT_SORT_KEYS
+})
+const isDefaultSort = computed(() => sameSortKeys(effectiveSortKeys.value, DEFAULT_SORT_KEYS))
+function onSortChanged(keys: SortKey[]) {
+  sortKeysState.value = keys
+  saveSortKeys(SORT_STORAGE_KEY, keys)
+  if (hasSearch.value) void load()   // 树形模式由 treeData 计算属性自动重排
+}
+function itemSortAccessor(key: string): (row: any) => unknown {
+  if (key === 'unit') return row => row.unit_name || row.unit
+  // 属性按类型编码排序（原辅材料 → 半成品 → 成品），与搜索模式的服务端排序一致
+  if (key === 'is_leaf') return row => row.is_leaf ?? 1
+  if (key.startsWith('field_')) return row => (row.field_values || {})[key.slice(6)]
+  return row => row[key]
+}
+function sortTreeLevel(nodes: any[]): any[] {
+  const sorted = sortRows(nodes, effectiveSortKeys.value, itemSortAccessor)
+  for (const n of sorted) if (n.children?.length) n.children = sortTreeLevel(n.children)
+  return sorted
+}
 function treeIndent(row: any) { return { paddingLeft: `${((row.level || 1) - 1) * 14}px`, display: 'inline-block' } }
+
+// ── 批量审核 / 停用 / 另存（第六份反馈） ─────────────────────────────────
+async function batchAudit(action: 'audit' | 'unaudit') {
+  const r = await scmApi.batchAuditMaster('items', selection.value.map(x => x.id), action)
+  ElMessage.success(`${action === 'audit' ? '审核' : '反审核'} ${r.data.changed} 个${r.data.skipped ? `，${r.data.skipped} 个状态无需变更` : ''}`)
+  load()
+}
+async function batchEnable(enabled: boolean) {
+  if (!enabled) {
+    try { await ElMessageBox.confirm(`停用选中的 ${selection.value.length} 个物料？停用后单据录入时不能再选，已有单据和库存不受影响。`, '停用', { type: 'warning' }) } catch { return }
+  }
+  const r = await scmApi.batchEnableMaster('items', selection.value.map(x => x.id), enabled)
+  ElMessage.success(`已${enabled ? '启用' : '停用'} ${r.data.changed} 个`)
+  load()
+}
+async function toggleEnable(row: any) {
+  const enabled = row.enabled === 0
+  await scmApi.batchEnableMaster('items', [row.id], enabled)
+  ElMessage.success(enabled ? '已启用' : '已停用')
+  load()
+}
+/** 另存：当前筛选下的全部物料（扁平，代码 / 名称按层级缩进），列与列设置一致 */
+async function exportAll() {
+  const rows = hasSearch.value ? list.value : filteredAllList.value
+  const cols = orderedVisibleColumns.value
+  await exportStyledTable({
+    fileName: `物料档案_${exportDateStamp()}.xlsx`,
+    title: '物料档案',
+    columns: cols.map(c => {
+      const numeric = ['purchase_price', 'sale_price'].includes(c.key)
+      return {
+        label: c.label,
+        type: numeric ? 'number' as const : 'text' as const,
+        align: numeric ? 'right' as const : 'left' as const,
+        indent: c.key === 'code' || c.key === 'name' ? (r: any) => Math.max(0, (r.level || 1) - 1) : undefined,
+        value: (r: any) => {
+          if (c.key === 'is_leaf') return r.is_leaf !== 0 ? '明细' : '目录'
+          if (c.key === 'is_asset') return r.is_asset ? '是' : ''
+          const v = itemColumnText(r, c.key)
+          return v === undefined || v === null ? '' : v
+        },
+      }
+    }),
+    rows,
+  })
+}
 
 // ── 参数（属性下拉用） ─────────────────────────────────────────────────────
 async function loadParams() {
@@ -344,14 +472,14 @@ async function load() {
   loading.value = true
   try {
     if (hasSearch.value) {
-      const params: any = { page: 1, page_size: 200 }
+      const params: any = { page: 1, page_size: 200, sort: serializeSortKeys(effectiveSortKeys.value) }
       if (filters.keyword) params.keyword = filters.keyword
       if (filters.item_type) params.item_type = filters.item_type
       const res = await scmApi.getItems(params)
       if (res.code === 0) {
         let rows: ScmItem[] = (res.data as any).list
         if (filters.is_leaf !== '') rows = rows.filter(r => (r.is_leaf ?? 1) === filters.is_leaf)
-        list.value = rows
+        list.value = rows.filter(statusOk)
         total.value = rows.length
       }
     } else {
@@ -369,17 +497,55 @@ function onSearchInput() {
   if (searchTimer) clearTimeout(searchTimer)
   searchTimer = setTimeout(load, 300)
 }
+// ── 搜索记录：回车 / 失焦 / 选中时保存，最多 10 条，可一键清除 ──
+const STORAGE_KEY_HISTORY = 'scm_item_keyword_history'
+const HISTORY_MAX = 10
+const keywordHistory = ref<string[]>([])
+const keywordAcKey = ref(0)   // 清除后重建组件：el-autocomplete 内部缓存着上次的建议列表，下次聚焦会先闪出旧记录
+try {
+  const h = JSON.parse(localStorage.getItem(STORAGE_KEY_HISTORY) || '[]')
+  if (Array.isArray(h)) keywordHistory.value = h.filter(x => typeof x === 'string').slice(0, HISTORY_MAX)
+} catch { /* ignore */ }
+function saveKeywordHistory() {
+  try { localStorage.setItem(STORAGE_KEY_HISTORY, JSON.stringify(keywordHistory.value)) } catch { /* ignore */ }
+}
+function commitKeyword() {
+  const k = (filters.keyword || '').trim()
+  if (!k) return
+  keywordHistory.value = [k, ...keywordHistory.value.filter(x => x !== k)].slice(0, HISTORY_MAX)
+  saveKeywordHistory()
+}
+function fetchKeywordHistory(q: string, cb: (items: Array<{ value: string; isClear?: boolean }>) => void) {
+  const key = (q || '').trim().toLowerCase()
+  const hits = keywordHistory.value.filter(x => !key || x.toLowerCase().includes(key))
+  if (!keywordHistory.value.length) return cb([])
+  cb([...hits.map(value => ({ value })), { value: '', isClear: true }])
+}
+function onHistorySelect(item: Record<string, any>) {
+  if (item.isClear) return
+  filters.keyword = item.value
+  commitKeyword()
+  load()
+}
+function clearKeywordHistory() {
+  keywordHistory.value = []
+  saveKeywordHistory()
+  keywordAcKey.value++            // 重建组件：收起下拉并丢弃内部缓存的旧建议
+}
 function onSearchClear() {
   filters.keyword = ''
   load()
 }
 
 // ── 树构建 ────────────────────────────────────────────────────────────────
-const treeData = computed(() => buildTree(filteredAllList.value))
+const treeData = computed(() => {
+  const tree = buildTree(filteredAllList.value)
+  return isDefaultSort.value ? tree : sortTreeLevel(tree)   // 默认按编号：保持服务端顺序（SQL 二进制序）
+})
 
 const filteredAllList = computed(() => {
-  if (filters.is_leaf === '') return allList.value
-  return filterWithAncestors(allList.value, r => (r.is_leaf ?? 1) === filters.is_leaf)
+  if (filters.is_leaf === '' && !statusFiltering.value) return allList.value
+  return filterWithAncestors(allList.value, r => (filters.is_leaf === '' || (r.is_leaf ?? 1) === filters.is_leaf) && statusOk(r))
 })
 
 function filterWithAncestors(items: ScmItem[], predicate: (r: ScmItem) => boolean): ScmItem[] {
@@ -606,6 +772,7 @@ onActivated(() => {
 </script>
 
 <style scoped>
+:deep(.row-disabled td) { color: var(--el-text-color-placeholder); }
 .page {
   height: calc(100vh - 60px);
   padding: var(--page-pad);
@@ -654,8 +821,15 @@ onActivated(() => {
   flex-shrink: 0;
 }
 
-.item-search {
+.item-toolbar :deep(.item-search) {
   width: 200px;
+}
+
+.history-clear {
+  text-align: center;
+  color: var(--el-color-danger);
+  border-top: 1px solid var(--el-border-color-lighter);
+  margin-top: 2px;
 }
 
 .item-filter {
@@ -742,6 +916,6 @@ onActivated(() => {
 
 @media (max-width: 1100px) {
   .item-toolbar { justify-content: flex-start; }
-  .item-search { width: 160px; }
+  .item-toolbar :deep(.item-search) { width: 160px; }
 }
 </style>

@@ -137,6 +137,15 @@ export function getNegativeStockWarehouses(db: Database.Database, accountSetId: 
   } catch { return new Set() }
 }
 
+/** 客供仓（scm_warehouse.is_customer_supplied=1）：只记数量与往来，不计成本——出入库单价一律按 0 */
+export function isCustomerSuppliedWarehouse(db: Database.Database, accountSetId: string, warehouse: string | null | undefined): boolean {
+  if (!warehouse) return false
+  try {
+    const row = db.prepare('SELECT is_customer_supplied FROM scm_warehouse WHERE account_set_id=? AND code=?').get(accountSetId, warehouse) as any
+    return Number(row?.is_customer_supplied) === 1
+  } catch { return false }   // 迁移前的库没有该列
+}
+
 interface StockMoveRow {
   id: string; account_set_id: string; move_date: string
   doc_type: string; doc_no: string; line_seq: number
@@ -154,6 +163,7 @@ export function applyMovingAvgIn(
   inQty: number, inCost: number,
   doc: { type: string; no: string; seq: number; date: string; batchNo?: string | null }
 ): StockMoveRow {
+  if (isCustomerSuppliedWarehouse(db, accountSetId, warehouse)) inCost = 0   // 客供仓不计成本
   const stock = db.prepare(
     'SELECT qty, amount FROM scm_stock WHERE account_set_id=? AND warehouse_code=? AND item_code=?'
   ).get(accountSetId, warehouse, itemCode) as StockRow | undefined
@@ -227,7 +237,7 @@ export function applyMovingAvgOut(
   warehouse: string, itemCode: string,
   outQty: number,
   doc: { type: string; no: string; seq: number; date: string; batchNo?: string | null },
-  options: { allowNegative?: boolean } = {}
+  options: { allowNegative?: boolean; forceUnitCost?: number } = {}
 ): { move: StockMoveRow; unitCost: number } {
   const stock = db.prepare(
     'SELECT qty, amount, avg_cost FROM scm_stock WHERE account_set_id=? AND warehouse_code=? AND item_code=?'
@@ -244,8 +254,14 @@ export function applyMovingAvgOut(
   // 库存金额一起记成 0，成本被低估且事后难以察觉。此处按该物料最近一次入库单价兜底。
   let unitCost = stock?.avg_cost || lastInboundUnitCost(db, accountSetId, itemCode) || 0
   let outAmt = Math.round(unitCost * outQty * 100) / 100
+  // 指定出库单价（导入历史单据沿用原系统成本）：不走均价 / 成本层，按给定单价出库
+  const forced = options.forceUnitCost
+  if (forced !== undefined && Number.isFinite(forced)) {
+    unitCost = Math.round(forced * 1e8) / 1e8   // 电子料单价常到 6 位小数，不能按 4 位截断
+    outAmt = Math.round(forced * outQty * 100) / 100
+  }
   // FIFO/LIFO：逐层扣减成本层得到出库金额；层不够（负库存）的部分按最后耗用层单价 / 最近入库价兜底
-  const mode = layerMode(db, accountSetId)
+  const mode = forced === undefined ? layerMode(db, accountSetId) : null
   let layerUses: { layer_id: string; qty: number; unit_cost: number; amount: number }[] = []
   if (mode && outQty > 0) {
     ensureLayersCoverStock(db, accountSetId, warehouse, itemCode, stock)
@@ -259,6 +275,8 @@ export function applyMovingAvgOut(
     outAmt = Math.round(amt * 100) / 100
     unitCost = Math.round((outAmt / outQty) * 10000) / 10000
   }
+  // 客供仓不计成本：入库层/结存本就为 0，这里再挡住「最近入库价 / 档案进价」兜底把成本带进来
+  if (isCustomerSuppliedWarehouse(db, accountSetId, warehouse)) { unitCost = 0; outAmt = 0 }
   const newAmtRaw = Math.round((oldAmt - outAmt) * 100) / 100
   const newAmt = newQty === 0 ? 0 : (options.allowNegative ? newAmtRaw : Math.max(0, newAmtRaw))
   const avg = newQty !== 0 ? Math.round((newAmt / newQty) * 10000) / 10000 : 0

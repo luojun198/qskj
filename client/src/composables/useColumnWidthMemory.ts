@@ -191,6 +191,59 @@ export function useListColumnWidth(tableKey: string, options?: { storageKey?: st
   }
 }
 
+/**
+ * 按动态存储键隔离的列宽记忆（键随账套/单据类型变化时自动重新加载）
+ * 用法：@header-dragend="onDragEnd"，列上用 lw(key) 取已记忆宽度，reset() 一键还原
+ */
+export function useScopedColumnWidth(storageKey: Ref<string>, tableRef?: Ref<any>) {
+  const widths = ref<SizeMemory>({})
+
+  function load() {
+    try {
+      const stored = localStorage.getItem(storageKey.value)
+      widths.value = stored ? { ...JSON.parse(stored) } : {}
+    } catch (error) {
+      console.warn('加载列宽失败:', error)
+      widths.value = {}
+    }
+  }
+
+  function save() {
+    try {
+      localStorage.setItem(storageKey.value, JSON.stringify(widths.value))
+    } catch (error) {
+      console.warn('保存列宽失败:', error)
+    }
+  }
+
+  function onDragEnd(newWidth: number, _oldWidth: number, column: any) {
+    const key = resolveTableColumnKey(column)
+    if (!key) return
+    widths.value = { ...widths.value, [key]: Math.round(newWidth) }
+    save()
+  }
+
+  /** 已记忆的列宽；无记录返回 undefined（调用方保留默认 width / min-width） */
+  function lw(columnKey: string): number | undefined {
+    const saved = widths.value[columnKey]
+    return saved && saved > 0 ? saved : undefined
+  }
+
+  function reset() {
+    widths.value = {}
+    try {
+      localStorage.removeItem(storageKey.value)
+    } catch (error) {
+      console.warn('清除列宽失败:', error)
+    }
+  }
+
+  watch(storageKey, load, { immediate: true })
+  if (tableRef) bindTableColumnLayout(widths, tableRef)
+
+  return { widths, onDragEnd, lw, reset, load }
+}
+
 /** border 表格右侧 gutter 列（与 EP 布局一致） */
 export const EL_TABLE_BORDER_GUTTER = 15
 

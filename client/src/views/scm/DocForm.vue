@@ -23,6 +23,12 @@
         <span v-if="isView && form.auditor" class="doc-form-header__meta">审核：{{ form.auditor }}</span>
       </div>
       <div class="doc-form-header__right">
+        <!-- 选择源单（原明细行工具栏，移到顶部「查询实时库存」左边，节约一行垂直空间） -->
+        <template v-if="!isAssembly && !isView && !isPaymentDoc">
+          <el-button v-for="opt in visibleSourceOptions" :key="opt.type + opt.detailSource" size="small" type="primary" plain @click="openSourcePicker(opt)">
+            <el-icon><Connection /></el-icon>{{ opt.label }}
+          </el-button>
+        </template>
         <!-- 查询实时库存（原明细行工具栏，移到顶部配置按钮左边） -->
         <el-button v-if="supportsRealtimeStock" size="small" :loading="stockLoading" @click="loadRealtimeStock">
           <el-icon><Goods /></el-icon>查询实时库存
@@ -36,11 +42,11 @@
             <el-dropdown-menu>
               <el-dropdown-item v-if="canColScheme && !isPaymentDoc" command="cols">列设置</el-dropdown-item>
               <el-dropdown-item v-if="canColScheme && hasFieldSettingOpts" command="fields">字段设置</el-dropdown-item>
-              <el-dropdown-item command="schemes" divided>方案管理</el-dropdown-item>
+              <el-dropdown-item command="schemes" divided>方案管理</el-dropdown-item><el-dropdown-item command="fielddefs">自定义字段管理</el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>
-        <ColumnSettingsDialog v-if="canColScheme && !isPaymentDoc" v-model="colSettingVisible" :columns="lineColumnSettings" @update:columns="updateLineColumnSettings" @reset="resetLineColumnSettings" />
+        <ColumnSettingsDialog v-if="canColScheme && !isPaymentDoc" v-model="colSettingVisible" reset-label="恢复默认（含列宽）" :columns="lineColumnSettings" @update:columns="updateLineColumnSettings" @reset="resetLineColumnSettings" />
         <!-- 字段设置 popover（锚定到配置按钮，trigger=manual 仅由 dropdown command 控制） -->
         <el-popover
           v-if="canColScheme && hasFieldSettingOpts"
@@ -66,6 +72,8 @@
             </template>
           </div>
         </el-popover>
+        <!-- 另存：编辑 / 查看都可导出整张单据（第六份反馈：单据类编辑、查看都要有另存） -->
+        <SaveAsButton doc :title="saveAsTitle" :file-name="saveAsTitle" :footer="saveAsFooter" />
         <template v-if="!isView">
           <el-button size="small" @click="goBack">取消</el-button>
           <el-button type="primary" size="small" :loading="saving" @click="handleSave()">保存</el-button>
@@ -77,7 +85,16 @@
           <el-button v-if="form.status === 'audited'" size="small" type="warning" plain :loading="auditing"
             :disabled="!!activeMrpTarget" :title="activeMrpTarget ? `已进入 MRP 计算单 ${activeMrpTarget.doc_no}，不能反审核` : '反审核'"
             @click="handleUnauditDoc">反审核</el-button>
-          <el-button v-if="form.status === 'audited' && !form.voucher_id" size="small" type="warning" plain @click="handleGenVoucher">生成凭证</el-button>
+          <el-tag v-if="form.status === 'audited' && !form.voucher_id && Number(form.external_voucher)" type="info" size="small" effect="plain" title="从润衡等原系统导入的历史单据，原系统已制证">原系统已制证</el-tag>
+          <el-button v-else-if="form.status === 'audited' && !form.voucher_id && docGeneratesVoucher(form.doc_type) && !paymentVoucherByCashier(form.doc_type, systemParams.paymentVoucherMode)" size="small" type="warning" plain @click="handleGenVoucher">生成凭证</el-button>
+          <el-tag v-else-if="form.status === 'audited' && !form.voucher_id && paymentVoucherByCashier(form.doc_type, systemParams.paymentVoucherMode)" type="info" size="small" effect="plain" title="系统参数「收付款制证方式」为通过出纳生成凭证">凭证请在出纳日记账生成</el-tag>
+          <!-- 已审核采购 / 销售订单：走变更单增减数量、改价（客户反馈：订单没有变更功能） -->
+          <el-button v-if="form.status === 'audited' && (form.doc_type === 'PO' || form.doc_type === 'SOa') && editId" size="small" type="primary" plain
+            @click="router.push({ name: 'ScmOrderChangeNew', params: { docId: editId } })">变更</el-button>
+          <el-button v-if="form.status === 'audited' && (form.doc_type === 'PO' || form.doc_type === 'SOa') && editId" size="small"
+            @click="router.push({ name: 'ScmOrderChangeList', query: { doc_type: form.doc_type, doc_id: editId } })">变更记录</el-button>
+          <el-button v-if="form.voucher_id && docVoucher" size="small" type="success" plain :title="`${docVoucher.year}年${docVoucher.period}期，点击查看凭证`"
+            @click="router.push({ path: '/voucher/query', query: { voucher_id: docVoucher.id, year: docVoucher.year, period: docVoucher.period, keyword: form.doc_no } })">凭证 {{ docVoucherLabel }}</el-button>
           <el-button v-if="form.status === 'draft' && !isLocked" size="small" type="primary" @click="goEdit">编辑</el-button>
           <el-button size="small" @click="goPrint"><el-icon><Printer /></el-icon>打印</el-button>
           <el-button v-if="isView && isCostInbound && form.status === 'audited'" size="small" type="primary" plain @click="goCost">成本明细</el-button>
@@ -113,7 +130,7 @@
         <el-row :gutter="16">
           <el-col :span="6">
             <el-form-item label="日期" required>
-              <el-date-picker v-model="form.doc_date" type="date" value-format="YYYY-MM-DD" style="width:100%" />
+              <el-date-picker v-model="form.doc_date" type="date" value-format="YYYY-MM-DD" style="width:100%" :disabled-date="disableDocDate" />
             </el-form-item>
           </el-col>
           <el-col :span="6">
@@ -134,7 +151,7 @@
             <el-form-item :label="isTransfer ? '调出仓' : '仓库'" :required="isTransfer || isShipment || isPurchaseReturn">
               <div style="display:flex;gap:4px;width:100%">
                 <el-select v-model="form.warehouse_code" clearable filterable style="flex:1" @change="onWarehouseManualChange">
-                  <el-option v-for="w in warehouses" :key="w.code" :label="w.name || w.code" :value="w.code" />
+                  <el-option v-for="w in warehouses" :key="w.code" :label="w.name || w.code" :value="w.code" :disabled="(w as any).enabled === 0" />
                 </el-select>
                 <el-button v-if="!isView" size="small" title="新增仓库" @click="warehouseDlgVisible = true"><el-icon><Plus /></el-icon></el-button>
               </div>
@@ -145,8 +162,17 @@
               <el-input-number v-model="form.tax_rate" :min="0" :max="100" :precision="1" :controls="false" style="width:100%" placeholder="整单默认税率，明细行可覆盖" @change="onHeaderTaxChange" />
             </el-form-item>
           </el-col>
-          <el-col v-if="hcol('partner')" :span="6">
-            <el-form-item :label="paymentPartnerLabel" :required="isCustomerDoc || isPaymentDoc">
+          <el-col v-if="isAssembly" :span="6">
+            <el-form-item label="加工方式">
+              <el-select v-model="form.process_mode" style="width:100%" @change="onProcessModeChange">
+                <el-option value="" label="自行组装" />
+                <el-option value="entrust" label="委托加工（加工费计成本，挂应付）" />
+                <el-option value="contract" label="受托加工（加工费挂应收，不计成本）" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col v-if="hcol('partner') || auxReqSources.has('partner') || asNeedsPartner" :span="6">
+            <el-form-item :label="paymentPartnerLabel" :required="partnerRequired || isPaymentDoc || auxReqSources.has('partner')" :error="auxFieldError('partner')">
               <div style="display:flex;gap:4px;width:100%">
                 <el-autocomplete
                   v-model="partnerSearch"
@@ -166,8 +192,8 @@
               </el-tag>
             </el-form-item>
           </el-col>
-          <el-col v-if="hcol('biz_person') || (isPurchaseOrSale && !headerHidden.has('biz_person'))" :span="6">
-            <el-form-item label="业务员">
+          <el-col v-if="hcol('biz_person') || (isPurchaseOrSale && !headerHidden.has('biz_person')) || auxReqSources.has('person')" :span="6">
+            <el-form-item label="业务员" :required="auxReqSources.has('person')" :error="auxFieldError('person')">
               <div style="display:flex;gap:4px;width:100%">
                 <el-select v-model="form.biz_person" filterable allow-create clearable default-first-option placeholder="选择/输入业务员" style="flex:1">
                   <el-option v-for="p in persons" :key="p.id" :value="p.name" :label="p.code ? `${p.code} ${p.name}` : p.name" />
@@ -176,8 +202,8 @@
               </div>
             </el-form-item>
           </el-col>
-          <el-col v-if="hcol('dept')" :span="6">
-            <el-form-item label="部门">
+          <el-col v-if="hcol('dept') || auxReqSources.has('dept')" :span="6">
+            <el-form-item label="部门" :required="auxReqSources.has('dept')" :error="auxFieldError('dept')">
               <div style="display:flex;gap:4px;width:100%">
                 <el-select v-model="form.dept_code" filterable allow-create clearable default-first-option placeholder="选择/输入部门" style="flex:1">
                   <el-option v-for="d in depts" :key="d.id" :value="d.code" :label="d.code ? `${d.code} ${d.name}` : d.name" />
@@ -189,8 +215,8 @@
           <el-col v-if="showIoCategory" :span="6">
             <el-form-item label="收发类别">
               <div style="display:flex;gap:4px;width:100%">
-                <el-select v-model="form.io_category" filterable allow-create clearable default-first-option placeholder="选择/输入收发类别" style="flex:1">
-                  <el-option v-for="c in ioCategoryOptions" :key="c" :value="c" :label="c" />
+                <el-select v-model="form.io_category" filterable allow-create clearable default-first-option :placeholder="form.doc_type === 'OO' ? '如：生产领用 / 盘亏 / 报废' : form.doc_type === 'OI' ? '如：成品入库 / 盘盈' : '选择/输入收发类别'" style="flex:1">
+                  <el-option v-for="c in ioCategoryChoices" :key="c" :value="c" :label="c" />
                 </el-select>
                 <el-button v-if="!isView" size="small" title="新增收发类别到字典" @click="quickDict('io')"><el-icon><Plus /></el-icon></el-button>
               </div>
@@ -302,6 +328,25 @@
               <el-input v-model="form.remark" />
             </el-form-item>
           </el-col>
+          <!-- 合计数量 / 金额等放在备注同一行右侧（原明细工具栏），节约垂直空间 -->
+          <el-col v-if="!isAssembly" :span="headerHidden.has('remark') ? 24 : 12" class="doc-lines-summary-col">
+            <span class="doc-lines-summary">
+              <template v-if="isPaymentDoc">
+                <template v-if="isAdvancePaymentMode">{{ isReceivePayment ? '预收款' : '预付款' }}金额：¥{{ fmt(advanceAmount) }}</template>
+                <template v-else>已选 {{ paymentSelectedCount }} 张源单<span v-if="advanceAmount > 0">　{{ isReceivePayment ? '预收' : '预付' }}：¥{{ fmt(advanceAmount) }}</span>　合计金额：¥{{ fmt(totalAmount) }}</template>
+              </template>
+              <template v-else>合计数量：{{ decStore.qty(totalQty, form.doc_type) }}　合计金额：{{ currencySymbol }}{{ amtText(displayTotalAmount) }}</template>
+              <span v-if="isPurchaseOrSale && !isInvoice">　税额：{{ currencySymbol }}{{ amtText(totalTax) }}</span>
+              <span v-if="isInvoice || isPurchaseOrSale">　价税合计：{{ currencySymbol }}{{ amtText(totalTaxAmount) }}</span>
+              <span v-if="isForeignCurrency" class="doc-cost-hint">　折本位币（汇率 {{ form.exchange_rate || '-' }}）：¥{{ fmt(round2((isPaymentDoc ? totalAmount : ((isInvoice || isPurchaseOrSale) ? totalTaxAmount : displayTotalAmount)) * (Number(form.exchange_rate) || 0))) }}</span>
+              <span v-if="isCostInbound && form.status === 'draft'" class="doc-cost-hint">
+                本单成本将在审核时按工单归集自动生成（{{ form.doc_type === 'WI' ? '料 + 加工费' : '料 + 人工/制费' }}），当前草稿暂无成本
+              </span>
+              <span v-else-if="isCostOutbound && form.status === 'draft'" class="doc-cost-hint">
+                本单成本将在审核时按「移动平均成本」出库计算，当前草稿暂无成本
+              </span>
+            </span>
+          </el-col>
           <!-- 表头自定义字段 -->
           <el-col v-for="f in headerFieldDefs" :key="f.field_key" :span="6">
             <el-form-item :label="f.field_name">
@@ -319,7 +364,7 @@
       </el-form>
 
       <!-- 关联单据链条 + 下游锁定提示（同一行，节省垂直空间） -->
-      <div v-if="(sourceDocs && sourceDocs.length) || (targetDocs && targetDocs.length)" class="doc-relation-bar">
+      <div v-if="(sourceDocs && sourceDocs.length) || (targetDocs && targetDocs.length) || docStatements.length" class="doc-relation-bar">
         <span v-if="sourceDocs && sourceDocs.length" class="relation-item">
           <span class="relation-label">上游来源：</span>
           <span v-for="sd in sourceDocs" :key="sd.id" class="target-doc-item" style="margin-right:12px; display:inline-flex; align-items:center;">
@@ -342,6 +387,16 @@
             </el-tag>
           </span>
         </span>
+        <!-- 已进入对账单（第四份反馈 Q2）：已审核对账单锁定本单 -->
+        <span v-if="docStatements.length" class="relation-item" style="margin-left:24px">
+          <span class="relation-label">对账单：</span>
+          <span v-for="st in docStatements" :key="st.id" class="target-doc-item" style="margin-right:12px; display:inline-flex; align-items:center;">
+            <el-link type="primary" size="small" @click="router.push({ name: 'ScmStatementForm', params: { id: st.id } })">{{ st.stmt_no }}</el-link>
+            <el-tag size="small" :type="st.status === 'audited' ? 'success' : 'info'" style="margin-left:4px">
+              {{ st.status === 'audited' ? '已对账（锁定）' : '对账中' }}
+            </el-tag>
+          </span>
+        </span>
         <!-- 已被下游引用锁定提示（内联到关联条右侧，不再独立成行） -->
         <span v-if="isLocked && isView" class="relation-lock-tip" title="本单已被下游单据引用，不可修改/删除；如需调整请先删除下游单据。锁定只限制改/删，未推完的数量仍可继续下推。">
           🔒 已被下游锁定，不可改/删（未推完仍可继续下推）
@@ -355,19 +410,21 @@
       <el-alert v-if="isCount && !isView" type="info" show-icon :closable="false" style="margin-bottom:10px">
         盘点单：「数量」列填写<b>实盘数量</b>（账面数由系统自动与实盘比较，盘盈自动入库、盘亏自动出库）。
       </el-alert>
-      <el-alert v-if="showPlanOverrunInfo" type="info" show-icon :closable="false" style="margin-bottom:10px">
-        原计划 {{ numCell(planExecutionInfo.planned_qty) }}；已执行 {{ numCell(planExecutionInfo.executed_qty) }}；
-        超量上限 {{ numCell(planExecutionInfo.max_allowed_qty) }}；剩余额度 {{ numCell(planExecutionInfo.overrun_remaining) }}。
+      <el-alert v-if="showPlanOverrunInfo && planNoMaterial" type="warning" show-icon :closable="false" style="margin-bottom:10px">
+        来源工单没有用料，无物料可{{ form.doc_type === 'PJ' ? '退' : '发' }}：请检查该计划是否已选 BOM，且 BOM 组件行类型为「主件」（副产品 / 联产品不计入用料）。
+        <el-button link type="primary" size="small" @click="router.push({ name: 'ScmProductionOrder', params: { id: form.plan_id } })">查看工单</el-button>
+      </el-alert>
+      <el-alert v-else-if="showPlanOverrunInfo && planExecutionInfo.planned_qty > 0" type="info" show-icon :closable="false" style="margin-bottom:10px">
+        原计划 {{ qtyText(planExecutionInfo.planned_qty) }}；已执行 {{ qtyText(planExecutionInfo.executed_qty) }}；
+        超量上限 {{ qtyText(planExecutionInfo.max_allowed_qty) }}；剩余额度 {{ qtyText(planExecutionInfo.overrun_remaining) }}。
         默认数量仍按原计划剩余带入，可手工增加但不得超过剩余额度。
       </el-alert>
 
       <!-- 明细行工具栏（组装单走下方两张表，不用此单表工具栏） -->
-      <div v-if="!isAssembly" class="doc-lines-toolbar">
+      <!-- 选择源单已移到顶部；合计已移到「备注」同一行。仅剩新增库位 / BOM 展开时才占这一行 -->
+      <div v-if="!isAssembly && !isView && !isPaymentDoc && (showBinCol || isProduction)" class="doc-lines-toolbar">
         <template v-if="!isView && !isPaymentDoc">
           <el-button v-if="showBinCol" size="small" @click="binDlgVisible = true"><el-icon><Plus /></el-icon>新增库位</el-button>
-          <el-button v-for="opt in visibleSourceOptions" :key="opt.type + opt.detailSource" size="small" type="primary" plain @click="openSourcePicker(opt)">
-            <el-icon><Connection /></el-icon>{{ opt.label }}
-          </el-button>
           <template v-if="isProduction">
             <el-select v-model="selectedBom" placeholder="选择BOM" size="small" style="width:200px" clearable>
               <el-option v-for="b in boms" :key="b.id" :label="`${b.code} ${b.item_code}`" :value="b.id" />
@@ -377,30 +434,23 @@
             </el-button>
           </template>
         </template>
-        <!-- 「查询实时库存」「列设置」已移到顶部工具栏「配置」下拉 -->
-        <span class="doc-lines-summary">
-          <template v-if="isPaymentDoc">
-            <template v-if="isAdvancePaymentMode">{{ isReceivePayment ? '预收款' : '预付款' }}金额：¥{{ fmt(advanceAmount) }}</template>
-            <template v-else>已选 {{ paymentSelectedCount }} 张源单<span v-if="advanceAmount > 0">　{{ isReceivePayment ? '预收' : '预付' }}：¥{{ fmt(advanceAmount) }}</span>　合计金额：¥{{ fmt(totalAmount) }}</template>
-          </template>
-          <template v-else>合计数量：{{ fmt(totalQty) }}　合计金额：{{ currencySymbol }}{{ fmt(displayTotalAmount) }}</template>
-          <span v-if="isInvoice">　价税合计：{{ currencySymbol }}{{ fmt(totalTaxAmount) }}</span>
-          <span v-if="isForeignCurrency" class="doc-cost-hint">　折本位币（汇率 {{ form.exchange_rate || '-' }}）：¥{{ fmt(round2((isPaymentDoc ? totalAmount : (isInvoice ? totalTaxAmount : displayTotalAmount)) * (Number(form.exchange_rate) || 0))) }}</span>
-          <span v-if="isCostInbound && form.status === 'draft'" class="doc-cost-hint">
-            本单成本将在审核时按工单归集自动生成（{{ form.doc_type === 'WI' ? '料 + 加工费' : '料 + 人工/制费' }}），当前草稿暂无成本
-          </span>
-          <span v-else-if="isCostOutbound && form.status === 'draft'" class="doc-cost-hint">
-            本单成本将在审核时按「移动平均成本」出库计算，当前草稿暂无成本
-          </span>
-        </span>
       </div>
 
       <!-- 收付款单：按应收应付源单逐单结算，空源单金额单独作为预收/预付。 -->
       <div v-if="isPaymentDoc" class="payment-source-panel">
+        <!-- 客户 / 供应商有预收预付余额：收付款前先冲抵，否则会多收多付（客户反馈） -->
+        <el-alert v-if="showAdvanceOffset" type="warning" show-icon :closable="false" class="payment-source-tip">
+          该{{ isReceivePayment ? '客户' : '供应商' }}有可冲抵的{{ isReceivePayment ? '预收款' : '预付款' }}（含退货）
+          <b>{{ currencySymbol }}{{ fmt(partnerAdvanceTotal) }}</b>（{{ partnerAdvanceItems.map(i => i.doc_no).join('、') }}），
+          建议先冲抵源单，再按剩余金额{{ isReceivePayment ? '收款' : '付款' }}。
+          <el-button size="small" type="warning" style="margin-left:8px" :loading="advanceOffsetting" @click="offsetWithAdvance">
+            用{{ isReceivePayment ? '预收款' : '预付款' }}冲抵{{ paymentSelectedRows.length ? '所选源单' : '源单' }}
+          </el-button>
+        </el-alert>
         <el-alert v-if="!isAdvancePaymentMode && !form.partner_code" type="info" show-icon :closable="false" class="payment-source-tip">
           请先选择{{ isReceivePayment ? '客户' : '供应商' }}，系统将列出可结算的{{ isReceivePayment ? '销售发货单' : '采购/委外入库单' }}。
         </el-alert>
-        <el-table v-else-if="!isAdvancePaymentMode" v-loading="paymentSourceLoading" :data="paymentSources" border size="small" style="width:100%" class="compact-data-table payment-source-table" empty-text="当前往来单位没有可结算源单">
+        <el-table v-col-width="'scm_DocForm_1'" v-else-if="!isAdvancePaymentMode" v-loading="paymentSourceLoading" :data="paymentSources" border size="small" style="width:100%" class="compact-data-table payment-source-table" empty-text="当前往来单位没有可结算源单">
           <el-table-column label="选择" width="62" align="center" fixed="left">
             <template #default="{ row }">
               <el-checkbox v-model="row.selected" :disabled="isView" @change="onPaymentSourceChecked(row)" />
@@ -418,6 +468,9 @@
           </el-table-column>
           <el-table-column label="原金额" width="120" align="right">
             <template #default="{ row }">{{ fmt(row.source_amount) }}</template>
+          </el-table-column>
+          <el-table-column label="退货冲减" width="110" align="right">
+            <template #default="{ row }">{{ Number(row.return_offset_amount) ? fmt(row.return_offset_amount) : '' }}</template>
           </el-table-column>
           <el-table-column :label="isReceivePayment ? '已收金额' : '已付金额'" width="120" align="right">
             <template #default="{ row }">{{ fmt(row.settled_amount) }}</template>
@@ -439,6 +492,35 @@
           </el-table-column>
         </el-table>
 
+        <!-- 未冲减的退货：无上游或冲完上游仍有余额的退货单，负数列示，可用上方「冲抵」按钮抵扣（第四份反馈 Q5） -->
+        <div v-if="!isAdvancePaymentMode && paymentOpenReturns.length" class="payment-return-block">
+          <div class="payment-return-block__title">
+            未冲减的{{ isReceivePayment ? '销售退货' : '采购退货' }}
+            <span class="payment-return-block__hint">退货会减少{{ isReceivePayment ? '应收' : '应付' }}，可点上方「冲抵」按钮抵扣源单后再按剩余金额{{ isReceivePayment ? '收款' : '付款' }}</span>
+          </div>
+          <el-table :data="paymentOpenReturns" border size="small" style="width:100%" class="compact-data-table payment-source-table">
+            <el-table-column label="源单类型" width="112">
+              <template #default="{ row }">{{ typeName(row.source_doc_type) }}</template>
+            </el-table-column>
+            <el-table-column label="源单日期" prop="source_doc_date" width="112" />
+            <el-table-column label="源单号" min-width="170">
+              <template #default="{ row }">
+                <el-link type="primary" @click="viewRelationDoc(row.source_doc_id)">{{ row.source_doc_no }}</el-link>
+              </template>
+            </el-table-column>
+            <el-table-column label="退货金额" width="120" align="right">
+              <template #default="{ row }"><span class="text-danger">-{{ fmt(row.source_amount) }}</span></template>
+            </el-table-column>
+            <el-table-column label="已冲减" width="120" align="right">
+              <template #default="{ row }">{{ fmt(row.offset_amount) }}</template>
+            </el-table-column>
+            <el-table-column label="未冲减" width="120" align="right">
+              <template #default="{ row }"><span class="text-danger">-{{ fmt(row.open_amount) }}</span></template>
+            </el-table-column>
+            <el-table-column label="备注" prop="remark" min-width="180" show-overflow-tooltip />
+          </el-table>
+        </div>
+
         <el-alert v-if="isAdvancePaymentMode" type="info" show-icon :closable="false" class="payment-source-tip">
           当前为{{ isReceivePayment ? '预收款单' : '预付款单' }}，不关联具体源单；审核后金额进入未核销余额，可在{{ isReceivePayment ? '预收款核销' : '预付款核销' }}中分配。
         </el-alert>
@@ -454,7 +536,7 @@
       </div>
 
       <!-- 明细表格（非组装单）：max-height 动态收缩；合计行作为表体最后一行，使水平滚动条落在合计行下方 -->
-      <el-table v-if="!isAssembly && !isPaymentDoc" ref="linesTableRef" :data="tableRows" border size="small" :max-height="tableMaxHeight" :row-class-name="lineRowClass" style="width:100%" @cell-click="handleCellClick" @cell-dblclick="handleCellDblClick" @expand-change="handleCostExpandChange" class="compact-data-table">
+      <el-table v-if="!isAssembly && !isPaymentDoc" ref="linesTableRef" :data="tableRows" border size="small" :max-height="tableMaxHeight" :row-class-name="lineRowClass" style="width:100%" @header-dragend="onLineColDragEnd" @cell-click="handleCellClick" @cell-dblclick="handleCellDblClick" @expand-change="handleCostExpandChange" class="compact-data-table">
         <el-table-column v-if="costLineExpandEnabled" type="expand" width="42" fixed="left">
           <template #default="{ row }">
             <div v-if="!row.__summary" v-loading="costDetailLoading" class="cost-source-panel">
@@ -473,7 +555,7 @@
                     <span>加工费 <b>{{ fmt(costDetailFor(row).fee_total) }}</b></span>
                   </div>
                 </div>
-                <el-table v-if="costDetailFor(row).materials?.length" :data="costDetailFor(row).materials" border stripe size="small" class="cost-source-table">
+                <el-table v-col-width="'scm_DocForm_2'" v-if="costDetailFor(row).materials?.length" :data="costDetailFor(row).materials" border stripe size="small" class="cost-source-table">
                   <el-table-column type="index" label="序号" width="54" align="center" />
                   <el-table-column label="来源物料" prop="item_code" width="130" />
                   <el-table-column label="物料名称" prop="item_name" min-width="160" show-overflow-tooltip />
@@ -492,7 +574,7 @@
         <el-table-column column-key="__line_index__" label="序号" width="52" align="center" fixed="left">
           <template #default="{ row, $index }">{{ row.__summary ? '' : $index + 1 }}</template>
         </el-table-column>
-        <el-table-column column-key="item_code" label="编号" min-width="140" align="center" prop="item_code">
+        <el-table-column column-key="item_code" label="编号" :width="lw('item_code')" :min-width="lw('item_code') ? undefined : 140" align="center" prop="item_code">
           <template #default="{ row }">
             <template v-if="isView">
               <span>{{ row.item_code }}</span>
@@ -500,62 +582,62 @@
               <el-tag v-if="row.line_role === 'by_product' || row.line_role === 'co_product'" size="small" effect="plain" type="warning" style="margin-left:4px">{{ row.line_role === 'by_product' ? '副产品' : '联产品' }}</el-tag>
             </template>
             <template v-else>
-              <ItemPicker v-if="isEditing(row, 'item_code')" v-model="row.item_code" :warehouse-code="lineStockWarehouse(row)" auto-open :focus-search="itemPickerFocusSearch" :browsable="false" :default-stock-only="isOutbound" @pick="(item:any) => { onItemPick(row, item); stopEdit() }" />
+              <ItemPicker v-if="isEditing(row, 'item_code')" v-model="row.item_code" :warehouse-code="lineStockWarehouse(row)" auto-open :focus-search="itemPickerFocusSearch" :browsable="false" :default-stock-only="isOutbound" :default-source="lineDefaultSource" @pick="(item:any) => { onItemPick(row, item); stopEdit() }" />
               <div v-else class="editable-cell">{{ row.item_code || '点击选择物料' }}</div>
             </template>
           </template>
         </el-table-column>
-        <el-table-column column-key="item_name" label="名称" min-width="170" align="center" prop="item_name" show-overflow-tooltip />
-        <el-table-column column-key="spec" label="规格" min-width="120" align="center" prop="spec" show-overflow-tooltip />
-        <el-table-column v-if="form.doc_type === 'SO'" column-key="sales_order_no" label="销售订单号" min-width="170" align="center" prop="sales_order_no" show-overflow-tooltip>
+        <el-table-column column-key="item_name" label="名称" :width="lw('item_name')" :min-width="lw('item_name') ? undefined : 170" align="center" prop="item_name" show-overflow-tooltip />
+        <el-table-column column-key="spec" label="规格" :width="lw('spec')" :min-width="lw('spec') ? undefined : 120" align="center" prop="spec" show-overflow-tooltip />
+        <el-table-column v-if="form.doc_type === 'SO'" column-key="sales_order_no" label="销售订单号" :width="lw('sales_order_no')" :min-width="lw('sales_order_no') ? undefined : 170" align="center" prop="sales_order_no" show-overflow-tooltip>
           <template #default="{ row }">{{ row.__summary ? '' : (row.sales_order_no || '—') }}</template>
         </el-table-column>
-        <el-table-column v-if="form.doc_type === 'PI'" column-key="purchase_order_no" label="采购订单号" min-width="170" align="center" prop="purchase_order_no" show-overflow-tooltip>
+        <el-table-column v-if="form.doc_type === 'PI'" column-key="purchase_order_no" label="采购订单号" :width="lw('purchase_order_no')" :min-width="lw('purchase_order_no') ? undefined : 170" align="center" prop="purchase_order_no" show-overflow-tooltip>
           <template #default="{ row }">{{ row.__summary ? '' : (row.purchase_order_no || '—') }}</template>
         </el-table-column>
-        <el-table-column v-if="showPlanOverrunInfo" column-key="plan_qty" label="原计划" width="100" align="right">
+        <el-table-column v-if="showPlanOverrunInfo" column-key="plan_qty" label="原计划" :width="lw('plan_qty') ?? 100" align="right">
           <template #default="{ row }">{{ row.__summary ? '' : numCell(row.plan_qty) }}</template>
         </el-table-column>
-        <el-table-column v-if="showPlanOverrunInfo" column-key="executed_qty" label="已执行" width="100" align="right">
+        <el-table-column v-if="showPlanOverrunInfo" column-key="executed_qty" label="已执行" :width="lw('executed_qty') ?? 100" align="right">
           <template #default="{ row }">{{ row.__summary ? '' : numCell(row.executed_qty) }}</template>
         </el-table-column>
-        <el-table-column v-if="showPlanOverrunInfo" column-key="max_allowed_qty" label="超量上限" width="110" align="right">
+        <el-table-column v-if="showPlanOverrunInfo" column-key="max_allowed_qty" label="超量上限" :width="lw('max_allowed_qty') ?? 110" align="right">
           <template #default="{ row }">{{ row.__summary ? '' : numCell(row.max_allowed_qty) }}</template>
         </el-table-column>
-        <el-table-column v-if="showPlanOverrunInfo" column-key="overrun_remaining" label="剩余额度" width="110" align="right">
+        <el-table-column v-if="showPlanOverrunInfo" column-key="overrun_remaining" label="剩余额度" :width="lw('overrun_remaining') ?? 110" align="right">
           <template #default="{ row }">{{ row.__summary ? '' : numCell(row.overrun_remaining) }}</template>
         </el-table-column>
-        <el-table-column column-key="warehouse_code" :label="isTransfer ? '调入仓' : '仓库'" width="130" align="center" prop="warehouse_code">
+        <el-table-column column-key="warehouse_code" :label="isTransfer ? '调入仓' : '仓库'" :width="lw('warehouse_code') ?? 130" align="center" prop="warehouse_code">
           <template #default="{ row }">
             <template v-if="isView">{{ whName(row.warehouse_code) }}</template>
             <template v-else>
               <el-select v-if="isEditing(row, 'warehouse_code')" v-model="row.warehouse_code" :placeholder="isTransfer ? '必填调入仓' : '覆盖头部仓库'" filterable clearable size="small" style="width:100%" @change="stopEdit" @visible-change="v => !v && stopEdit()" v-focus>
-                <el-option v-for="w in warehouses" :key="w.code" :label="w.name || w.code" :value="w.code" />
+                <el-option v-for="w in warehouses" :key="w.code" :label="w.name || w.code" :value="w.code" :disabled="(w as any).enabled === 0" />
               </el-select>
               <div v-else class="editable-cell">{{ whName(row.warehouse_code) }}</div>
             </template>
           </template>
         </el-table-column>
-        <el-table-column column-key="qty" :label="isCount ? '实盘数量' : '数量'" width="110" align="right" prop="qty">
+        <el-table-column column-key="qty" :label="isCount ? '实盘数量' : '数量'" :width="lw('qty') ?? 110" align="right" prop="qty">
           <template #default="{ row }">
-            <template v-if="isView">{{ numCell(row.qty) }}</template>
+            <template v-if="isView">{{ qtyCell(row.qty) }}</template>
             <template v-else>
-              <el-input-number v-if="isEditing(row, 'qty')" v-model="row.qty" :min="0" :max="planLineMax(row)" :precision="showPlanOverrunInfo ? 6 : 3" size="small" :controls="false" style="width:100%" placeholder="数量" @change="recalcRow(row)" @blur="stopEdit" v-focus />
-              <div v-else class="editable-cell">{{ numCell(row.qty) }}</div>
+              <el-input-number v-if="isEditing(row, 'qty')" v-model="row.qty" :min="0" :max="planLineMax(row)" :precision="showPlanOverrunInfo ? Math.max(6, dec.qty) : dec.qty" size="small" :controls="false" style="width:100%" placeholder="数量" @change="recalcRow(row)" @blur="stopEdit" v-focus />
+              <div v-else class="editable-cell">{{ qtyCell(row.qty) }}</div>
             </template>
           </template>
         </el-table-column>
-        <el-table-column v-if="stockShown && lineColShown('realtime_stock')" column-key="realtime_stock" label="实时库存" width="150" align="right">
+        <el-table-column v-if="stockShown && lineColShown('realtime_stock')" column-key="realtime_stock" label="实时库存" :width="lw('realtime_stock') ?? 150" align="right">
           <template #default="{ row }"><span class="rt-stock">{{ stockText(row) }}</span></template>
         </el-table-column>
         <!-- C-1 替代料：工单领料时主料缺料，列出同组替代料在库量，改物料编号即可领替代料（按主料需求上限校验） -->
-        <el-table-column v-if="isPlanControlledDoc && lines.some((l: any) => l._substitutes?.length)" label="可用替代料" width="200" show-overflow-tooltip>
+        <el-table-column v-if="showSubstituteCol" column-key="substitutes" label="可用替代料" :width="lw('substitutes') ?? 200" show-overflow-tooltip>
           <template #default="{ row }">
             <span v-if="row._substitutes?.length" class="sub-hint">{{ row._substitutes.map((s: any) => `${s.item_code}(库存 ${stockNum(s.on_hand)})`).join('、') }}</span>
             <span v-else class="text-muted">—</span>
           </template>
         </el-table-column>
-        <el-table-column v-if="isMr" column-key="source_type" label="来源" width="110" prop="source_type">
+        <el-table-column v-if="isMr" column-key="source_type" label="来源" :width="lw('source_type') ?? 110" prop="source_type">
           <template #default="{ row }">
             <template v-if="isView">{{ SOURCE_TYPES[row.source_type] || '采购' }}</template>
             <template v-else>
@@ -566,7 +648,7 @@
             </template>
           </template>
         </el-table-column>
-        <el-table-column v-if="isMr" column-key="supplier_code" label="供应商/委外厂" width="190" prop="supplier_code">
+        <el-table-column v-if="isMr" column-key="supplier_code" label="供应商/委外厂" :width="lw('supplier_code') ?? 190" prop="supplier_code">
           <template #default="{ row }">
             <template v-if="isView">{{ supplierLabel(row.supplier_code || row.item_supplier) }}</template>
             <template v-else>
@@ -577,7 +659,7 @@
             </template>
           </template>
         </el-table-column>
-        <el-table-column v-if="showPushCol && isView" column-key="push_progress" label="下推进度" width="120" align="center">
+        <el-table-column v-if="showPushCol && isView" column-key="push_progress" label="下推进度" :width="lw('push_progress') ?? 120" align="center">
           <template #default="{ row }">
             <template v-if="!row.__summary && (Number(row.qty) || 0) > 0">
               <span :class="(row.pushed_qty || 0) >= row.qty ? 'text-success' : ((row.pushed_qty || 0) > 0 ? 'text-warning' : 'text-muted')">
@@ -585,27 +667,28 @@
               </span>
             </template>
             <span v-else-if="!row.__summary" class="text-muted">—</span>
+            <template v-else>{{ row.pushed_qty || 0 }} / {{ Math.round((Number(row.qty) || 0) * 1e6) / 1e6 }}</template>
           </template>
         </el-table-column>
-        <el-table-column v-if="!isMr && !isCostInbound" column-key="price" label="单价" width="120" align="right" prop="price">
+        <el-table-column v-if="!isMr && !isCostInbound" column-key="price" label="单价" :width="lw('price') ?? 120" align="right" prop="price">
           <template #default="{ row }">
-            <template v-if="isView">{{ numCell(row.price) }}</template>
+            <template v-if="isView">{{ priceCell(row.price) }}</template>
             <template v-else>
-              <el-input-number v-if="isEditing(row, 'price')" v-model="row.price" :min="0" :precision="4" size="small" :controls="false" style="width:100%" placeholder="单价" @change="recalcRow(row)" @blur="stopEdit" v-focus />
-              <div v-else class="editable-cell">{{ numCell(row.price) }}</div>
+              <el-input-number v-if="isEditing(row, 'price')" v-model="row.price" :min="0" :precision="dec.price" size="small" :controls="false" style="width:100%" placeholder="单价" @change="recalcRow(row)" @blur="stopEdit" v-focus />
+              <div v-else class="editable-cell">{{ priceCell(row.price) }}</div>
             </template>
           </template>
         </el-table-column>
-        <el-table-column v-if="col('price_with_tax') && lineColShown('price_with_tax')" column-key="price_with_tax" label="含税单价" width="120" align="right" prop="price_with_tax">
+        <el-table-column v-if="col('price_with_tax') && lineColShown('price_with_tax')" column-key="price_with_tax" label="含税单价" :width="lw('price_with_tax') ?? 120" align="right" prop="price_with_tax">
           <template #default="{ row }">
-            <template v-if="isView">{{ numCell(row.price_with_tax) }}</template>
+            <template v-if="isView">{{ priceCell(row.price_with_tax) }}</template>
             <template v-else>
-              <el-input-number v-if="isEditing(row, 'price_with_tax')" v-model="row.price_with_tax" :min="0" :precision="4" size="small" :controls="false" style="width:100%" placeholder="含税单价" @change="recalcFromTaxPrice(row)" @blur="stopEdit" v-focus />
-              <div v-else class="editable-cell">{{ numCell(row.price_with_tax) }}</div>
+              <el-input-number v-if="isEditing(row, 'price_with_tax')" v-model="row.price_with_tax" :min="0" :precision="dec.price" size="small" :controls="false" style="width:100%" placeholder="含税单价" @change="recalcFromTaxPrice(row)" @blur="stopEdit" v-focus />
+              <div v-else class="editable-cell">{{ priceCell(row.price_with_tax) }}</div>
             </template>
           </template>
         </el-table-column>
-        <el-table-column v-if="col('discount_rate') && lineColShown('discount_rate')" column-key="discount_rate" label="折扣(折)" width="90" align="right" prop="discount_rate">
+        <el-table-column v-if="col('discount_rate') && lineColShown('discount_rate')" column-key="discount_rate" label="折扣(折)" :width="lw('discount_rate') ?? 90" align="right" prop="discount_rate">
           <template #default="{ row }">
             <template v-if="isView">{{ (Number(row.discount_rate) || 0) > 0 ? row.discount_rate + ' 折' : '' }}</template>
             <template v-else>
@@ -614,10 +697,10 @@
             </template>
           </template>
         </el-table-column>
-        <el-table-column column-key="amount" label="金额" width="120" align="right">
-          <template #default="{ row }">{{ numCell(isCostDoc && !row.__summary ? (Number(row.unit_cost) || 0) * (Number(row.qty) || 0) : row.amount, true) }}</template>
+        <el-table-column column-key="amount" label="金额" :width="lw('amount') ?? 120" align="right">
+          <template #default="{ row }">{{ amtCell(isCostDoc && !row.__summary ? (Number(row.unit_cost) || 0) * (Number(row.qty) || 0) : row.amount) }}</template>
         </el-table-column>
-        <el-table-column v-if="col('tax_rate') && lineColShown('tax_rate')" column-key="tax_rate" label="税率%" width="90" align="right" prop="tax_rate">
+        <el-table-column v-if="col('tax_rate') && lineColShown('tax_rate')" column-key="tax_rate" label="税率%" :width="lw('tax_rate') ?? 90" align="right" prop="tax_rate">
           <template #default="{ row }">
             <template v-if="isView">{{ effTax(row) ? effTax(row) + '%' : '' }}</template>
             <template v-else>
@@ -626,25 +709,25 @@
             </template>
           </template>
         </el-table-column>
-        <el-table-column v-if="col('tax_amount') && lineColShown('tax_amount')" column-key="tax_amount" label="税额" width="110" align="right" prop="tax_amount">
+        <el-table-column v-if="col('tax_amount') && lineColShown('tax_amount')" column-key="tax_amount" label="税额" :width="lw('tax_amount') ?? 110" align="right" prop="tax_amount">
           <template #default="{ row }">
-            <template v-if="isView">{{ numCell(row.tax_amount, true) }}</template>
+            <template v-if="isView">{{ amtCell(row.tax_amount) }}</template>
             <template v-else>
-              <el-input-number v-if="isEditing(row, 'tax_amount')" v-model="row.tax_amount" :min="0" :precision="2" size="small" :controls="false" style="width:100%" placeholder="税额" @blur="stopEdit" v-focus />
-              <div v-else class="editable-cell">{{ numCell(row.tax_amount, true) }}</div>
+              <el-input-number v-if="isEditing(row, 'tax_amount')" v-model="row.tax_amount" :min="0" :precision="dec.amount" size="small" :controls="false" style="width:100%" placeholder="税额" @blur="stopEdit" v-focus />
+              <div v-else class="editable-cell">{{ amtCell(row.tax_amount) }}</div>
             </template>
           </template>
         </el-table-column>
-        <el-table-column v-if="col('tax_amount') && lineColShown('gross_amount')" column-key="gross_amount" label="价税合计" width="130" align="right" prop="gross_amount">
+        <el-table-column v-if="col('tax_amount') && lineColShown('gross_amount')" column-key="gross_amount" label="价税合计" :width="lw('gross_amount') ?? 130" align="right" prop="gross_amount">
           <template #default="{ row }">
-            <template v-if="isView">{{ numCell(grossOf(row), true) }}</template>
+            <template v-if="isView">{{ amtCell(grossOf(row)) }}</template>
             <template v-else>
-              <el-input-number v-if="isEditing(row, 'gross_amount')" v-model="row.gross_amount" :min="0" :precision="2" size="small" :controls="false" style="width:100%" placeholder="价税合计" @change="recalcFromGross(row)" @blur="stopEdit" v-focus />
-              <div v-else class="editable-cell">{{ numCell(grossOf(row), true) }}</div>
+              <el-input-number v-if="isEditing(row, 'gross_amount')" v-model="row.gross_amount" :min="0" :precision="dec.amount" size="small" :controls="false" style="width:100%" placeholder="价税合计" @change="recalcFromGross(row)" @blur="stopEdit" v-focus />
+              <div v-else class="editable-cell">{{ amtCell(grossOf(row)) }}</div>
             </template>
           </template>
         </el-table-column>
-        <el-table-column v-if="showBatchCols && lineColShown('batch_no')" column-key="batch_no" label="批号" width="120" prop="batch_no">
+        <el-table-column v-if="showBatchCols && lineColShown('batch_no')" column-key="batch_no" label="批号" :width="lw('batch_no') ?? 120" prop="batch_no">
           <template #default="{ row }">
             <template v-if="isView">{{ row.batch_no }}</template>
             <template v-else>
@@ -653,7 +736,7 @@
             </template>
           </template>
         </el-table-column>
-        <el-table-column v-if="showBatchCols && lineColShown('produce_date')" column-key="produce_date" label="生产日期" width="140" prop="produce_date">
+        <el-table-column v-if="showBatchCols && lineColShown('produce_date')" column-key="produce_date" label="生产日期" :width="lw('produce_date') ?? 140" prop="produce_date">
           <template #default="{ row }">
             <template v-if="isView">{{ row.produce_date }}</template>
             <template v-else>
@@ -662,7 +745,7 @@
             </template>
           </template>
         </el-table-column>
-        <el-table-column v-if="(showBatchCols || col('expire_date')) && lineColShown('expire_date')" column-key="expire_date" label="保质期" width="140" prop="expire_date">
+        <el-table-column v-if="(showBatchCols || col('expire_date')) && lineColShown('expire_date')" column-key="expire_date" label="保质期" :width="lw('expire_date') ?? 140" prop="expire_date">
           <template #default="{ row }">
             <template v-if="isView">{{ row.expire_date }}</template>
             <template v-else>
@@ -671,7 +754,7 @@
             </template>
           </template>
         </el-table-column>
-        <el-table-column v-if="showBinCol && lineColShown('bin_no')" column-key="bin_no" label="库位" width="130" prop="bin_no">
+        <el-table-column v-if="showBinCol && lineColShown('bin_no')" column-key="bin_no" label="库位" :width="lw('bin_no') ?? 130" prop="bin_no">
           <template #default="{ row }">
             <template v-if="isView">{{ row.bin_no }}</template>
             <template v-else>
@@ -682,7 +765,7 @@
             </template>
           </template>
         </el-table-column>
-        <el-table-column v-if="showSerialCols" column-key="serial_no" label="序列号" width="130" align="center">
+        <el-table-column v-if="showSerialCols" column-key="serial_no" label="序列号" :width="lw('serial_no') ?? 130" align="center">
           <template #default="{ row }">
             <template v-if="row._serial">
               <el-button v-if="!isView" link type="primary" size="small" @click="openSerialDialog(row)">
@@ -693,7 +776,7 @@
             <span v-else>-</span>
           </template>
         </el-table-column>
-        <el-table-column v-if="col('scrap_rate') && lineColShown('scrap_rate')" column-key="scrap_rate" label="损耗%" width="90" align="right" prop="scrap_rate">
+        <el-table-column v-if="col('scrap_rate') && lineColShown('scrap_rate')" column-key="scrap_rate" label="损耗%" :width="lw('scrap_rate') ?? 90" align="right" prop="scrap_rate">
           <template #default="{ row }">
             <template v-if="isView">{{ Number(row.scrap_rate) ? row.scrap_rate + '%' : '' }}</template>
             <template v-else>
@@ -702,22 +785,22 @@
             </template>
           </template>
         </el-table-column>
-        <el-table-column v-if="col('process_fee') && lineColShown('process_fee')" column-key="process_fee" label="加工费" width="110" align="right" prop="process_fee">
+        <el-table-column v-if="col('process_fee') && lineColShown('process_fee')" column-key="process_fee" label="加工费" :width="lw('process_fee') ?? 110" align="right" prop="process_fee">
           <template #default="{ row }">
             <template v-if="isView">{{ numCell(row.process_fee, true) }}</template>
             <template v-else>
               <el-input-number v-if="isEditing(row, 'process_fee')" v-model="row.process_fee" :min="0" :precision="2" size="small" :controls="false" style="width:100%" placeholder="加工费" @change="recalcRow(row)" @blur="stopEdit" v-focus />
-              <div v-else class="editable-cell">{{ numCell(row.process_fee, true) }}</div>
+              <div v-else class="editable-cell" :class="{ 'is-locked': outsourcePriceLocked(row), 'price-diff': outsourcePriceDiff(row) }" :title="outsourcePriceTitle(row)">{{ numCell(row.process_fee, true) }}</div>
             </template>
           </template>
         </el-table-column>
-        <el-table-column v-if="isCostDoc || form.status === 'audited'" column-key="unit_cost" label="成本单价" width="110" align="right">
+        <el-table-column v-if="isCostDoc || form.status === 'audited'" column-key="unit_cost" label="成本单价" :width="lw('unit_cost') ?? 110" align="right">
           <template #default="{ row }">
             <span v-if="isCostInbound && form.status !== 'audited'" class="doc-cost-pending">审核后计算</span>
-            <span v-else>{{ numCell(row.unit_cost, true) }}</span>
+            <span v-else>{{ priceCell(row.unit_cost) }}</span>
           </template>
         </el-table-column>
-        <el-table-column v-if="lineColShown('remark')" column-key="remark" label="备注" min-width="120" prop="remark">
+        <el-table-column v-if="lineColShown('remark')" column-key="remark" label="备注" :width="lw('remark')" :min-width="lw('remark') ? undefined : 120" prop="remark">
           <template #default="{ row }">
             <template v-if="isView">{{ row.remark }}</template>
             <template v-else>
@@ -727,7 +810,7 @@
           </template>
         </el-table-column>
         <!-- 表体自定义字段（按行存 row.field_values）-->
-        <el-table-column v-for="f in bodyFieldDefs" :key="'bf_' + f.field_key" :column-key="'bf_' + f.field_key" :label="f.field_name" min-width="140">
+        <el-table-column v-for="f in bodyFieldDefs" :key="'bf_' + f.field_key" :column-key="'bf_' + f.field_key" :label="f.field_name" :width="lw('bf_' + f.field_key)" :min-width="lw('bf_' + f.field_key) ? undefined : 140">
           <template #default="{ row }">
             <template v-if="isView">{{ lineFieldText(row, f) }}</template>
             <template v-else>
@@ -767,7 +850,7 @@
             <span class="as-group__title is-product">成品（入库）</span>
             <span class="as-group__count">{{ asFilledProductCount }} 个</span>
           </div>
-          <el-table :data="productLines" border size="small" show-summary :summary-method="asSummary" style="width:100%" @cell-click="handleCellClick" class="compact-data-table">
+          <el-table v-col-width="'scm_DocForm_3'" :data="productLines" border size="small" show-summary :summary-method="asSummary" style="width:100%" @cell-click="handleCellClick" class="compact-data-table">
             <el-table-column label="序号" width="52" align="center"><template #default="{ $index }">{{ $index + 1 }}</template></el-table-column>
             <el-table-column label="编号" min-width="150" prop="item_code">
               <template #default="{ row }">
@@ -785,7 +868,7 @@
                 <template v-if="isView">{{ whName(row.warehouse_code) }}</template>
                 <template v-else>
                   <el-select v-if="isEditing(row, 'warehouse_code')" v-model="row.warehouse_code" placeholder="覆盖头部仓库" filterable clearable size="small" style="width:100%" @change="stopEdit" @visible-change="v => !v && stopEdit()" v-focus>
-                    <el-option v-for="w in warehouses" :key="w.code" :label="w.name || w.code" :value="w.code" />
+                    <el-option v-for="w in warehouses" :key="w.code" :label="w.name || w.code" :value="w.code" :disabled="(w as any).enabled === 0" />
                   </el-select>
                   <div v-else class="editable-cell">{{ whName(row.warehouse_code) }}</div>
                 </template>
@@ -795,10 +878,47 @@
               <template #default="{ row }">
                 <template v-if="isView">{{ row.qty }}</template>
                 <template v-else>
-                  <el-input-number v-if="isEditing(row, 'qty')" v-model="row.qty" :min="0" :precision="3" size="small" :controls="false" style="width:100%" placeholder="数量" @change="(cur:any, old:any) => recomputeGroupQty(row, cur, old)" @blur="stopEdit" v-focus />
+                  <el-input-number v-if="isEditing(row, 'qty')" v-model="row.qty" :min="0" :precision="dec.qty" size="small" :controls="false" style="width:100%" placeholder="数量" @change="(cur:any, old:any) => recomputeGroupQty(row, cur, old)" @blur="stopEdit" v-focus />
                   <div v-else class="editable-cell">{{ row.qty }}</div>
                 </template>
               </template>
+            </el-table-column>
+            <el-table-column v-if="asNeedsPartner" label="加工单价" width="110" align="right" prop="process_fee">
+              <template #header><span title="不含税">加工单价<small class="as-fee-hint">不含税</small></span></template>
+              <template #default="{ row }">
+                <template v-if="isView">{{ numCell(row.process_fee, true) }}</template>
+                <template v-else>
+                  <el-input-number v-if="isEditing(row, 'process_fee')" v-model="row.process_fee" :min="0" :precision="4" size="small" :controls="false" style="width:100%" placeholder="不含税" @change="asRecalcFeeTax(row)" @blur="stopEdit" v-focus />
+                  <div v-else class="editable-cell">{{ numCell(row.process_fee, true) }}</div>
+                </template>
+              </template>
+            </el-table-column>
+            <el-table-column v-if="asNeedsPartner" label="税率%" width="80" align="right" prop="tax_rate">
+              <template #default="{ row }">
+                <template v-if="isView">{{ row.item_code ? effTax(row) : '' }}</template>
+                <template v-else>
+                  <el-input-number v-if="isEditing(row, 'tax_rate')" v-model="row.tax_rate" :min="0" :max="100" :precision="2" size="small" :controls="false" style="width:100%" placeholder="税率" @change="asRecalcFeeTax(row)" @blur="stopEdit" v-focus />
+                  <div v-else class="editable-cell">{{ row.item_code ? effTax(row) : '' }}</div>
+                </template>
+              </template>
+            </el-table-column>
+            <el-table-column v-if="asNeedsPartner" label="含税单价" width="110" align="right" prop="price_with_tax">
+              <template #default="{ row }">
+                <template v-if="isView">{{ numCell(asFeeWithTax(row), true) }}</template>
+                <template v-else>
+                  <el-input-number v-if="isEditing(row, 'price_with_tax')" v-model="row.price_with_tax" :min="0" :precision="4" size="small" :controls="false" style="width:100%" placeholder="含税" @change="asRecalcFeeFromTaxPrice(row)" @blur="stopEdit" v-focus />
+                  <div v-else class="editable-cell">{{ numCell(asFeeWithTax(row), true) }}</div>
+                </template>
+              </template>
+            </el-table-column>
+            <el-table-column v-if="asNeedsPartner" label="加工费" width="110" align="right" prop="process_amount">
+              <template #default="{ row }">{{ row.item_code ? fmt(asProcessAmount(row)) : '' }}</template>
+            </el-table-column>
+            <el-table-column v-if="asNeedsPartner" label="税额" width="96" align="right" prop="process_tax">
+              <template #default="{ row }">{{ row.item_code ? fmt(asProcessTax(row)) : '' }}</template>
+            </el-table-column>
+            <el-table-column v-if="asNeedsPartner" label="价税合计" width="110" align="right" prop="process_gross">
+              <template #default="{ row }">{{ row.item_code ? fmt(asProcessAmount(row) + asProcessTax(row)) : '' }}</template>
             </el-table-column>
             <el-table-column label="备注" min-width="110" prop="remark">
               <template #default="{ row }">
@@ -829,7 +949,7 @@
             <span class="as-group__count">{{ mergedMaterials.length }} 种</span>
             <span class="as-group__hint">仓库可直接调整；物料/数量请点成品行的「物料」</span>
           </div>
-          <el-table :data="mergedMaterials" border size="small" show-summary :summary-method="asSummary" style="width:100%" class="compact-data-table">
+          <el-table v-col-width="'scm_DocForm_4'" :data="mergedMaterials" border size="small" show-summary :summary-method="asSummary" style="width:100%" class="compact-data-table">
             <el-table-column label="序号" width="52" align="center"><template #default="{ $index }">{{ $index + 1 }}</template></el-table-column>
             <el-table-column label="编号" min-width="150" prop="item_code" />
             <el-table-column label="名称" min-width="170" prop="item_name" show-overflow-tooltip />
@@ -847,12 +967,16 @@
                   style="width:100%"
                   @change="(code:any) => setMergedMaterialWarehouse(row, code)"
                 >
-                  <el-option v-for="w in warehouses" :key="w.code" :label="w.name || w.code" :value="w.code" />
+                  <el-option v-for="w in warehouses" :key="w.code" :label="w.name || w.code" :value="w.code" :disabled="(w as any).enabled === 0" />
                 </el-select>
               </template>
             </el-table-column>
             <el-table-column label="合计数量" width="120" align="right" prop="qty" />
-            <el-table-column label="涉及成品" min-width="180" prop="products" show-overflow-tooltip />
+            <el-table-column label="涉及成品" min-width="180" prop="products" show-overflow-tooltip>
+              <template #default="{ row }">
+                <el-tag v-if="!row.warehouse_mixed && isCustomerSuppliedWh(row.warehouse_code)" size="small" type="warning" effect="plain" style="margin-right:4px" title="客供仓：只记数量，不计成本">客供</el-tag>{{ row.products }}
+              </template>
+            </el-table-column>
           </el-table>
           <div v-if="!mergedMaterials.length" class="as-empty">暂无子件，请在上方「选成品BOM」自动展开，或点成品行「物料」手工添加</div>
         </div>
@@ -885,6 +1009,7 @@
       v-model="batchPickerVisible"
       :warehouse-code="batchPickerWarehouse"
       :stock-only-default="isOutbound"
+      :default-source="lineDefaultSource"
       @confirm="onBatchPickConfirm"
     />
 
@@ -925,7 +1050,7 @@
         <el-button v-if="showBinCol" size="small" @click="binDlgVisible = true"><el-icon><Plus /></el-icon>新增库位</el-button>
         <span class="mat-dlg-hint">末行空行直接选物料即可 · 成品数量 {{ matDlgProduct && matDlgProduct.qty }} · 子件 {{ matDlgRows.filter(r => r.item_code).length }} 项（改数量即为该成品的实际用量）</span>
       </div>
-      <el-table :data="matDlgRows" border size="small" show-summary :summary-method="asSummary" max-height="60vh" style="width:100%" @cell-click="handleCellClick" class="compact-data-table">
+      <el-table v-col-width="'scm_DocForm_5'" :data="matDlgRows" border size="small" show-summary :summary-method="asSummary" max-height="60vh" style="width:100%" @cell-click="handleCellClick" class="compact-data-table">
         <el-table-column label="序号" width="52" align="center"><template #default="{ $index }">{{ $index + 1 }}</template></el-table-column>
         <el-table-column label="编号" min-width="150" prop="item_code">
           <template #default="{ row }">
@@ -943,7 +1068,7 @@
             <template v-if="isView">{{ whName(row.warehouse_code) }}</template>
             <template v-else>
               <el-select v-if="isEditing(row, 'warehouse_code')" v-model="row.warehouse_code" placeholder="覆盖头部仓库" filterable clearable size="small" style="width:100%" @change="stopEdit" @visible-change="v => !v && stopEdit()" v-focus>
-                <el-option v-for="w in warehouses" :key="w.code" :label="w.name || w.code" :value="w.code" />
+                <el-option v-for="w in warehouses" :key="w.code" :label="w.name || w.code" :value="w.code" :disabled="(w as any).enabled === 0" />
               </el-select>
               <div v-else class="editable-cell">{{ whName(row.warehouse_code) }}</div>
             </template>
@@ -953,7 +1078,7 @@
           <template #default="{ row }">
             <template v-if="isView">{{ row.qty }}</template>
             <template v-else>
-              <el-input-number v-if="isEditing(row, 'qty')" v-model="row.qty" :min="0" :precision="3" size="small" :controls="false" style="width:100%" @blur="stopEdit" v-focus />
+              <el-input-number v-if="isEditing(row, 'qty')" v-model="row.qty" :min="0" :precision="dec.qty" size="small" :controls="false" style="width:100%" @blur="stopEdit" v-focus />
               <div v-else class="editable-cell">{{ row.qty }}</div>
             </template>
           </template>
@@ -1022,7 +1147,7 @@
     <!-- 组装单：成品有多个 BOM 时，选对应 BOM 展开 -->
     <el-dialog v-model="bomDlgVisible" :title="'选择 BOM · ' + ((bomDlgRow && (bomDlgRow.item_name || bomDlgRow.item_code)) || '成品')" width="520px" append-to-body>
       <div class="mat-dlg-hint" style="margin-bottom:8px">该成品有多个 BOM，请选择本次组装采用的 BOM：</div>
-      <el-table :data="bomDlgOptions" border size="small" highlight-current-row style="width:100%" @row-click="(r:any) => pickBom(r.id)">
+      <el-table v-col-width="'scm_DocForm_6'" :data="bomDlgOptions" border size="small" highlight-current-row style="width:100%" @row-click="(r:any) => pickBom(r.id)">
         <el-table-column label="BOM编码" prop="code" width="150" />
         <el-table-column label="BOM名称" prop="name" min-width="180" show-overflow-tooltip>
           <template #default="{ row }">{{ row.name || '—' }}</template>
@@ -1042,17 +1167,26 @@
 <script setup lang="ts">
 import { todayStr } from '@/utils/format'
 import { ref, computed, watch, onMounted, onActivated, onDeactivated, onBeforeUnmount, nextTick, defineAsyncComponent, onErrorCaptured } from 'vue'
+import { useGlStartDate } from '@/composables/useGlStartDate'
+const { isBeforeGlStart } = useGlStartDate()
+/** 单据日期不得早于总账开账日期；期初入库（IS）录的就是开账前库存，不限 */
+const disableDocDate = (d: Date) => form.value.doc_type !== 'IS' && isBeforeGlStart(d)
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft, ArrowDown, Plus, Connection, Goods, Printer, Setting } from '@element-plus/icons-vue'
-import { scmApi, SOURCE_TYPES, type ScmDocType, type ScmDocFieldDef, type ScmPaymentSource } from '@/api/scm'
+import { scmApi, SOURCE_TYPES, type ScmDocType, type ScmDocFieldDef, type ScmPaymentSource, type ScmPaymentOpenReturn, type ScmAuxRequiredField } from '@/api/scm'
 import { cashierApi, type CashierAccount } from '@/api/cashier'
 import { LINE_OPT_COLS, HEADER_OPT_COLS, type ColMeta } from '@/config/scmColumns'
 import { useAutoBlankRow } from '@/composables/useAutoBlankRow'
+import { useScopedColumnWidth } from '@/composables/useColumnWidthMemory'
+import { resetColWidth } from '@/directives/colWidth'
 import { hasPermission } from '@/utils/permission'
-import { PUSH_MAP, pushTarget, canGenerateDownstream, canShowStandardPushAction, downstreamActionLabel, normalizePushProgress } from '@/utils/scmDoc'
+import { PUSH_MAP, pushTarget, docGeneratesVoucher, paymentVoucherByCashier, canGenerateDownstream, canShowStandardPushAction, downstreamActionLabel, normalizePushProgress } from '@/utils/scmDoc'
+import { useSystemParamsStore } from '@/stores/systemParams'
+import { useScmDecimalsStore } from '@/stores/scmDecimals'
 import { resolveDefaultWarehouse } from '@/utils/scmDefaultWarehouse'
 import { confirmAuditDefaultWarehouses } from '@/utils/scmAuditDefaultWarehouseConfirm'
+import { genScmVoucher } from '@/utils/scmVoucherAux'
 import { buildSalesDispatchLines } from '@/utils/scmSalesDispatch'
 import { buildMultiSourceRemainingLines, commonSourceHeaderValue, sourceFieldValues } from '@/utils/scmMultiSource'
 import { useTabsStore } from '@/stores/tabs'
@@ -1080,10 +1214,14 @@ const ScmPushMenu = defineAsyncComponent(() => import('@/components/scm/ScmPushM
 
 const route = useRoute()
 const router = useRouter()
+const systemParams = useSystemParamsStore()
+systemParams.load()
 
 const formRenderError = ref<Error | null>(null)
 onErrorCaptured((err, _instance, info) => {
   console.error('DocForm error captured:', err, info)
+  // 只有渲染 / 初始化阶段的错误才替换成错误页；按钮事件里的接口失败（带 response）不能清空整张单据
+  if ((err as any)?.response || /event handler/i.test(String(info || ''))) return false
   formRenderError.value = err as Error
   // return false to prevent this error from bubbling up and crashing the entire RouterView
   return false
@@ -1146,12 +1284,29 @@ async function onCurrencyChange() {
   } catch { /* 取不到汇率则保留手填 */ }
 }
 const ioCategoryOptions = ref<string[]>([])   // 收发类别字典（scm:io_categories）
+// 第五份反馈：其他入库 / 其他出库内置收发类别（生产领用、成品入库带生产成本科目，见进销存凭证设置），再并上字典
+const BUILTIN_IO_CATEGORIES: Record<string, string[]> = { OI: ['成品入库', '盘盈', '其他入库'], OO: ['生产领用', '盘亏', '报废', '其他出库'] }
+const ioCategoryChoices = computed(() => {
+  const builtin = BUILTIN_IO_CATEGORIES[form.value.doc_type] || []
+  return [...new Set([...builtin, ...ioCategoryOptions.value])]
+})
 const transportOptions  = ref<string[]>([])   // 运输方式字典（scm:transport_methods）
 const bins        = ref<any[]>([])  // 库位档案（参考用）
 const partnerSearch = ref('')
 const boms        = ref<any[]>([])
 const productionPlans = ref<any[]>([])
+// 已生成凭证（详情接口带出）：表头按钮显示「凭证 记-001」，点击打开凭证查询
+const docVoucher = ref<{ id: string; voucher_no: string; year: number; period: number; status: string; voucher_type_name?: string | null } | null>(null)
+const docVoucherLabel = computed(() => {
+  const v = docVoucher.value
+  if (!v) return ''
+  const no = String(v.voucher_no || '')
+  const type = String(v.voucher_type_name || '').slice(0, 1)
+  return type && !no.includes('-') ? `${type}-${no}` : no
+})
 const planExecutionInfo = ref({ planned_qty: 0, executed_qty: 0, max_allowed_qty: 0, overrun_remaining: 0 })
+// 领料 / 委外发料 / 退料：来源工单取不到任何用料（未选 BOM 或 BOM 无主件）
+const planNoMaterial = ref(false)
 const selectedBom = ref('')
 const saving      = ref(false)
 const auditing    = ref(false)
@@ -1175,6 +1330,33 @@ const availableProductionPlans = computed(() => {
   })
 })
 const isAssembly   = computed(() => form.value.doc_type === 'AS')  // 组装单：成品行+子件行模式
+// 组装单加工方式：委托加工(entrust，加工费计成本、挂应付) / 受托加工(contract，加工费挂应收)；空 = 自行组装
+const asNeedsPartner = computed(() => isAssembly.value && ['entrust', 'contract'].includes(form.value.process_mode))
+/** 成品行加工费 = 数量 × 加工单价（不含税） */
+const asProcessAmount = (row: any) => round2((Number(row.qty) || 0) * (Number(row.process_fee) || 0))
+/** 成品行加工费税额 = 加工费 × 税率（行税率为空取表头税率；后端保存时按同一口径重算） */
+const asProcessTax = (row: any) => round2(asProcessAmount(row) * effTax(row) / 100)
+/** 含税加工单价 = 加工单价 × (1 + 税率) */
+const asFeeWithTax = (row: any) => round4((Number(row.process_fee) || 0) * (1 + effTax(row) / 100))
+/** 改加工单价 / 税率：同步含税单价与税额 */
+function asRecalcFeeTax(row: any) {
+  row.price_with_tax = asFeeWithTax(row) || null
+  row.tax_amount = asProcessTax(row) || null
+}
+/** 改含税单价：反算不含税加工单价 */
+function asRecalcFeeFromTaxPrice(row: any) {
+  const tr = effTax(row)
+  const pwt = Number(row.price_with_tax) || 0
+  row.process_fee = tr > 0 ? round4(pwt / (1 + tr / 100)) : pwt
+  row.tax_amount = asProcessTax(row) || null
+}
+/** 客供仓：只记数量与往来，不计成本 */
+const isCustomerSuppliedWh = (code?: string) => !!code && warehouses.value.some((w: any) => w.code === code && Number(w.is_customer_supplied) === 1)
+function onProcessModeChange() {
+  // 切换方向后原往来单位可能角色不符（客户 ↔ 供应商），清空让用户重选
+  const p = allPartners.value.find((x: any) => x.code === form.value.partner_code)
+  if (p && !partnerInScope(p)) { form.value.partner_code = ''; partnerSearch.value = '' }
+}
 const isInvoice    = computed(() => ['RP','RS'].includes(form.value.doc_type))
 const isTransfer   = computed(() => form.value.doc_type === 'TR')
 const isCount      = computed(() => form.value.doc_type === 'CK')
@@ -1184,7 +1366,9 @@ const isMr         = computed(() => form.value.doc_type === 'MR')
 const isPaymentDoc = computed(() => ['PAY', 'RCV'].includes(form.value.doc_type))
 const isReceivePayment = computed(() => form.value.doc_type === 'RCV')
 const isAdvancePaymentMode = computed(() => isNew.value && isPaymentDoc.value && route.query.payment_mode === 'advance')
-const paymentPartnerLabel = computed(() => isPaymentDoc.value ? (isReceivePayment.value ? '客户' : '供应商') : (isCustomerDoc.value ? '客户' : '往来单位'))
+const paymentPartnerLabel = computed(() => isPaymentDoc.value ? (isReceivePayment.value ? '客户' : '供应商')
+  : asNeedsPartner.value ? (form.value.process_mode === 'contract' ? '客户' : '加工厂')
+  : (isCustomerDoc.value ? '客户' : '往来单位'))
 // 成本类入库单：完工入库(PF)/委外入库(WI)——成本由审核时按工单归集生成，落在 unit_cost/total_amount，
 // 不走 price/amount（录入进价）管线，故单价/金额列与合计需改读成本口径。
 const isCostInbound = computed(() => ['PF', 'WI'].includes(form.value.doc_type))
@@ -1229,6 +1413,8 @@ function handleCostExpandChange(row: any, expandedRows: any[]) {
 const docTypeObj = computed(() => types.value.find(x => x.code === form.value.doc_type))
 // 出库/耗库类：direction=out 的减库存单据（领料PL/补料PB/委外发货WO/其他出库OO/销售出库SO/采购退货PR）
 // + 调拨(TR，按调出仓)；组装子件(AS)在子件选择器单独判定 → 物料默认只看有库存
+/** 采购询价 / 订单选物料默认「采购」来源（选择器里可切回全部，搜不到时自动放开） */
+const lineDefaultSource = computed(() => (['PQ', 'PO'].includes(form.value.doc_type) ? 'purchase' : ''))
 const isOutbound = computed(() => (docTypeObj.value?.direction === 'out' && !!docTypeObj.value?.affects_stock) || isTransfer.value)
 // 物料选择器取库存用的仓库：调拨按「调出仓」(表头，行仓是调入仓不能用)，其余行仓优先、回退表头
 function lineStockWarehouse(row: any): string {
@@ -1245,7 +1431,10 @@ function openStockLedger(row: any) {
 // 双击批量选择器取库存仓库（同上口径，取触发行）
 const batchPickerWarehouse = computed(() => lineStockWarehouse(lines.value[batchPickerRowIndex.value]))
 // 销售类单据：往来单位（客户）必填（销售报价、销售订单、销售出库）
-const isCustomerDoc = computed(() => ['SQ', 'SOa', 'SO'].includes(form.value.doc_type))
+const isCustomerDoc = computed(() => ['SQ', 'SOa', 'SO', 'SR'].includes(form.value.doc_type))
+// 与后端 scmDocumentControls.ts 的 PARTNER_REQUIRED_DOC_TYPES 保持一致
+const PARTNER_REQUIRED_TYPES = ['PQ', 'PO', 'PI', 'PR', 'SQ', 'SOa', 'SO', 'SR']
+const partnerRequired = computed(() => PARTNER_REQUIRED_TYPES.includes(form.value.doc_type) || asNeedsPartner.value)
 const isSalesOrderOrDispatch = computed(() => ['SOa', 'SO'].includes(form.value.doc_type))
 
 // 采购/销售类单据：支持「查询实时库存」（含订单/入出库/退货/发票）
@@ -1274,6 +1463,7 @@ const costTotalAmount = computed(() => round2(lines.value.reduce((s, l) => s + (
 // 往来单位适用范围：销售类→客户、采购类→供应商、其他→全部（双向/未分类两类都可）
 const partnerScope = computed<'customer' | 'supplier' | 'all'>(() =>
   isPaymentDoc.value ? (isReceivePayment.value ? 'customer' : 'supplier')
+    : asNeedsPartner.value ? (form.value.process_mode === 'contract' ? 'customer' : 'supplier')
     : priceMode.value === 'sale' ? 'customer' : priceMode.value === 'purchase' ? 'supplier' : 'all')
 function partnerInScope(p: any): boolean {
   if (partnerScope.value === 'all') return true
@@ -1365,11 +1555,21 @@ const lineCols = computed<Set<string>>(() => {
     ? new Set(typeConfig.value.line)
     : new Set(['item', 'warehouse', 'qty', 'price'])
   if (isInvoice.value) { s.add('tax_rate'); s.add('tax_amount') }
+  // 采购 / 销售类单据往来按价税合计挂账：含税单价、税率、税额、价税合计必须默认可见，
+  // 否则表体只显示不含税金额，与往来余额、收付款金额对不上（客户反馈）。仍可用列方案隐藏。
+  if (isPurchaseOrSale.value) {
+    s.add('price_with_tax')
+    s.add('tax_rate')
+    s.add('tax_amount')
+  }
   // 委外入库加工费按税前单价维护，税率/税额必须可见且可调整。
   if (form.value.doc_type === 'WI') {
     s.add('process_fee')
     s.add('tax_rate')
     s.add('tax_amount')
+    // 加工费由采购在委外计划中定，入库多由仓库操作：无「委外加工单价修改」权限时不显示加工单价 / 税率 / 税额 / 价税合计
+    //（客户测试 20261011「此外不能显示出来」；保存时后端按计划价写入）
+    if (!canEditOutsourcePrice.value) for (const k of ['process_fee', 'tax_rate', 'tax_amount', 'price_with_tax']) s.delete(k)
   }
   return s
 })
@@ -1386,6 +1586,19 @@ const whName = (code: string) => { if (!code) return ''; const w = warehouses.va
 
 // ── 列方案（管理员建方案分配用户；有 scm:colscheme 权限者可临时调整，无权限锁定）──
 const canColScheme = computed(() => hasPermission('scm:colscheme'))
+function outsourcePriceLocked(row: any) {
+  return form.value.doc_type === 'WI' && !canEditOutsourcePrice.value && !!row?.item_code && !!planPriceMap.value[row.item_code]
+}
+/** 有权限的人改过加工单价时，提示与计划单价不同 */
+function outsourcePriceDiff(row: any) {
+  const p = form.value.doc_type === 'WI' && row?.item_code ? planPriceMap.value[row.item_code] : undefined
+  return !!p && (Number(row.process_fee) || 0) !== p.fee
+}
+function outsourcePriceTitle(row: any) {
+  if (outsourcePriceLocked(row)) return '加工单价取委外计划，无「委外加工单价修改」权限不能修改'
+  if (outsourcePriceDiff(row)) return `与委外计划加工单价 ${planPriceMap.value[row.item_code].fee} 不同`
+  return ''
+}
 // 「配置」下拉合并「列设置」+「字段设置」+「方案管理」，两个 popover 由 visible 显式控制
 const configBtnRef = ref<HTMLElement | null>(null)
 const colSettingVisible = ref(false)
@@ -1397,6 +1610,10 @@ const showConfigBtn = computed(() =>
 function onConfigCommand(cmd: string) {
   if (cmd === 'schemes') {
     router.push('/scm/col-schemes')
+    return
+  }
+  if (cmd === 'fielddefs') {
+    router.push('/scm/doc-field-defs')
     return
   }
   // cols / fields：先关闭另一个，下一个 tick 再打开目标 popover（互斥显示，且等 dropdown 关闭）
@@ -1416,7 +1633,7 @@ const footerHidden = ref<Set<string>>(new Set())
 /** 每个可选列在当前单据类型下是否"本就会出现"（方案只能在可用列里做隐藏） */
 function lineColAvailable(key: string): boolean {
   switch (key) {
-    case 'realtime_stock': return stockShown.value
+    case 'realtime_stock': return true   // 点「查询实时库存」后才渲染，但设置里始终可见，便于预先设为隐藏
     case 'price_with_tax': return col('price_with_tax')
     case 'discount_rate':  return col('discount_rate')
     case 'tax_rate':       return col('tax_rate')
@@ -1463,6 +1680,16 @@ const DOC_TITLE: Record<string, string> = {
   RP:'采购发票', RS:'销售发票', PAY:'付款单', RCV:'收款单', MR:'缺料单',
 }
 
+const saveAsTitle = computed(() => {
+  const typeName = isAdvancePaymentMode.value ? (isReceivePayment.value ? '预收款单' : '预付款单') : (DOC_TITLE[form.value.doc_type] || form.value.doc_type || '单据')
+  return [typeName, form.value.doc_no].filter(Boolean).join(' ')
+})
+const saveAsFooter = computed(() => [
+  form.value.maker ? `制单：${form.value.maker}` : '',
+  form.value.auditor ? `审核：${form.value.auditor}` : '',
+  form.value.status ? `状态：${form.value.status === 'audited' ? '已审核' : '草稿'}` : '',
+].filter(Boolean).join('　'))
+
 const pageTitle = computed(() => {
   if (isAdvancePaymentMode.value) return `新增${isReceivePayment.value ? '预收款单' : '预付款单'}`
   const typeName = DOC_TITLE[form.value.doc_type] || form.value.doc_type || '单据'
@@ -1489,11 +1716,29 @@ const form = ref<Record<string, any>>({
   warehouse_code: '', partner_code: '', operator: '', remark: '', status: 'draft', bom_id: '', source_doc_id: '', plan_id: '',
   biz_person: '', dept_code: '', payment_type: '', settle_account: '', invoice_type: '', invoice_no: '', invoice_date: '',
   contract_no: '', currency: 'CNY', exchange_rate: 1, discount_rate: null, expect_date: '', credit_days: null,
-  io_category: '', transport_method: '', tax_rate: null, field_values: {},
+  io_category: '', transport_method: '', tax_rate: null, process_mode: '', field_values: {},
 })
+// ── 委外加工单价管控（客户测试 20261011）：加工单价在委外计划中制定，入库带出；
+//    无「委外加工单价修改」权限时，计划成品行的加工单价 / 税率只读（后端保存时同样强制取计划价）
+const canEditOutsourcePrice = computed(() => hasPermission('scm:outsource-price'))
+const OUTSOURCE_PRICE_FIELDS = new Set(['process_fee', 'tax_rate', 'tax_amount'])
+const planPriceMap = ref<Record<string, { fee: number; rate: number }>>({})
+watch(() => [form.value.doc_type, form.value.plan_id] as const, async ([docType, planId]) => {
+  planPriceMap.value = {}
+  if (docType !== 'WI' || !planId) return
+  try {
+    const r = await scmApi.getProductionPlan(String(planId))
+    if (r.code !== 0 || form.value.plan_id !== planId) return
+    const map: Record<string, { fee: number; rate: number }> = {}
+    for (const p of (r.data.products || []) as any[]) map[p.item_code] = { fee: Number(p.process_fee) || 0, rate: Number(p.process_tax_rate) || 0 }
+    planPriceMap.value = map
+  } catch { /* 取不到计划价时不做只读控制，后端仍会兜底 */ }
+}, { immediate: true })
 // 记录上次由往来单位自动带入的值：切换单位时可更新旧默认值，手工改过的值则保留。
 const partnerHeaderDefaults = ref<{ bizPerson?: string; taxRate?: number | null }>({})
 const lines = ref<Array<Record<string, any>>>([])
+// 工单领料类单据存在可用替代料时才出现「可用替代料」列（纳入列设置，可调序）
+const showSubstituteCol = computed(() => isPlanControlledDoc.value && lines.value.some((l: any) => l._substitutes?.length))
 type PaymentSourceRow = ScmPaymentSource & {
   selected: boolean
   current_amount: number | null
@@ -1501,6 +1746,7 @@ type PaymentSourceRow = ScmPaymentSource & {
   invalid?: boolean
 }
 const paymentSources = ref<PaymentSourceRow[]>([])
+const paymentOpenReturns = ref<ScmPaymentOpenReturn[]>([])
 const paymentSourceLoading = ref(false)
 const advanceAmount = ref(0)
 const advanceRemark = ref('')
@@ -1592,6 +1838,9 @@ function asSummary({ columns, data }: { columns: any[]; data: any[] }): string[]
   return columns.map((col, i) => {
     if (i === 0) return '合计'
     if (col.property === 'qty') return fmt(data.reduce((s: number, r: any) => s + (Number(r.qty) || 0), 0))
+    if (col.property === 'process_amount') return fmt(data.reduce((s: number, r: any) => s + (r.item_code ? asProcessAmount(r) : 0), 0))
+    if (col.property === 'process_tax') return fmt(data.reduce((s: number, r: any) => s + (r.item_code ? asProcessTax(r) : 0), 0))
+    if (col.property === 'process_gross') return fmt(data.reduce((s: number, r: any) => s + (r.item_code ? asProcessAmount(r) + asProcessTax(r) : 0), 0))
     return ''
   })
 }
@@ -1641,6 +1890,7 @@ const LINE_CORE_COLUMNS: Array<{ key: string; label: string; available?: () => b
   { key: 'amount', label: '金额' },
   { key: 'serial_no', label: '序列号', available: () => showSerialCols.value },
   { key: 'unit_cost', label: '成本单价', available: () => isCostDoc.value || form.value.status === 'audited' },
+  { key: 'substitutes', label: '可用替代料', available: () => showSubstituteCol.value },
 ]
 const lineColumnStorageKey = computed(() => `scm_doc_line_columns_${localStorage.getItem('accountSetId') || ''}_${form.value.doc_type || 'unknown'}`)
 const lineColumnDefaults = computed<ColumnSetting[]>(() => [
@@ -1649,6 +1899,9 @@ const lineColumnDefaults = computed<ColumnSetting[]>(() => [
   ...bodyFieldDefs.value.map(field => ({ key: `bf_${field.field_key}`, label: field.field_name, visible: true, required: true, group: '自定义字段' })),
 ])
 const lineColumnSettings = ref<ColumnSetting[]>([])
+// 明细表列宽记忆：按账套 + 单据类型隔离，拖动列头后写 localStorage，随列设置「恢复默认」一并还原
+const lineWidthStorageKey = computed(() => `scm_doc_line_width_${localStorage.getItem('accountSetId') || ''}_${form.value.doc_type || 'unknown'}`)
+const { onDragEnd: onLineColDragEnd, lw, reset: resetLineWidths } = useScopedColumnWidth(lineWidthStorageKey, linesTableRef)
 
 function applyLineColumnOrder() {
   nextTick(() => {
@@ -1684,6 +1937,9 @@ function updateLineColumnSettings(columns: ColumnSetting[]) {
 }
 
 function resetLineColumnSettings() {
+  resetLineWidths()
+  resetColWidth(...[1, 2, 3, 4, 5, 6].map(n => `scm_DocForm_${n}`))
+  nextTick(() => linesTableRef.value?.doLayout?.())
   updateLineColumnSettings(lineColumnDefaults.value.map(column => ({ ...column, visible: true })))
 }
 
@@ -1767,6 +2023,7 @@ const sourceDocs = ref<any[]>([])
 const sourceWarehouse = ref('')
 const warehouseManuallySelected = ref(false)
 const targetDocs = ref<any[]>([])
+const docStatements = ref<Array<{ id: string; stmt_no: string; status: string }>>([])
 
 function syncDefaultWarehouse() {
   if (!isNew.value || !form.value.doc_type || isView.value) return
@@ -1786,7 +2043,7 @@ const sourcePickerVisible = ref(false)
 // 下游单据 → 可反向选择的源单选项（用于「选择源单」反向选单）。
 // detailSource：self=展开源单自身明细（常规下推/入库单退货）；received=展开订单下钻出的「已入库」明细（采购订单退货）。
 // PR 两种来源都是行级严格关联（明细行 source_line_id → 入库行），自动防超退。
-interface SourceOption { type: string; detailSource: 'self' | 'received'; label: string }
+interface SourceOption { type: string; detailSource: 'self' | 'received' | 'invoice'; label: string }
 const SOURCE_OPTIONS: Record<string, SourceOption[]> = {
   PI:  [{ type: 'PO',  detailSource: 'self', label: '选择源单（采购订单）' }],
   PO:  [{ type: 'PQ',  detailSource: 'self', label: '选择源单（采购询价）' }],
@@ -1794,6 +2051,16 @@ const SOURCE_OPTIONS: Record<string, SourceOption[]> = {
   SOa: [{ type: 'SQ',  detailSource: 'self', label: '选择源单（销售报价）' }],
   // 采购退货：单个「选择源单」按钮（风格同其他单据），弹窗顶部列采购订单、展开下钻其已入库明细。
   PR:  [{ type: 'PO', detailSource: 'received', label: '选择源单（采购订单）' }],
+  // 销售退货：与采购退货对称——销售订单下钻已出库明细；另可直接选销售出库单（覆盖合并出库、无订单的出库）。
+  // 两种来源均为行级 source_line_id 关联（→ 出库行），后端自动防超退。
+  SR:  [
+    { type: 'SOa', detailSource: 'received', label: '选择源单（销售订单）' },
+    { type: 'SO',  detailSource: 'self',     label: '选择源单（销售出库）' },
+  ],
+  // 发票选入库 / 出库单（第四份反馈 Q7）：可多张合并开票、可分批开票，剩余量按未开票数量；
+  // 账务按行计差额（applyInvoiceByLines），表头 source_doc_id 只作展示。
+  RP:  [{ type: 'PI', detailSource: 'invoice', label: '选择源单（采购入库）' }],
+  RS:  [{ type: 'SO', detailSource: 'invoice', label: '选择源单（销售出库）' }],
 }
 // 当前正在选择的源单选项（点击某个「选择源单」按钮时设置）
 const activePick = ref<SourceOption | null>(null)
@@ -1814,9 +2081,16 @@ function openSourcePicker(opt: SourceOption) {
 }
 
 // 选择源单回调：把源单剩余明细追加到当前明细（支持多对一合并）
-function onSourcePick(payload: { lines: any[]; partner_code: string }) {
+function onSourcePick(payload: { lines: any[]; partner_code: string; docs?: Array<{ id: string; doc_no: string; doc_type: string; status: string }>; warehouse_code?: string; tax_rate?: number | null }) {
   const incoming = payload.lines || []
   if (!incoming.length) return
+  // 关联条立即显示上游单号（多张源单合并显示）；表头来源取第一张，仅作展示，账务按行
+  for (const d of payload.docs || []) {
+    if (!sourceDocs.value.some(s => s.id === d.id)) sourceDocs.value.push(d)
+  }
+  if (isInvoice.value && !(form.value as any).source_doc_id && sourceDocs.value.length) {
+    (form.value as any).source_doc_id = sourceDocs.value[0].id
+  }
   // 往来单位：表单为空则用源单的
   if (!form.value.partner_code && payload.partner_code) {
     form.value.partner_code = payload.partner_code
@@ -1827,9 +2101,14 @@ function onSourcePick(payload: { lines: any[]; partner_code: string }) {
   // 默认带入源单仓库到表头：本单未填仓库且带入明细仓库唯一时，用其作为表头仓库
   // （采购订单退货即带入入库行所在仓；多仓时不强设，保留各行自带仓库）
   const whs = [...new Set(incoming.map(l => l.warehouse_code).filter(Boolean))]
-  sourceWarehouse.value = whs.length === 1 ? whs[0] : ''
+  sourceWarehouse.value = whs.length === 1 ? whs[0] : (payload.warehouse_code || '')
   warehouseManuallySelected.value = false
   if (sourceWarehouse.value) form.value.warehouse_code = sourceWarehouse.value
+  // 源单表头税率：本单表头税率为空时带入（FIX-400）
+  if (isEmptyHeaderValue(form.value.tax_rate) && payload.tax_rate !== null && payload.tax_rate !== undefined) {
+    form.value.tax_rate = payload.tax_rate
+    onHeaderTaxChange()
+  }
   // 每行补全仓库（用表单仓库兜底）并追加；去掉当前的空行
   const rows = incoming.map(l => ({ ...l, warehouse_code: l.warehouse_code || form.value.warehouse_code }))
   const kept = lines.value.filter(l => l.item_code)
@@ -1901,7 +2180,17 @@ function viewRelationDoc(id: string) {
 }
 
 const fmt = (v: number) => (v ?? 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+// 小数位（系统参数 → 供应链 → 小数位设置，按单据类型）：明细数量 / 单价 / 金额的显示与录入位数
+const decStore = useScmDecimalsStore()
+void decStore.load()
+const dec = computed(() => decStore.get(form.value.doc_type))
+const qtyCell = (v: any) => (Number(v) ? decStore.qty(v, form.value.doc_type) : '')
+const priceCell = (v: any) => (Number(v) ? decStore.price(v, form.value.doc_type) : '')
+const amtCell = (v: any) => (Number(v) ? decStore.amount(v, form.value.doc_type) : '')
+const amtText = (v: any) => decStore.amount(Number(v) || 0, form.value.doc_type)
 // 单元格数字显示：0/null/空 → 空白（不填 0 / 0.00）；否则原值（useFmt=true 走千分位 2 位金额格式）
+// 提示条数量：0 也要显示成 0（numCell 对 0 返回空串，提示条会出现「原计划 ；已执行 ；」）
+const qtyText = (v: any) => fmt(Number(v) || 0)
 function numCell(v: any, useFmt = false): string {
   if (!Number(v)) return ''
   return useFmt ? fmt(Number(v)) : String(v)
@@ -2063,6 +2352,7 @@ const vFocus = {
 
 // 按「行对象」判定当前编辑单元格（而非行索引），使拆成多张表后仍能正确定位
 function isEditing(row: any, field: string) {
+  if (OUTSOURCE_PRICE_FIELDS.has(field) && outsourcePriceLocked(row)) return false
   return editingCell.value?.row === row && editingCell.value?.field === field
 }
 
@@ -2188,7 +2478,7 @@ function resetForm() {
     warehouse_code: '', partner_code: '', operator: '', remark: '', status: 'draft', bom_id: '', source_doc_id: '', plan_id: '',
   biz_person: '', dept_code: '', payment_type: '', settle_account: '', invoice_type: '', invoice_no: '', invoice_date: '',
   contract_no: '', currency: 'CNY', exchange_rate: 1, discount_rate: null, expect_date: '', credit_days: null,
-  io_category: '', transport_method: '', tax_rate: null, field_values: {},
+  io_category: '', transport_method: '', tax_rate: null, process_mode: '', field_values: {},
   }
   lines.value = []
   paymentSources.value = []
@@ -2203,6 +2493,7 @@ function resetForm() {
   sourceWarehouse.value = ''
   warehouseManuallySelected.value = false
   targetDocs.value = []
+  docStatements.value = []
   loadedDocSnapshot.value = ''
   partnerHeaderDefaults.value = {}
 }
@@ -2269,13 +2560,32 @@ function applyLastDocDefaults(docType: string) {
     const raw = localStorage.getItem(docDefaultsKey(docType))
     if (!raw) return
     const data = JSON.parse(raw)
+    // 下推单明细已带源单仓库时，不再用「上一张单据的仓库」覆盖空表头（否则表头仓与订单不一致，FIX-400）
+    const pushedWithWarehouse = !!sourceDocs.value.length && lines.value.some((row: any) => row.item_code && row.warehouse_code)
     for (const f of DOC_DEFAULT_FIELDS) {
+      if (f === 'warehouse_code' && pushedWithWarehouse) continue
       const cur = form.value[f]
       const isEmpty = cur === undefined || cur === null || cur === ''
       if (isEmpty && data[f] !== undefined && data[f] !== null && data[f] !== '') form.value[f] = data[f]
     }
   } catch { /* 忽略 */ }
 }
+
+// 单号规则含业务字段（往来单位 / 仓库 / 部门 / 业务员）时，表头字段变化后刷新单号预览；保存时以服务端取号为准
+watch(
+  () => [form.value.partner_code, form.value.warehouse_code, form.value.dept_code, (form.value as any).biz_person, form.value.doc_date],
+  async () => {
+    if (!isNew.value || !form.value.doc_type) return
+    try {
+      const f = form.value as any
+      const r = await scmApi.getDocNextNo(f.doc_type, f.doc_date, {
+        partner_code: f.partner_code || undefined, warehouse_code: f.warehouse_code || undefined,
+        dept_code: f.dept_code || undefined, biz_person: f.biz_person || undefined,
+      })
+      if (r.code === 0) form.value.doc_no = r.data.next_no
+    } catch { /* 预览失败不影响保存 */ }
+  },
+)
 
 async function initForm() {
   initedKey = currentDocKey()
@@ -2395,18 +2705,20 @@ async function loadDoc(id: string) {
   if (route.name !== expectedRoute) {
     await router.replace({ name: expectedRoute, params: { id }, query: route.query })
   }
+  docVoucher.value = d.voucher || null
   form.value = {
     doc_type: d.doc_type, doc_no: d.doc_no, doc_date: d.doc_date,
     warehouse_code: d.warehouse_code || '', partner_code: d.partner_code || '',
     operator: d.operator || '', remark: d.remark || '', status: d.status,
     maker: d.maker || '', auditor: d.auditor || '', audited_at: d.audited_at || '',
-    voucher_id: d.voucher_id || '', total_amount: Number(d.total_amount) || 0,
+    voucher_id: d.voucher_id || '', external_voucher: Number(d.external_voucher) || 0, total_amount: Number(d.total_amount) || 0,
     bom_id: d.bom_id || '', source_doc_id: d.source_doc_id || '', plan_id: d.plan_id || '',
     biz_person: d.biz_person || '', dept_code: d.dept_code || '', payment_type: d.payment_type || '',
     settle_account: d.settle_account || '', invoice_type: d.invoice_type || '', invoice_no: d.invoice_no || '',
     invoice_date: d.invoice_date || '', contract_no: d.contract_no || '', currency: d.currency || 'CNY',
     exchange_rate: d.exchange_rate ?? 1, discount_rate: d.discount_rate || 0, expect_date: d.expect_date || '', credit_days: d.credit_days || 0,
     io_category: d.io_category || '', transport_method: d.transport_method || '', tax_rate: Number(d.tax_rate) || 0,
+    process_mode: d.process_mode || '',
     field_values: (d.field_values && typeof d.field_values === 'object') ? d.field_values : {},
   }
   partnerHeaderDefaults.value = {}
@@ -2415,6 +2727,7 @@ async function loadDoc(id: string) {
   // 注意空数组为真值，不能直接用 `d.source_docs || ...` 否则表头来源永不显示。
   sourceDocs.value = (d.source_docs && d.source_docs.length) ? d.source_docs : (d.source_doc ? [d.source_doc] : [])
   targetDocs.value = d.target_docs || []
+  docStatements.value = d.statements || []
   updateTabTitle()
   if (d.bom_id) selectedBom.value = d.bom_id
   if (d.partner_code) {
@@ -2428,8 +2741,10 @@ async function loadDoc(id: string) {
     item_code: l.item_code, item_name: l.item_name || '', spec: l.spec || '',
     warehouse_code: l.warehouse_code || '', qty: l.qty || null, pushed_qty: l.pushed_qty || 0,
     price: l.price || null, amount: l.amount || null, unit_cost: l.unit_cost || null,
-    tax_rate: l.tax_rate || null, tax_amount: l.tax_amount || null, remark: l.remark || '',
-    price_with_tax: l.price_with_tax || null, discount_rate: l.discount_rate || null, batch_no: l.batch_no || '',
+    // 行税率 0% 是明确值，不能当空（原 `|| null` 让 0% 行重新打开后显示成表头税率，FIX-400）
+    tax_rate: l.tax_rate === null || l.tax_rate === undefined || l.tax_rate === '' ? null : Number(l.tax_rate), tax_amount: l.tax_amount || null, remark: l.remark || '',
+    // 历史单据含税列曾默认隐藏，含税单价可能未落库：按 单价 ×（1 + 行税率 / 表头税率）补出显示值
+    price_with_tax: l.price_with_tax || fillPriceWithTax(l, d.tax_rate), discount_rate: l.discount_rate || null, batch_no: l.batch_no || '',
     produce_date: l.produce_date || '', expire_date: l.expire_date || '', bin_no: l.bin_no || '', scrap_rate: l.scrap_rate || null, process_fee: l.process_fee || null,
     supplier_code: l.supplier_code || '', source_type: l.source_type || 'purchase', item_supplier: l.item_supplier || '',
     line_role: l.line_role || null,
@@ -2543,6 +2858,7 @@ async function loadSourceDoc(sourceId: string) {
         return {
           item_code: l.item_code, item_name: l.item_name || '', spec: l.spec || '',
           warehouse_code: l.warehouse_code || form.value.warehouse_code,
+          _defaultWarehouse: l.warehouse_code || form.value.warehouse_code || '',
           qty: remain, price: price || null, amount: Math.round(remain * price * 100) / 100 || null, unit_cost: l.unit_cost || null,
           price_with_tax: Number(l.price_with_tax) || null,
           tax_rate: taxRate, tax_amount: taxAmount, remark: l.remark || '',
@@ -2553,7 +2869,20 @@ async function loadSourceDoc(sourceId: string) {
       })
     // 若源单已全部下推完，至少保留一空行避免空表格
     lines.value = rows.length ? rows : [newLine()]
+    settleSourceHeaderWarehouse()
   }
+}
+
+/**
+ * 下推后锁定表头仓库（FIX-400）：源单表头没填仓库、但明细仓库一致时，用明细仓库作表头；
+ * 并记为「源单仓库」，避免之后删行 / 选物料时 syncDefaultWarehouse 把表头仓库清空。
+ */
+function settleSourceHeaderWarehouse() {
+  if (!form.value.warehouse_code) {
+    const whs = [...new Set(lines.value.map((row: any) => row.warehouse_code).filter(Boolean))]
+    if (whs.length === 1) form.value.warehouse_code = whs[0]
+  }
+  sourceWarehouse.value = form.value.warehouse_code || ''
 }
 
 async function loadSourceDocs(sourceIds: string[]) {
@@ -2606,10 +2935,12 @@ async function loadSourceDocs(sourceIds: string[]) {
   const rows = buildMultiSourceRemainingLines(docs).map(row => ({
     ...row,
     warehouse_code: row.warehouse_code || form.value.warehouse_code,
+    _defaultWarehouse: row.warehouse_code || form.value.warehouse_code || '',
     field_values: row.field_values && typeof row.field_values === 'object' ? { ...row.field_values } : {},
     purchase_order_no: form.value.doc_type === 'PI' ? row.source_doc_no : row.purchase_order_no,
   }))
   lines.value = rows.length ? rows : [newLine()]
+  settleSourceHeaderWarehouse()
   if (!rows.length) ElMessage.warning('选中单据已全部下推，未生成下游明细')
 }
 
@@ -2636,6 +2967,14 @@ function removeAsProduct(row: any) {
 
 const round2 = (v: number) => Math.round(v * 100) / 100
 const round4 = (v: number) => Math.round(v * 10000) / 10000
+// 含税单价兜底：行税率为空时取表头税率；无税率时含税单价即单价
+function fillPriceWithTax(line: any, headerTaxRate: any): number | null {
+  const price = Number(line?.price) || 0
+  if (!price) return null
+  const rowRate = line?.tax_rate
+  const tr = (rowRate === null || rowRate === undefined || rowRate === '') ? (Number(headerTaxRate) || 0) : (Number(rowRate) || 0)
+  return round4(price * (1 + tr / 100))
+}
 // 价税合计 = 不含税金额 + 税额；优先取缓存字段，未初始化时即时计算兜底
 const grossOf = (row: any) => Number(row.gross_amount != null ? row.gross_amount : (Number(row.amount) || 0) + (Number(row.tax_amount) || 0))
 
@@ -2652,6 +2991,7 @@ const summaryRow = computed<Record<string, any>>(() => {
     tax_amount: sum(r => r.tax_amount) || null,
     gross_amount: lines.value.reduce((s, r) => s + grossOf(r), 0) || null,
     process_fee: sum(r => r.process_fee) || null,
+    pushed_qty: Math.round(sum(r => r.pushed_qty) * 1e6) / 1e6,
     price: null, price_with_tax: null, discount_rate: null, scrap_rate: null,
   }
 })
@@ -2668,6 +3008,7 @@ function effTax(row: any): number {
 
 async function onPlanChange(planId: string) {
   planExecutionInfo.value = { planned_qty: 0, executed_qty: 0, max_allowed_qty: 0, overrun_remaining: 0 }
+  planNoMaterial.value = false
   if (!planId) { lines.value = [newLine()]; return }
   const result = await scmApi.getProductionPlan(planId)
   if (result.code !== 0) return
@@ -2704,6 +3045,7 @@ async function onPlanChange(planId: string) {
   if (issue) {
     const suggestion = await scmApi.getIssueSuggestion(planId)
     const sourceRows = suggestion.data?.lines || []
+    planNoMaterial.value = !sourceRows.length
     const plannedQty = sourceRows.reduce((sum: number, row: any) => sum + (Number(row.need) || 0), 0)
     const factor = plannedQty > 0 ? (Number(action?.max_allowed_qty) || plannedQty) / plannedQty : 1
     const mappedRows = sourceRows.map((row: any) => ({
@@ -2747,6 +3089,11 @@ async function onPlanChange(planId: string) {
       overrun_remaining: Number(action?.overrun_remaining) || 0,
     }
     form.value.warehouse_code = plan.fp_warehouse || rows[0]?.warehouse_code || ''
+    // 委外入库表头税率：各成品加工税率一致时带到表头（FIX-400）
+    if (form.value.doc_type === 'WI' && rows.length) {
+      const rates = [...new Set(rows.map((row: any) => Number(row.tax_rate) || 0))]
+      if (rates.length === 1) form.value.tax_rate = rates[0]
+    }
     lines.value = rows.length ? rows : [newLine()]
   }
 }
@@ -2779,6 +3126,10 @@ function applyPartnerHeaderDefaults(partner?: any) {
 // 只算金额/税额（不改单价、含税单价），与后端 calcLine 一致
 function applyAmounts(row: any) {
   const qty = Number(row.qty) || 0
+  if (isAssembly.value && row.line_role === 'product' && asNeedsPartner.value) {
+    asRecalcFeeTax(row)
+    return
+  }
   if (form.value.doc_type === 'WI') {
     const fee = Number(row.process_fee) || 0
     const tr = effTax(row)
@@ -2805,13 +3156,13 @@ function applyAmounts(row: any) {
 // 编辑 数量/单价/折扣：同步含税单价 + 金额
 function recalcRow(row: any) {
   const tr = effTax(row)
-  if (tr > 0) row.price_with_tax = round4((Number(row.price) || 0) * (1 + tr / 100))
+  row.price_with_tax = round4((Number(row.price) || 0) * (1 + tr / 100)) || null
   applyAmounts(row)
 }
 // 编辑 税率：重算含税单价与税额
 function recalcTax(row: any) {
   const tr = effTax(row)
-  if (tr > 0) row.price_with_tax = round4((Number(row.price) || 0) * (1 + tr / 100))
+  row.price_with_tax = round4((Number(row.price) || 0) * (1 + tr / 100)) || null
   applyAmounts(row)
 }
 // 编辑 含税单价：反算不含税单价
@@ -2828,7 +3179,8 @@ function onHeaderTaxChange() {
 // 编辑 价税合计：按 数量/税率/折扣 倒挤 不含税单价、金额、税额、含税单价
 function recalcFromGross(row: any) {
   const qty = Number(row.qty) || 0
-  const tr = Number(row.tax_rate) || 0
+  // 行税率为空时取表头税率（与 effTax 一致），否则表头 13% 的单据反算会按 0 税率算
+  const tr = effTax(row)
   const dr = Number(row.discount_rate) || 0
   const factor = dr > 0 ? dr / 10 : 1
   const gross = Number(row.gross_amount) || 0
@@ -2869,18 +3221,102 @@ function onItemPick(row: any, item: any) {
 function queryPartners(query: string, cb: (s: any[]) => void) {
   const q = query.trim().toLowerCase()
   cb(allPartners.value
-    // 销售类只显示客户、采购类只显示供应商（含双向/未分类）；过滤停用
-    .filter(p => partnerInScope(p) && p.enabled !== 0 && (!q || p.code.toLowerCase().includes(q) || (p.name || '').toLowerCase().includes(q)))
+    // 销售类只显示客户、采购类只显示供应商（含双向/未分类）；过滤停用；参数开启时过滤未审核
+    .filter(p => partnerInScope(p) && p.enabled !== 0 && (!systemParams.masterAuditRequired || p.audit_status === 'audited') && (!q || p.code.toLowerCase().includes(q) || (p.name || '').toLowerCase().includes(q)))
     .slice(0, 20)
     .map(p => ({ ...p, value: p.id, label: `${p.code} ${p.name}`, code: p.code, name: p.name }))
   )
 }
 
+// ── 预收 / 预付冲抵：往来单位尚有未核销的收付款 / 退货时，提示并一键核销到源单 ──
+const partnerAdvanceItems = ref<Array<{ id: string; doc_no: string; doc_date: string; currency: string; open_amount: number }>>([])
+const advanceOffsetting = ref(false)
+const partnerAdvanceTotal = computed(() => round2(partnerAdvanceItems.value.reduce((s, r) => s + (Number(r.open_amount) || 0), 0)))
+const showAdvanceOffset = computed(() => isPaymentDoc.value && !isAdvancePaymentMode.value && !isView.value
+  && !!form.value.partner_code && partnerAdvanceTotal.value > 0.005 && paymentSources.value.some(r => !r.invalid && Number(r.open_amount) > 0.005))
+async function loadPartnerAdvance() {
+  partnerAdvanceItems.value = []
+  if (!isPaymentDoc.value || isAdvancePaymentMode.value || isView.value || !form.value.partner_code) return
+  try {
+    const r = await scmApi.getArapOpenItems({ partner_code: form.value.partner_code, side: isReceivePayment.value ? 'ar' : 'ap' })
+    if (r.code !== 0) return
+    // 编辑已保存的收付款单时，排除本单自己的收付款行（草稿不入往来台账，此处只是防御）
+    partnerAdvanceItems.value = (r.data.out_items || [])
+      .filter((i: any) => i.doc_no !== form.value.doc_no)
+      .map((i: any) => ({ id: i.id, doc_no: i.doc_no, doc_date: i.doc_date, currency: i.currency || '', open_amount: Number(i.open_amount) || 0 }))
+  } catch { /* 预收提示失败不影响收付款录入 */ }
+}
+async function offsetWithAdvance() {
+  // 源单已按本单币别过滤；预收只取同币别（本位币 CNY / RMB / 空视为同一种），核销须同币别
+  const curKey = (c?: string | null) => (!c || ['CNY', 'RMB'].includes(String(c).toUpperCase())) ? 'BASE' : String(c).toUpperCase()
+  const sameCur = (c: string) => curKey(c) === curKey(form.value.currency)
+  const targets = (paymentSelectedRows.value.length ? paymentSelectedRows.value : paymentSources.value)
+    .filter(r => !r.invalid && Number(r.open_amount) > 0.005)
+  const outs = partnerAdvanceItems.value.filter(o => o.open_amount > 0.005 && sameCur(o.currency))
+  // 贪心配对：按源单顺序（到期日 / 日期）逐张用最早的预收冲抵
+  const matches: Array<{ in_log_id: string; out_log_id: string; amount: number }> = []
+  const left = outs.map(o => ({ id: o.id, left: o.open_amount }))
+  let j = 0
+  for (const t of targets) {
+    let need = round2(Number(t.open_amount) || 0)
+    while (need > 0.005 && j < left.length) {
+      const m = round2(Math.min(need, left[j].left))
+      if (m > 0.005) { matches.push({ in_log_id: t.arap_source_log_id, out_log_id: left[j].id, amount: m }); need = round2(need - m); left[j].left = round2(left[j].left - m) }
+      if (left[j].left <= 0.005) j++
+    }
+  }
+  const total = round2(matches.reduce((s, m) => s + m.amount, 0))
+  if (!matches.length) return ElMessage.warning('没有可冲抵的同币别源单')
+  const docNos = [...new Set(matches.map(m => targets.find(t => t.arap_source_log_id === m.in_log_id)?.source_doc_no).filter(Boolean))]
+  try {
+    await ElMessageBox.confirm(
+      `将用${isReceivePayment.value ? '预收款' : '预付款'}冲抵 ${docNos.join('、')} 共 ${fmt(total)}，生成核销单。冲抵后源单只需按剩余金额${isReceivePayment.value ? '收款' : '付款'}。继续？`,
+      '预收预付冲抵', { type: 'warning' })
+  } catch { return }
+  advanceOffsetting.value = true
+  try {
+    const r = await scmApi.verifyArap({ partner_code: form.value.partner_code, matches })
+    ElMessage.success(`已冲抵 ${fmt(total)}，核销单 ${r.data.verify_no}`)
+    // 已被冲平的源单从列表移除；部分冲抵的源单，已填的本次金额超出新余额时压到新余额
+    const offsetByLog = new Map<string, number>()
+    for (const m of matches) offsetByLog.set(m.in_log_id, round2((offsetByLog.get(m.in_log_id) || 0) + m.amount))
+    const settled = new Set(targets.filter(t => (offsetByLog.get(t.arap_source_log_id) || 0) >= round2(Number(t.open_amount) || 0) - 0.005).map(t => t.arap_source_log_id))
+    paymentSources.value = paymentSources.value.filter(row => !settled.has(row.arap_source_log_id))
+    await loadPaymentSources(true)
+    for (const row of paymentSources.value) {
+      if (!offsetByLog.has(row.arap_source_log_id) || !row.selected) continue
+      const open = Number(row.open_amount) || 0
+      if (Number(row.current_amount) > open) row.current_amount = open
+      row.invalid = false
+    }
+  } catch (e: any) {
+    // 请求拦截器已提示失败原因
+    console.warn('预收冲抵失败：', e?.response?.data?.message || e?.message || e)
+  } finally { advanceOffsetting.value = false }
+}
+
+async function loadPaymentOpenReturns() {
+  paymentOpenReturns.value = []
+  if (!isPaymentDoc.value || isAdvancePaymentMode.value || isView.value || !form.value.partner_code) return
+  try {
+    const r = await scmApi.getPaymentOpenReturns({
+      partner_code: form.value.partner_code,
+      payment_doc_type: form.value.doc_type as 'RCV' | 'PAY',
+      currency: form.value.currency || undefined,
+    })
+    if (r.code === 0) paymentOpenReturns.value = r.data || []
+  } catch { /* 退货列示失败不影响收付款录入 */ }
+}
+
 async function loadPaymentSources(preserveSelected = false) {
   if (!isPaymentDoc.value || isAdvancePaymentMode.value || !form.value.partner_code) {
     paymentSources.value = []
+    paymentOpenReturns.value = []
+    partnerAdvanceItems.value = []
     return
   }
+  void loadPartnerAdvance()
+  void loadPaymentOpenReturns()
   const saved = preserveSelected
     ? new Map(paymentSources.value.filter(r => r.selected).map(r => [r.arap_source_log_id, r]))
     : new Map<string, PaymentSourceRow>()
@@ -3081,6 +3517,80 @@ function pickBom(bomId: string) {
   bomDlgVisible.value = false
 }
 
+// ── 凭证科目挂了辅助核算 → 单据往来单位 / 部门 / 业务员必填（保存只提醒，审核时后端拦截） ──
+const auxRequired = ref<ScmAuxRequiredField[]>([])
+const auxReqSources = computed(() => new Set(auxRequired.value.map(f => f.source)))
+/** 审核被拦截后标红的字段 */
+const auxErrorSources = ref<Set<string>>(new Set())
+function auxSourceValue(source: string): string {
+  if (source === 'partner') return String(form.value.partner_code || '').trim()
+  if (source === 'dept') return String(form.value.dept_code || '').trim()
+  return String(form.value.biz_person || '').trim()
+}
+const auxMissing = computed(() => auxRequired.value.filter(f => !auxSourceValue(f.source)))
+function auxFieldError(source: string): string {
+  if (!auxErrorSources.value.has(source) || auxSourceValue(source)) return ''
+  const f = auxRequired.value.find(x => x.source === source)
+  return f ? `凭证科目 ${f.accounts[0] || ''} 要求填写${f.label}` : '请填写'
+}
+function auxRequirementLines(): Array<Record<string, any>> {
+  if (isPaymentDoc.value) return [{ qty: 1, price: 1, amount: 1 }]
+  return lines.value
+    .filter(l => l.item_code && Number(l.qty) > 0)
+    .map(l => ({ item_code: l.item_code, qty: Number(l.qty), price: Number(l.price) || 0, amount: Number(l.amount) || 0,
+      tax_amount: Number(l.tax_amount) || 0, unit_cost: l.unit_cost ?? null, line_role: l.line_role || null }))
+}
+let auxReqTimer: ReturnType<typeof setTimeout> | null = null
+let auxReqSeq = 0
+async function refreshAuxRequirements() {
+  const seq = ++auxReqSeq
+  if (!form.value.doc_type || form.value.status === 'audited') { auxRequired.value = []; return }
+  try {
+    const r = await scmApi.auxRequirements({
+      doc_type: form.value.doc_type, partner_code: form.value.partner_code || '', dept_code: form.value.dept_code || '',
+      biz_person: form.value.biz_person || '', settle_account: form.value.settle_account || '',
+      source_doc_id: initSourceDocIds.value.length === 1 ? initSourceDocIds.value[0] : (form.value as any).source_doc_id || null,
+      bom_id: selectedBom.value || null, lines: auxRequirementLines(),
+    })
+    if (seq === auxReqSeq) auxRequired.value = r.data?.required || []
+  } catch { /* 提醒接口失败不影响录入 */ }
+}
+function scheduleAuxRequirements() {
+  if (auxReqTimer) clearTimeout(auxReqTimer)
+  auxReqTimer = setTimeout(refreshAuxRequirements, 400)
+}
+watch(
+  [() => form.value.doc_type, () => form.value.partner_code, () => form.value.settle_account, () => form.value.status,
+    () => lines.value.map(l => `${l.item_code || ''}:${Number(l.qty) > 0 ? 1 : 0}:${l.line_role || ''}`).join('|')],
+  scheduleAuxRequirements,
+  { immediate: true },
+)
+/** 审核被 SCM_AUX_REQUIRED 拦截：标红对应字段 */
+function markAuxRequiredError(e: any): boolean {
+  const body = e?.response?.data
+  if (body?.reason !== 'SCM_AUX_REQUIRED') return false
+  const fields: ScmAuxRequiredField[] = Array.isArray(body?.data?.fields) ? body.data.fields : []
+  for (const f of fields) if (!auxRequired.value.some(x => x.source === f.source)) auxRequired.value = [...auxRequired.value, f]
+  auxErrorSources.value = new Set(fields.map(f => f.source))
+  return true
+}
+/** 保存前提醒：缺必填辅助字段时确认，仍可保存 */
+async function confirmAuxMissingBeforeSave(thenAudit: boolean): Promise<boolean> {
+  await refreshAuxRequirements()
+  const missing = auxMissing.value
+  if (!missing.length) return true
+  const tip = missing.map(f => `• ${f.label}：科目 ${f.accounts.slice(0, 3).join('、')} 挂了「${f.categoryNames.join('、')}」辅助核算`).join('\n')
+  auxErrorSources.value = new Set(missing.map(f => f.source))
+  try {
+    await ElMessageBox.confirm(
+      `以下字段未填写，${thenAudit ? '本次审核会被拦截' : '审核时会被拦截'}（凭证辅助核算无法填写）：\n${tip}\n\n仍要保存吗？`,
+      '关键字段未填写',
+      { confirmButtonText: '仍要保存', cancelButtonText: '返回填写', type: 'warning' },
+    )
+    return true
+  } catch { return false }
+}
+
 async function handleSave(thenAudit = false) {
   if (!form.value.doc_type || !form.value.doc_date) return ElMessage.warning('类型和日期不能为空')
   if (isPlanControlledDoc.value && !form.value.plan_id) return ElMessage.warning('请先选择已审核来源工单')
@@ -3100,7 +3610,7 @@ async function handleSave(thenAudit = false) {
   if (isTransfer.value && !form.value.warehouse_code) return ElMessage.warning('调拨单须指定调出仓')
   // 销售发货单：审核要扣库存、挂应收，故仓库与客户必填
   if (isShipment.value && !form.value.warehouse_code) return ElMessage.warning('销售出库单必须指定仓库')
-  if (isCustomerDoc.value && !form.value.partner_code) return ElMessage.warning(`${DOC_TITLE[form.value.doc_type] || '当前单据'}必须指定客户（往来单位）`)
+  if (partnerRequired.value && !form.value.partner_code) return ElMessage.warning(`${DOC_TITLE[form.value.doc_type] || '当前单据'}必须指定${isCustomerDoc.value ? '客户' : '供应商'}（往来单位）`)
   const paymentLines: Array<Record<string, any>> = isPaymentDoc.value
     ? [
         ...paymentSelectedRows.value.map(l => ({
@@ -3153,6 +3663,8 @@ async function handleSave(thenAudit = false) {
       if (miss) return ElMessage.warning(`成品「${miss.item_code}」缺少对应子件行`)
     }
   }
+  if (asNeedsPartner.value && !form.value.partner_code)
+    return ElMessage.warning(`${form.value.process_mode === 'contract' ? '受托加工请选择客户' : '委托加工请选择加工厂（供应商）'}`)
   if (isTransfer.value && cleanLines.some(l => !l.warehouse_code)) return ElMessage.warning('调拨单每行须指定调入仓')
   // 采购退货扣减库存：每行须有可解析仓库（行仓库 || 表头仓库），否则后端只会报含糊的「库存不足」
   if (isPurchaseReturn.value && cleanLines.some(l => !l.warehouse_code)) return ElMessage.warning('采购退货须指定仓库（表头或明细行），否则无法扣减库存')
@@ -3171,6 +3683,7 @@ async function handleSave(thenAudit = false) {
       } catch { return }
     }
   }
+  if (!(await confirmAuxMissingBeforeSave(thenAudit))) return
   saving.value = true
   try {
     const payload: Record<string, any> = { ...form.value, lines: cleanLines, total_qty: totalQty.value, total_amount: totalAmount.value, total_tax: totalTax.value }
@@ -3202,12 +3715,21 @@ async function handleSave(thenAudit = false) {
         ElMessage.success('已保存并审核')
         await router.push({ name: 'ScmDocView', params: { id: savedId }, query: route.query })
       } catch (e: any) {
-        ElMessage.warning('已保存，但审核失败：' + (e?.response?.data?.message || e?.message || ''))
+        markAuxRequiredError(e)
+        ElMessage.warning('已保存为草稿，但审核失败：' + (e?.response?.data?.message || e?.message || ''))
+        // 新增单据已落库：切到该草稿的编辑页。否则仍停在「新增」路由（editId 为空），
+        // 再点保存会另建一张草稿，草稿占用计划数，后续报「已完工/报废/占用」（客户反馈）
+        if (!editId.value) await router.push({ name: 'ScmDocEdit', params: { id: savedId }, query: route.query })
       }
     } else {
       ElMessage.success('保存成功')
       goBack()
     }
+  } catch (e: any) {
+    // 保存被后端拒绝（如超计划完工）：请求拦截器已弹出原因，这里吞掉异常，保留用户已录入的内容。
+    // 不吞的话异常冒泡到 onErrorCaptured，整张单据被替换成「表单渲染遇到错误」，录入全部丢失。
+    markAuxRequiredError(e)
+    console.warn('单据保存失败：', e?.response?.data?.message || e?.message || e)
   } finally {
     saving.value = false
   }
@@ -3234,6 +3756,7 @@ async function handleAuditDoc() {
     ElMessage.success('已审核')
     await loadDoc(editId.value)
   } catch (e: any) {
+    markAuxRequiredError(e)
     ElMessage.error(e?.response?.data?.message || e?.message || '审核失败')
   } finally { auditing.value = false }
 }
@@ -3242,8 +3765,8 @@ async function handleUnauditDoc() {
   try { await ElMessageBox.confirm('确认反审核（将撤销库存移动）？', '反审核确认', { type: 'warning' }) } catch { return }
   auditing.value = true
   try {
-    await scmApi.unauditDoc(editId.value, { skipErrorToast: true })
-    ElMessage.success('已反审核')
+    const r: any = await scmApi.unauditDoc(editId.value, { skipErrorToast: true })
+    ElMessage.success(r?.data?.notice ? `已反审核，${r.data.notice}` : '已反审核')
     await loadDoc(editId.value)
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.message || e?.message || '反审核失败（可能已被下游单据引用）')
@@ -3252,13 +3775,12 @@ async function handleUnauditDoc() {
 
 // 与列表操作列一致：生成凭证 / 生成资产 / 删除 / 查看上下游
 async function handleGenVoucher() {
-  if (!editId.value) return
+  const id = editId.value
+  if (!id) return
   try { await ElMessageBox.confirm('为该单据生成记账凭证？', '提示', { type: 'info' }) } catch { return }
-  try {
-    const r = await scmApi.genVoucher(editId.value)
-    if (r.code === 0) ElMessage.success(`已生成凭证 ${r.data?.voucher_no || ''}`)
-    await loadDoc(editId.value)
-  } catch (e: any) { ElMessage.error(e?.response?.data?.message || e?.message || '生成凭证失败') }
+  // 辅助核算对应不上时跳转处理页（提示在 genScmVoucher 内完成）；处理完重试成功后刷新本单据
+  await genScmVoucher(id, () => loadDoc(id))
+  await loadDoc(id)
 }
 async function handleDeleteDoc() {
   if (!editId.value) return
@@ -3313,10 +3835,14 @@ function goCost() {
   /* 独占一行并抬高层级：按钮多时换行而不是压到下方表格表头上，避免与「#/编号」表头重叠糊成一团 */
   position: relative; z-index: 2;
 }
-.doc-lines-summary { margin-left: auto; font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }
+.doc-lines-summary-col { display: flex; align-items: center; justify-content: flex-end; min-height: 32px; margin-bottom: 8px; }
+.doc-lines-summary { margin-left: auto; text-align: right; font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }
 .doc-cost-hint { margin-left: 12px; color: var(--el-color-warning); font-size: 12px; }
 .payment-source-panel { margin-top: 2px; }
 .payment-source-tip { margin-bottom: 10px; }
+.payment-return-block { margin-top: 10px; }
+.payment-return-block__title { font-size: 13px; font-weight: 600; margin-bottom: 6px; color: var(--el-text-color-primary); }
+.payment-return-block__hint { margin-left: 8px; font-weight: 400; font-size: 12px; color: var(--el-text-color-secondary); }
 .payment-advance-row {
   display: grid; grid-template-columns: 110px minmax(260px, 1fr) 180px minmax(220px, 1fr);
   align-items: center; gap: 12px; margin-top: 12px; padding: 12px 14px;
@@ -3346,14 +3872,13 @@ function goCost() {
 .as-group__title { font-weight: 600; font-size: var(--cw-text-base); }
 .as-group__title.is-product { color: var(--el-color-success); }
 .as-group__title.is-component { color: var(--el-color-info); }
+.as-fee-hint { margin-left: 2px; font-size: 11px; font-weight: normal; color: var(--el-text-color-secondary); }
 .as-group__count { font-size: 12px; color: var(--el-text-color-secondary); }
 .as-group__hint { font-size: 12px; color: var(--el-text-color-placeholder); }
 .as-empty { text-align: center; color: var(--el-text-color-placeholder); font-size: var(--cw-text-base); padding: 12px 0; border: 1px dashed var(--el-border-color-lighter); border-top: none; }
 .mat-dlg-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .mat-dlg-hint { font-size: 12px; color: var(--el-text-color-secondary); }
 /* 合计行（表体最后一行）：加粗 + 浅底，水平滚动条落在其下方 */
-.compact-data-table :deep(.doc-line-summary) { font-weight: 600; }
-.compact-data-table :deep(.doc-line-summary td.el-table__cell) { background: var(--el-fill-color-light); }
 .compact-data-table :deep(.doc-line-summary .el-table__expand-icon) { visibility: hidden; }
 .compact-data-table :deep(.doc-cost-expandable > td.el-table__cell) { cursor: pointer; }
 .cost-source-panel { padding: 10px 14px 14px 56px; background: var(--el-fill-color-lighter); }
@@ -3384,6 +3909,8 @@ function goCost() {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.editable-cell.is-locked { cursor: not-allowed; color: var(--el-text-color-secondary); }
+.editable-cell.price-diff { background: var(--el-color-warning-light-9); color: var(--el-color-warning-dark-2); }
 .editable-cell:hover {
   background-color: var(--el-fill-color-light);
 }
@@ -3423,5 +3950,6 @@ function goCost() {
 }
 .text-success { color: var(--el-color-success); font-weight: 600; }
 .text-warning { color: var(--el-color-warning); font-weight: 600; }
+.text-danger { color: var(--el-color-danger); }
 .text-muted { color: var(--el-text-color-placeholder); }
 </style>

@@ -19,7 +19,7 @@
       </el-select>
       <el-checkbox v-model="onlyWip" border>只看有在制</el-checkbox>
       <el-button type="primary" :loading="loading" @click="query">查询</el-button>
-      <el-button type="success" plain :loading="exporting" @click="exportExcel">导出Excel</el-button>
+      <el-button type="success" plain :loading="exporting" @click="exportExcel">另存</el-button>
     </div>
 
     <div class="cards">

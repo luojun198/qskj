@@ -25,8 +25,9 @@ describe('voucher hiprint fields', () => {
   it('默认面板元素坐标使用 pt 而不是 CSS px', () => {
     const panel = buildDefaultVoucherPanel().panels[0]
     const title = (panel.printElements as any[]).find(el => el.options?.field === 'doc_title')
-    expect(title.options.left).toBe(mmToPt(12))
-    expect(title.options.top).toBe(mmToPt(8))
+    // 标题宽 64mm、在 220mm 纸上水平居中
+    expect(title.options.left).toBe(mmToPt(110 - 32))
+    expect(title.options.top).toBe(mmToPt(12))
     expect(title.options.testData).toBe('记 账 凭 证')
     expect(panel.paperHeader).toBe(mmToPt(8))
   })

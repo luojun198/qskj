@@ -229,8 +229,8 @@ a {
   --cw-shadow-red: 0 4px 16px rgba(18, 199, 174, 0.22);
 
   /* 字体系统 - 现代中国风 */
-  --cw-font-heading: 'Noto Sans SC', 'Source Han Sans CN', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  --cw-font-body: 'Noto Sans SC', 'Source Han Sans CN', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --cw-font-heading: 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans SC', 'Source Han Sans CN', sans-serif;
+  --cw-font-body: 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans SC', 'Source Han Sans CN', sans-serif;
   --cw-font-number: 'DIN Alternate', 'DIN', 'Helvetica Neue', 'Arial', sans-serif;
   --cw-font-accent: 'FZShuSong-Z01S', 'STSong', 'SimSun', serif;
 
@@ -252,7 +252,7 @@ a {
   --el-font-size-extra-large: 16px;
 
   /* 列表表头与表体同字号，字重略重即可，不要 700 黑体抢导航 */
-  --cw-table-header-font-family: 'Noto Sans SC', 'Source Han Sans CN', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --cw-table-header-font-family: 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans SC', 'Source Han Sans CN', sans-serif;
   --cw-table-header-font-size: 12px;
   --cw-table-header-font-weight: 600;
 
@@ -408,10 +408,23 @@ a {
   transform: scale(0.96);
 }
 
+/* ========== 虚拟表格（el-table-v2 / 虚拟列表）悬停发虚 ==========
+   Element Plus 给滚动窗口内联了 will-change: transform（独立合成层，文字失去亚像素抗锯齿），
+   且滚动条平时 opacity:0、鼠标进入表格才显示。悬停时合成层重排，普通 DPI 屏上整块文字会发虚，
+   移开又恢复清晰。去掉 will-change，滚动条常显、不做显隐，悬停不再触发合成层变化。 */
+.el-vl__window {
+  will-change: auto !important;
+}
+
+.el-table-v2__main .el-virtual-scrollbar,
+.el-vl__wrapper .el-virtual-scrollbar {
+  opacity: 1 !important;
+  transition: none !important;
+}
+
 /* ========== 表格选中行样式统一 ========== */
 .el-table__body tr.current-row > td.el-table__cell:not(.el-table-fixed-column--left):not(.el-table-fixed-column--right) {
   background-color: rgba(18, 199, 174, 0.08) !important;
-  font-weight: 500;
 }
 
 .el-table__body tr.current-row:hover > td.el-table__cell:not(.el-table-fixed-column--left):not(.el-table-fixed-column--right) {

@@ -10,6 +10,7 @@
         <span class="pc-header__meta" v-if="plan">工单 <b>{{ plan.code }}</b>（{{ plan.status === 'released' ? '已审核' : plan.status }}）</span>
       </div>
       <div class="pc-header__right">
+        <SaveAsButton doc title="工单变更单" />
         <template v-if="!readonly">
           <el-button size="small" @click="preview" :loading="previewing">预览差异</el-button>
           <el-button type="primary" size="small" :loading="saving" @click="save(false)">保存草稿</el-button>
@@ -28,7 +29,7 @@
 
       <el-form label-width="90px" size="small" class="pc-form" :disabled="readonly">
         <div class="pc-form__row">
-          <el-form-item label="变更日期"><el-date-picker v-model="form.change_date" type="date" value-format="YYYY-MM-DD" style="width:150px" :clearable="false" /></el-form-item>
+          <el-form-item label="变更日期"><el-date-picker v-model="form.change_date" type="date" value-format="YYYY-MM-DD" style="width:150px" :clearable="false" :disabled-date="disabledBeforeGlStart" /></el-form-item>
           <el-form-item label="变更原因" class="grow"><el-input v-model="form.reason" placeholder="如：客户追加 20 件 / 改用替代料 / 交期顺延" /></el-form-item>
         </div>
         <div class="pc-form__row">
@@ -43,12 +44,12 @@
 
       <section class="pc-section">
         <div class="pc-section__hd"><h3>成品</h3><el-button v-if="!readonly" size="small" @click="addProduct">添加成品</el-button></div>
-        <el-table :data="products" size="small" border highlight-current-row @current-change="(row: any) => currentProduct = row">
+        <el-table v-col-width="'scm_PlanChangeForm_1'" :data="products" size="small" border highlight-current-row @current-change="(row: any) => currentProduct = row">
           <el-table-column type="index" width="44" align="center" />
           <el-table-column label="成品" min-width="220">
             <template #default="{ row }">
               <template v-if="row.id || readonly">{{ row.item_code }} {{ row.item_name || '' }}</template>
-              <ItemPicker v-else v-model="row.item_code" placeholder="选择成品" @pick="(it: any) => onPickProduct(it, row)" />
+              <ItemPicker v-else v-model="row.item_code" placeholder="选择成品" :default-source="isOutsource ? 'outsource' : 'self'" @pick="(it: any) => onPickProduct(it, row)" />
             </template>
           </el-table-column>
           <el-table-column label="原计划数" width="95" align="right"><template #default="{ row }">{{ row._before_qty != null ? num(row._before_qty) : '新增' }}</template></el-table-column>
@@ -59,6 +60,14 @@
           <el-table-column label="成品仓" width="150">
             <template #default="{ row }"><el-select v-model="row.fp_warehouse" clearable size="small" :disabled="readonly"><el-option v-for="w in warehouses" :key="w.code" :label="w.name || w.code" :value="w.code" /></el-select></template>
           </el-table-column>
+          <template v-if="isOutsource">
+            <el-table-column label="税前加工单价" width="120" align="right">
+              <template #default="{ row }"><el-input-number v-model="row.process_fee" :min="0" :precision="4" :controls="false" size="small" style="width:100%" :disabled="readonly" /></template>
+            </el-table-column>
+            <el-table-column label="加工税率%" width="95" align="right">
+              <template #default="{ row }"><el-input-number v-model="row.process_tax_rate" :min="0" :max="100" :precision="2" :controls="false" size="small" style="width:100%" :disabled="readonly" /></template>
+            </el-table-column>
+          </template>
           <el-table-column label="用料" width="80" align="right"><template #default="{ row }">{{ row.lines.filter((l: any) => l.item_code).length }} 项</template></el-table-column>
           <el-table-column v-if="!readonly" label="操作" width="70" align="center">
             <template #default="{ row, $index }"><el-button link type="danger" size="small" :disabled="!canRemove(row)" :title="canRemove(row) ? '' : '有完工/报废/报工的成品不能删除'" @click="products.splice($index, 1)">删除</el-button></template>
@@ -71,7 +80,7 @@
           <h3>用料明细 — {{ currentProduct.item_code }}（计划 {{ num(currentProduct.plan_qty) }}）</h3>
           <el-button v-if="!readonly" size="small" @click="currentProduct.lines.push(newLine())">添加用料</el-button>
         </div>
-        <el-table :data="currentProduct.lines" size="small" border>
+        <el-table v-col-width="'scm_PlanChangeForm_2'" :data="currentProduct.lines" size="small" border>
           <el-table-column type="index" width="44" align="center" />
           <el-table-column label="物料" min-width="220">
             <template #default="{ row }">
@@ -91,11 +100,43 @@
       <section class="pc-section" v-if="diff.length || change">
         <div class="pc-section__hd"><h3>变更内容{{ change?.status === 'audited' ? '（已生效）' : '' }}</h3><span>{{ diff.length }} 项</span></div>
         <el-empty v-if="!diff.length" description="与当前工单一致，无变更" :image-size="50" />
-        <el-table v-else :data="diff" size="small" border>
+        <el-table v-col-width="'scm_PlanChangeForm_3'" v-else :data="diff" size="small" border>
           <el-table-column label="类别" width="90"><template #default="{ row }">{{ ({ head: '工单', product: '成品', line: '用料' } as any)[row.kind] }}</template></el-table-column>
           <el-table-column label="项目" min-width="200"><template #default="{ row }">{{ row.label }}{{ row.product ? ' · ' + row.product : '' }}{{ row.item ? ' · ' + row.item : '' }}</template></el-table-column>
           <el-table-column label="变更前" min-width="140"><template #default="{ row }">{{ row.before ?? '-' }}</template></el-table-column>
           <el-table-column label="变更后" min-width="140"><template #default="{ row }"><b>{{ row.after ?? '-' }}</b></template></el-table-column>
+        </el-table>
+      </section>
+
+      <!-- 追加物料需求：变更加大用量后，按增量生成缺料单，再走缺料单下推采购 / 委外 / 生产（客户反馈） -->
+      <section class="pc-section" v-if="change?.status === 'audited' && (increaseRows.length || shortageDoc)">
+        <div class="pc-section__hd">
+          <h3>追加物料需求</h3>
+          <span v-if="shortageDoc" class="pc-shortage">已生成缺料单
+            <el-link type="primary" :underline="false" @click="openShortage">{{ shortageDoc.doc_no }}</el-link>
+            <el-button size="small" type="primary" @click="openShortagePush">下推采购 / 委外 / 生产</el-button>
+          </span>
+          <el-button v-else size="small" type="primary" :loading="genShortaging" :disabled="!increaseRows.some(r => Number(r.qty) > 0)" @click="genShortage">生成追加缺料单</el-button>
+        </div>
+        <div class="pc-hint">增加 = 变更前后「计划总需（计划数 × 单位用量 ×（1+损耗率））」之差；可用库存 = 现有库存 − 其他单据占用 − 本计划原未发用量（变更前总需 − 已发料）；建议追加 = 增加 − 可用库存。本次追加默认取建议值，可手工调整，0 表示不追加。缺料单生成后点「下推」生成采购单 / 委外 / 生产计划。</div>
+        <el-table v-col-width="'scm_PlanChangeForm_4'" :data="increaseRows" size="small" border>
+          <el-table-column label="物料" min-width="200" show-overflow-tooltip><template #default="{ row }">{{ row.item_code }} {{ row.item_name }}</template></el-table-column>
+          <el-table-column label="规格" prop="spec" width="110" show-overflow-tooltip />
+          <el-table-column label="变更前总需" width="110" align="right"><template #default="{ row }">{{ row.before_need }}</template></el-table-column>
+          <el-table-column label="变更后总需" width="110" align="right"><template #default="{ row }">{{ row.after_need }}</template></el-table-column>
+          <el-table-column label="增加" width="90" align="right"><template #default="{ row }"><b>{{ row.increase }}</b></template></el-table-column>
+          <el-table-column label="已发料" width="90" align="right"><template #default="{ row }">{{ num(row.issued_qty) }}</template></el-table-column>
+          <el-table-column label="原未发" width="90" align="right"><template #default="{ row }">{{ num(row.open_need) }}</template></el-table-column>
+          <el-table-column label="现有库存" width="100" align="right"><template #default="{ row }">{{ num(row.stock_qty) }}</template></el-table-column>
+          <el-table-column label="其他占用" width="90" align="right"><template #default="{ row }">{{ num(row.other_reserved) }}</template></el-table-column>
+          <el-table-column label="可用库存" width="90" align="right"><template #default="{ row }">{{ num(row.free_stock) }}</template></el-table-column>
+          <el-table-column label="建议追加" width="95" align="right"><template #default="{ row }"><b>{{ num(row.suggest_qty) }}</b></template></el-table-column>
+          <el-table-column label="本次追加" width="130" align="right">
+            <template #default="{ row }">
+              <el-input-number v-if="!shortageDoc" v-model="row.qty" :min="0" :precision="4" :controls="false" size="small" style="width:110px" />
+              <span v-else>{{ row.qty }}</span>
+            </template>
+          </el-table-column>
         </el-table>
       </section>
     </div>
@@ -105,11 +146,13 @@
 <script setup lang="ts">
 import { todayStr } from '@/utils/format'
 import { computed, defineAsyncComponent, onMounted, ref } from 'vue'
+import { useGlStartDate } from '@/composables/useGlStartDate'
+const { disabledBeforeGlStart } = useGlStartDate()
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft } from '@element-plus/icons-vue'
 import { scmApi } from '@/api/scm'
-import { scmProductionPlanOrderRoute } from '@/utils/scmDocNavigation'
+import { scmDocumentRoute, scmProductionPlanOrderRoute } from '@/utils/scmDocNavigation'
 
 const ItemPicker = defineAsyncComponent(() => import('@/components/scm/ItemPicker.vue'))
 const route = useRoute(); const router = useRouter()
@@ -127,6 +170,7 @@ const currentProduct = ref<any>(null)
 const diff = ref<any[]>([])
 const readonly = computed(() => change.value?.status === 'audited' || (change.value && change.value.status === 'draft' && viewMode.value))
 const viewMode = ref(false)
+const isOutsource = computed(() => plan.value?.plan_type === 'outsource')
 const num = (v: any) => { const n = Number(v) || 0; return Number.isInteger(n) ? String(n) : n.toFixed(4).replace(/\.?0+$/, '') }
 const newLine = () => ({ item_code: '', item_name: '', qty: 1, scrap_rate: 0, unit: '', warehouse_code: '', remark: '' })
 const minQty = (row: any) => Math.max(0.001, (Number(row.finished_qty) || 0) + (Number(row.scrap_qty) || 0))
@@ -134,7 +178,7 @@ const canRemove = (row: any) => !row.id || (!(Number(row.finished_qty) > 0) && !
 const issuedOf = (code: string) => Number(issued.value[code]) || 0
 const totalNeed = (code: string) => products.value.reduce((s: number, p: any) => s + (p.lines as any[]).filter((l: any) => l.item_code === code).reduce((x: number, l: any) => x + (Number(l.qty) || 0) * (1 + (Number(l.scrap_rate) || 0) / 100) * (Number(p.plan_qty) || 0), 0), 0)
 
-function goBack() { plan.value ? router.push(scmProductionPlanOrderRoute(plan.value.id, 'self')) : router.back() }
+function goBack() { plan.value ? router.push(scmProductionPlanOrderRoute(plan.value.id, isOutsource.value ? 'outsource' : 'self')) : router.back() }
 function hydrate(snapshot: any) {
   head.value = { ...snapshot.head }
   products.value = snapshot.products.map((p: any) => ({ ...p, _before_qty: p.id ? p.plan_qty : null, lines: (p.lines || []).map((l: any) => ({ ...l })) }))
@@ -143,6 +187,9 @@ function hydrate(snapshot: any) {
 function addProduct() { products.value.push({ id: null, item_code: '', item_name: '', plan_qty: 1, fp_warehouse: '', finished_qty: 0, scrap_qty: 0, _before_qty: null, lines: [] }); currentProduct.value = products.value[products.value.length - 1] }
 async function onPickProduct(it: any, row: any) {
   row.item_code = it.code; row.item_name = it.name
+  // 新增成品智能带出：成品仓取物料默认仓 / 表头成品仓；委外计划带物料档案的加工单价、税率
+  if (!row.fp_warehouse) row.fp_warehouse = it.default_warehouse_code || head.value.fp_warehouse || ''
+  if (isOutsource.value && !Number(row.process_fee)) { row.process_fee = Number(it.outsource_fee) || 0; row.process_tax_rate = Number(it.outsource_tax_rate) || 0 }
   if (row.lines.length) return
   try {
     const boms = await scmApi.getBoms()
@@ -154,6 +201,8 @@ function payload() {
   return {
     plan_id: plan.value.id, change_date: form.value.change_date, reason: form.value.reason, remark: form.value.remark, head: head.value,
     products: products.value.filter(p => p.item_code && Number(p.plan_qty) > 0).map(p => ({ id: p.id || undefined, item_code: p.item_code, plan_qty: p.plan_qty, bom_id: p.bom_id || undefined, fp_warehouse: p.fp_warehouse || undefined, remark: p.remark,
+      // 加工单价 / 税率必须回传，否则审核变更会把委外计划的加工单价清零（FIX-398）
+      process_fee: Number(p.process_fee) || 0, process_tax_rate: Number(p.process_tax_rate) || 0,
       lines: p.lines.filter((l: any) => l.item_code && Number(l.qty) > 0).map((l: any) => ({ item_code: l.item_code, qty: l.qty, scrap_rate: l.scrap_rate || 0, unit: l.unit, warehouse_code: l.warehouse_code || null, remark: l.remark })) })),
   }
 }
@@ -172,6 +221,8 @@ function preview() {
       const b: any = p.id ? byId.get(p.id) : null
       if (!b) { if (p.item_code) out.push({ kind: 'product', label: '新增成品', product: p.item_code, before: null, after: p.plan_qty }); continue }
       if (Number(b.plan_qty) !== Number(p.plan_qty)) out.push({ kind: 'product', label: '计划数', product: p.item_code, before: b.plan_qty, after: p.plan_qty })
+      if ((Number(b.process_fee) || 0) !== (Number(p.process_fee) || 0)) out.push({ kind: 'product', label: '加工单价', product: p.item_code, before: Number(b.process_fee) || 0, after: Number(p.process_fee) || 0 })
+      if ((Number(b.process_tax_rate) || 0) !== (Number(p.process_tax_rate) || 0)) out.push({ kind: 'product', label: '加工税率%', product: p.item_code, before: Number(b.process_tax_rate) || 0, after: Number(p.process_tax_rate) || 0 })
       const bl = new Map(b.lines.map((l: any) => [l.item_code, l]))
       for (const l of p.lines.filter((x: any) => x.item_code)) { const o: any = bl.get(l.item_code); if (!o) out.push({ kind: 'line', label: '新增用料', product: p.item_code, item: l.item_code, before: null, after: l.qty }); else if (Number(o.qty) !== Number(l.qty) || Number(o.scrap_rate || 0) !== Number(l.scrap_rate || 0)) out.push({ kind: 'line', label: '单位用量', product: p.item_code, item: l.item_code, before: o.qty, after: l.qty }) }
       for (const code of bl.keys()) if (!p.lines.some((x: any) => x.item_code === code)) out.push({ kind: 'line', label: '删除用料', product: p.item_code, item: code, before: (bl.get(code) as any).qty, after: null })
@@ -194,7 +245,9 @@ async function save(andAudit: boolean) {
     if (andAudit) {
       const a: any = await scmApi.auditPlanChange(id)
       if (a.code !== 0) { ElMessage.error(a.message || '审核失败'); router.replace({ name: 'ScmPlanChangeForm', params: { id } }); return }
-      ElMessage.success('变更已生效'); goBack(); return
+      // 用量增加时留在本页列出追加物料需求（原来直接返回，「保存并审核」看不到追加入口）
+      await afterAudited(id)
+      return
     }
     ElMessage.success('已保存草稿')
     router.replace({ name: 'ScmPlanChangeForm', params: { id } })
@@ -204,7 +257,66 @@ async function save(andAudit: boolean) {
 async function audit() {
   try { await ElMessageBox.confirm('审核后立即写回工单（计划数 / 用料 / 日期），不可反审核。继续？', '审核变更单', { type: 'warning' }) } catch { return }
   saving.value = true
-  try { const a: any = await scmApi.auditPlanChange(change.value.id); if (a.code === 0) { ElMessage.success('变更已生效'); goBack() } else ElMessage.error(a.message || '审核失败') } finally { saving.value = false }
+  try {
+    const a: any = await scmApi.auditPlanChange(change.value.id)
+    if (a.code !== 0) { ElMessage.error(a.message || '审核失败'); return }
+    await afterAudited(change.value.id)
+  } finally { saving.value = false }
+}
+/** 审核生效后：用量增加则留在本页列出追加物料需求，否则返回工单 */
+async function afterAudited(id: string) {
+  const r: any = await scmApi.getPlanChangeMaterialIncrease(id).catch(() => null)
+  if (r?.code === 0 && (r.data?.rows || []).length) {
+    ElMessage.success('变更已生效，用料增加的物料已列在「追加物料需求」，可生成缺料单并下推采购')
+    if (changeId.value === id) await init()
+    else router.replace({ name: 'ScmPlanChangeForm', params: { id } })
+  } else { ElMessage.success('变更已生效'); goBack() }
+}
+
+// ── 追加物料需求 ──
+const increaseRows = ref<any[]>([])
+const shortageDoc = ref<{ id: string; doc_no: string; status: string } | null>(null)
+const genShortaging = ref(false)
+async function loadIncrease() {
+  increaseRows.value = []; shortageDoc.value = null
+  if (!change.value?.id) return
+  try {
+    const r = await scmApi.getPlanChangeMaterialIncrease(change.value.id)
+    if (r.code !== 0) return
+    shortageDoc.value = r.data.shortage_doc || null
+    increaseRows.value = (r.data.rows || []).map((row: any) => ({ ...row, qty: row.suggest_qty ?? row.increase }))
+  } catch { /* 追加需求加载失败不影响查看变更单 */ }
+}
+async function genShortage() {
+  const lines = increaseRows.value.map(r => ({ item_code: r.item_code, qty: Number(r.qty) || 0 }))
+  const total = lines.filter(l => l.qty > 0).length
+  try { await ElMessageBox.confirm(`按「本次追加」数量生成缺料单（${total} 种物料）？生成后可在缺料单上下推采购 / 生产 / 委外。`, '生成追加缺料单', { type: 'info' }) } catch { return }
+  genShortaging.value = true
+  try {
+    const r = await scmApi.genPlanChangeShortage(change.value.id, lines)
+    if (r.code !== 0) return
+    shortageDoc.value = { id: r.data.id, doc_no: r.data.doc_no, status: r.data.status }
+    ElMessage.success(r.data.reused ? `本变更单已生成过缺料单 ${r.data.doc_no}` : `已生成缺料单 ${r.data.doc_no}`)
+    try {
+      await ElMessageBox.confirm('是否立即下推生成采购单（委外 / 自制物料生成计划）？', '下推缺料单', { type: 'info', confirmButtonText: '去下推', cancelButtonText: '稍后' })
+      openShortagePush()
+    } catch { /* 稍后在本页或缺料单上下推 */ }
+  } finally { genShortaging.value = false }
+}
+/** 缺料单须审核后才能下推：草稿时先确认审核，再进入下推预览 */
+async function openShortagePush() {
+  const doc = shortageDoc.value
+  if (!doc) return
+  if (doc.status !== 'audited') {
+    try { await ElMessageBox.confirm(`缺料单 ${doc.doc_no} 尚未审核，审核后才能下推。现在审核？`, '审核缺料单', { type: 'info', confirmButtonText: '审核并下推' }) } catch { return }
+    const a: any = await scmApi.auditDoc(doc.id)
+    if (a.code !== 0) return
+    shortageDoc.value = { ...doc, status: 'audited' }
+  }
+  router.push({ name: 'ScmMrPushPreview', params: { id: doc.id }, query: { from: 'view' } })
+}
+function openShortage() {
+  if (shortageDoc.value) router.push(scmDocumentRoute(shortageDoc.value.id, 'MR', shortageDoc.value.status))
 }
 async function remove() {
   try { await ElMessageBox.confirm('删除该草稿变更单？', '提示', { type: 'warning' }) } catch { return }
@@ -227,6 +339,7 @@ async function init() {
       // 已审核：after 快照里已有完工数是审核前的，展示时用当前工单
       diff.value = c.data.diff || []
       viewMode.value = false
+      if (c.data.status === 'audited') await loadIncrease()
     } else {
       const base = await scmApi.getPlanChangeBase(planIdParam.value)
       if (base.code !== 0) { ElMessage.error(base.message || '工单不存在'); return router.back() }
@@ -244,6 +357,8 @@ onMounted(init)
 </script>
 
 <style scoped>
+.pc-shortage { display: inline-flex; align-items: center; gap: 8px; }
+.pc-hint { font-size: 12px; color: var(--el-text-color-secondary); margin-bottom: 8px; }
 .pc-page { display: flex; flex-direction: column; height: 100%; }
 .pc-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 16px; border-bottom: 1px solid var(--el-border-color-lighter); }
 .pc-header__left { display: flex; align-items: center; gap: 8px; }

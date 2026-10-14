@@ -2,6 +2,7 @@
   <div class="page scm-unit-page">
     <div class="list-toolbar" style="margin-bottom:var(--block-gap)">
       <el-button type="primary" size="small" @click="openAdd"><el-icon><Plus /></el-icon>新增计量单位</el-button>
+      <SaveAsButton title="计量单位" />
     </div>
     <div class="page-table-fill">
       <el-table ref="tableRef" :data="list" v-loading="loading" border stripe size="small" height="100%" class="compact-data-table" @header-dragend="onDragEnd">

@@ -10,6 +10,7 @@
       <el-date-picker v-model="period" type="month" value-format="YYYY-MM" placeholder="计算期间" style="width:150px" :clearable="false" />
       <el-button :loading="loading" @click="preview">试算</el-button>
       <el-button type="primary" :loading="saving" :disabled="!isMonthAvg" @click="calc">计算并写入</el-button>
+      <SaveAsButton title="全月平均成本计算" />
       <span v-if="!isMonthAvg" class="hint">仅计价方式为「全月平均」的账套可写入，当前可试算查看差异</span>
     </div>
     <div v-if="result" class="summary-grid">

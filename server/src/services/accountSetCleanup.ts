@@ -8,10 +8,15 @@ function tableExists(db: Database, table: string): boolean {
   return !!row?.name
 }
 
-/**
- * 级联删除账套及其全部关联数据（删除账套、导入回滚等统一入口）
- */
-export function cleanupAccountSetCascade(db: Database, accountSetId: string) {
+export interface CleanupStep {
+  label: string
+  run: () => void
+}
+
+export type CleanupProgress = (done: number, total: number, label: string) => void
+
+/** 级联清理的全部步骤（显式清单 + 兜底扫描），同步版与异步版共用 */
+function buildCleanupSteps(db: Database, accountSetId: string): CleanupStep[] {
   const statements: Array<{ sql: string; params: unknown[] }> = [
     { sql: 'DELETE FROM user_login_sessions WHERE account_set_id = ?', params: [accountSetId] },
     { sql: 'DELETE FROM user_roles WHERE account_set_id = ?', params: [accountSetId] },
@@ -109,32 +114,97 @@ export function cleanupAccountSetCascade(db: Database, accountSetId: string) {
     { sql: 'DELETE FROM account_sets WHERE id = ?', params: [accountSetId] },
   ]
 
-  db.pragma('foreign_keys = OFF')
-  try {
-    const cleanup = db.transaction(() => {
-      for (const { sql, params } of statements) {
-        const tableMatch = sql.match(/^DELETE FROM\s+([a-zA-Z_][\w]*)/i)
-        const updateMatch = sql.match(/^UPDATE\s+([a-zA-Z_][\w]*)/i)
-        const table = tableMatch?.[1] || updateMatch?.[1]
-        if (table && !tableExists(db, table)) continue
+  const steps: CleanupStep[] = []
+  for (const { sql, params } of statements) {
+    const tableMatch = sql.match(/^DELETE FROM\s+([a-zA-Z_][\w]*)/i)
+    const updateMatch = sql.match(/^UPDATE\s+([a-zA-Z_][\w]*)/i)
+    const table = tableMatch?.[1] || updateMatch?.[1]
+    steps.push({
+      label: table || '账套数据',
+      run: () => {
+        if (table && !tableExists(db, table)) return
         try {
           db.prepare(sql).run(...params)
         } catch (err) {
           // 部分环境可能尚未创建可选表（如 cash_flow_items）
           if (tableMatch && ['cash_flow_items', 'ai_config', 'ai_logs'].includes(tableMatch[1])) {
-            continue
+            return
           }
           throw err
         }
-      }
-      // 评审 P2 收尾：上面的显式清单按依赖顺序删，但新增模块（供应链 scm_*、币种 / 汇率等）常漏加，
-      // 删账套后留下孤儿行（开发库实测 6 个已删账套残留约 510 行）。最后统一扫一遍所有带 account_set_id 列的表兜底。
-      for (const table of listAccountSetScopedTables(db)) {
+      },
+    })
+  }
+  // 评审 P2 收尾：上面的显式清单按依赖顺序删，但新增模块（供应链 scm_*、币种 / 汇率等）常漏加，
+  // 删账套后留下孤儿行（开发库实测 6 个已删账套残留约 510 行）。最后统一扫一遍所有带 account_set_id 列的表兜底。
+  for (const table of listAccountSetScopedTables(db)) {
+    steps.push({
+      label: table,
+      run: () => {
         db.prepare(`DELETE FROM "${table}" WHERE account_set_id = ?`).run(accountSetId)
-      }
+      },
+    })
+  }
+  return steps
+}
+
+/**
+ * 级联删除账套及其全部关联数据（删除账套、导入回滚等统一入口）
+ * 同步执行、单事务；onProgress 仅用于上报进度（同步执行期间无法被轮询到）
+ */
+export function cleanupAccountSetCascade(
+  db: Database,
+  accountSetId: string,
+  onProgress?: CleanupProgress
+) {
+  const steps = buildCleanupSteps(db, accountSetId)
+  db.pragma('foreign_keys = OFF')
+  try {
+    const cleanup = db.transaction(() => {
+      steps.forEach((step, i) => {
+        step.run()
+        onProgress?.(i + 1, steps.length, step.label)
+      })
     })
     cleanup()
     repairDatabaseReferentialIntegrity(db)
+  } finally {
+    db.pragma('foreign_keys = ON')
+  }
+}
+
+const yieldToEventLoop = () => new Promise<void>(resolve => setImmediate(resolve))
+
+/**
+ * 异步版：每清完一张表让出事件循环，使进度接口能被响应。
+ * 手动事务保持原子性；调用方须在运行期间屏蔽其它请求（见 accountSetBusy 中间件），
+ * 避免别的请求的写入混进这个未提交事务。
+ */
+export async function cleanupAccountSetCascadeAsync(
+  db: Database,
+  accountSetId: string,
+  onProgress?: CleanupProgress
+) {
+  const steps = buildCleanupSteps(db, accountSetId)
+  const total = steps.length + 1 // 最后一步：完整性校验
+  db.pragma('foreign_keys = OFF')
+  try {
+    db.exec('BEGIN IMMEDIATE')
+    try {
+      for (let i = 0; i < steps.length; i++) {
+        onProgress?.(i, total, steps[i].label)
+        await yieldToEventLoop()
+        steps[i].run()
+      }
+      db.exec('COMMIT')
+    } catch (err) {
+      if (db.inTransaction) db.exec('ROLLBACK')
+      throw err
+    }
+    onProgress?.(steps.length, total, '校验数据完整性')
+    await yieldToEventLoop()
+    repairDatabaseReferentialIntegrity(db)
+    onProgress?.(total, total, '完成')
   } finally {
     db.pragma('foreign_keys = ON')
   }

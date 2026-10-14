@@ -1,5 +1,5 @@
-import { getBalance, getPeriodSum, getPeriodRangeSum, getPeriodRangeSumExcludeTransfer, type BalanceQueryDb } from './reportBalance.js'
-import { getCashFlowAmount } from './cashFlowAmount.js'
+import { getBalance, getBatchBalances, getPeriodSum, getPeriodRangeSum, getPeriodRangeSumExcludeTransfer, type BalanceQueryDb } from './reportBalance.js'
+import { getCashFlowAmount, getCashFlowSupplementAmount } from './cashFlowAmount.js'
 import type { AccountScopeContext } from './accountAuthorization.js'
 import type { Database } from 'better-sqlite3'
 import {
@@ -203,6 +203,58 @@ function getAccountDirection(db: BalanceQueryDb | Database, accountSetId: string
   return normalizeDirection(grouped?.direction)
 }
 
+/** 将自然方向余额拆到借/贷一侧：与科目方向一致且为正 → 本方向；为负 → 对方方向 */
+function splitNaturalBalance(direction: 'debit' | 'credit', naturalBalance: number, side: 'debit' | 'credit') {
+  return direction === side ? Math.max(naturalBalance, 0) : Math.max(-naturalBalance, 0)
+}
+
+/**
+ * 明细口径的借/贷余额（ACD @mjy/@mdy/@mnj/@mnd）：
+ * 逐个末级明细科目单独判断余额方向后再汇总，不能先在上级轧差。
+ * 例：1122 下 1122002 贷 25,423.80、1122006 借 320.00 → mjy=320、mdy=25,423.80；
+ * 若按上级净额（贷 25,103.80）拆分，应收账款取 0、预收账款少 320，资产负债表两边各差 320（FIX-398）
+ */
+function getDetailSideBalance(
+  context: ExecuteContext,
+  accountCode: string,
+  period: number,
+  side: 'debit' | 'credit',
+  year = context.year
+) {
+  const leaves = context.db
+    .prepare(
+      `
+      SELECT a.code, a.direction
+      FROM accounts a
+      WHERE a.account_set_id = ? AND (a.code = ? OR a.code LIKE ?)
+        AND NOT EXISTS (
+          SELECT 1 FROM accounts c
+          WHERE c.account_set_id = a.account_set_id AND c.code LIKE a.code || '_%'
+        )
+      `
+    )
+    .all(context.accountSetId, accountCode, `${accountCode}_%`) as { code: string; direction?: string }[]
+
+  if (leaves.length <= 1) {
+    return getSideBalance(context, accountCode, period, side, year)
+  }
+
+  const balances = getBatchBalances(
+    context.db,
+    context.accountSetId,
+    leaves.map(leaf => leaf.code),
+    year,
+    Number(period),
+    context.accountScope
+  )
+  let total = 0
+  for (const leaf of leaves) {
+    const direction = String(leaf.direction || '').toLowerCase() === 'credit' ? 'credit' : 'debit'
+    total += splitNaturalBalance(direction, balances.get(leaf.code) ?? 0, side)
+  }
+  return Math.round(total * 100) / 100
+}
+
 function getSideBalance(
   context: ExecuteContext,
   accountCode: string,
@@ -391,24 +443,36 @@ function callAnchorFunction(rawName: string, rawArgs: string[], context: Execute
         result = sum.debit
         break
       }
-      case 'jy':
-      case 'mjy': {
+      case 'jy': {
         result = getSideBalance(context, accountCode, resolvedPeriod.period, 'debit', resolvedPeriod.year)
         break
       }
-      case 'dy':
-      case 'mdy': {
+      case 'mjy': {
+        result = getDetailSideBalance(context, accountCode, resolvedPeriod.period, 'debit', resolvedPeriod.year)
+        break
+      }
+      case 'dy': {
         result = getSideBalance(context, accountCode, resolvedPeriod.period, 'credit', resolvedPeriod.year)
         break
       }
-      case 'nj':
-      case 'mnj': {
+      case 'mdy': {
+        result = getDetailSideBalance(context, accountCode, resolvedPeriod.period, 'credit', resolvedPeriod.year)
+        break
+      }
+      case 'nj': {
         result = getSideBalance(context, accountCode, 0, 'debit', resolvedPeriod.year)
         break
       }
-      case 'nd':
-      case 'mnd': {
+      case 'mnj': {
+        result = getDetailSideBalance(context, accountCode, 0, 'debit', resolvedPeriod.year)
+        break
+      }
+      case 'nd': {
         result = getSideBalance(context, accountCode, 0, 'credit', resolvedPeriod.year)
+        break
+      }
+      case 'mnd': {
+        result = getDetailSideBalance(context, accountCode, 0, 'credit', resolvedPeriod.year)
         break
       }
       case 'jqy': {
@@ -454,13 +518,14 @@ function callAnchorFunction(rawName: string, rawArgs: string[], context: Execute
         result = name === 'jqj' ? rangeSum.debit : rangeSum.credit
         break
       }
-      case 'xj_je': {
+      case 'xj_je':
+      case 'xj_fb': {
         const range = resolveAcdPeriodRange(
           context,
           args[1] === undefined || args[1] === '' ? '99' : String(args[1]).trim(),
           args[2] === undefined || args[2] === '' ? '99' : String(args[2]).trim()
         )
-        result = getCashFlowAmount(
+        result = (name === 'xj_fb' ? getCashFlowSupplementAmount : getCashFlowAmount)(
           context.db,
           context.accountSetId,
           accountCode,

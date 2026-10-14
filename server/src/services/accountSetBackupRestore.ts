@@ -238,7 +238,7 @@ export const SINGLE_BACKUP_CORE_TABLES = [
 
 /** 运行时 / 日志 / 全局表：不进单账套备份（backups、license_activation 存在会被识别成完整备份） */
 const SINGLE_BACKUP_EXCLUDED_TABLES = new Set([
-  'backups', 'license_activation', 'schema_migrations', 'keyboard_shortcuts', 'async_tasks', 'ai_logs',
+  'backups', 'license_activation', 'license_activation_log', 'schema_migrations', 'keyboard_shortcuts', 'async_tasks', 'ai_logs',
   'user_login_sessions', 'operation_logs',
 ])
 

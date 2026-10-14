@@ -29,7 +29,11 @@ timeout /t 4 /nobreak >nul
 echo.
 echo [3/4] Starting frontend...
 start "CW Frontend" cmd /k "cd /d "%ROOT%" && npm run dev:client"
-timeout /t 5 /nobreak >nul
+for /L %%i in (1,1,120) do (
+    netstat -ano | findstr ":5275 " | findstr "LISTENING" >nul 2>&1 && goto :fe_ready
+    timeout /t 1 /nobreak >nul
+)
+:fe_ready
 
 echo.
 echo [4/4] Opening homepage in Microsoft Edge...

@@ -153,8 +153,8 @@ describe('accountSetDefaults', () => {
       panel: string
     }
     expect(row.name).toBe(DEFAULT_BATCH_PRINT_TEMPLATE_NAME)
-    expect(row.paper_width).toBe(210)
-    expect(row.paper_height).toBe(148)
+    expect(row.paper_width).toBe(220)
+    expect(row.paper_height).toBe(140)
     expect(row.template_key).toBe('voucher:standard')
     const panel = JSON.parse(row.panel)
     expect(panel.panels[0].printElements.some((el: any) => el.options?.field === 'doc_title')).toBe(true)

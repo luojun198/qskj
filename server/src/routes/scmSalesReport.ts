@@ -29,6 +29,8 @@ import {
   type PurchaseFixedReportRequest,
 } from '../services/scmPurchaseFixedReport.js'
 
+import { runDocQueryReport } from '../services/scmDocQueryReport.js'
+
 const router = Router()
 router.use(authMiddleware)
 router.use('/scm/report', requirePermission('scm:report'))
@@ -159,7 +161,7 @@ router.post('/scm/report/sales/fixed-export', async (req: AuthRequest, res) => {
     const buffer = await buildStyledXlsxBuffer({
       sheetName: title,
       title,
-      subtitle: '数据口径：当前账套已审核销售出库减销售退货；退货按负数冲减',
+      subtitle: result.report_code === 'return' ? '数据口径：当前账套已审核销售退货单；退货数量、金额按正数展示' : '数据口径：当前账套已审核销售出库减销售退货；退货按负数冲减',
       columns,
       rows,
       summaryValues,
@@ -226,6 +228,19 @@ router.post('/scm/report/purchase/custom-export', async (req: AuthRequest, res) 
   }
 })
 
+// 单据查询表：采购 / 销售退货、采购 / 销售发票逐单逐行（第四份反馈 Q6 ~ Q8）
+router.get('/scm/report/doc-query', (req: AuthRequest, res) => {
+  const q = req.query as any
+  try {
+    res.json({ code: 0, data: runDocQueryReport(getDb(), owner(req).accountSetId, {
+      doc_type: String(q.doc_type || ''), start_date: q.start_date, end_date: q.end_date, partner_code: q.partner_code,
+      status: q.status, keyword: q.keyword, page: Number(q.page) || 1, page_size: Number(q.page_size) || 100,
+    }) })
+  } catch (e: any) {
+    res.status(400).json({ code: 400, message: e?.message || '查询失败' })
+  }
+})
+
 router.get('/scm/report/purchase/fixed-meta', (req: AuthRequest, res) => {
   try {
     const { accountSetId } = owner(req)
@@ -266,7 +281,9 @@ router.post('/scm/report/purchase/fixed-export', async (req: AuthRequest, res) =
       title,
       subtitle: result.report_code === 'order_tracking'
         ? '数据口径：已审核采购订单；已审核入库减已审核退货，草稿入库单独列示；仅按行级来源关系归属'
-        : '数据口径：当前账套已审核采购入库减采购退货；退货按负数冲减',
+        : result.report_code === 'return'
+          ? '数据口径：当前账套已审核采购退货单；退货数量、金额按正数展示'
+          : '数据口径：当前账套已审核采购入库减采购退货；退货按负数冲减',
       columns,
       rows,
       summaryValues,

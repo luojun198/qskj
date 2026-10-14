@@ -22,7 +22,7 @@
           @click="exportData"
         >
           <el-icon><Download /></el-icon>
-          导出 Excel
+          另存
         </el-button>
         <el-button plain :disabled="loadingAll || list.length === 0" @click="printPage">
           <el-icon><Printer /></el-icon>

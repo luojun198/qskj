@@ -639,3 +639,127 @@ export async function exportStyledAoa(options: ExportStyledAoaOptions) {
 
   await downloadExcelWorkbook(workbook, fileName)
 }
+
+export type DocSheetValue = string | number | null | undefined
+
+export interface DocSheetSection {
+  title?: string
+  columns: Array<{ label: string; numeric?: boolean; amount?: boolean }>
+  rows: DocSheetValue[][]
+  summary?: DocSheetValue[] | null
+}
+
+export interface ExportDocSheetOptions {
+  fileName: string
+  sheetName?: string
+  /** 大标题，如「销售订单 2609300001」 */
+  title: string
+  /** 表头字段，按页面顺序；每行排 3 组「标签 | 值」 */
+  fields: Array<{ label: string; value: DocSheetValue }>
+  /** 明细表（可多张，如组装单的成品 / 子件） */
+  sections: DocSheetSection[]
+  /** 表尾说明行，如「制单：张三　审核：李四」 */
+  footer?: string
+}
+
+/** 数值格式按值本身的小数位（电子料单价常有 4–6 位，不能一律两位） */
+function numFmtFor(value: number, amount: boolean): string {
+  if (amount) return '#,##0.00'
+  const text = String(value)
+  const dot = text.indexOf('.')
+  const decimals = dot < 0 || text.includes('e') ? 0 : Math.min(8, text.length - dot - 1)
+  return decimals ? `#,##0.${'0'.repeat(decimals)}` : '#,##0'
+}
+
+/**
+ * 单据「另存」：一张单据导出为一个工作表——标题、表头字段（三组一行）、各明细表（表头 + 行 + 合计）、表尾说明。
+ * 与列表 / 报表导出同一套字体与网格线样式。
+ */
+export async function exportDocSheet(options: ExportDocSheetOptions) {
+  const ExcelJS = await loadExcelJS()
+  const workbook = new ExcelJS.Workbook()
+  workbook.creator = 'CW Finance'
+  const ws = workbook.addWorksheet((options.sheetName || options.title || 'Sheet1').replace(/[\/?*[\]:]/g, ' ').slice(0, 30))
+  const FIELD_PAIRS = 3
+  const colCount = Math.max(FIELD_PAIRS * 2, ...options.sections.map(s => s.columns.length))
+  const widths = new Array(colCount).fill(10)
+  const track = (col: number, value: DocSheetValue) => {
+    const len = String(value ?? '').split('').reduce((n, ch) => n + (ch.charCodeAt(0) > 255 ? 2 : 1), 0)
+    widths[col] = Math.min(40, Math.max(widths[col], len + 2))
+  }
+  let r = 1
+
+  // 标题
+  const titleCell = ws.getRow(r).getCell(1)
+  titleCell.value = options.title
+  applyCellStyle(titleCell, { title: true, align: 'center' })
+  ws.mergeCells(r, 1, r, colCount)
+  ws.getRow(r).height = 26
+  r += 1
+
+  // 表头字段
+  const fields = options.fields.filter(f => f.label)
+  for (let i = 0; i < fields.length; i += FIELD_PAIRS) {
+    const row = ws.getRow(r)
+    row.height = 18
+    for (let k = 0; k < FIELD_PAIRS; k++) {
+      const f = fields[i + k]
+      const labelCell = row.getCell(k * 2 + 1)
+      const valueCell = row.getCell(k * 2 + 2)
+      labelCell.value = f ? f.label : ''
+      valueCell.value = f ? normalizeCellValue(f.value) : ''
+      applyCellStyle(labelCell, { header: true, align: 'right' })
+      applyCellStyle(valueCell, { align: typeof valueCell.value === 'number' ? 'right' : 'left' })
+      if (typeof valueCell.value === 'number') valueCell.numFmt = numFmtFor(valueCell.value, false)
+      if (f) { track(k * 2, f.label); track(k * 2 + 1, f.value) }
+    }
+    // 字段区比明细窄时，把最后一个值格向右合并到表宽
+    if (colCount > FIELD_PAIRS * 2) ws.mergeCells(r, FIELD_PAIRS * 2, r, colCount)
+    r += 1
+  }
+
+  // 明细表
+  for (const section of options.sections) {
+    r += 1
+    if (section.title) {
+      const c = ws.getRow(r).getCell(1)
+      c.value = section.title
+      applyCellStyle(c, { bold: true })
+      ws.mergeCells(r, 1, r, colCount)
+      r += 1
+    }
+    const head = ws.getRow(r)
+    section.columns.forEach((col, k) => {
+      const c = head.getCell(k + 1)
+      c.value = col.label
+      applyCellStyle(c, { header: true })
+      track(k, col.label)
+    })
+    r += 1
+    const writeRow = (values: DocSheetValue[], bold: boolean) => {
+      const row = ws.getRow(r)
+      section.columns.forEach((col, k) => {
+        const c = row.getCell(k + 1)
+        c.value = normalizeCellValue(values[k])
+        const isNum = typeof c.value === 'number'
+        applyCellStyle(c, { bold, align: isNum || col.numeric ? 'right' : 'left' })
+        if (isNum) c.numFmt = numFmtFor(c.value as number, !!col.amount)
+        track(k, values[k])
+      })
+      r += 1
+    }
+    section.rows.forEach(v => writeRow(v, false))
+    if (section.summary) writeRow(section.summary, true)
+  }
+
+  if (options.footer) {
+    r += 1
+    const c = ws.getRow(r).getCell(1)
+    c.value = options.footer
+    applyCellStyle(c, {})
+    ws.mergeCells(r, 1, r, colCount)
+  }
+
+  widths.forEach((w, i) => { ws.getColumn(i + 1).width = w })
+  await downloadExcelWorkbook(workbook, options.fileName.endsWith('.xlsx') ? options.fileName : `${options.fileName}.xlsx`)
+}

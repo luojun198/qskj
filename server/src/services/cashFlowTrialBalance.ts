@@ -5,6 +5,7 @@ import {
   type ResolvedAccountingStandard,
 } from './staticReportConfig.js'
 import { expandFlowAccountCodes } from './staticCashFlowExpand.js'
+import { computeCashFlowByMapping } from './cashFlowAutoEngine.js'
 import { getBatchBalances } from './reportBalance.js'
 import { isCashFlowEnabledForAccountSet } from './voucherEntry.js'
 import {
@@ -141,101 +142,6 @@ function resolveStaticStandard(db: Database, accountSetId: string) {
   return resolveStaticReportStandard(db, accountSetId)
 }
 
-function signedNetFromTotals(
-  direction: string,
-  debitTotal: number,
-  creditTotal: number
-): number {
-  if (direction === 'outflow') {
-    return round2(-Math.abs(debitTotal - creditTotal))
-  }
-  if (direction === 'inflow') {
-    return round2(Math.abs(creditTotal - debitTotal))
-  }
-  return round2(debitTotal - creditTotal)
-}
-
-function buildStatusCondition(includeUnposted: boolean): string {
-  return includeUnposted
-    ? "v.status IN ('draft', 'audited', 'posted')"
-    : "v.status = 'posted'"
-}
-
-function sumCashAccountNetChange(
-  db: Database,
-  accountSetId: string,
-  year: number,
-  fromPeriod: number,
-  toPeriod: number,
-  includeUnposted: boolean
-): number {
-  const statusCondition = buildStatusCondition(includeUnposted)
-  const rows = db
-    .prepare(
-      `
-      SELECT ve.direction, SUM(ve.amount) AS amount
-      FROM voucher_entries ve
-      JOIN vouchers v ON v.id = ve.voucher_id
-      JOIN accounts a ON a.id = ve.account_id
-      WHERE ve.account_set_id = ?
-        AND v.year = ?
-        AND v.period >= ?
-        AND v.period <= ?
-        AND ${statusCondition}
-        AND (a.is_cash = 1 OR a.is_bank = 1)
-      GROUP BY ve.direction
-      `
-    )
-    .all(accountSetId, year, fromPeriod, toPeriod) as Array<{
-    direction: 'debit' | 'credit'
-    amount: number | null
-  }>
-
-  const debit = rows
-    .filter(r => r.direction === 'debit')
-    .reduce((s, r) => s + Number(r.amount || 0), 0)
-  const credit = rows
-    .filter(r => r.direction === 'credit')
-    .reduce((s, r) => s + Number(r.amount || 0), 0)
-  return round2(debit - credit)
-}
-
-function loadFlowItemTotals(
-  db: Database,
-  accountSetId: string,
-  year: number,
-  fromPeriod: number,
-  toPeriod: number,
-  includeUnposted: boolean
-) {
-  const statusCondition = buildStatusCondition(includeUnposted)
-  return db
-    .prepare(
-      `
-      SELECT ve.cash_flow_code AS code,
-             ve.direction,
-             SUM(ve.amount) AS amount,
-             COUNT(DISTINCT ve.voucher_id) AS voucher_count
-      FROM voucher_entries ve
-      JOIN vouchers v ON v.id = ve.voucher_id
-      WHERE ve.account_set_id = ?
-        AND v.year = ?
-        AND v.period >= ?
-        AND v.period <= ?
-        AND ${statusCondition}
-        AND ve.cash_flow_code IS NOT NULL
-        AND TRIM(ve.cash_flow_code) != ''
-      GROUP BY ve.cash_flow_code, ve.direction
-      `
-    )
-    .all(accountSetId, year, fromPeriod, toPeriod) as Array<{
-    code: string
-    direction: 'debit' | 'credit'
-    amount: number | null
-    voucher_count: number
-  }>
-}
-
 export function getCashFlowTrialBalance(
   db: Database,
   accountSetId: string,
@@ -255,44 +161,17 @@ export function getCashFlowTrialBalance(
   const scopeLabel =
     scope === 'ytd' ? `${year}年1-${period}月（本年累计）` : `${year}年${period}月`
 
-  const flowItems = db
-    .prepare(
-      `SELECT code, name, parent_code, level, direction
-       FROM cash_flow_items
-       WHERE account_set_id = ? AND is_active = 1
-       ORDER BY sort_order, code`
-    )
-    .all(accountSetId) as Array<{
-    code: string
-    name: string
-    parent_code: string | null
-    level: number
-    direction: string
-  }>
-
-  const rawTotals = loadFlowItemTotals(db, accountSetId, year, fromPeriod, toPeriod, includeUnposted)
-  const debitByCode = new Map<string, number>()
-  const creditByCode = new Map<string, number>()
-  const voucherCountByCode = new Map<string, number>()
-
-  for (const row of rawTotals) {
-    const code = String(row.code).trim()
-    if (!code) continue
-    if (row.direction === 'debit') {
-      debitByCode.set(code, (debitByCode.get(code) || 0) + Number(row.amount || 0))
-    } else {
-      creditByCode.set(code, (creditByCode.get(code) || 0) + Number(row.amount || 0))
-    }
-    voucherCountByCode.set(code, Math.max(voucherCountByCode.get(code) || 0, Number(row.voucher_count || 0)))
-  }
-
-  const itemMeta = new Map(flowItems.map(i => [i.code, i]))
-  const allCodes = new Set<string>([...flowItems.map(i => i.code), ...debitByCode.keys(), ...creditByCode.keys()])
+  const auto = computeCashFlowByMapping(db, accountSetId, year, fromPeriod, toPeriod, undefined, {
+    includeUnposted,
+  })
+  const flowItems = auto.items.filter(i => i.kind !== 'supplement')
 
   const items: CashFlowTrialBalanceItem[] = []
-  for (const code of [...allCodes].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))) {
-    const meta = itemMeta.get(code)
-    const activity = activityFromCode(code)
+  for (const item of [...flowItems].sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }))) {
+    const amt = auto.main.get(item.code)
+    if (!amt) continue
+    const cls = auto.itemClass.get(item.code)
+    const activity: CashFlowActivityKey = cls?.activity || 'other'
     const activityLabel =
       activity === 'operating'
         ? activityLabels.operating
@@ -301,50 +180,35 @@ export function getCashFlowTrialBalance(
           : activity === 'financing'
             ? activityLabels.financing
             : '其他'
-
-    const debitTotal = round2(debitByCode.get(code) || 0)
-    const creditTotal = round2(creditByCode.get(code) || 0)
-    const signedNet = signedNetFromTotals(meta?.direction || 'neutral', debitTotal, creditTotal)
-    if (debitTotal === 0 && creditTotal === 0 && signedNet === 0) continue
-
+    // 借方发生 = 现金类科目借方（流入），贷方发生 = 现金类科目贷方（流出）
+    const debitTotal = round2(amt.inflow)
+    const creditTotal = round2(amt.outflow)
+    const signedNet = round2(amt.inflow - amt.outflow)
+    if (debitTotal === 0 && creditTotal === 0) continue
     items.push({
-      code,
-      name: meta?.name || code,
-      parentCode: meta?.parent_code || null,
-      level: meta?.level || 1,
-      direction: meta?.direction || 'neutral',
+      code: item.code,
+      name: item.name,
+      parentCode: item.parent_code || null,
+      level: 1,
+      direction: cls?.flow === 'out' ? 'outflow' : cls?.flow === 'in' ? 'inflow' : item.direction,
       activity,
       activityLabel,
       debitTotal,
       creditTotal,
       signedNet,
-      voucherCount: voucherCountByCode.get(code) || 0,
+      voucherCount: amt.voucherCount || 0,
     })
   }
 
-  let operatingNet = 0
-  let investingNet = 0
-  let financingNet = 0
-  for (const item of items) {
-    if (item.activity === 'operating') operatingNet += item.signedNet
-    else if (item.activity === 'investing') investingNet += item.signedNet
-    else if (item.activity === 'financing') financingNet += item.signedNet
-  }
-  operatingNet = round2(operatingNet)
-  investingNet = round2(investingNet)
-  financingNet = round2(financingNet)
+  const operatingNet = auto.activities.operating
+  const investingNet = auto.activities.investing
+  const financingNet = auto.activities.financing
 
   const itemCount = flowItems.length
   const itemsWithData = items.length
 
-  const cashAccountNetChange = sumCashAccountNetChange(
-    db,
-    accountSetId,
-    year,
-    fromPeriod,
-    toPeriod,
-    includeUnposted
-  )
+  // 现金及现金等价物科目本期净变动（与自动取数同一口径：含其他货币资金；未设置项目的金额体现在差额里）
+  const cashAccountNetChange = auto.cashChange
 
   const beginPeriod = scope === 'month' && period > 1 ? period - 1 : 0
   const beginBalanceMap = getBatchBalances(db, accountSetId, cashAccountCodes, year, beginPeriod)
@@ -358,7 +222,7 @@ export function getCashFlowTrialBalance(
   beginCash = round2(beginCash)
   endCash = round2(endCash)
 
-  const totalNet = round2(operatingNet + investingNet + financingNet)
+  const totalNet = round2(operatingNet + investingNet + financingNet + auto.activities.other)
   const diff = round2(totalNet - cashAccountNetChange)
   const cashBalanceDiff = round2(endCash - beginCash - totalNet)
 
@@ -380,8 +244,8 @@ export function getCashFlowTrialBalance(
       label: `${activityLabels.operating} + ${activityLabels.investing} + ${activityLabels.financing} = 现金流量净额`,
       expected: totalNet,
       actual: totalNet,
-      diff: round2(totalNet - (operatingNet + investingNet + financingNet)),
-      passed: Math.abs(totalNet - (operatingNet + investingNet + financingNet)) < EPS,
+      diff: round2(totalNet - (operatingNet + investingNet + financingNet + auto.activities.other)),
+      passed: Math.abs(totalNet - (operatingNet + investingNet + financingNet + auto.activities.other)) < EPS,
       severity: 'error',
     },
     {
@@ -404,7 +268,7 @@ export function getCashFlowTrialBalance(
     },
     {
       id: 'unmatched_entries',
-      label: '现金/银行分录均已指定现金流量项目',
+      label: '现金收付凭证的对方科目均已设置现金流量项目',
       expected: 0,
       actual: unmatchedCashEntries.length,
       diff: unmatchedCashEntries.length,
@@ -416,7 +280,7 @@ export function getCashFlowTrialBalance(
   if (invalidCodeEntries.length > 0) {
     balanceChecks.push({
       id: 'invalid_code_entries',
-      label: '现金流量项目编码均有效',
+      label: '科目设置的现金流量项目均有效',
       expected: 0,
       actual: invalidCodeEntries.length,
       diff: invalidCodeEntries.length,

@@ -5,6 +5,7 @@
       <el-input v-model="kw" placeholder="物料编码/名称" size="small" clearable style="width:180px" @keyup.enter="load" />
       <el-input v-model="batchNo" placeholder="批次号" size="small" clearable style="width:140px" @keyup.enter="load" />
       <el-button type="primary" plain size="small" :loading="loading" @click="load"><el-icon><Search /></el-icon>查询</el-button>
+      <SaveAsButton title="批次库存" />
       <FilterClearButton size="small" @clear="handleClearFilters" />
       <span class="rpt-hint">共 {{ rows.length }} 个批次</span>
     </div>

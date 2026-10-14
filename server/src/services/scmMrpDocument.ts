@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
 import { computeIssueSuggestion, computePushedQty } from './scmProduction.js'
 import { bomComponents, pickActiveBom, substituteStock } from './scmBom.js'
+import { renderTpl, resolveDocTpl, nextFromValues } from './scmNoRule.js'
 
 export type MrpSourceKind = 'sales_order' | 'production_plan' | 'outsource_plan' | 'assembly'
 export interface MrpSourceRef { kind: MrpSourceKind; id: string }
@@ -64,26 +65,10 @@ function add(map: Map<string, number>, code: string, qty: number) {
   if (code && qty > 0) map.set(code, r6((map.get(code) || 0) + qty))
 }
 
-function nextDocNo(db: Database.Database, aid: string, code: string) {
-  const now = new Date()
-  const row = db.prepare("SELECT param_value FROM system_params WHERE account_set_id=? AND param_key='scm:doc_no_rule'").get(aid) as any
-  let rule = String(row?.param_value || '').trim() || '{YYYY}{MM}-{CODE}-{SEQ:3}'
-  if (!/\{SEQ(:\d+)?\}/.test(rule)) rule += '-{SEQ:3}'
-  const yyyy = String(now.getFullYear())
-  const rendered = rule
-    .replace(/\{YYYY\}/g, yyyy).replace(/\{YY\}/g, yyyy.slice(2))
-    .replace(/\{MM\}/g, String(now.getMonth() + 1).padStart(2, '0'))
-    .replace(/\{DD\}/g, String(now.getDate()).padStart(2, '0')).replace(/\{CODE\}/g, code)
-  const token = rendered.match(/\{SEQ(?::(\d+))?\}/)!
-  const width = token[1] ? Number(token[1]) : 3
-  const prefix = rendered.slice(0, rendered.indexOf(token[0]))
-  const rows = db.prepare('SELECT doc_no FROM scm_doc WHERE account_set_id=? AND doc_type=? AND doc_no LIKE ?').all(aid, code, `${prefix}%`) as any[]
-  let max = 0
-  for (const current of rows) {
-    const match = String(current.doc_no || '').slice(prefix.length).match(/^(\d+)/)
-    if (match) max = Math.max(max, Number(match[1]))
-  }
-  return rendered.replace(token[0], String(max + 1).padStart(width, '0'))
+function nextDocNo(db: Database.Database, aid: string, code: string, docDate?: string | null) {
+  const r = renderTpl(resolveDocTpl(db, aid, code), code, docDate)
+  const rows = db.prepare('SELECT doc_no FROM scm_doc WHERE account_set_id=? AND doc_type=? AND doc_no LIKE ?').all(aid, code, `${r.prefix}%`) as any[]
+  return nextFromValues(r, rows.map(x => x.doc_no))
 }
 
 function ensureSourceKind(value: unknown): MrpSourceKind {
@@ -706,7 +691,9 @@ export function listMrpSourceOptions(
     const occupied = db.prepare(`SELECT s.mrp_doc_id,d.doc_no FROM scm_mrp_source s JOIN scm_doc d ON d.id=s.mrp_doc_id
       WHERE s.account_set_id=? AND s.source_kind=? AND s.source_id=? AND d.status IN ('draft','audited')
         AND (?='' OR s.mrp_doc_id<>?) LIMIT 1`).get(aid, kind, row.id, currentMrpId, currentMrpId) as any
-    let eligible = !occupied, reason = occupied ? `已进入 ${occupied.doc_no}` : ''
+    // 计划已在 MRP 中又做了数量变更：不能重跑 MRP，提示走「变更单 → 追加物料需求」（客户测试 20261011）
+    const isPlan = kind === 'outsource_plan' || kind === 'production_plan'
+    let eligible = !occupied, reason = occupied ? `已进入 ${occupied.doc_no}${isPlan ? '，数量变更请在变更单中追加' : ''}` : ''
     if (eligible) {
       try { if (!normalizeRef(db, aid, { kind, id: row.id }).rows.length) { eligible = false; reason = '已无可计算需求' } }
       catch (error: any) { eligible = false; reason = error?.message || '来源不可用' }

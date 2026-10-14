@@ -75,7 +75,7 @@ describe('采购固定报表查询服务', () => {
 
   it('返回六张采购固定报表和供应商筛选元数据', () => {
     const meta = getPurchaseFixedReportMeta(db, 'a1')
-    expect(meta.reports.map(item => item.code)).toEqual(['summary', 'detail', 'order_tracking', 'ranking', 'cost', 'trend'])
+    expect(meta.reports.map(item => item.code)).toEqual(['summary', 'detail', 'order_tracking', 'return', 'ranking', 'cost', 'trend'])
     expect(meta.groupings.summary).toContainEqual({ value: 'batch_product', label: '批次 + 产品' })
     expect(meta.options.partners.map(item => item.value)).toEqual(['S01', 'S02'])
     expect(meta.defaults.order_tracking_statuses).not.toContain('completed')
@@ -85,6 +85,16 @@ describe('采购固定报表查询服务', () => {
     const result = runPurchaseFixedReport(db, 'a1', { report_code: 'summary', grouping: 'supplier_product', filters })
     expect(result.rows.find(row => row.partner_code === 'S01')).toMatchObject({ qty: 8, purchase_amount: 800, purchase_cost: 720, cost_variance: 80, variance_rate: 10 })
     expect(result.summary).toMatchObject({ qty: 13, purchase_amount: 1800, purchase_cost: 1620, cost_variance: 180, variance_rate: 10 })
+  })
+
+  it('采购退货统计表只统计退货单，退货数量金额按正数展示', () => {
+    const result = runPurchaseFixedReport(db, 'a1', { report_code: 'return', grouping: 'supplier', filters })
+    expect(result.rows).toHaveLength(1)
+    expect(result.rows[0]).toMatchObject({ partner_code: 'S01', qty: 2, purchase_amount: 200, purchase_cost: 180 })
+    expect(result.columns.find(column => column.key === 'qty')?.label).toBe('退货数量')
+    expect(result.columns.find(column => column.key === 'purchase_amount')?.label).toBe('退货金额')
+    const forced = runPurchaseFixedReport(db, 'a1', { report_code: 'return', grouping: 'supplier', filters: { ...filters, source_types: ['PI'] } })
+    expect(forced.summary).toMatchObject({ qty: 2 })
   })
 
   it('采购明细固定字段、负数退货和差额率正确', () => {

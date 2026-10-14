@@ -46,7 +46,7 @@
         <span class="items-hd__hint">关键项任一不合格即整行不合格；非关键项不合格只记录。数值型按上下限判定，判定型填「合格/不合格」</span>
         <el-button size="small" @click="addItem"><el-icon><Plus /></el-icon>加检验项</el-button>
       </div>
-      <el-table :data="form.items" border stripe size="small" class="items-table">
+      <el-table v-col-width="'scm_QcStandardForm_1'" :data="form.items" border stripe size="small" class="items-table">
         <el-table-column type="index" label="序" width="48" align="center" />
         <el-table-column label="检验项" min-width="150"><template #default="{ row }"><el-input v-model="row.name" size="small" placeholder="如 直径" /></template></el-table-column>
         <el-table-column label="检验方法" min-width="130"><template #default="{ row }"><el-input v-model="row.method" size="small" placeholder="如 卡尺" /></template></el-table-column>

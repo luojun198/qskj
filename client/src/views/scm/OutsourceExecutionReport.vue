@@ -10,7 +10,7 @@
       <el-input v-model="filters.item_code" clearable placeholder="成品编码/名称" style="width:160px" />
       <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" start-placeholder="开始日期" end-placeholder="结束日期" style="width:240px" />
       <el-select v-model="filters.status" clearable placeholder="执行状态" style="width:130px"><el-option v-for="s in ['未入库','部分入库','已完成']" :key="s" :label="s" :value="s" /></el-select>
-      <el-button type="primary" :loading="loading" @click="query">查询</el-button><FilterClearButton size="small" @clear="handleClearFilters" /><el-button type="success" plain :loading="exporting" @click="exportExcel">导出Excel</el-button>
+      <el-button type="primary" :loading="loading" @click="query">查询</el-button><FilterClearButton size="small" @clear="handleClearFilters" /><el-button type="success" plain :loading="exporting" @click="exportExcel">另存</el-button>
     </div>
     <div class="cards"><div><span>委外计划数</span><b>{{ summary.plan_count || 0 }}</b></div><div><span>计划数量</span><b>{{ num(summary.plan_qty) }}</b></div><div><span>已入库</span><b>{{ num(summary.finished_qty) }}</b></div><div><span>未完成</span><b>{{ num(summary.remaining_qty) }}</b></div><div><span>含税加工费</span><b>{{ money(summary.fee_gross) }}</b></div><div><span>未付金额</span><b>{{ money(summary.outstanding_amount) }}</b></div></div>
     <div class="table-wrap"><el-table v-loading="loading" :data="rows" border stripe height="100%" @sort-change="onSortChange">

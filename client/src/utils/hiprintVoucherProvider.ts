@@ -9,12 +9,19 @@ export const VOUCHER_TEXT_FIELDS = [
   { field: 'voucher_no_text', title: '凭证字号', testData: '记-001', fontSize: 11 },
   { field: 'date_text', title: '凭证日期', testData: '2026-09-07', fontSize: 11 },
   { field: 'attachments_text', title: '附件张数', testData: '附单据 2 张', fontSize: 10 },
+  { field: 'page_text', title: '页次', testData: '1/2', fontSize: 11, textAlign: 'right' },
   { field: 'total_debit_text', title: '借方合计', testData: '1,000.00', fontSize: 11, textAlign: 'right' },
   { field: 'total_credit_text', title: '贷方合计', testData: '1,000.00', fontSize: 11, textAlign: 'right' },
   { field: 'maker_text', title: '制单', testData: '制单：张三', fontSize: 10 },
   { field: 'auditor_text', title: '审核', testData: '审核：李四', fontSize: 10 },
   { field: 'poster_text', title: '记账', testData: '记账：王五', fontSize: 10 },
-  { field: 'supervisor_text', title: '主管', testData: '主管：赵六', fontSize: 10 },
+  { field: 'supervisor_text', title: '主管', testData: '会计主管：赵六', fontSize: 10 },
+  { field: 'cashier_text', title: '出纳', testData: '出纳：', fontSize: 10 },
+  { field: 'unit_text', title: '单位名称', testData: '单位名称：示例账套', fontSize: 10 },
+  { field: 'date_cn_text', title: '凭证日期（中文）', testData: '2026年09月07日', fontSize: 10 },
+  { field: 'voucher_word_text', title: '凭证字号（字第几号）', testData: '[记] 字第 1 号', fontSize: 10 },
+  { field: 'brand_text', title: '品牌（竖排）', testData: '润衡财经软件', fontSize: 8 },
+  { field: 'attachments_side_text', title: '附单据（竖排）', testData: '附单据2张', fontSize: 10 },
 ] as const
 
 export const VOUCHER_TABLE_FIELD = 'entries'
@@ -26,6 +33,17 @@ export const VOUCHER_TABLE_COLUMNS = [
   { title: '借方金额', field: 'debit', width: 56, align: 'right' },
   { title: '贷方金额', field: 'credit', width: 56, align: 'right' },
 ] as const
+
+/**
+ * 会计科目全称：上级科目 / 本级科目 / 辅助项目，用「/」连接（如 应收账款/零散户/239陈佳洪）。
+ * 列目录里紧跟「会计科目」，默认不勾选；标准凭证模板用它代替「科目编码 + 会计科目」两列。
+ */
+export const VOUCHER_ACCOUNT_FULL_COLUMN = {
+  title: '会计科目（全称）',
+  field: 'account_full_text',
+  width: 120,
+  align: 'left',
+} as const
 
 /** 默认不勾选、可在属性面板里按需打开的分录列 */
 export const VOUCHER_TABLE_OPTIONAL_COLUMNS = [
@@ -73,7 +91,11 @@ export function buildVoucherTableColumns(
     colspan: 1,
     checked,
   })
-  const base = VOUCHER_TABLE_COLUMNS.map(col => toDef(col, true))
+  const base = VOUCHER_TABLE_COLUMNS.flatMap(col =>
+    col.field === 'account_name'
+      ? [toDef(col, true), toDef(VOUCHER_ACCOUNT_FULL_COLUMN, false)]
+      : [toDef(col, true)]
+  )
   const optional = VOUCHER_TABLE_OPTIONAL_COLUMNS.map(col => toDef(col, false))
   const seen = new Set([...base, ...optional].map(col => col.field))
   const aux = auxCategories
@@ -162,13 +184,25 @@ export function createVoucherPrintProvider(hiprint: {
       if (!Group) return
 
       const infoFields = VOUCHER_TEXT_FIELDS.filter(f =>
-        ['doc_title', 'account_set_name', 'voucher_no_text', 'date_text', 'attachments_text'].includes(f.field)
+        [
+          'doc_title',
+          'unit_text',
+          'account_set_name',
+          'voucher_no_text',
+          'voucher_word_text',
+          'date_text',
+          'date_cn_text',
+          'attachments_text',
+          'attachments_side_text',
+          'page_text',
+          'brand_text',
+        ].includes(f.field)
       )
       const totalFields = VOUCHER_TEXT_FIELDS.filter(f =>
         ['total_debit_text', 'total_credit_text'].includes(f.field)
       )
       const signFields = VOUCHER_TEXT_FIELDS.filter(f =>
-        ['maker_text', 'auditor_text', 'poster_text', 'supervisor_text'].includes(f.field)
+        ['supervisor_text', 'auditor_text', 'poster_text', 'cashier_text', 'maker_text'].includes(f.field)
       )
 
       try {
@@ -466,4 +500,39 @@ export const VOUCHER_SUMMARY_FORMATTER_SRC = `function (column, nums, allData, o
   var rowHeight = options && Number(options.tableBodyRowHeight)
   var style = 'text-align: ' + align + (rowHeight > 0 ? '; height: ' + rowHeight + 'pt' : '')
   return '<td style="' + style + '" colspan="' + colspan + '">' + text + '</td>'
+}`
+
+/**
+ * 合计行标签列（tableSummary === 'text'）的渲染函数（源码字符串，同样必须自包含）。
+ *
+ * hiprint 的 text 分支只会输出模板里写死的 tableSummaryText；凭证按数据层切页后，
+ * 非末页要显示「过次页」、末页显示「合计」，标签放在每行数据的 __sum_label 上
+ * （见 voucherToHiprintData）。没有 __sum_label 时（老数据 / 设计器示例）回退模板文字。
+ *
+ * 末页数据还带 __sum_upper（合计金额大写）：标签格跨 2 列及以上时拆成两格，
+ * 第一格放「合计」，其余列合并放大写金额（如 摘要 | 肆仟柒佰壹拾柒元叁角玖分）。
+ */
+export const VOUCHER_SUMMARY_LABEL_FORMATTER_SRC = `function (column, nums, allData, options) {
+  var rows = Object.prototype.toString.call(allData) === '[object Array]' ? allData : []
+  var label = ''
+  var upper = ''
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i] && rows[i].__sum_label) {
+      label = String(rows[i].__sum_label)
+      upper = rows[i].__sum_upper ? String(rows[i].__sum_upper) : ''
+      break
+    }
+  }
+  if (!label) label = column.tableSummaryText || ''
+  var align = column.tableSummaryAlign || 'center'
+  var colspan = column.tableSummaryColspan === null || column.tableSummaryColspan === undefined
+    ? 1 : Number(column.tableSummaryColspan)
+  var rowHeight = options && Number(options.tableBodyRowHeight)
+  var h = rowHeight > 0 ? '; height: ' + rowHeight + 'pt' : ''
+  var esc = function (t) { return t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }
+  if (upper && colspan >= 2) {
+    return '<td style="text-align: center' + h + '" colspan="1">' + esc(label) + '</td>' +
+      '<td style="text-align: left' + h + '" colspan="' + (colspan - 1) + '">' + esc(upper) + '</td>'
+  }
+  return '<td style="text-align: ' + align + h + '" colspan="' + colspan + '">' + esc(label) + '</td>'
 }`

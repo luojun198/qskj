@@ -35,6 +35,8 @@ function createDb() {
       doc_date TEXT, due_date TEXT, direction TEXT, amount REAL, ar_account TEXT, ap_account TEXT,
       cashier_journal_id TEXT, remark TEXT, verified_amount REAL NOT NULL DEFAULT 0);
     CREATE TABLE scm_ar_ap_verify (id TEXT, account_set_id TEXT, verify_no TEXT, in_log_id TEXT, out_log_id TEXT, amount REAL);
+    CREATE TABLE scm_invoice_arap_adjust (id TEXT PRIMARY KEY, account_set_id TEXT, invoice_id TEXT, invoice_no TEXT, src_doc_id TEXT,
+      src_log_id TEXT, delta_fc REAL, delta_base REAL, created_at TEXT DEFAULT (datetime('now')));
     CREATE TABLE scm_stock (id TEXT, account_set_id TEXT, warehouse_code TEXT, item_code TEXT,
       qty REAL DEFAULT 0, amount REAL DEFAULT 0, avg_cost REAL DEFAULT 0, updated_at TEXT);
     CREATE TABLE scm_stock_move (id TEXT, account_set_id TEXT, move_date TEXT, doc_type TEXT, doc_no TEXT,
@@ -52,7 +54,7 @@ function createDb() {
     CREATE TABLE accounts (id TEXT, account_set_id TEXT, code TEXT, name TEXT);
     CREATE TABLE vouchers (id TEXT, account_set_id TEXT, voucher_no TEXT, voucher_date TEXT,
       year INTEGER, period INTEGER, total_amount REAL, maker_name TEXT, remark TEXT, source TEXT, voucher_type_id TEXT);
-    CREATE TABLE voucher_entries (currency_code TEXT, exchange_rate REAL, foreign_amount REAL, id TEXT, account_set_id TEXT, voucher_id TEXT, seq INTEGER,
+    CREATE TABLE voucher_entries (currency_code TEXT, exchange_rate REAL, foreign_amount REAL, dept_id TEXT, dept_name TEXT, project_id TEXT, project_name TEXT, supplier_id TEXT, supplier_name TEXT, person_id TEXT, person_name TEXT, func_class_id TEXT, func_class_name TEXT, aux_data TEXT, cash_flow_code TEXT, cash_flow_name TEXT, quantity REAL, unit_price REAL, unit TEXT, id TEXT, account_set_id TEXT, voucher_id TEXT, seq INTEGER,
       account_id TEXT, account_code TEXT, account_name TEXT, direction TEXT, amount REAL,
       amount_cents INTEGER, summary TEXT);
   `)
@@ -268,5 +270,102 @@ describe('S2 往来与凭证口径一致', () => {
     const apEntry = entriesOf(latestVoucherId()).find(e => e.account_code === '2202' && e.direction === 'credit')!
     expect(logOf('PI-020').amount).toBe(apEntry.amount)
     expect(apEntry.amount).toBe(1130)
+  })
+})
+
+describe('第四份反馈 Q7：一张发票对应多张源单、同一源单分批开票', () => {
+  beforeEach(() => { testDb = createDb(); seedBase() })
+
+  /** 发票行逐行指向来源行 */
+  const linkLines = (invoiceId: string, sourceLineIds: string[]) => {
+    const rows = testDb.prepare('SELECT id FROM scm_doc_line WHERE doc_id=? ORDER BY seq').all(invoiceId) as any[]
+    rows.forEach((r, i) => testDb.prepare('UPDATE scm_doc_line SET source_line_id=? WHERE id=?').run(sourceLineIds[i], r.id))
+  }
+  const lineIdsOf = (docId: string) => (testDb.prepare('SELECT id FROM scm_doc_line WHERE doc_id=? ORDER BY seq').all(docId) as any[]).map(r => r.id)
+  const adjCount = () => (testDb.prepare('SELECT COUNT(*) c FROM scm_invoice_arap_adjust').get() as any).c
+
+  it('合并两张入库单开票：两张入库单各自按差额校正，不新增台账；差额凭证逐行计', async () => {
+    const pi1 = seedDoc('PI', 'PI-101', [{ qty: 10, price: 100, amount: 1000, tax_amount: 130 }])
+    const pi2 = seedDoc('PI', 'PI-102', [{ qty: 5, price: 200, amount: 1000, tax_amount: 130 }])
+    for (const id of [pi1, pi2]) {
+      expect(callHandler(auditDocHandler, id).body.code).toBe(0)
+      expect(callHandler(genVoucherHandler, id).body.code).toBe(0)
+    }
+    // 发票：PI-101 原价全开；PI-102 改价 220 全开
+    const rp = seedDoc('RP', 'RP-101', [
+      { qty: 10, price: 100, amount: 1000, tax_amount: 130 },
+      { qty: 5, price: 220, amount: 1100, tax_amount: 143 },
+    ], { sourceDocId: pi1 })
+    linkLines(rp, [lineIdsOf(pi1)[0], lineIdsOf(pi2)[0]])
+    const res = callHandler(auditDocHandler, rp)
+    expect(res.body.code).toBe(0)
+    expect(logCount()).toBe(2)
+    expect(logOf('PI-101').amount).toBe(1130)
+    expect(logOf('PI-102').amount).toBe(1243)
+    expect(adjCount()).toBe(2)
+
+    const v = callHandler(genVoucherHandler, rp)
+    expect(v.body.code).toBe(0)
+    expect(totalsOf(v.body.data.voucher_id)).toEqual({ debit: 113, credit: 113 })
+    expect(entriesOf(v.body.data.voucher_id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ account_code: '1405', direction: 'debit', amount: 100 }),
+      expect.objectContaining({ account_code: '22210101', direction: 'debit', amount: 13 }),
+      expect.objectContaining({ account_code: '2202', direction: 'credit', amount: 113 }),
+    ]))
+  })
+
+  it('同一入库单分两次开票：只调整所开部分，未开票部分保持暂估；反审核按记录精确回退', async () => {
+    const { reverseInvoice } = await import('../services/scmArAp.js')
+    const pi = seedDoc('PI', 'PI-201', [{ qty: 10, price: 100, amount: 1000, tax_amount: 130 }])
+    expect(callHandler(auditDocHandler, pi).body.code).toBe(0)
+    const piLine = lineIdsOf(pi)[0]
+    // 第一次开 4 件、单价 110：暂估折算 400+52，发票 440+57.2 → 差额 +45.2
+    const rp1 = seedDoc('RP', 'RP-201', [{ qty: 4, price: 110, amount: 440, tax_amount: 57.2 }])
+    linkLines(rp1, [piLine])
+    expect(callHandler(auditDocHandler, rp1).body.code).toBe(0)
+    expect(logOf('PI-201').amount).toBe(1175.2)
+    // 第二次开 6 件原价：无差额
+    const rp2 = seedDoc('RP', 'RP-202', [{ qty: 6, price: 100, amount: 600, tax_amount: 78 }])
+    linkLines(rp2, [piLine])
+    expect(callHandler(auditDocHandler, rp2).body.code).toBe(0)
+    expect(logOf('PI-201').amount).toBe(1175.2)
+    // 第三次再开就超出入库数量
+    const rp3 = seedDoc('RP', 'RP-203', [{ qty: 1, price: 100, amount: 100, tax_amount: 13 }])
+    linkLines(rp3, [piLine])
+    const over = callHandler(auditDocHandler, rp3)
+    expect(over.statusCode).toBe(400)
+    // 反审核第一张发票：PI 恢复到只含第二张（无差额）的金额
+    const rp1Doc = testDb.prepare('SELECT * FROM scm_doc WHERE id=?').get(rp1) as any
+    reverseInvoice(testDb, AID, rp1Doc)
+    expect(logOf('PI-201').amount).toBe(1130)
+    expect(String(logOf('PI-201').remark || '')).not.toMatch(/RP-201/)
+    expect(String(logOf('PI-201').remark || '')).toMatch(/RP-202/)
+  })
+
+  it('发票里混有无来源的行：有来源的校正暂估，无来源的另挂一条', () => {
+    const pi = seedDoc('PI', 'PI-301', [{ qty: 10, price: 100, amount: 1000, tax_amount: 130 }])
+    expect(callHandler(auditDocHandler, pi).body.code).toBe(0)
+    const rp = seedDoc('RP', 'RP-301', [
+      { qty: 10, price: 100, amount: 1000, tax_amount: 130 },
+      { qty: 0, price: 0, amount: 50, tax_amount: 0 },   // 运费行，无来源
+    ])
+    linkLines(rp, [lineIdsOf(pi)[0], null as any])
+    expect(callHandler(auditDocHandler, rp).body.code).toBe(0)
+    expect(logOf('PI-301').amount).toBe(1130)
+    expect(logOf('RP-301')).toMatchObject({ direction: 'in', amount: 50 })
+  })
+
+  it('来源单未制证时，发票制证提示逐一列出未制证的来源单', () => {
+    const pi1 = seedDoc('PI', 'PI-401', [{ qty: 1, price: 100, amount: 100, tax_amount: 13 }])
+    const pi2 = seedDoc('PI', 'PI-402', [{ qty: 1, price: 100, amount: 100, tax_amount: 13 }])
+    callHandler(auditDocHandler, pi1); callHandler(auditDocHandler, pi2)
+    callHandler(genVoucherHandler, pi1)
+    const rp = seedDoc('RP', 'RP-401', [{ qty: 1, price: 120, amount: 120, tax_amount: 15.6 }, { qty: 1, price: 100, amount: 100, tax_amount: 13 }])
+    linkLines(rp, [lineIdsOf(pi1)[0], lineIdsOf(pi2)[0]])
+    callHandler(auditDocHandler, rp)
+    const res = callHandler(genVoucherHandler, rp)
+    expect(res.statusCode).toBe(400)
+    expect(res.body.message).toMatch(/PI-402/)
+    expect(res.body.message).not.toMatch(/PI-401/)
   })
 })

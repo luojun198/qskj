@@ -11,6 +11,8 @@ export interface CashFlowItem {
   is_leaf: number
   sort_order: number
   is_active: number
+  /** main 主表项目 / supplement 附表（补充资料）项目 */
+  kind?: 'main' | 'supplement'
   created_at: string
   updated_at: string
   children?: CashFlowItem[]
@@ -38,7 +40,7 @@ export function getCashFlowTree(accountSetId: string) {
  * 根据编码获取现金流量项目
  */
 export function getCashFlowItemByCode(accountSetId: string, code: string) {
-  return request.get<CashFlowItem>(`/base/cash-flow-items/${code}`, {
+  return request.get<CashFlowItem>(`/base/cash-flow-items/code/${encodeURIComponent(code)}`, {
     params: { account_set_id: accountSetId }
   })
 }

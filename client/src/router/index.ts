@@ -65,10 +65,15 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '角色管理', icon: 'UserFilled', parent: '系统管理' },
       },
       {
+        // 系统参数已嵌入「系统管理」主页：旧地址保留为重定向，?tab= / ?openBrandSettings= 原样带过去
         path: 'system/param',
-        name: 'Param',
-        component: () => import('@/views/system/Param.vue'),
-        meta: { title: '系统参数', icon: 'Setting', parent: '系统管理' },
+        redirect: to => ({ path: `/group/${encodeURIComponent('系统管理')}`, query: to.query }),
+      },
+      {
+        path: 'system/license',
+        name: 'SystemLicense',
+        component: () => import('@/views/system/License.vue'),
+        meta: { title: '注册信息', icon: 'Key', parent: '系统管理' },
       },
       {
         path: 'system/dashboard-rules',
@@ -120,10 +125,22 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '现金流量表(估算)', icon: 'Money', parent: '账簿查询' },
       },
       {
+        path: 'report/cash-flow-auto',
+        name: 'CashFlowAutoReport',
+        component: () => import('@/views/report/CashFlowAuto.vue'),
+        meta: { title: '现金流量表', icon: 'Money', parent: '账簿查询', requiresCashFlow: true },
+      },
+      {
         path: 'report/dynamic/:code?',
         name: 'DynamicReport',
         component: () => import('@/views/report/DynamicReport.vue'),
         meta: { title: '报表维护', icon: 'TrendCharts', parent: '基础设置' },
+      },
+      {
+        path: 'base/scm-voucher-setting',
+        name: 'ScmVoucherSetting',
+        component: () => import('@/views/base/ScmVoucherSetting.vue'),
+        meta: { title: '进销存凭证设置', icon: 'Setting', parent: '基础设置' },
       },
       {
         path: 'base/project',
@@ -172,6 +189,12 @@ const routes: RouteRecordRaw[] = [
         name: 'CashFlowItems',
         component: () => import('@/views/base/CashFlowItems.vue'),
         meta: { title: '现金流量项目', icon: 'Money', parent: '基础设置', requiresCashFlow: true },
+      },
+      {
+        path: 'base/cash-flow-account-map',
+        name: 'CashFlowAccountMap',
+        component: () => import('@/views/base/CashFlowAccountMap.vue'),
+        meta: { title: '科目现金流量项目', icon: 'Money', parent: '基础设置', requiresCashFlow: true },
       },
       {
         path: 'base/currency',
@@ -226,6 +249,18 @@ const routes: RouteRecordRaw[] = [
         name: 'VoucherPeriodClose',
         component: () => import('@/views/voucher/PeriodClose.vue'),
         meta: { title: '期间结账', icon: 'Calendar', parent: '凭证管理' },
+      },
+      {
+        path: 'voucher/biz-center',
+        name: 'BizVoucherCenter',
+        component: () => import('@/views/voucher/BizVoucherCenter.vue'),
+        meta: { title: '业务凭证', icon: 'Files', parent: '凭证管理' },
+      },
+      {
+        path: 'voucher/aux-unmatched',
+        name: 'ScmAuxUnmatched',
+        component: () => import('@/views/voucher/ScmAuxUnmatched.vue'),
+        meta: { title: '辅助核算对应不上', parent: '凭证管理' },
       },
       {
         path: 'voucher/query',
@@ -756,6 +791,24 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '自动排程', icon: 'SetUp', parent: '生产管理' },
       },
       {
+        path: 'scm/order-changes',
+        name: 'ScmOrderChangeList',
+        component: () => import('@/views/scm/OrderChangeList.vue'),
+        meta: { title: '订单变更单', icon: 'Edit', parent: '供应链' },
+      },
+      {
+        path: 'scm/order-changes/new/:docId',
+        name: 'ScmOrderChangeNew',
+        component: () => import('@/views/scm/OrderChangeForm.vue'),
+        meta: { title: '新增订单变更', icon: 'Edit', parent: '供应链' },
+      },
+      {
+        path: 'scm/order-changes/:id',
+        name: 'ScmOrderChangeForm',
+        component: () => import('@/views/scm/OrderChangeForm.vue'),
+        meta: { title: '订单变更单', icon: 'Edit', parent: '供应链' },
+      },
+      {
         path: 'scm/plan-changes',
         name: 'ScmPlanChangeList',
         component: () => import('@/views/scm/PlanChangeList.vue'),
@@ -878,6 +931,42 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '销售明细表', icon: 'Tickets', parent: '销售报表' },
       },
       {
+        path: 'scm/report/sales/return',
+        name: 'ScmSalesReturnReport',
+        component: () => import('@/views/scm/SalesFixedReport.vue'),
+        props: { reportCode: 'return' },
+        meta: { title: '销售退货统计表', icon: 'Undo2', parent: '销售报表' },
+      },
+      // 退货 / 发票查询表（第四份反馈 Q6 ~ Q8）：逐单逐行，共用 DocQueryReport
+      {
+        path: 'scm/report/sales/return-query',
+        name: 'ScmSalesReturnQuery',
+        component: () => import('@/views/scm/DocQueryReport.vue'),
+        props: { docType: 'SR' },
+        meta: { title: '销售退货查询表', icon: 'Undo2', parent: '销售报表' },
+      },
+      {
+        path: 'scm/report/sales/invoice-query',
+        name: 'ScmSalesInvoiceQuery',
+        component: () => import('@/views/scm/DocQueryReport.vue'),
+        props: { docType: 'RS' },
+        meta: { title: '销售发票查询表', icon: 'Tickets', parent: '销售报表' },
+      },
+      {
+        path: 'scm/report/purchase/return-query',
+        name: 'ScmPurchaseReturnQuery',
+        component: () => import('@/views/scm/DocQueryReport.vue'),
+        props: { docType: 'PR' },
+        meta: { title: '采购退货查询表', icon: 'Undo2', parent: '采购报表' },
+      },
+      {
+        path: 'scm/report/purchase/invoice-query',
+        name: 'ScmPurchaseInvoiceQuery',
+        component: () => import('@/views/scm/DocQueryReport.vue'),
+        props: { docType: 'RP' },
+        meta: { title: '采购发票查询表', icon: 'Tickets', parent: '采购报表' },
+      },
+      {
         path: 'scm/report/sales/ranking',
         name: 'ScmSalesRankingReport',
         component: () => import('@/views/scm/SalesFixedReport.vue'),
@@ -934,6 +1023,13 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '采购成本分析', icon: 'TrendCharts', parent: '采购报表' },
       },
       {
+        path: 'scm/report/purchase/return',
+        name: 'ScmPurchaseReturnReport',
+        component: () => import('@/views/scm/SalesFixedReport.vue'),
+        props: { reportCode: 'return', reportType: 'purchase' },
+        meta: { title: '采购退货统计表', icon: 'Undo2', parent: '采购报表' },
+      },
+      {
         path: 'scm/report/purchase/trend',
         name: 'ScmPurchaseTrendReport',
         component: () => import('@/views/scm/SalesFixedReport.vue'),
@@ -984,6 +1080,18 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '往来核销', icon: 'Money', parent: '往来管理' },
       },
       {
+        path: 'scm/arap-verify-records',
+        name: 'ScmArApVerifyRecords',
+        component: () => import('@/views/scm/ArApVerifyRecords.vue'),
+        meta: { title: '核销单记录', icon: 'Money', parent: '往来管理' },
+      },
+      {
+        path: 'scm/arap-verify-records/:verifyNo',
+        name: 'ScmArApVerifyRecord',
+        component: () => import('@/views/scm/ArApVerifyRecord.vue'),
+        meta: { title: '核销单', icon: 'Money', parent: '往来管理' },
+      },
+      {
         path: 'scm/arap-due',
         name: 'ScmArApDueReminder',
         component: () => import('@/views/scm/ArApDueReminder.vue'),
@@ -994,7 +1102,38 @@ const routes: RouteRecordRaw[] = [
         path: 'scm/arap-statement',
         name: 'ScmPartnerStatement',
         component: () => import('@/views/scm/PartnerStatement.vue'),
+        meta: { title: '往来对账查询', icon: 'Money', parent: '往来管理' },
+      },
+      {
+        // 对账单（单据化，第四份反馈 Q2）：列表 / 新增 / 查看编辑 / 打印 / 对账明细表
+        path: 'scm/statements',
+        name: 'ScmStatementList',
+        component: () => import('@/views/scm/StatementList.vue'),
         meta: { title: '对账单', icon: 'Money', parent: '往来管理' },
+      },
+      {
+        path: 'scm/statements/new',
+        name: 'ScmStatementNew',
+        component: () => import('@/views/scm/StatementForm.vue'),
+        meta: { title: '新增对账单', parent: '往来管理' },
+      },
+      {
+        path: 'scm/statements/detail-report',
+        name: 'ScmStatementDetailReport',
+        component: () => import('@/views/scm/StatementDetailReport.vue'),
+        meta: { title: '对账明细表', parent: '往来管理' },
+      },
+      {
+        path: 'scm/statements/:id/print',
+        name: 'ScmStatementPrint',
+        component: () => import('@/views/scm/StatementPrint.vue'),
+        meta: { title: '对账单打印', parent: '往来管理' },
+      },
+      {
+        path: 'scm/statements/:id',
+        name: 'ScmStatementForm',
+        component: () => import('@/views/scm/StatementForm.vue'),
+        meta: { title: '对账单', parent: '往来管理' },
       },
       {
         // 对账单打印预览（独立页，query 传 partner_code/start_date/end_date/arap_type）
@@ -1068,6 +1207,20 @@ const routes: RouteRecordRaw[] = [
         name: 'ScmDocFieldDefs',
         component: () => import('@/views/scm/DocFieldDefs.vue'),
         meta: { title: '单据自定义字段', parent: '供应链' },
+      },
+      {
+        // 物料 / 往来单位 Excel 导入（第六份反馈）：?kind=items|partners
+        path: 'scm/master-import',
+        name: 'ScmMasterImport',
+        component: () => import('@/views/scm/MasterImport.vue'),
+        meta: { title: '档案导入', parent: '供应链' },
+      },
+      {
+        // 润衡进销存（POS）备份独立导入：预检 → 导入 → 核对报告 → 导入历史 / 撤销
+        path: 'scm/acd-import',
+        name: 'ScmAcdImport',
+        component: () => import('@/views/scm/AcdImport.vue'),
+        meta: { title: '进销存ACD导入', parent: '供应链' },
       },
       {
         path: 'scm/docs/import',
@@ -1180,6 +1333,18 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '取消折旧', parent: '固定资产' },
       },
       {
+        path: 'asset/vouchers',
+        name: 'AssetVoucherManage',
+        component: () => import('@/views/asset/AssetVoucherManage.vue'),
+        meta: { title: '凭证管理', icon: 'Tickets', parent: '固定资产' },
+      },
+      {
+        path: 'asset/vouchers/regenerate',
+        name: 'AssetVoucherRegenerate',
+        component: () => import('@/views/asset/AssetVoucherRegenerate.vue'),
+        meta: { title: '重新生成凭证', parent: '固定资产' },
+      },
+      {
         path: 'asset/report',
         name: 'AssetReport',
         component: () => import('@/views/asset/AssetReport.vue'),
@@ -1190,6 +1355,12 @@ const routes: RouteRecordRaw[] = [
         name: 'AssetInventory',
         component: () => import('@/views/asset/AssetInventory.vue'),
         meta: { title: '资产盘点', icon: 'Checked', parent: '固定资产' },
+      },
+      {
+        path: 'cashier/accounts-manage',
+        name: 'CashierAccountManage',
+        component: () => import('@/views/cashier/CashierAccountManage.vue'),
+        meta: { title: '出纳账户', icon: 'Wallet', parent: '基础设置' },
       },
       {
         path: 'cashier/settle-type',

@@ -324,7 +324,7 @@ const SWITCH_ITEMS: Array<{ key: DraftKey; label: string }> = [
   { key: 'require_audit', label: '凭证审核' },
   { key: 'direct_print', label: '直接打印' },
   { key: 'voucher_time_control', label: '凭证时序控制' },
-  { key: 'enable_cash_flow', label: '现金流核算' },
+  { key: 'enable_cash_flow', label: '现金流量表' },
   { key: 'enable_foreign_currency', label: '外币核算' },
 ]
 

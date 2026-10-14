@@ -15,10 +15,11 @@
       <el-input v-model="filters.keyword" clearable placeholder="报工单号 / 工单号 / 成品" size="small" style="width:180px" @keyup.enter="query" @clear="query" />
       <el-button size="small" :loading="loading" @click="query">查询</el-button>
       <el-button type="primary" size="small" :disabled="!planId" :title="planId ? '' : '请先选择工单'" @click="openAdd"><el-icon><Plus /></el-icon>新增报工</el-button>
+      <SaveAsButton title="生产报工" />
       <span class="hint">合格 <b>{{ num(summary.qty) }}</b>　不良 <b>{{ num(summary.scrap_qty) }}</b>　工时 <b>{{ num(summary.work_hours) }}</b>　人工 <b>{{ fmt(summary.labor_amount) }}</b>　制费 <b>{{ fmt(summary.overhead_amount) }}</b></span>
     </div>
 
-    <el-table :data="rows" v-loading="loading" border stripe size="small" height="100%">
+    <el-table v-col-width="'scm_WorkReport_1'" :data="rows" v-loading="loading" border stripe size="small" height="100%">
       <el-table-column label="报工单号" prop="report_no" width="140" />
       <el-table-column label="日期" prop="report_date" width="105" />
       <el-table-column label="工单" min-width="130" show-overflow-tooltip><template #default="{ row }"><el-link type="primary" @click="openPlan(row)">{{ row.plan_code }}</el-link></template></el-table-column>

@@ -20,7 +20,7 @@
       <el-input v-model="filters.operator" clearable placeholder="操作工" size="small" style="width:120px" @keyup.enter="load" />
       <el-button type="primary" size="small" :loading="loading" @click="load">查询</el-button>
       <FilterClearButton size="small" @clear="clear" />
-      <el-button type="success" plain size="small" :loading="exporting" @click="exportExcel">导出Excel</el-button>
+      <el-button type="success" plain size="small" :loading="exporting" @click="exportExcel">另存</el-button>
     </div>
     <div class="summary-grid">
       <div><span>报工单数</span><b>{{ summary.report_count || 0 }}</b></div>

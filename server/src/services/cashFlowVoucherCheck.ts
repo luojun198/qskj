@@ -1,7 +1,15 @@
 import type { Database } from 'better-sqlite3'
 import type { CashFlowTrialBalanceScope } from './cashFlowTrialBalance.js'
 import { isCashFlowEnabledForAccountSet } from './voucherEntry.js'
+import { computeCashFlowByMapping } from './cashFlowAutoEngine.js'
 
+/**
+ * 现金流量凭证检查（按「科目现金流量项目」自动取数口径）
+ *
+ * 凭证录入不再指定现金流量项目，检查的对象变成：含现金类科目的凭证里，
+ * 对方科目没有设置主表项目（missing）或设的项目已停用 / 删除（invalid_code）的分录。
+ * 修正方式是到「基础资料 → 科目现金流量项目」补设置，而不是改凭证。
+ */
 export type CashFlowVoucherCheckIssue = 'missing' | 'invalid_code' | 'orphan'
 
 export type CashFlowVoucherCheckEntry = {
@@ -30,6 +38,7 @@ export type CashFlowVoucherCheckResult = {
     scopeLabel: string
   }
   summary: {
+    /** 参与检查的含现金类科目凭证张数 */
     totalCashEntries: number
     missingCount: number
     invalidCodeCount: number
@@ -39,195 +48,15 @@ export type CashFlowVoucherCheckResult = {
   }
   missingEntries: CashFlowVoucherCheckEntry[]
   invalidCodeEntries: CashFlowVoucherCheckEntry[]
+  /** 已废弃：凭证不再人工指定项目，恒为空 */
   orphanEntries: CashFlowVoucherCheckEntry[]
 }
 
-function buildStatusCondition(includeUnposted: boolean): string {
-  return includeUnposted
-    ? "v.status IN ('draft', 'audited', 'posted')"
-    : "v.status = 'posted'"
-}
-
-function buildScopeMeta(
-  year: number,
-  period: number,
-  scope: CashFlowTrialBalanceScope,
-  includeUnposted: boolean
-) {
+function buildScopeMeta(year: number, period: number, scope: CashFlowTrialBalanceScope) {
   const fromPeriod = scope === 'ytd' ? 1 : period
   const toPeriod = period
-  const scopeLabel =
-    scope === 'ytd' ? `${year}年1-${period}月（本年累计）` : `${year}年${period}月`
+  const scopeLabel = scope === 'ytd' ? `${year}年1-${period}月（本年累计）` : `${year}年${period}月`
   return { fromPeriod, toPeriod, scopeLabel }
-}
-
-function countTotalCashEntries(
-  db: Database,
-  accountSetId: string,
-  year: number,
-  fromPeriod: number,
-  toPeriod: number,
-  includeUnposted: boolean
-): number {
-  const statusCondition = buildStatusCondition(includeUnposted)
-  const row = db
-    .prepare(
-      `
-      SELECT COUNT(*) AS cnt
-      FROM voucher_entries ve
-      JOIN vouchers v ON v.id = ve.voucher_id
-      JOIN accounts a ON a.id = ve.account_id
-      WHERE ve.account_set_id = ?
-        AND v.year = ?
-        AND v.period >= ?
-        AND v.period <= ?
-        AND ${statusCondition}
-        AND (a.is_cash = 1 OR a.is_bank = 1)
-      `
-    )
-    .get(accountSetId, year, fromPeriod, toPeriod) as { cnt: number } | undefined
-  return row?.cnt || 0
-}
-
-function loadMissingCashFlowEntries(
-  db: Database,
-  accountSetId: string,
-  year: number,
-  fromPeriod: number,
-  toPeriod: number,
-  includeUnposted: boolean
-): CashFlowVoucherCheckEntry[] {
-  const statusCondition = buildStatusCondition(includeUnposted)
-  const rows = db
-    .prepare(
-      `
-      SELECT ve.voucher_id AS voucherId,
-             v.voucher_no AS voucherNo,
-             v.voucher_date AS voucherDate,
-             ve.account_code AS accountCode,
-             a.name AS accountName,
-             ve.direction,
-             ve.amount,
-             v.status
-      FROM voucher_entries ve
-      JOIN vouchers v ON v.id = ve.voucher_id
-      JOIN accounts a ON a.id = ve.account_id
-      WHERE ve.account_set_id = ?
-        AND v.year = ?
-        AND v.period >= ?
-        AND v.period <= ?
-        AND ${statusCondition}
-        AND (a.is_cash = 1 OR a.is_bank = 1)
-        AND (ve.cash_flow_code IS NULL OR TRIM(ve.cash_flow_code) = '')
-      ORDER BY v.voucher_date, v.voucher_no, ve.seq
-      `
-    )
-    .all(accountSetId, year, fromPeriod, toPeriod) as Array<Omit<CashFlowVoucherCheckEntry, 'cashFlowCode' | 'issueType' | 'issueLabel'>>
-
-  return rows.map(row => ({
-    ...row,
-    cashFlowCode: null,
-    issueType: 'missing' as const,
-    issueLabel: '未指定现金流量项目',
-  }))
-}
-
-function loadInvalidCodeEntries(
-  db: Database,
-  accountSetId: string,
-  year: number,
-  fromPeriod: number,
-  toPeriod: number,
-  includeUnposted: boolean
-): CashFlowVoucherCheckEntry[] {
-  const statusCondition = buildStatusCondition(includeUnposted)
-  const rows = db
-    .prepare(
-      `
-      SELECT ve.voucher_id AS voucherId,
-             v.voucher_no AS voucherNo,
-             v.voucher_date AS voucherDate,
-             ve.account_code AS accountCode,
-             a.name AS accountName,
-             ve.direction,
-             ve.amount,
-             v.status,
-             TRIM(ve.cash_flow_code) AS cashFlowCode
-      FROM voucher_entries ve
-      JOIN vouchers v ON v.id = ve.voucher_id
-      JOIN accounts a ON a.id = ve.account_id
-      LEFT JOIN cash_flow_items cf
-        ON cf.account_set_id = ve.account_set_id
-       AND cf.code = TRIM(ve.cash_flow_code)
-       AND cf.is_active = 1
-      WHERE ve.account_set_id = ?
-        AND v.year = ?
-        AND v.period >= ?
-        AND v.period <= ?
-        AND ${statusCondition}
-        AND (a.is_cash = 1 OR a.is_bank = 1)
-        AND ve.cash_flow_code IS NOT NULL
-        AND TRIM(ve.cash_flow_code) != ''
-        AND cf.id IS NULL
-      ORDER BY v.voucher_date, v.voucher_no, ve.seq
-      `
-    )
-    .all(accountSetId, year, fromPeriod, toPeriod) as Array<
-    Omit<CashFlowVoucherCheckEntry, 'issueType' | 'issueLabel'>
-  >
-
-  return rows.map(row => ({
-    ...row,
-    issueType: 'invalid_code' as const,
-    issueLabel: `无效编码「${row.cashFlowCode}」`,
-  }))
-}
-
-function loadOrphanFlowEntries(
-  db: Database,
-  accountSetId: string,
-  year: number,
-  fromPeriod: number,
-  toPeriod: number,
-  includeUnposted: boolean
-): CashFlowVoucherCheckEntry[] {
-  const statusCondition = buildStatusCondition(includeUnposted)
-  const rows = db
-    .prepare(
-      `
-      SELECT ve.voucher_id AS voucherId,
-             v.voucher_no AS voucherNo,
-             v.voucher_date AS voucherDate,
-             ve.account_code AS accountCode,
-             a.name AS accountName,
-             ve.direction,
-             ve.amount,
-             v.status,
-             TRIM(ve.cash_flow_code) AS cashFlowCode
-      FROM voucher_entries ve
-      JOIN vouchers v ON v.id = ve.voucher_id
-      JOIN accounts a ON a.id = ve.account_id
-      WHERE ve.account_set_id = ?
-        AND v.year = ?
-        AND v.period >= ?
-        AND v.period <= ?
-        AND ${statusCondition}
-        AND ve.cash_flow_code IS NOT NULL
-        AND TRIM(ve.cash_flow_code) != ''
-        AND a.is_cash = 0
-        AND a.is_bank = 0
-      ORDER BY v.voucher_date, v.voucher_no, ve.seq
-      `
-    )
-    .all(accountSetId, year, fromPeriod, toPeriod) as Array<
-    Omit<CashFlowVoucherCheckEntry, 'issueType' | 'issueLabel'>
-  >
-
-  return rows.map(row => ({
-    ...row,
-    issueType: 'orphan' as const,
-    issueLabel: '非现金类科目指定了现金流量项目',
-  }))
 }
 
 export function getCashFlowVoucherCheck(
@@ -239,98 +68,87 @@ export function getCashFlowVoucherCheck(
   includeUnposted = false
 ): CashFlowVoucherCheckResult {
   const enabled = isCashFlowEnabledForAccountSet(db, accountSetId)
-  const { fromPeriod, toPeriod, scopeLabel } = buildScopeMeta(year, period, scope, includeUnposted)
+  const { fromPeriod, toPeriod, scopeLabel } = buildScopeMeta(year, period, scope)
+  const meta = { enabled, scope, year, period, fromPeriod, toPeriod, includeUnposted, scopeLabel }
 
   if (!enabled) {
     return {
-      meta: {
-        enabled: false,
-        scope,
-        year,
-        period,
-        fromPeriod,
-        toPeriod,
-        includeUnposted,
-        scopeLabel,
-      },
-      summary: {
-        totalCashEntries: 0,
-        missingCount: 0,
-        invalidCodeCount: 0,
-        orphanCount: 0,
-        issueCount: 0,
-        passed: true,
-      },
+      meta,
+      summary: { totalCashEntries: 0, missingCount: 0, invalidCodeCount: 0, orphanCount: 0, issueCount: 0, passed: true },
       missingEntries: [],
       invalidCodeEntries: [],
       orphanEntries: [],
     }
   }
 
-  const totalCashEntries = countTotalCashEntries(
-    db,
-    accountSetId,
-    year,
-    fromPeriod,
-    toPeriod,
-    includeUnposted
-  )
-  const missingEntries = loadMissingCashFlowEntries(
-    db,
-    accountSetId,
-    year,
-    fromPeriod,
-    toPeriod,
-    includeUnposted
-  )
-  const invalidCodeEntries = loadInvalidCodeEntries(
-    db,
-    accountSetId,
-    year,
-    fromPeriod,
-    toPeriod,
-    includeUnposted
-  )
-  const orphanEntries = loadOrphanFlowEntries(
-    db,
-    accountSetId,
-    year,
-    fromPeriod,
-    toPeriod,
-    includeUnposted
+  const result = computeCashFlowByMapping(db, accountSetId, year, fromPeriod, toPeriod, undefined, {
+    includeUnposted,
+    collectDetail: true,
+  })
+
+  const voucherIds = [...new Set(result.issues.map(i => i.voucher_id))]
+  const voucherMeta = new Map<string, { voucher_no: string; voucher_date: string; status: string }>()
+  for (let i = 0; i < voucherIds.length; i += 500) {
+    const chunk = voucherIds.slice(i, i + 500)
+    const rows = db
+      .prepare(
+        `SELECT id, voucher_no, voucher_date, status FROM vouchers WHERE id IN (${chunk.map(() => '?').join(',')})`
+      )
+      .all(...chunk) as Array<{ id: string; voucher_no: string; voucher_date: string; status: string }>
+    for (const r of rows) voucherMeta.set(r.id, r)
+  }
+  const accountById = new Map(
+    (db.prepare(`SELECT id, code, name FROM accounts WHERE account_set_id = ?`).all(accountSetId) as Array<{
+      id: string
+      code: string
+      name: string
+    }>).map(a => [a.id, a])
   )
 
-  const missingCount = missingEntries.length
-  const invalidCodeCount = invalidCodeEntries.length
-  const orphanCount = orphanEntries.length
-  const issueCount = missingCount + invalidCodeCount
+  const entries: CashFlowVoucherCheckEntry[] = result.issues.map(issue => {
+    const v = voucherMeta.get(issue.voucher_id)
+    const acc = accountById.get(issue.account_id)
+    const sideLabel = issue.side === 'credit' ? '贷方（现金流入）' : '借方（现金流出）'
+    return {
+      voucherId: issue.voucher_id,
+      voucherNo: v?.voucher_no || '',
+      voucherDate: v?.voucher_date || '',
+      accountCode: acc?.code || '',
+      accountName: acc?.name || '',
+      direction: issue.side,
+      amount: issue.amount,
+      status: v?.status || '',
+      cashFlowCode: issue.code,
+      issueType: issue.issue,
+      issueLabel:
+        issue.issue === 'missing'
+          ? `科目未设置主表${sideLabel}项目`
+          : `科目设置的项目「${issue.code}」已停用或不存在`,
+    }
+  })
+  entries.sort((a, b) => a.voucherDate.localeCompare(b.voucherDate) || a.voucherNo.localeCompare(b.voucherNo, undefined, { numeric: true }))
+
+  const missingEntries = entries.filter(e => e.issueType === 'missing')
+  const invalidCodeEntries = entries.filter(e => e.issueType === 'invalid_code')
+  const issueCount = missingEntries.length + invalidCodeEntries.length
 
   return {
-    meta: {
-      enabled: true,
-      scope,
-      year,
-      period,
-      fromPeriod,
-      toPeriod,
-      includeUnposted,
-      scopeLabel,
-    },
+    meta,
     summary: {
-      totalCashEntries,
-      missingCount,
-      invalidCodeCount,
-      orphanCount,
+      totalCashEntries: result.cashVoucherCount,
+      missingCount: missingEntries.length,
+      invalidCodeCount: invalidCodeEntries.length,
+      orphanCount: 0,
       issueCount,
       passed: issueCount === 0,
     },
     missingEntries,
     invalidCodeEntries,
-    orphanEntries,
+    orphanEntries: [],
   }
 }
 
-/** 供试算平衡表复用：未指定 + 无效编码的 error 级问题数 */
+/** 供试算平衡表复用：未设置 + 无效编码的 error 级问题数 */
 export function countCashFlowVoucherErrors(result: CashFlowVoucherCheckResult): number {
   return result.summary.missingCount + result.summary.invalidCodeCount
 }

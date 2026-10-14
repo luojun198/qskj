@@ -279,6 +279,71 @@ describe('reportTemplateExecutor', () => {
     expect(sheet.cells[1].numeric_value).toBe(0)
   })
 
+  it('FIX-398：@mjy/@mdy/@mnj/@mnd 按末级明细分别判断借贷方向后再汇总，不在上级轧差', () => {
+    const db = new Database(':memory:')
+    const accountSetId = 'set-1'
+    db.exec(`
+      CREATE TABLE accounts (
+        id TEXT PRIMARY KEY, account_set_id TEXT, code TEXT, name TEXT,
+        direction TEXT, parent_id TEXT, is_enabled INTEGER DEFAULT 1
+      );
+      CREATE TABLE init_balances (
+        id TEXT PRIMARY KEY, account_set_id TEXT, account_id TEXT,
+        year INTEGER, init_balance REAL, aux_item_id TEXT DEFAULT ''
+      );
+      CREATE TABLE account_balances (
+        id TEXT PRIMARY KEY, account_set_id TEXT, account_id TEXT,
+        year INTEGER, period INTEGER, current_debit REAL, current_credit REAL
+      );
+    `)
+    const insertAccount = db.prepare(
+      'INSERT INTO accounts (id, account_set_id, code, name, direction, parent_id) VALUES (?, ?, ?, ?, ?, ?)'
+    )
+    insertAccount.run('a1122', accountSetId, '1122', '应收账款', 'debit', null)
+    insertAccount.run('a1122002', accountSetId, '1122002', '客户甲', 'debit', 'a1122')
+    insertAccount.run('a1122006', accountSetId, '1122006', '客户乙', 'debit', 'a1122')
+    const insertInit = db.prepare(
+      'INSERT INTO init_balances (id, account_set_id, account_id, year, init_balance) VALUES (?, ?, ?, ?, ?)'
+    )
+    // 客户甲预收（借方科目负余额）25423.80，客户乙应收 320
+    insertInit.run('i1', accountSetId, 'a1122002', 2025, -25423.8)
+    insertInit.run('i2', accountSetId, 'a1122006', 2025, 320)
+
+    const cell = (id: string, col: number, formula: string) => ({
+      id,
+      report_sheet_id: 'sheet-1',
+      row_index: 0,
+      col_index: col,
+      cell_type: 'formula',
+      text_value: null,
+      formula_text: formula,
+      format_text: null,
+      style_key: null,
+      side: null,
+    })
+    const [sheet] = executeTemplateSheets(
+      [
+        {
+          id: 'sheet-1',
+          report_definition_id: 'report-1',
+          sheet_key: 'sheet1',
+          sheet_name: 'detail-side',
+          sheet_index: 0,
+          cells: [
+            cell('c1', 0, '@mjy(1122,99)'),
+            cell('c2', 1, '@mdy(1122,99)'),
+            cell('c3', 2, '@mnj(1122)'),
+            cell('c4', 3, '@mnd(1122)'),
+            cell('c5', 4, '@dy(1122,99)'),
+          ],
+        },
+      ],
+      { db: db as any, accountSetId, year: 2025, period: 12 }
+    )
+
+    expect(sheet.cells.map(c => c.numeric_value)).toEqual([320, 25423.8, 320, 25423.8, 25103.8])
+  })
+
   it('应该支持 @ys_cy 按预算差异项目和期间汇总金额', () => {
     const [sheet] = executeTemplateSheets(
       [

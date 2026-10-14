@@ -4,6 +4,7 @@
       <span class="lbl">截止日期</span>
       <el-date-picker v-model="asOfDate" type="date" value-format="YYYY-MM-DD" placeholder="截止日期" style="width:150px" size="small" />
       <el-button type="primary" plain size="small" @click="load"><el-icon><Search /></el-icon>查询</el-button>
+      <SaveAsButton title="账龄分析" />
       <FilterClearButton size="small" @clear="handleClearFilters" />
       <span class="total-hint">共 {{ rows.length }} 个往来单位</span>
     </div>

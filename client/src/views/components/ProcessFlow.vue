@@ -19,7 +19,7 @@
               :aria-disabled="!canAccess(node)"
               @click.prevent="!canAccess(node) && $event.preventDefault()"
             >
-              <span class="flow-node__index" :class="`is-${node.color || 'blue'}`">{{ index + 1 }}</span>
+              <!-- 不显示步骤序号（客户反馈：1 2 3 4 5 不好看），流程顺序由箭头表达 -->
               <span class="flow-node__icon" :class="`is-${node.color || 'blue'}`">
                 <component :is="getIcon(node)" :size="20" :stroke-width="1.8" />
               </span>
@@ -42,6 +42,7 @@
                 </span>
                 <span class="flow-branch__title">{{ getTitle(branch) }}</span>
               </router-link>
+              <span v-for="branch in node.branches.filter(b => b.hint)" :key="`${branch.id}-hint`" class="flow-branch__hint">{{ branch.hint }}</span>
             </div>
           </li>
 
@@ -324,6 +325,12 @@ function auxVariant(node: FlowNode, index: number) {
 .flow-branch__title {
   font-size: 12px;
   color: var(--wb-text-2);
+  white-space: nowrap;
+}
+
+.flow-branch__hint {
+  font-size: 11px;
+  color: var(--wb-text-3, var(--el-text-color-secondary));
   white-space: nowrap;
 }
 

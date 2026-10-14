@@ -54,7 +54,7 @@
         <el-button size="small" @click="addLine"><el-icon><Plus /></el-icon>加工序</el-button>
       </div>
       <div class="rt-lines">
-        <el-table :data="form.lines" border stripe size="small" height="100%">
+        <el-table v-col-width="'scm_RoutingForm_1'" :data="form.lines" border stripe size="small" height="100%">
           <el-table-column type="index" label="序号" width="60" align="center" />
           <el-table-column label="工序名" min-width="160">
             <template #default="{ row }"><el-input v-model="row.process_name" size="small" placeholder="如 总装" /></template>

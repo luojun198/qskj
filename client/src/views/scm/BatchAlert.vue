@@ -6,6 +6,7 @@
       <el-input-number v-model="days" :min="0" :precision="0" :controls="false" size="small" style="width:80px" @change="load" />
       <span class="rpt-sub">天内到期 / 已过期</span>
       <el-button size="small" :loading="loading" @click="load"><el-icon><Refresh /></el-icon>刷新</el-button>
+      <SaveAsButton title="批次效期预警" />
       <span class="rpt-hint">共 {{ rows.length }} 个批次（含已过期 {{ expiredCount }}）</span>
     </div>
     <div class="rpt-body">

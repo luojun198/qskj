@@ -41,6 +41,9 @@ const COLUMN_REFS: ColumnRef[] = [
   { label: '出纳期初', table: 'cashier_init_balance', column: 'account_code', data: true },
   { label: '银行对账单', table: 'bank_statement', column: 'account_code', data: true },
   { label: '出纳总账对账批次', table: 'cashier_gl_match', column: 'account_code', data: true },
+  // 出纳独立账户：关联科目算引用；与科目同编码的账户编码随出纳流水一起迁移，保证账户与流水对得上
+  { label: '出纳账户：关联科目', table: 'cashier_account', column: 'gl_account_code' },
+  { label: '出纳账户编码', table: 'cashier_account', column: 'code', data: true },
 ]
 
 const PARAM_REFS: Array<{ key: string; label: string }> = [
@@ -58,6 +61,7 @@ const PARAM_REFS: Array<{ key: string; label: string }> = [
   { key: 'scm:acc_production', label: '进销存参数：生产成本' },
   { key: 'scm:acc_labor', label: '进销存参数：应付职工薪酬' },
   { key: 'scm:acc_overhead', label: '进销存参数：制造费用' },
+  { key: 'scm:acc_process_income', label: '进销存参数：受托加工收入' },
   { key: 'scm:acc_tax_input', label: '进销存参数：进项税额' },
   { key: 'scm:acc_tax_output', label: '进销存参数：销项税额' },
   { key: 'auto_transfer:balance_account_code', label: '自动转账参数：结转余额科目' },

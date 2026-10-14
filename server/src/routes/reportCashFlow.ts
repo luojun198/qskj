@@ -23,6 +23,9 @@ import {
   expandFlowAccountCodes,
   sumPeriodFlowByPatterns,
 } from '../services/staticCashFlowExpand.js'
+import { computeCashFlowByMapping, getMainItemAmount } from '../services/cashFlowAutoEngine.js'
+import { getEffectiveCashFlowMapping } from '../services/cashFlowAccountMap.js'
+import { SUPPLEMENT_ITEMS, SUPPLEMENT_NET_PROFIT_CODE } from '../config/cashFlowAccountDefaults.js'
 
 const router = Router()
 router.use(authMiddleware)
@@ -216,6 +219,100 @@ router.get('/cash-flow', (req: AuthRequest, res) => {
       reportSourceNote: `${scopeNote}；正式报送请使用动态报表模板（@xj_je 直接法）`,
     },
   })
+})
+
+/**
+ * 现金流量表（按「科目现金流量项目」自动计算）：主表直接法 + 补充资料间接法
+ */
+router.get('/cash-flow/auto', (req: AuthRequest, res) => {
+  try {
+    const db = getDb()
+    const accountSetId = req.accountSetId!
+    const y = parseReportYear(req.query.year)
+    const p = Math.min(12, Math.max(1, Number(req.query.period) || new Date().getMonth() + 1))
+    const scope = parseCashFlowScope(req.query.scope)
+    const fromPeriod = scope === 'ytd' ? 1 : p
+    const result = computeCashFlowByMapping(db, accountSetId, y, fromPeriod, p, req.accountScope)
+    const mapping = getEffectiveCashFlowMapping(db, accountSetId)
+    const labels = mapping.profile.activityLabels
+
+    const ACTIVITIES = [
+      { key: 'operating', label: labels.operating },
+      { key: 'investing', label: labels.investing },
+      { key: 'financing', label: labels.financing },
+    ] as const
+    const mainItems = result.items.filter(i => i.kind !== 'supplement' && i.is_leaf !== 0)
+    const sections = ACTIVITIES.map(act => {
+      const pick = (flow: 'in' | 'out') =>
+        mainItems
+          .filter(i => {
+            const cls = result.itemClass.get(i.code)
+            return cls?.activity === act.key && cls?.flow === flow
+          })
+          .map(i => ({ code: i.code, name: i.name, amount: getMainItemAmount(result, i.code) }))
+      const inflows = pick('in')
+      const outflows = pick('out')
+      const inflowTotal = Math.round(inflows.reduce((s, i) => s + i.amount, 0) * 100) / 100
+      const outflowTotal = Math.round(outflows.reduce((s, i) => s + i.amount, 0) * 100) / 100
+      return { key: act.key, label: act.label, inflows, outflows, inflowTotal, outflowTotal, net: result.activities[act.key] }
+    })
+    const others = mainItems
+      .filter(i => {
+        const cls = result.itemClass.get(i.code)
+        return !cls?.activity || !cls?.flow
+      })
+      .map(i => ({ code: i.code, name: i.name, amount: getMainItemAmount(result, i.code) }))
+      .filter(i => Math.abs(i.amount) >= 0.005)
+
+    // 现金及现金等价物期初 / 期末余额：取最上层的现金类科目，避免上下级重复
+    const cashTopCodes = mapping.accounts
+      .filter(a => mapping.cashIds.has(a.id) && !(a.parent_id && mapping.cashIds.has(a.parent_id)))
+      .map(a => a.code)
+    const sumBalance = (period: number) => {
+      const map = getBatchBalances(db, accountSetId, cashTopCodes, y, period, req.accountScope)
+      return Math.round(cashTopCodes.reduce((s, c) => s + (map.get(c) || 0), 0) * 100) / 100
+    }
+    const beginCash = sumBalance(fromPeriod - 1)
+    const endCash = sumBalance(p)
+
+    // 只有企业会计准则编补充资料（小企业 / 政府 / 民非只有直接法主表）
+    const supplement = (mapping.profile.hasSupplement ? SUPPLEMENT_ITEMS : []).map(s => ({
+      code: s.code,
+      name: s.name,
+      amount: result.supplement.get(s.code) || 0,
+      computed: s.code === SUPPLEMENT_NET_PROFIT_CODE,
+    }))
+
+    res.json({
+      code: 0,
+      data: {
+        year: y,
+        period: p,
+        scope,
+        fromPeriod,
+        standard: mapping.standard,
+        standardName: mapping.profile.name,
+        hasSupplement: mapping.profile.hasSupplement,
+        persisted: result.persisted,
+        sections,
+        others,
+        netIncrease: result.activities.net,
+        cashChange: result.cashChange,
+        beginCash,
+        endCash,
+        supplement,
+        netProfit: result.netProfit,
+        indirectOperating: result.indirectOperating,
+        directOperating: result.activities.operating,
+        indirectDiff: Math.round((result.indirectOperating - result.activities.operating) * 100) / 100,
+        unmapped: result.unmapped,
+        unmappedTotal: Math.round((result.cashChange - result.activities.net) * 100) / 100,
+      },
+    })
+  } catch (error: any) {
+    console.error('现金流量表（自动）计算失败:', error)
+    res.status(500).json({ code: 500, message: error.message || '计算失败' })
+  }
 })
 
 export default router

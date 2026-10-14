@@ -17,7 +17,7 @@
       </el-select>
       <el-button type="primary" @click="handleSearch"><el-icon><Search /></el-icon>查询</el-button>
       <FilterClearButton @clear="handleClearFilters" />
-      <el-button plain :disabled="!journalResult" @click="handleExport"><el-icon><Download /></el-icon>导出</el-button>
+      <el-button plain :disabled="!journalResult" @click="handleExport"><el-icon><Download /></el-icon>另存</el-button>
       <el-button plain :disabled="!journalResult" @click="handlePrint"><el-icon><Printer /></el-icon>打印</el-button>
     </div>
 
@@ -40,8 +40,8 @@
 
     <!-- 流水表格 -->
     <div ref="tableContainerRef" class="table-container">
-      <el-table ref="tableRef" :data="rows" :height="tableHeight" border stripe size="small" class="compact-data-table" :row-class-name="rowClassName" @header-dragend="onDragEnd">
-        <el-table-column label="日期" prop="biz_date" :width="cw('biz_date', 100)" />
+      <el-table ref="tableRef" :data="rows" :height="tableHeight" border stripe size="small" class="compact-data-table" :row-class-name="rowClassName" @header-dragend="onDragEnd" @sort-change="handleSortChange">
+        <el-table-column label="日期" prop="biz_date" :width="cw('biz_date', 100)" sortable="custom" :sort-orders="['ascending', 'descending']" />
         <el-table-column label="摘要" prop="summary" :width="cw('summary', 140)" show-overflow-tooltip>
           <template #header>
             <CashierHeaderFilter label="摘要" kind="text"
@@ -188,11 +188,13 @@ const pageSize = ref(100)
 const rows = computed(() => {
   const raw = journalResult.value?.rows ?? []
   if (raw.length === 0 && !journalResult.value) return []
-  // 期初行只在第 1 页显示（后续页的逐行余额已含前页累计）
-  if (page.value > 1) return raw
+  // 期初行：升序只在第 1 页头部显示；降序只在最后一页尾部显示（其余页的逐行余额已含前后页累计）
+  const desc = sortOrder.value === 'desc'
+  const total = journalResult.value?.total ?? raw.length
+  const lastPage = Math.max(1, Math.ceil(total / pageSize.value))
+  if (desc ? page.value < lastPage : page.value > 1) return raw
   const opening = journalResult.value?.opening ?? 0
-  return [
-    {
+  const openingRow = {
       id: '__opening__',
       account_code: filters.value.account_code,
       currency: 'RMB', biz_date: '', seq: -1,
@@ -201,10 +203,16 @@ const rows = computed(() => {
       reconciled: 0, voucher_year: null, voucher_month: null, voucher_type: null, voucher_no: null,
       balance: opening,
       _is_opening: true,
-    },
-    ...raw,
-  ]
+  }
+  return desc ? [...raw, openingRow] : [openingRow, ...raw]
 })
+
+/** 日期排序：asc 默认；服务端按方向取页，余额始终是按时间累计的真实余额 */
+const sortOrder = ref<'asc' | 'desc'>('asc')
+function handleSortChange({ order }: { order: 'ascending' | 'descending' | null }) {
+  sortOrder.value = order === 'descending' ? 'desc' : 'asc'
+  handleSearch()
+}
 
 const rowClassName = ({ row }: any) => row._is_opening ? 'opening-row' : ''
 
@@ -218,6 +226,8 @@ function handleClearFilters() {
   const currentAccount = filters.value.account_code || accounts.value[0]?.code || ''
   clearFilters()
   detail.value = defaultCashierFilter()
+  sortOrder.value = 'asc'
+  ;(tableRef.value as any)?.clearSort?.()
   filters.value.account_code = currentAccount
   filters.value.currency = 'RMB'
   handleSearch()
@@ -272,6 +282,7 @@ async function handleQuery() {
     end_date: filters.value.end_date || undefined,
     page: page.value,
     page_size: pageSize.value,
+    sort_order: sortOrder.value,
     ...toJournalDetailParams(detail.value),
   })
   if (res.code === 0) journalResult.value = res.data

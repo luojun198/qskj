@@ -12,6 +12,8 @@ export interface CashFlowItem {
   is_leaf: number
   sort_order: number
   is_active: number
+  /** main 主表项目 / supplement 附表（补充资料）项目 */
+  kind?: 'main' | 'supplement'
   created_at: string
   updated_at: string
 }

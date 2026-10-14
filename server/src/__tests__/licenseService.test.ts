@@ -20,8 +20,11 @@ vi.mock('../services/machineId.js', () => ({
 
 import {
   activateLicense,
+  assertConcurrencyAvailable,
   assertLicenseValid,
   assertModuleLicensed,
+  listLicenseLog,
+  listOnlineIdentities,
   getLicenseStatus,
   getTodayDateString,
   LICENSE_ERROR,
@@ -117,7 +120,11 @@ describe('licenseService', () => {
   it('有效注册码应激活成功', () => {
     const code = makeCode(TEST_MACHINE_ID, futureDate(30))
     const result = activateLicense(code, db)
-    expect(result).toEqual({ expiresAt: expect.any(String), modules: ALL_MODULE_KEYS })
+    expect(result).toEqual({
+      expiresAt: expect.any(String),
+      modules: ALL_MODULE_KEYS,
+      maxConcurrent: 0,
+    })
 
     getMachineIdCandidatesMock.mockClear()
     const status = getLicenseStatus(db)
@@ -133,7 +140,11 @@ describe('licenseService', () => {
     const copiedCode = `${code.slice(0, 40)}\r\n${code.slice(40, 80)}\u200B${code.slice(80)}`
     const result = activateLicense(copiedCode, db)
 
-    expect(result).toEqual({ expiresAt: expect.any(String), modules: ALL_MODULE_KEYS })
+    expect(result).toEqual({
+      expiresAt: expect.any(String),
+      modules: ALL_MODULE_KEYS,
+      maxConcurrent: 0,
+    })
     const row = db
       .prepare(`SELECT license_token FROM license_activation WHERE id = 'default'`)
       .get() as { license_token: string }
@@ -217,7 +228,11 @@ describe('licenseService', () => {
     it('v2 注册码只解锁指定模块，未知 key 忽略', () => {
       const code = makeCodeV2(TEST_MACHINE_ID, futureDate(30), ['scm', 'gl', 'unknown-module'])
       const result = activateLicense(code, db)
-      expect(result).toEqual({ expiresAt: expect.any(String), modules: ['gl', 'scm'] })
+      expect(result).toEqual({
+        expiresAt: expect.any(String),
+        modules: ['gl', 'scm'],
+        maxConcurrent: 0,
+      })
       expect(getLicenseStatus(db).modules).toEqual(['gl', 'scm'])
       expect(assertLicenseValid(db)).toBeNull()
 
@@ -304,5 +319,116 @@ describe('licenseCodec', () => {
   it('isExpired 应在截止日之后返回 true', () => {
     expect(isExpired(pastDate(1))).toBe(true)
     expect(isExpired(futureDate(1))).toBe(false)
+  })
+})
+
+describe('并发授权', () => {
+  let db: Database.Database
+  const originalSkip = process.env.LICENSE_SKIP
+
+  function makeCodeV3(cc: number): string {
+    return buildLicenseCode(
+      { v: 3, mid: TEST_MACHINE_ID, exp: futureDate(30), iat: getTodayDateString(), mods: ['*'], cc },
+      loadPrivateKey()
+    )
+  }
+
+  function addSession(userId: string, ip: string, opts: { status?: string; minutesAgo?: number } = {}) {
+    db.prepare(
+      `INSERT INTO user_login_sessions (id, user_id, username, login_ip, login_at, last_seen_at, status)
+       VALUES (?, ?, ?, ?, datetime('now'), datetime('now', ?), ?)`
+    ).run(
+      `s-${Math.random()}`,
+      userId,
+      userId,
+      ip,
+      `-${opts.minutesAgo ?? 0} minutes`,
+      opts.status ?? 'active'
+    )
+  }
+
+  beforeEach(() => {
+    delete process.env.LICENSE_SKIP
+    getMachineIdMock.mockReturnValue(TEST_MACHINE_ID)
+    getMachineIdCandidatesMock.mockImplementation(() => [getMachineIdMock()])
+    db = new Database(':memory:')
+    db.exec(`
+      CREATE TABLE license_activation (
+        id TEXT PRIMARY KEY DEFAULT 'default', machine_id TEXT NOT NULL, expires_at TEXT NOT NULL,
+        activated_at TEXT NOT NULL, license_token TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE TABLE license_activation_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, machine_id TEXT NOT NULL, expires_at TEXT NOT NULL,
+        modules TEXT NOT NULL, max_concurrent INTEGER NOT NULL DEFAULT 0, issued_at TEXT, operator TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE user_login_sessions (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL, username TEXT NOT NULL, login_ip TEXT,
+        login_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, status TEXT NOT NULL
+      );
+    `)
+  })
+
+  afterEach(() => {
+    if (originalSkip === undefined) delete process.env.LICENSE_SKIP
+    else process.env.LICENSE_SKIP = originalSkip
+  })
+
+  it('带 cc 的注册码激活后状态含最大并发与在线人数', () => {
+    const result = activateLicense(makeCodeV3(2), db, '张三')
+    expect('code' in result).toBe(false)
+    addSession('u1', '1.1.1.1')
+    const status = getLicenseStatus(db)
+    expect(status.maxConcurrent).toBe(2)
+    expect(status.onlineCount).toBe(1)
+  })
+
+  it('旧注册码（无 cc）不限制并发', () => {
+    activateLicense(makeCodeV2(TEST_MACHINE_ID, futureDate(30), ['*']), db)
+    for (let i = 0; i < 5; i++) addSession(`u${i}`, '1.1.1.1')
+    expect(assertConcurrencyAvailable('new', '2.2.2.2', db)).toBeNull()
+  })
+
+  it('在线人数达上限时拒绝新身份，同一用户同 IP 重复登录放行', () => {
+    activateLicense(makeCodeV3(2), db)
+    addSession('u1', '1.1.1.1')
+    addSession('u2', '1.1.1.2')
+    addSession('u1', '1.1.1.1') // 同人多标签不重复计数
+    expect(listOnlineIdentities(db)).toHaveLength(2)
+
+    expect(assertConcurrencyAvailable('u3', '1.1.1.3', db)?.code).toBe(LICENSE_ERROR.CONCURRENT_FULL)
+    expect(assertConcurrencyAvailable('u1', '1.1.1.1', db)).toBeNull()
+  })
+
+  it('已退出 / 超过在线窗口的会话不占名额', () => {
+    activateLicense(makeCodeV3(1), db)
+    addSession('u1', '1.1.1.1', { status: 'logout' })
+    addSession('u2', '1.1.1.2', { minutesAgo: 45 })
+    expect(assertConcurrencyAvailable('u3', '1.1.1.3', db)).toBeNull()
+  })
+
+  it('排除当前会话后切换操作员不被自己占位', () => {
+    activateLicense(makeCodeV3(1), db)
+    db.prepare(
+      `INSERT INTO user_login_sessions VALUES ('cur', 'u1', 'u1', '1.1.1.1', datetime('now'), datetime('now'), 'active')`
+    ).run()
+    expect(assertConcurrencyAvailable('u2', '1.1.1.1', db)?.code).toBe(LICENSE_ERROR.CONCURRENT_FULL)
+    expect(assertConcurrencyAvailable('u2', '1.1.1.1', db, 'cur')).toBeNull()
+  })
+
+  it('LICENSE_SKIP 时不限并发', () => {
+    activateLicense(makeCodeV3(1), db)
+    addSession('u1', '1.1.1.1')
+    process.env.LICENSE_SKIP = 'true'
+    expect(assertConcurrencyAvailable('u2', '2.2.2.2', db)).toBeNull()
+  })
+
+  it('每次提交注册码写入变动记录，可重新提交覆盖', () => {
+    activateLicense(makeCodeV3(2), db, '管理员')
+    activateLicense(makeCodeV3(5), db, '管理员')
+    const log = listLicenseLog(db)
+    expect(log).toHaveLength(2)
+    expect(log[0]).toMatchObject({ maxConcurrent: 5, operator: '管理员', machineId: TEST_MACHINE_ID })
+    expect(getLicenseStatus(db).maxConcurrent).toBe(5)
   })
 })

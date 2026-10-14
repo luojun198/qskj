@@ -19,6 +19,7 @@ import {
 import { buildForeignBalanceQuery } from './ledgerQuery.js'
 import { hasPreBookColumns, hasForeignPreBookColumns, resolveOpeningBaseYear } from './initBalanceScope.js'
 import { peekAccountSetStartDate } from './accountSetDefaults.js'
+import { getGlStartDateError } from './voucherMutationGuard.js'
 import { getAutoTransferVoucherDate, validateAutoTransferPeriod } from './autoTransfer.js'
 
 export const FX_REVAL_SOURCE = 'fx_reval'
@@ -457,6 +458,8 @@ export function runFxRevaluation(params: {
   const { db, accountSetId, year, period } = params
   const periodError = validateAutoTransferPeriod(year, period)
   if (periodError) return { error: periodError, voucherId: null, voucherNo: null, entryCount: 0 }
+  const startDateError = getGlStartDateError(db, accountSetId, getAutoTransferVoucherDate(year, period))
+  if (startDateError) return { error: startDateError, voucherId: null, voucherNo: null, entryCount: 0 }
 
   const preview = previewFxRevaluation(params)
   if (preview.closed) return { error: '该期间已结账，不能生成调汇凭证', voucherId: null, voucherNo: null, entryCount: 0 }

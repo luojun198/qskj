@@ -16,6 +16,7 @@
     "db:migrate:status": "node --import tsx/esm src/scripts/runMigrations.ts status",
     "db:import:acd": "node --import tsx/esm src/scripts/importAcdToCurrentAccountSet.ts",
     "db:migrate:transfer": "node --import tsx/esm src/scripts/migrateTransferConfig.ts",
+    "db:fix:scm-cashier-dup": "node --import tsx/esm src/scripts/fixScmCashierDupVoucher.ts",
     "config:ai": "node --import tsx/esm src/scripts/configThirdPartyAi.ts",
     "scripts:sanitize-templates": "node --import tsx/esm src/scripts/sanitizeExistingTemplates.ts",
     "scripts:rebuild-balances": "node --import tsx/esm src/scripts/rebuildAccountBalances.ts",

@@ -6,7 +6,6 @@ import {
   findVoucherNoConflict,
   parseVoucherNoSeq,
   validateVoucherEntriesNoNegativeBalance,
-  validateVoucherEntriesCashFlow,
   VOUCHER_ENTRY_INSERT_PARAM_COUNT,
   isCashFlowEnabledForAccountSet,
   type VoucherEntryInput,
@@ -391,67 +390,5 @@ describe('buildVoucherEntryPayloads', () => {
     expect(payloads[0][9]).toBe(10000)
     expect(payloads[0][22]).toBe('1101')
     expect(payloads[0][23]).toBe('收现')
-  })
-})
-
-describe('validateVoucherEntriesCashFlow', () => {
-  it('未启用现金流时不校验', () => {
-    const db = {
-      prepare(sql: string) {
-        return {
-          get() {
-            if (sql.includes('enable_cash_flow')) return { param_value: 'false' }
-            return undefined
-          },
-        }
-      },
-    }
-    expect(
-      validateVoucherEntriesCashFlow(db as any, 'as1', [
-        buildEntry({ account_id: 'a1', amount: 100 }),
-      ])
-    ).toBeNull()
-  })
-
-  it('现金科目未填现金流量项目时拦截', () => {
-    const db = {
-      prepare(sql: string) {
-        return {
-          get(...args: any[]) {
-            if (sql.includes('enable_cash_flow')) return { param_value: 'true' }
-            if (sql.includes('FROM accounts')) {
-              return { name: '库存现金', require_cash_flow: 0, is_cash: 1, is_bank: 0 }
-            }
-            return undefined
-          },
-        }
-      },
-    }
-    expect(
-      validateVoucherEntriesCashFlow(db as any, 'as1', [
-        buildEntry({ account_id: 'cash', amount: 10 }),
-      ])
-    ).toContain('现金流量项目')
-  })
-
-  it('仅 require_cash_flow=1 且非现金/银行科目时不拦截', () => {
-    const db = {
-      prepare(sql: string) {
-        return {
-          get() {
-            if (sql.includes('enable_cash_flow')) return { param_value: 'true' }
-            if (sql.includes('FROM accounts')) {
-              return { name: '其他应收款', require_cash_flow: 1, is_cash: 0, is_bank: 0 }
-            }
-            return undefined
-          },
-        }
-      },
-    }
-    expect(
-      validateVoucherEntriesCashFlow(db as any, 'as1', [
-        buildEntry({ account_id: 'other', amount: 10 }),
-      ])
-    ).toBeNull()
   })
 })

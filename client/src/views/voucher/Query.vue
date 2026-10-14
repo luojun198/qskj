@@ -39,6 +39,7 @@
       :loading="loading"
       :loading-more="loadingMore"
       :has-more="hasMore"
+      :show-load-status="false"
       :flat-list="flatList"
       :is-selectable-row="() => false"
       :get-row-class="getRowClass"
@@ -55,57 +56,48 @@
       @delete="handleDelete"
     />
 
-    <div v-if="flatList.length > 0" class="voucher-batch-bar voucher-query-summary-bar">
-      <span class="summary-item">
-        <span class="summary-label">已加载凭证：</span>
-        <span class="summary-value">{{ voucherCount }} 张</span>
+    <!-- 底部状态（一行纯文字，不单独分区）：左 已加载凭证与借贷合计 | 中 加载状态 | 右 条数、每次加载、继续加载 -->
+    <div class="pagination-bar toolbar list-status-bar">
+      <template v-if="flatList.length > 0">
+        <span class="status-item">已加载凭证 <b>{{ voucherCount }}</b> 张</span>
+        <span class="status-item">借方合计 <b class="summary-debit">{{ formatAmount(totalDebit) }}</b></span>
+        <span class="status-item">贷方合计 <b class="summary-credit">{{ formatAmount(totalCredit) }}</b></span>
+        <span class="status-item">差额 <b :class="balanceDiff !== 0 ? 'summary-error' : ''">{{ formatAmount(balanceDiff) }}</b></span>
+      </template>
+      <span v-if="flatList.length > 0 && (loadingMore || !hasMore)" class="status-item status-hint">
+        {{ loadingMore ? '加载中…' : '已全部加载' }}
       </span>
-      <span class="summary-item">
-        <span class="summary-label">借方合计：</span>
-        <span class="summary-value summary-debit">{{ formatAmount(totalDebit) }}</span>
-      </span>
-      <span class="summary-item">
-        <span class="summary-label">贷方合计：</span>
-        <span class="summary-value summary-credit">{{ formatAmount(totalCredit) }}</span>
-      </span>
-      <span class="summary-item">
-        <span class="summary-label">差额：</span>
-        <span class="summary-value" :class="balanceDiff !== 0 ? 'summary-error' : ''">
-          {{ formatAmount(balanceDiff) }}
+      <span class="status-right">
+        <span class="pagination-text">
+          共 {{ pagination.total }} 条 · 已加载 {{ list.length }} 条
+          <template v-if="softCapReached">（已加载较多，自动加载已暂停）</template>
         </span>
+        <span class="pagination-text">每次加载</span>
+        <el-select v-model="pagination.pageSize" class="page-size-select" @change="handlePageSizeChange">
+          <el-option label="20条" :value="20" />
+          <el-option label="50条" :value="50" />
+          <el-option label="100条" :value="100" />
+          <el-option label="200条" :value="200" />
+        </el-select>
+        <el-button
+          v-if="softCapReached"
+          size="small"
+          plain
+          :loading="loading || loadingMore"
+          @click="handleContinueLoad"
+        >
+          继续加载
+        </el-button>
+        <el-button
+          v-else-if="hasMore"
+          size="small"
+          plain
+          :loading="loading || loadingMore"
+          @click="handleLoadRemaining"
+        >
+          加载剩余
+        </el-button>
       </span>
-    </div>
-
-    <div class="pagination-bar toolbar">
-      <span class="pagination-text">
-        共 {{ pagination.total }} 条 · 已加载 {{ list.length }} 条
-        <template v-if="softCapReached">（已加载较多，自动加载已暂停）</template>
-      </span>
-      <span class="pagination-text">每次加载</span>
-      <el-select v-model="pagination.pageSize" style="width: 95px" @change="handlePageSizeChange">
-        <el-option label="20条" :value="20" />
-        <el-option label="50条" :value="50" />
-        <el-option label="100条" :value="100" />
-        <el-option label="200条" :value="200" />
-      </el-select>
-      <el-button
-        v-if="softCapReached"
-        size="small"
-        plain
-        :loading="loading || loadingMore"
-        @click="handleContinueLoad"
-      >
-        继续加载
-      </el-button>
-      <el-button
-        v-else-if="hasMore"
-        size="small"
-        plain
-        :loading="loading || loadingMore"
-        @click="handleLoadRemaining"
-      >
-        加载剩余
-      </el-button>
     </div>
 
     <VoucherEntryDialogHost ref="entryDialogHostRef" @saved="fetchData" />
@@ -144,6 +136,9 @@
 </template>
 
 <script setup lang="ts">
+// 凭证页共用全局样式：用脚本 import 而非 <style src>。
+// 多个组件 <style src> 同一文件时，生产构建只编译一份且可能套用某个导入方的 scoped，导致其它页面样式丢失（FIX-344）
+import '@/views/voucher/voucher.styles.css'
 import { ref, computed, onMounted, onActivated, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import request from '@/api/request'
@@ -207,7 +202,9 @@ const baseVisibleCols: ColSetting[] = [
   { key: 'account_name', label: '科目名称', visible: true },
   { key: 'debit_amt', label: '借方金额', visible: true },
   { key: 'credit_amt', label: '贷方金额', visible: true },
-  { key: 'operator_info', label: '经办信息', visible: true },
+  { key: 'maker_name', label: '制单', visible: true },
+  { key: 'auditor_name', label: '审核', visible: true },
+  { key: 'poster_name', label: '记账', visible: true },
   { key: 'status', label: '状态', visible: true },
 ]
 
@@ -423,6 +420,8 @@ function applyRouteFilters() {
   if (Number.isFinite(year) && year > 0) filters.value.year = year
   if (Number.isFinite(period) && period > 0) filters.value.period = period
   filters.value.keyword = keyword
+  // 从业务单据 / 资产凭证管理跳来时选中该凭证（可直接查看 / 打印）
+  if (typeof route.query.voucher_id === 'string' && route.query.voucher_id) selectedVoucherId.value = route.query.voucher_id
 }
 
 function handleRowClick(row: { _voucherId?: string }) {
@@ -660,7 +659,7 @@ const glToolbarButtons = computed<GlToolbarButton[]>(() => [
   },
   {
     key: 'save',
-    group: 'more',
+    // 第五份反馈：客户找不到「另存」（原收在「更多」里），提到工具栏常驻
     name: '另存',
     icon: Download,
     tooltip: '导出为 Excel 文件',
@@ -749,4 +748,3 @@ onActivated(() => {
 })
 </script>
 
-<style src="./voucher.styles.css"></style>

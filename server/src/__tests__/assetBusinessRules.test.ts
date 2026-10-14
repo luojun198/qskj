@@ -126,6 +126,10 @@ describe('评审 P2：折旧汇总按该期期末原值 / 减值', () => {
     expect(row.total_net_value).toBe(11800)
     const [detail] = queryDeprDetail({ db, accountSetId: SET_ID, year: 2026, month: 2, groupBy: 'dept', groupCode: 'D1' })
     expect(detail).toMatchObject({ original_value: 12000, net_value: 11800 })
+    // 第六份反馈：按资产逐项列出（不按类别 / 部门过滤）
+    const all = queryDeprDetail({ db, accountSetId: SET_ID, year: 2026, month: 2, groupBy: 'asset' })
+    expect(all.map(r => r.asset_no)).toEqual(['H1'])
+    expect(all[0]).toMatchObject({ month_depr: 200, accum_depr: 200, net_value: 11800 })
     db.close()
   })
 })

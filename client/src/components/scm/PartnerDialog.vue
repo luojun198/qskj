@@ -111,10 +111,33 @@ const visible = ref(false)
 const form = ref<Partial<ScmPartner>>({})
 const saving = ref(false)
 
-async function resetForNew() {
-  form.value = { partner_type: (props.defaultType as any) || 'both', credit_limit: 0, tax_rate: 0, price_level: 1 }
-  try { const r = await scmApi.getPartnerNextNo(props.defaultType || undefined); if (r.code === 0) form.value.code = r.data.next_no } catch { /* 取号失败可手填 */ }
+/** 最近一次自动取到的编号；用户没手改时，切换「单位属性」会按新属性的编码规则重新取号 */
+let autoCode = ''
+let fetchSeq = 0
+
+async function fetchCode(partnerType?: string) {
+  const seq = ++fetchSeq
+  try {
+    const r = await scmApi.getPartnerNextNo(partnerType || undefined)
+    // 只认最后一次取号；返回前用户已手改编号 / 已切到编辑，则不覆盖
+    if (seq !== fetchSeq) return
+    if (r.code === 0 && !props.row && (form.value.code || '') === autoCode) {
+      form.value.code = r.data.next_no
+      autoCode = r.data.next_no
+    }
+  } catch { /* 取号失败可手填 */ }
 }
+
+async function resetForNew() {
+  autoCode = ''
+  form.value = { partner_type: (props.defaultType as any) || 'both', credit_limit: 0, tax_rate: 0, price_level: 1 }
+  await fetchCode(form.value.partner_type)
+}
+
+watch(() => form.value.partner_type, (t, old) => {
+  if (props.row || !old || t === old) return
+  fetchCode(t)
+})
 
 // 父 prop → 内部 ref；打开时初始化表单（编辑取 row，新增默认值+取号）
 watch(() => props.modelValue, v => { visible.value = v; if (v) { if (props.row) form.value = { ...props.row }; else resetForNew() } }, { immediate: true })

@@ -59,6 +59,7 @@ import baseInitBalanceRoutes from './routes/baseInitBalance.js'
 import basePrintTemplateRoutes from './routes/basePrintTemplate.js'
 import baseKeyboardShortcutsRoutes from './routes/baseKeyboardShortcuts.js'
 import baseCashFlowRoutes from './routes/baseCashFlow.js'
+import cashFlowAccountMapRoutes from './routes/cashFlowAccountMap.js'
 import baseCurrencyRoutes from './routes/baseCurrency.js'
 import voucherRoutes from './routes/voucher.js'
 import voucherExcelImportRoutes from './routes/voucherExcelImport.js'
@@ -90,8 +91,12 @@ import cashierRoutes from './routes/cashierJournal.js'
 import fixedAssetRoutes from './routes/fixedAsset.js'
 import scmBaseRoutes from './routes/scmBase.js'
 import scmDocRoutes from './routes/scmDoc.js'
+import scmVoucherSettingRoutes from './routes/scmVoucherSetting.js'
+import bizVoucherCenterRoutes from './routes/bizVoucherCenter.js'
 import scmColSchemeRoutes from './routes/scmColScheme.js'
 import scmSalesReportRoutes from './routes/scmSalesReport.js'
+import scmStatementRoutes from './routes/scmStatement.js'
+import scmAcdImportRoutes from './routes/scmAcdImport.js'
 import acdExportRoutes from './routes/acdExport.js'
 import cashierImportRoutes from './routes/cashierImport.js'
 import backupRoutes from './routes/backup.js'
@@ -233,6 +238,10 @@ app.use((_req, res, next) => {
   next()
 })
 
+// 删除账套期间锁定其它请求，并免登录提供删除进度查询
+import { accountSetBusyMiddleware } from './middleware/accountSetBusy.js'
+app.use(accountSetBusyMiddleware)
+
 // 软件授权（公开接口，须在 licenseMiddleware 之前注册）
 app.use('/api/license', licenseRoutes)
 
@@ -245,6 +254,7 @@ app.use('/api/system', systemRoutes)
 app.use('/api/base', baseRoutes)
 app.use('/api/base/keyboard-shortcuts', baseKeyboardShortcutsRoutes)
 app.use('/api/base/cash-flow-items', baseCashFlowRoutes)
+app.use('/api/base/cash-flow-account-map', cashFlowAccountMapRoutes)
 app.use('/api/base', baseCurrencyRoutes)
 app.use('/api/base', baseAccountRoutes)
 app.use('/api/base', baseVoucherTypeRoutes)
@@ -280,7 +290,11 @@ app.use('/api/security', backupRoutes)
 app.use('/api', cashierRoutes)
 app.use('/api', fixedAssetRoutes)
 app.use('/api', scmBaseRoutes)
+app.use('/api', scmStatementRoutes)
+app.use('/api', scmAcdImportRoutes)
 app.use('/api', scmDocRoutes)
+app.use('/api', scmVoucherSettingRoutes)
+app.use('/api', bizVoucherCenterRoutes)
 app.use('/api', scmColSchemeRoutes)
 app.use('/api', scmSalesReportRoutes)
 app.use('/api', acdExportRoutes)

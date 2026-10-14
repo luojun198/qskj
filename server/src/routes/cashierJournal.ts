@@ -11,6 +11,8 @@ import { getDb } from '../db/index.js'
 import { authMiddleware, AuthRequest, operationLog } from '../middleware/index.js'
 import { cashierPermissionGuard } from '../middleware/cashierPermission.js'
 import { deleteVoucherWithRefs } from '../services/voucherDelete.js'
+import { getScmSourceOfJournal, paymentDocLabel } from '../services/paymentVoucherMode.js'
+import { normalizeRequestedVoucherTypeId } from '../services/voucherEntry.js'
 import { assertAccountIdInScope, type AccountScopeContext } from '../services/accountAuthorization.js'
 import { createPreReinitializeBackup } from '../services/systemReinitialize.js'
 import {
@@ -41,6 +43,7 @@ import {
 import { assertGlPeriodOpen } from '../services/voucherMutationGuard.js'
 import { fixGarbledFilename } from '../utils/uploadFilename.js'
 import { getGlOpeningBalance } from '../services/cashierOpening.js'
+import { cashierGlCode, ensureCashierAccountSchema, listCashierAccountRows, createCashierAccount, updateCashierAccount, deleteCashierAccount } from '../services/cashierAccount.js'
 import { getCashierResetImpact, performCashierReset } from '../services/cashierReset.js'
 import {
   assertJournalDateWritable, importJournalRows, round2, validateJournalAmounts,
@@ -141,7 +144,11 @@ function assertCashierCodesInScope(
   if (!ctx || ctx.bypass || !ctx.restricted) return null
   for (const code of codes) {
     if (!code) continue
-    const row = db.prepare('SELECT id FROM accounts WHERE account_set_id=? AND code=?').get(accountSetId, code) as any
+    // 出纳账户按其关联科目判断授权；未关联科目的独立账户不受科目授权限制；其余编码（对方科目等）按科目表
+    ensureCashierAccountSchema(db as any)
+    const cashier = db.prepare('SELECT gl_account_id AS id FROM v_cashier_account WHERE account_set_id=? AND code=?').get(accountSetId, code) as any
+    if (cashier && !cashier.id) continue
+    const row = cashier || db.prepare('SELECT id FROM accounts WHERE account_set_id=? AND code=?').get(accountSetId, code) as any
     if (!row) continue
     const err = assertAccountIdInScope(ctx, row.id)
     if (err) return err
@@ -261,6 +268,25 @@ router.get('/cashier/accounts', (req: AuthRequest, res) => {
   res.json({ code: 0, data: listCashierAccounts(asid, req.accountScope) })
 })
 
+// ── 出纳账户档案（出纳独立账户：自定义账户名称，关联总账科目生成凭证） ──
+router.get('/cashier/account-manage', (req: AuthRequest, res) => {
+  const db = getDb(); const asid = req.accountSetId || ''
+  const rows = listCashierAccountRows(db, asid, { includeDisabled: true, kind: req.query.kind ? String(req.query.kind) : undefined })
+  res.json({ code: 0, data: rows })
+})
+router.post('/cashier/account-manage', operationLog('新增出纳账户', '出纳'), (req: AuthRequest, res) => {
+  try { res.json({ code: 0, data: createCashierAccount(getDb(), req.accountSetId || '', req.body || {}) }) }
+  catch (e: any) { res.status(400).json({ code: 400, message: e?.message || '保存失败' }) }
+})
+router.put('/cashier/account-manage/:id', operationLog('修改出纳账户', '出纳'), (req: AuthRequest, res) => {
+  try { updateCashierAccount(getDb(), req.accountSetId || '', req.params.id, req.body || {}); res.json({ code: 0, data: { ok: true } }) }
+  catch (e: any) { res.status(400).json({ code: 400, message: e?.message || '保存失败' }) }
+})
+router.delete('/cashier/account-manage/:id', operationLog('删除出纳账户', '出纳'), (req: AuthRequest, res) => {
+  try { deleteCashierAccount(getDb(), req.accountSetId || '', req.params.id); res.json({ code: 0, data: { ok: true } }) }
+  catch (e: any) { res.status(400).json({ code: 400, message: e?.message || '删除失败' }) }
+})
+
 // ── 出纳币别列表（含本位币，供前端币种切换） ────────────
 router.get('/cashier/currencies', (req: AuthRequest, res) => {
   res.json({ code: 0, data: listCashierCurrencies(req.accountSetId || '', req.accountScope) })
@@ -367,7 +393,11 @@ router.get('/cashier/init-balance/gl', (req: AuthRequest, res) => {
   }
   for (const r of existing) pairs.set(`${r.account_code}::${r.currency}`, r)
   const rows = [...pairs.values()]
-    .map(p => ({ ...p, balance: getGlOpeningBalance(db, asid, p.account_code, p.currency, initDate, base) }))
+    // 出纳独立账户：按关联科目取总账余额；未关联科目的账户没有总账余额（过滤掉）
+    .map(p => {
+      const glCode = cashierGlCode(db, asid, p.account_code)
+      return { ...p, balance: glCode ? getGlOpeningBalance(db, asid, glCode, p.currency, initDate, base) : null }
+    })
     .filter(r => r.balance !== null)
   res.json({ code: 0, data: { init_date: initDate, rows } })
 })
@@ -386,6 +416,8 @@ router.get('/cashier/journal', (req: AuthRequest, res) => {
     // FIX-326：一律分页（未传按第 1 页、每页 100 条，上限 1000）；导出走 /export/styled-xlsx 的 cashierJournal 数据源
     page: page !== undefined ? Number(page) : undefined,
     pageSize: page_size !== undefined ? Number(page_size) : undefined,
+    // 日期排序：仅 desc 生效，余额始终是按时间累计的真实余额
+    sortOrder: (req.query.sort_order === 'desc' ? 'desc' : 'asc') as 'asc' | 'desc',
   }
   // 表头明细筛选（摘要 / 结算方式 / 票据号 / 对方单位 / 对方科目 / 辅助项目 / 凭证状态 / 对账状态）：
   // 只列出命中行，逐行余额仍是完整流水里的真实余额，期初 / 期末不变
@@ -465,6 +497,21 @@ router.post(
   }
 )
 
+/** 辅助项选择的规范化比较键（JSON 键排序；空对象 / 空串 / null 视为相同） */
+function auxKey(raw: unknown): string {
+  if (raw == null || raw === '') return ''
+  let obj: unknown = raw
+  if (typeof raw === 'string') {
+    try { obj = JSON.parse(raw) } catch { return raw }
+  }
+  if (!obj || typeof obj !== 'object') return String(raw)
+  const entries = Object.entries(obj as Record<string, unknown>)
+    .map(([k, v]) => [k, typeof v === 'object' && v ? (v as any).id ?? '' : v ?? ''] as [string, unknown])
+    .filter(([, v]) => v !== '')
+    .sort(([a], [b]) => a.localeCompare(b))
+  return entries.length ? JSON.stringify(entries) : ''
+}
+
 router.put(
   '/cashier/journal/:id',
   operationLog('出纳日记账修改', '出纳管理'),
@@ -472,8 +519,8 @@ router.put(
     const { id } = req.params
     const db = getDb()
     const existing = db
-      .prepare('SELECT id, account_code, currency, biz_date, debit, credit, exchange_rate, reconciled, counter_account, voucher_no, voucher_id FROM cashier_journal WHERE id=? AND account_set_id=?')
-      .get(id, req.accountSetId) as { id: string; account_code: string; currency: string; biz_date: string; debit: number; credit: number; exchange_rate: number; reconciled: number; counter_account: string | null; voucher_no: string | null; voucher_id: string | null } | undefined
+      .prepare('SELECT * FROM cashier_journal WHERE id=? AND account_set_id=?')
+      .get(id, req.accountSetId) as { id: string; account_code: string; currency: string; biz_date: string; debit: number; credit: number; exchange_rate: number; reconciled: number; counter_account: string | null; counter_aux_item_id: string | null; voucher_no: string | null; voucher_id: string | null } | undefined
     if (!existing) return res.status(404).json({ code: 404, message: '记录不存在' })
     if (!scopeGuard(req, res, [existing.account_code, req.body.counter_account])) return
 
@@ -489,6 +536,24 @@ router.put(
       if (biz_date) newBizDate = assertJournalDateWritable(db, req.accountSetId || '', biz_date)
     } catch (e: any) {
       return res.status(400).json({ code: 400, message: e.message })
+    }
+    // 收付款单审核写入的流水：金额 / 日期 / 汇率 / 对方科目 / 辅助项随单据走，只能在供应链反审核后修改（摘要、票据号可改）
+    const scmSource = getScmSourceOfJournal(db, req.accountSetId || '', id)
+    if (scmSource) {
+      const differs = (a: unknown, b: unknown) => a != null && a !== '' && Math.abs(Number(a) - Number(b || 0)) > 0.0049
+      const changed =
+        differs(debit, existing.debit) ||
+        differs(credit, existing.credit) ||
+        (newBizDate != null && newBizDate !== existing.biz_date) ||
+        (req.body.exchange_rate != null && req.body.exchange_rate !== '' && differs(req.body.exchange_rate, existing.exchange_rate)) ||
+        (counter_account != null && counter_account !== '' && String(counter_account) !== String(existing.counter_account ?? '')) ||
+        ('counter_aux_item_id' in req.body && auxKey(req.body.counter_aux_item_id) !== auxKey(existing.counter_aux_item_id))
+      if (changed) {
+        return res.status(400).json({
+          code: 400,
+          message: `该记录由${paymentDocLabel(scmSource.doc_type)} ${scmSource.doc_no} 审核生成，修改金额、日期、汇率、对方科目或辅助项请在供应链反审核该单据（摘要、票据号等可直接改）`,
+        })
+      }
     }
     // 评审 P2：已生成凭证的行改金额 / 日期 / 汇率 / 对方科目，日记账与总账凭证不再一致（凭证不会跟着变）——须先删凭证
     if (existing.voucher_no || existing.voucher_id) {
@@ -580,6 +645,11 @@ router.delete(
     // P1-4：已勾对的行删除后对账单侧 matched=1 成孤儿，余额调节表永久不平
     if (existing.reconciled) {
       return res.status(400).json({ code: 400, message: '该记录已与总账分录对账匹配，请先在「出纳对账」取消匹配后再删除' })
+    }
+    // 收付款单审核写入的流水：删除会连带删掉单据凭证并让往来台账悬空，只能在供应链反审核单据
+    const scmSource = getScmSourceOfJournal(db, req.accountSetId || '', id)
+    if (scmSource) {
+      return res.status(400).json({ code: 400, message: `该记录由${paymentDocLabel(scmSource.doc_type)} ${scmSource.doc_no} 审核生成，不能在出纳删除，请在供应链反审核该单据` })
     }
 
     let deletedVoucher: { voucher_no: string; status: string } | null = null
@@ -845,6 +915,8 @@ router.post(
       endDate: end_date,
       ids,
     })
+    // 收付款制证方式拦截（来源于收付款单的流水由单据制证 / 单据已制证）
+    if (data.error) return res.status(400).json({ code: 400, message: data.error })
     res.json({ code: 0, data })
   }
 )
@@ -871,6 +943,13 @@ router.post(
       const counters = (db.prepare(`SELECT DISTINCT counter_account FROM cashier_journal WHERE ${conds.join(' AND ')}`)
         .all(...vals) as Array<{ counter_account: string }>).map(r => r.counter_account)
       if (!scopeGuard(req, res, [account_code, hangup_account_code, ...counters])) return
+    }
+    // 本次指定的凭证类型（业务凭证中心 / 生成预览选择），空则按出纳默认参数
+    let voucherTypeId: string | null
+    try {
+      voucherTypeId = normalizeRequestedVoucherTypeId(db, req.accountSetId || '', req.body?.voucher_type_id)
+    } catch (e: any) {
+      return res.status(400).json({ code: 400, message: e.message })
     }
     // 出纳结账闸：按 ids 时逐条校验业务日期，否则按日期区间校验
     try {
@@ -901,10 +980,11 @@ router.post(
       makerName: (req as any).userName || '系统',
       hangupAccountCode: hangup_account_code || undefined,
       ids,
+      voucherTypeId,
     })
     if ('error' in result) {
       // 携带未填对方科目的记录明细，供前端列出引导补全 / 选择挂账科目
-      return res.status(400).json({ code: 400, message: result.error, missingRows: result.missingRows })
+      return res.status(400).json({ code: 400, message: result.error, missingRows: result.missingRows, missingAuxRows: result.missingAuxRows })
     }
     res.json({ code: 0, data: result })
   }
@@ -976,6 +1056,8 @@ router.get('/cashier/journal/search', (req: AuthRequest, res) => {
     aux: query.aux,
     // 兼容旧参数：has_voucher=1 → 已有凭证（任意状态）；0 → 无凭证
     has_voucher: query.has_voucher,
+    // 业务凭证中心：收付款单直接制证模式下不列收付款单写入的流水
+    exclude_scm_payment: query.exclude_scm_payment,
   })
   const data = searchJournalsReport(getDb(), filter, query.page ? Number(query.page) : 1, query.page_size ? Number(query.page_size) : 100)
   res.json({ code: 0, data })

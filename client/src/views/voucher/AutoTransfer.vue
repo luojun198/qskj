@@ -32,7 +32,7 @@
           <el-icon class="revoke-callout__icon"><WarningFilled /></el-icon>
           <div>
             <strong>{{ form.year }}年{{ form.period }}期 已生成 {{ generatedVouchers.length }} 张</strong>
-            <span>重新生成前须先反结转删除全部凭证</span>
+            <span>之后又有损益凭证记账时，可直接「补结差额」，或在类型上点「重新结转」整体重做</span>
           </div>
         </div>
         <el-tooltip :disabled="canRevokeTransfer" :content="revokeDisabledTip" placement="top">
@@ -77,6 +77,15 @@
         <em>{{ item.hint }}</em>
       </div>
     </section>
+
+    <el-alert
+      v-if="previewResult?.unpostedCount"
+      :title="`本期还有 ${previewResult.unpostedCount} 张凭证未记账，结转只取已记账余额，这些凭证不会被结转；记账后可再「补结差额」。`"
+      type="warning"
+      :closable="false"
+      show-icon
+      class="section-alert section-alert--compact"
+    />
 
     <el-alert
       v-if="topNotice"
@@ -137,9 +146,22 @@
             <p v-if="preview.disabledReason || preview.emptyReason" class="type-reason">
               {{ preview.disabledReason || preview.emptyReason }}
             </p>
-            <p v-else-if="preview.alreadyGenerated" class="type-reason">
-              已生成凭证号：{{ preview.existingRun?.voucher_no || '-' }}
-            </p>
+            <div v-if="preview.alreadyGenerated" class="type-run-row">
+              <span class="type-reason">
+                已结转 {{ preview.runCount || 1 }} 次：{{ runVoucherNos(preview) }}
+                <template v-if="preview.incremental">，本次补结差额 {{ formatAmount(preview.totals.debitTotal) }}</template>
+              </span>
+              <el-button
+                text
+                type="danger"
+                size="small"
+                :disabled="Boolean(previewResult?.closed) || redoingCode === preview.transferTypeCode"
+                :loading="redoingCode === preview.transferTypeCode"
+                @click="redoTransfer(preview)"
+              >
+                重新结转
+              </el-button>
+            </div>
           </article>
         </div>
       </el-card>
@@ -212,6 +234,10 @@ interface TransferPreview {
   disabledReason?: string | null
   emptyReason?: string | null
   alreadyGenerated: boolean
+  /** 已结转过、按当前余额还有差额：本次生成的是补结差额凭证 */
+  incremental?: boolean
+  runCount?: number
+  existingRuns?: Array<{ voucher_no?: string; status?: string }>
   notYetDue?: boolean
   notYetDueReason?: string
   existingRun: any
@@ -241,6 +267,7 @@ interface GeneratedTransferVoucher {
 
 interface PreviewResult {
   closed: boolean
+  unpostedCount?: number
   blockedReason: string | null
   generatedVouchers?: GeneratedTransferVoucher[]
   summary?: {
@@ -265,6 +292,7 @@ const form = ref({
 const previewLoading = ref(false)
 const running = ref(false)
 const revoking = ref(false)
+const redoingCode = ref('')
 const previewResult = ref<PreviewResult | null>(null)
 const selectedCodes = ref<string[]>([])
 
@@ -288,7 +316,7 @@ const summaryCards = computed(() => {
     { label: '结转类型', value: summary?.totalTypes || previews.value.length, hint: '当前账套配置' },
     { label: '可生成', value: summary?.readyCount || readyPreviews.value.length, hint: '默认可勾选' },
     { label: '已选择', value: selectedReadyCount.value, hint: '本次将生成' },
-    { label: '已生成', value: summary?.generatedCount || generatedVouchers.value.length, hint: '需撤销后重做' },
+    { label: '已生成', value: summary?.generatedCount || generatedVouchers.value.length, hint: '可补结差额或重新结转' },
   ]
 })
 
@@ -297,9 +325,10 @@ const topNotice = computed(() => {
   if (hasGeneratedVouchers.value) {
     const voucherText = generatedVouchers.value.map(item => item.voucherNo || '-').join('、')
     if (readyPreviews.value.length === 0) {
-      return `${form.value.year}年${form.value.period}期已生成 ${generatedVouchers.value.length} 张结转凭证（${voucherText}），如需重新生成请先反结转。`
+      return `${form.value.year}年${form.value.period}期已生成 ${generatedVouchers.value.length} 张结转凭证（${voucherText}），损益已结平。`
     }
-    return `本期已生成 ${generatedVouchers.value.length} 张结转凭证（${voucherText}），另有 ${readyPreviews.value.length} 个类型可继续生成。`
+    const incremental = readyPreviews.value.filter(item => item.incremental).length
+    return `本期已生成 ${generatedVouchers.value.length} 张结转凭证（${voucherText}），另有 ${readyPreviews.value.length} 个类型可继续生成${incremental ? `（其中 ${incremental} 个为结转后新增的差额，生成补结差额凭证）` : ''}。`
   }
   if (previewResult.value.blockedReason) return previewResult.value.blockedReason
   if (readyPreviews.value.length === 0) return '当前期间没有可生成的结转分录，左侧已列出每个结转类型的原因。'
@@ -337,8 +366,13 @@ function toggleType(preview: TransferPreview, checked: boolean) {
   selectedCodes.value = selectedCodes.value.filter(code => code !== preview.transferTypeCode)
 }
 
+function runVoucherNos(preview: TransferPreview) {
+  const runs = preview.existingRuns?.length ? preview.existingRuns : [preview.existingRun].filter(Boolean)
+  return runs.map(run => run?.voucher_no || '-').join('、') || '-'
+}
+
 function getStatusText(preview: TransferPreview) {
-  if (preview.status === 'ready') return '可生成'
+  if (preview.status === 'ready') return preview.incremental ? '补结差额' : '可生成'
   if (preview.status === 'generated') return '已生成'
   if (preview.status === 'notYetDue') return '未到期'
   if (preview.status === 'unbalanced') return '借贷不平'
@@ -393,7 +427,7 @@ async function runTransfer() {
     form.value.year,
     form.value.period,
     selected.map(item => ({
-      transferTypeName: item.transferTypeName,
+      transferTypeName: item.incremental ? `${item.transferTypeName}（补结差额）` : item.transferTypeName,
       transferTypeCode: item.transferTypeCode,
       voucherType: item.voucherType,
     }))
@@ -424,6 +458,37 @@ async function runTransfer() {
     ElMessage.error(error.response?.data?.message || '生成结转凭证失败')
   } finally {
     running.value = false
+  }
+}
+
+/** 一键重新结转：删除该类型本期全部结转凭证（含补结差额），按当前余额整体重新生成一张 */
+async function redoTransfer(preview: TransferPreview) {
+  if (previewResult.value?.closed) {
+    ElMessage.warning('该期间已结账，不能重新结转')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `将删除「${preview.transferTypeName}」本期已生成的结转凭证（${runVoucherNos(preview)}），再按当前已记账余额重新生成一张。凭证号可能变化，确定继续？`,
+      '确认重新结转',
+      { confirmButtonText: '重新结转', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  redoingCode.value = preview.transferTypeCode
+  try {
+    const res = await request.post('/voucher/auto-transfer/redo', {
+      year: form.value.year,
+      period: form.value.period,
+      transferTypeCodes: [preview.transferTypeCode],
+    })
+    ElMessage.success(res.message || '重新结转完成')
+  } catch (error: any) {
+    ElMessage.error(error.response?.data?.message || '重新结转失败')
+  } finally {
+    redoingCode.value = ''
+    await loadPreview(false)
   }
 }
 
@@ -479,6 +544,13 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.type-run-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .auto-transfer-page {
   padding: 10px 12px;
   gap: 8px;

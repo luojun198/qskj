@@ -4,6 +4,7 @@
       <span class="rpt-title">采购建议</span>
       <span class="rpt-sub">建议量 = 安全库存 − 现存 − 在途（不足起订量按起订量）</span>
       <el-button size="small" :loading="loading" @click="load"><el-icon><Refresh /></el-icon>刷新</el-button>
+      <SaveAsButton title="采购建议" />
       <span class="rpt-hint">共 {{ rows.length }} 项建议</span>
     </div>
     <div class="rpt-body">

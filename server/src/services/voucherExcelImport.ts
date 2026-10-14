@@ -25,7 +25,6 @@ import {
   getVoucherBalanceError,
   loadVoucherAuxiliaryData,
   validateVoucherDate,
-  validateVoucherEntriesCashFlow,
   validateVoucherEntriesForeignCurrency,
   validateVoucherEntriesQuantity,
   validateVoucherEntryAmounts,
@@ -428,7 +427,6 @@ export function parseVoucherExcelRows(params: {
         timeControlMax && g.voucherDate < timeControlMax
           ? `日期 ${g.voucherDate} 早于 ${timeControlMax}，凭证时序控制已开启，不允许录入早于已有凭证的日期`
           : null,
-      () => validateVoucherEntriesCashFlow(db, accountSetId, g.entries),
       () => validateVoucherEntriesForeignCurrency(db, accountSetId, g.entries),
       () => validateVoucherEntriesQuantity(db, accountSetId, g.entries),
       () =>

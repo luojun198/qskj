@@ -1,4 +1,5 @@
 import bcrypt from 'bcryptjs'
+import { initCashFlowForAccountSetSafe } from './cashFlowAccountMap.js'
 import type { Database } from 'better-sqlite3'
 import {
   importAcdTemplateToAccountSet,
@@ -319,6 +320,7 @@ function clearMasterDataForReinit(
   deleteIfExists(db, 'DELETE FROM fixed_asset_purpose WHERE account_set_id = ?', accountSetId)
   deleteIfExists(db, 'DELETE FROM fixed_asset_dept WHERE account_set_id = ?', accountSetId)
 
+  deleteIfExists(db, 'DELETE FROM account_cash_flow_map WHERE account_set_id = ?', accountSetId)
   deleteIfExists(db, 'DELETE FROM accounts WHERE account_set_id = ?', accountSetId)
 }
 
@@ -359,6 +361,8 @@ export function reinitializeAccountSet(
 
       if (payload.mode === 'voucher_only') {
         applyReinitStartDate(db, accountSetId, startDate)
+      // 科目已重建（映射已清空）：按准则重新预设科目现金流量项目
+      initCashFlowForAccountSetSafe(db, accountSetId)
         return {
           mode: payload.mode,
           message: `已清理全部凭证及相关余额、结账记录，建账日期已更新为 ${startDate}`,

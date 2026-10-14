@@ -93,25 +93,6 @@
           </div>
 
           <div class="header-actions header-actions--right">
-            <!-- 性能模式切换按钮 -->
-            <button
-              class="header-action-btn header-action-btn--perf"
-              :title="isLightMode ? '当前：省电模式（点击恢复完整视觉效果）' : '当前：完整模式（点击开启省电模式，低配电脑推荐）'"
-              @click="togglePerfMode"
-            >
-              <span class="header-action-btn__icon">
-                <svg v-if="isLightMode" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <!-- 闪电图标：省电模式激活中 -->
-                  <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
-                </svg>
-                <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <!-- 仪表盘图标：完整模式激活中 -->
-                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/>
-                  <path d="M12 6v6l4 2"/>
-                </svg>
-              </span>
-              <span class="header-action-btn__label">{{ isLightMode ? '省电模式' : '完整模式' }}</span>
-            </button>
             <button class="header-action-btn header-action-btn--home" title="回到首页" @click="goToHome">
               <span class="header-action-btn__icon">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -272,7 +253,7 @@ import AppRail from '@/components/layout/AppRail.vue'
 import { useTabsStore } from '@/stores/tabs'
 import { getTabPolicy, getViewKey as getViewKeyUtil } from '@/utils/viewKey'
 import { DOC_TITLE } from '@/utils/scmDoc'
-import { shouldUseLightMode, setPerformanceMode } from '@/utils/performanceMode'
+import { isLowEndDevice } from '@/utils/performanceMode'
 import { getGroupNavigationPath, resolveNavAppTitle } from '@/utils/groupNavigation'
 import { preloadRoutePathsWhenIdle } from '@/utils/routePreload'
 import {
@@ -287,20 +268,7 @@ import {
   resetAccountDisplayMode,
 } from '@/utils/accountDisplayPreference'
 
-const keepAliveMax = shouldUseLightMode() ? 6 : 14
-
-// ── 性能模式切换 ───────────────────────────────────────────────────────────
-const isLightMode = ref(shouldUseLightMode())
-
-function togglePerfMode() {
-  const next = isLightMode.value ? 'full' : 'light'
-  const nowLight = setPerformanceMode(next)
-  isLightMode.value = nowLight
-  ElMessage.success(nowLight
-    ? '已开启省电模式：关闭毛玻璃/动画，提升流畅度'
-    : '已恢复完整模式：视觉特效已开启'
-  )
-}
+const keepAliveMax = isLowEndDevice() ? 6 : 14
 
 // const { currentTheme, toggleTheme, initTheme } = useTheme()
 
@@ -503,15 +471,17 @@ useKeyboardShortcuts([
     ctrl: true,
     shift: true,
     handler: () => {
-      if (route.path === '/system/param') {
+      // 系统参数嵌在「系统管理」主页：已在主页时切换品牌面板显隐
+      const systemHome = getGroupNavigationPath('系统管理')
+      if (decodeURIComponent(route.path) === decodeURIComponent(systemHome)) {
         const open = route.query.openBrandSettings === '1'
         router.replace({
-          path: '/system/param',
+          path: systemHome,
           query: open ? {} : { openBrandSettings: '1' },
         })
         return
       }
-      router.push({ path: '/system/param', query: { openBrandSettings: '1' } })
+      router.push({ path: systemHome, query: { openBrandSettings: '1' } })
     },
     description: 'Ctrl+Shift+L 打开品牌设置',
   },
@@ -782,6 +752,8 @@ function resolveTabTitle(r: { path: string; name?: any; meta?: any; query?: any;
   else if (r.name === 'ScmDocNew' && r.query?.payment_mode === 'advance' && dt === 'RCV') base = '新增预收款单'
   else if (r.name === 'ScmDocNew' && r.query?.payment_mode === 'advance' && dt === 'PAY') base = '新增预付款单'
   else if (r.name === 'ScmDocNew' && dt) base = '新增' + (DOC_TITLE[dt] || '单据')
+  else if (r.path === '/scm/statements' && (r.query?.direction === 'ar' || r.query?.direction === 'ap')) base = r.query.direction === 'ar' ? '应收对账单' : '应付对账单'
+  else if (r.path === '/scm/statements/new' && (r.query?.direction === 'ar' || r.query?.direction === 'ap')) base = r.query.direction === 'ar' ? '新增应收对账单' : '新增应付对账单'
   else if (r.name === 'GroupNav') {
     // 模块导航页按所属分组命名，避免多个「模块导航」标签无法区分（采购管理→采购导航）
     const g = resolveNavAppTitle(String(r.params?.groupTitle || '').trim())
@@ -989,6 +961,8 @@ async function reloadCurrentView() {
 
 .rail-context-menu {
   position: fixed;
+  font-family: 'Microsoft YaHei', '微软雅黑', 'PingFang SC', 'Hiragino Sans GB', sans-serif;
+  -webkit-font-smoothing: auto;
   min-width: 148px;
   margin: 0;
   padding: 4px 0;

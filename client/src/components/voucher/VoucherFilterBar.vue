@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import {
   Calendar,
   ArrowDown,
@@ -10,15 +10,20 @@ import {
 } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { VoucherFilters } from '@/composables/useVoucherQuery'
-import { cloneVoucherFilters } from '@/composables/useVoucherQuery'
+import { cloneVoucherFilters, resolveVoucherSorts, VOUCHER_SORT_OPTIONS, DEFAULT_VOUCHER_SORTS } from '@/composables/useVoucherQuery'
+import MultiSortPanel from '@/components/common/MultiSortPanel.vue'
+import type { SortKey } from '@/utils/multiSort'
 import { useQueryScheme } from '@/composables/useQueryScheme'
 import { ACCOUNT_SELECT_POPPER_CLASS } from '@/utils/accountSelectDisplay'
 import FilterClearButton from '@/components/common/FilterClearButton.vue'
+import VoucherDateRangeQuick from '@/components/voucher/VoucherDateRangeQuick.vue'
 
 interface Props {
   filters: VoucherFilters
   layout?: 'inline' | 'grouped'
   enableStatus?: boolean
+  /** 状态常驻在筛选栏外：分段按钮「全部 / 只录入 / 已审核 / 已记账」，切换即查询（第四份反馈 Q3） */
+  statusQuick?: boolean
   enableYearPeriod?: boolean
   enableVoucherType?: boolean
   enableAccount?: boolean
@@ -36,6 +41,7 @@ interface Props {
 const props = withDefaults(defineProps<Props>(), {
   layout: 'inline',
   enableStatus: false,
+  statusQuick: false,
   enableYearPeriod: false,
   enableVoucherType: false,
   enableAccount: false,
@@ -52,16 +58,40 @@ const props = withDefaults(defineProps<Props>(), {
 
 const emit = defineEmits<{
   search: []
-  sortChange: [field: string, order: 'asc' | 'desc']
+  sortChange: [sorts: SortKey[]]
   loadAccounts: []
   loadAuxItems: [categoryId: string]
   searchAuxItems: [categoryId: string, keyword: string]
   applyScheme: [filters: VoucherFilters]
 }>()
 
+// 多级排序（第一排序 / 第二排序 / …）
+const currentSorts = computed(() => resolveVoucherSorts(props.filters))
+function onSortsChange(sorts: SortKey[]) {
+  props.filters.sorts = sorts
+  emit('sortChange', sorts)
+}
+
 const showDateDialog = ref(false)
 const tempDateRange = ref<string[]>([])
 const filterExpanded = ref(false)
+
+// 展开后点击筛选框以外（列表等）任意位置自动收起；下拉面板、日期面板、弹窗内的点击不算
+const filterCardRef = ref<{ $el?: HTMLElement } | null>(null)
+const FILTER_KEEP_OPEN_SELECTOR = '.el-popper, .el-overlay, .el-message-box, .el-picker-panel'
+function handleOutsidePointerDown(event: PointerEvent) {
+  const target = event.target as Element | null
+  if (!target || !target.isConnected) return
+  const cardEl = filterCardRef.value?.$el
+  if (cardEl?.contains(target)) return
+  if (target.closest(FILTER_KEEP_OPEN_SELECTOR)) return
+  filterExpanded.value = false
+}
+watch(filterExpanded, (expanded) => {
+  if (expanded) document.addEventListener('pointerdown', handleOutsidePointerDown, true)
+  else document.removeEventListener('pointerdown', handleOutsidePointerDown, true)
+})
+onBeforeUnmount(() => document.removeEventListener('pointerdown', handleOutsidePointerDown, true))
 function handleClearFilters() {
   props.filters.keyword = ''
   props.filters.status = ''
@@ -101,13 +131,6 @@ const years = computed(() => {
   return Array.from({ length: 5 }, (_, i) => currentYear - i)
 })
 
-const dateRangeLabel = computed(() => {
-  const [start, end] = props.filters.dateRange || []
-  if (start && end) return `${start} ~ ${end}`
-  if (start) return `${start} 起`
-  return '日期范围'
-})
-
 const hasScopeGroup = computed(
   () => props.enableStatus || props.enableYearPeriod || props.enableVoucherType
 )
@@ -124,8 +147,7 @@ const activeFilterCount = computed(() => {
   let count = 0
   const f = props.filters
   if (f.keyword?.trim()) count++
-  if (f.status) count++
-  if (f.dateRange?.length) count++
+  if (f.status && !props.statusQuick) count++
   if (f.year != null) count++
   if (f.period != null) count++
   if (f.voucherTypeIds?.length) count++
@@ -149,12 +171,7 @@ const activeFilterCount = computed(() => {
 const collapsedSummary = computed(() => {
   const parts: string[] = []
   const f = props.filters
-  if (f.status) parts.push(statusLabels[f.status] || f.status)
-  if (f.dateRange?.length === 2 && f.dateRange[0] && f.dateRange[1]) {
-    parts.push(`${f.dateRange[0]}~${f.dateRange[1]}`)
-  } else if (dateRangeLabel.value !== '日期范围') {
-    parts.push(dateRangeLabel.value)
-  }
+  if (f.status && !props.statusQuick) parts.push(statusLabels[f.status] || f.status)
   if (f.year != null) parts.push(`${f.year}年`)
   if (f.period != null) parts.push(`${f.period}月`)
   if (f.voucherTypeIds?.length) parts.push(`类型${f.voucherTypeIds.length}项`)
@@ -197,57 +214,6 @@ function parseFieldOptions(optionsJson: string | null): string[] {
 function openDateDialog() {
   tempDateRange.value = [...props.filters.dateRange]
   showDateDialog.value = true
-}
-
-// 快捷时间选择
-function setQuickDate(type: 'today' | 'week' | 'month' | 'quarter' | 'year') {
-  const today = new Date()
-  const year = today.getFullYear()
-  const month = today.getMonth()
-  const date = today.getDate()
-  const day = today.getDay()
-
-  let startDate = ''
-  let endDate = ''
-
-  switch (type) {
-    case 'today':
-      startDate = endDate = formatDate(today)
-      break
-    case 'week':
-      // 本周一到今天
-      const monday = new Date(today)
-      monday.setDate(date - (day === 0 ? 6 : day - 1))
-      startDate = formatDate(monday)
-      endDate = formatDate(today)
-      break
-    case 'month':
-      // 本月1号到今天
-      startDate = `${year}-${String(month + 1).padStart(2, '0')}-01`
-      endDate = formatDate(today)
-      break
-    case 'quarter':
-      // 本季度第一天到今天
-      const quarterStartMonth = Math.floor(month / 3) * 3
-      startDate = `${year}-${String(quarterStartMonth + 1).padStart(2, '0')}-01`
-      endDate = formatDate(today)
-      break
-    case 'year':
-      // 本年1月1日到今天
-      startDate = `${year}-01-01`
-      endDate = formatDate(today)
-      break
-  }
-
-  props.filters.dateRange = [startDate, endDate]
-  emit('search')
-}
-
-function formatDate(date: Date): string {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
 }
 
 // 查询方案相关函数
@@ -355,7 +321,7 @@ function handleSetDefault(schemeId: string) {
 </script>
 
 <template>
-  <el-card class="voucher-filter-card" shadow="never">
+  <el-card ref="filterCardRef" class="voucher-filter-card" shadow="never">
     <!-- 分组布局（可折叠，默认收起） -->
     <div v-if="layout === 'grouped'" class="filter-panel-wrap">
       <div class="filter-bar-compact">
@@ -380,6 +346,19 @@ function handleSetDefault(schemeId: string) {
           clearable
           @keyup.enter="emit('search')"
         />
+        <VoucherDateRangeQuick v-model="filters.dateRange" @change="emit('search')" />
+        <el-radio-group
+          v-if="enableStatus && statusQuick"
+          v-model="filters.status"
+          class="filter-status-quick"
+          size="small"
+          @change="emit('search')"
+        >
+          <el-radio-button value="">全部</el-radio-button>
+          <el-radio-button value="draft">只录入</el-radio-button>
+          <el-radio-button value="audited">已审核</el-radio-button>
+          <el-radio-button value="posted">已记账</el-radio-button>
+        </el-radio-group>
         <span
           v-if="!filterExpanded && collapsedSummary !== '更多条件'"
           class="filter-summary-text"
@@ -401,12 +380,12 @@ function handleSetDefault(schemeId: string) {
             {{ activeScheme.name }}
           </el-tag>
           <template v-if="enableQueryScheme">
-            <el-button size="small" plain @click="handleSaveScheme()">
+            <el-button size="small" text @click="handleSaveScheme()">
               <el-icon><FolderOpened /></el-icon>
               保存方案
             </el-button>
             <el-dropdown trigger="click" @command="handleSchemeCommand">
-              <el-button size="small" plain>
+              <el-button size="small" text>
                 我的方案
                 <el-icon class="el-icon--right"><ArrowDown /></el-icon>
               </el-button>
@@ -465,18 +444,17 @@ function handleSetDefault(schemeId: string) {
             </el-dropdown>
           </template>
           <el-button type="primary" size="small" @click="emit('search')">查询</el-button>
-          <FilterClearButton size="small" @clear="handleClearFilters" />
+          <FilterClearButton size="small" text @clear="handleClearFilters" />
           <slot name="actions" />
         </div>
       </div>
 
-      <el-collapse-transition>
         <div v-show="filterExpanded" class="filter-panel-expanded">
           <div v-if="hasScopeGroup" class="filter-group-row">
             <span class="filter-group-label">范围</span>
             <div class="filter-group-body">
               <el-select
-                v-if="enableStatus"
+                v-if="enableStatus && !statusQuick"
                 v-model="filters.status"
                 placeholder="凭证状态"
                 class="filter-control filter-control--sm"
@@ -489,24 +467,6 @@ function handleSetDefault(schemeId: string) {
                 <el-option label="已审核" value="audited" />
                 <el-option label="已记账" value="posted" />
               </el-select>
-
-              <el-button class="filter-date-btn" size="small" @click="openDateDialog">
-                <el-icon><Calendar /></el-icon>
-                {{ dateRangeLabel }}
-              </el-button>
-
-              <el-dropdown trigger="click" @command="(cmd: 'today' | 'week' | 'month' | 'quarter' | 'year') => setQuickDate(cmd)">
-                <el-button size="small">快捷日期</el-button>
-                <template #dropdown>
-                  <el-dropdown-menu>
-                    <el-dropdown-item command="today">今天</el-dropdown-item>
-                    <el-dropdown-item command="week">本周</el-dropdown-item>
-                    <el-dropdown-item command="month">本月</el-dropdown-item>
-                    <el-dropdown-item command="quarter">本季</el-dropdown-item>
-                    <el-dropdown-item command="year">本年</el-dropdown-item>
-                  </el-dropdown-menu>
-                </template>
-              </el-dropdown>
 
               <template v-if="enableYearPeriod">
                 <el-select
@@ -681,33 +641,15 @@ function handleSetDefault(schemeId: string) {
           <div v-if="enableSort" class="filter-group-row">
             <span class="filter-group-label">排序</span>
             <div class="filter-group-body">
-              <el-select
-                v-model="filters.sortField"
-                placeholder="排序字段"
-                class="filter-control filter-control--sort"
-                size="small"
-                @change="emit('sortChange', filters.sortField, filters.sortOrder)"
-              >
-                <el-option label="凭证日期" value="voucher_date" />
-                <el-option label="凭证号" value="voucher_no" />
-                <el-option label="借方金额" value="debit_amount" />
-                <el-option label="贷方金额" value="credit_amount" />
-                <el-option label="创建时间" value="created_at" />
-              </el-select>
-              <el-select
-                v-model="filters.sortOrder"
-                placeholder="排序方式"
-                class="filter-control filter-control--xs"
-                size="small"
-                @change="emit('sortChange', filters.sortField, filters.sortOrder)"
-              >
-                <el-option label="升序" value="asc" />
-                <el-option label="降序" value="desc" />
-              </el-select>
+              <MultiSortPanel
+                :options="VOUCHER_SORT_OPTIONS"
+                :model-value="currentSorts"
+                :default-keys="DEFAULT_VOUCHER_SORTS"
+                @change="onSortsChange"
+              />
             </div>
           </div>
         </div>
-      </el-collapse-transition>
 
     </div>
 
@@ -851,27 +793,12 @@ function handleSetDefault(schemeId: string) {
         </template>
       </template>
       <template v-if="enableSort">
-        <el-select
-          v-model="filters.sortField"
-          placeholder="排序字段"
-          style="width: 130px"
-          @change="emit('sortChange', filters.sortField, filters.sortOrder)"
-        >
-          <el-option label="凭证日期" value="voucher_date" />
-          <el-option label="凭证号" value="voucher_no" />
-          <el-option label="借方金额" value="debit_amount" />
-          <el-option label="贷方金额" value="credit_amount" />
-          <el-option label="创建时间" value="created_at" />
-        </el-select>
-        <el-select
-          v-model="filters.sortOrder"
-          placeholder="排序方式"
-          style="width: 100px"
-          @change="emit('sortChange', filters.sortField, filters.sortOrder)"
-        >
-          <el-option label="升序" value="asc" />
-          <el-option label="降序" value="desc" />
-        </el-select>
+        <MultiSortPanel
+          :options="VOUCHER_SORT_OPTIONS"
+          :model-value="currentSorts"
+          :default-keys="DEFAULT_VOUCHER_SORTS"
+          @change="onSortsChange"
+        />
       </template>
       <el-button type="primary" @click="emit('search')">查询</el-button>
       <FilterClearButton @clear="handleClearFilters" />
@@ -986,6 +913,10 @@ function handleSetDefault(schemeId: string) {
   min-height: 28px;
 }
 
+.filter-status-quick {
+  flex-shrink: 0;
+}
+
 .filter-toggle-btn {
   flex-shrink: 0;
   padding: 0 4px !important;
@@ -1039,9 +970,19 @@ function handleSetDefault(schemeId: string) {
 }
 
 .filter-bar-actions :deep(.el-button) {
-  height: 28px;
-  padding: 0 10px;
+  height: 24px;
+  padding: 0 8px;
   font-size: 12px;
+}
+
+/* 次要按钮只留文字，不要独立边框；「查询」保持实心主按钮 */
+.filter-bar-actions :deep(.el-button:not(.el-button--primary)) {
+  border-color: transparent;
+  background: transparent;
+}
+
+.filter-bar-actions :deep(.el-button:not(.el-button--primary):hover) {
+  background: var(--el-fill-color-light);
 }
 
 .filter-panel-expanded {

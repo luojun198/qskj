@@ -102,7 +102,7 @@ export interface PrintTemplate {
 }
 
 /** 打印模板大类 */
-export type PrintTemplateType = 'voucher' | 'ledger' | 'report'
+export type PrintTemplateType = 'voucher' | 'ledger' | 'report' | 'scm_doc'
 
 /** hiprint 原生模板面板（结构由 vue-plugin-hiprint 定义，此处用宽松类型承接） */
 export interface HiprintPanel {
@@ -201,6 +201,8 @@ export interface VoucherEntryPrintData {
   foreign_amount?: number
   cash_flow_code?: string
   cash_flow_name?: string
+  /** 会计科目全称：上级科目 / 本级科目（服务端按科目树拼接） */
+  account_full_name?: string
   aux_data?: Record<string, { id: string; name: string; field_values?: Record<string, any> }>  // 辅助项目数据
   /** 服务端已扁平化的辅助项目名称：aux_<类别code> → 项目名 */
   [auxField: `aux_${string}`]: any

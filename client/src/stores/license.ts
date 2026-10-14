@@ -16,6 +16,8 @@ const EMPTY_STATUS: LicenseStatus = {
   machineId: '',
   machineMismatch: false,
   modules: [],
+  maxConcurrent: 0,
+  onlineCount: 0,
 }
 
 const LICENSE_STATUS_CACHE_KEY = 'cw_license_status_v2'

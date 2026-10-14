@@ -33,13 +33,14 @@ function toBase64Url(input) {
 }
 
 function parseArgs(argv) {
-  const args = { machineId: '', expires: '', modules: '', privateKey: DEFAULT_PRIVATE_KEY }
+  const args = { machineId: '', expires: '', modules: '', concurrent: null, privateKey: DEFAULT_PRIVATE_KEY }
   for (let i = 2; i < argv.length; i++) {
     const arg = argv[i]
     if (arg === '--machine-id' || arg === '-m')
       args.machineId = (argv[++i] || '').trim().toUpperCase()
     else if (arg === '--expires' || arg === '-e') args.expires = (argv[++i] || '').trim()
     else if (arg === '--modules' || arg === '-M') args.modules = (argv[++i] || '').trim()
+    else if (arg === '--concurrent' || arg === '-c') args.concurrent = (argv[++i] || '').trim()
     else if (arg === '--private-key' || arg === '-k') args.privateKey = resolve(argv[++i] || '')
     else if (arg === '--help' || arg === '-h') args.help = true
   }
@@ -144,11 +145,12 @@ async function main() {
   -e, --expires <YYYY-MM-DD> 授权截止日期（含当天）
   -M, --modules <list>       授权模块，逗号分隔 key 或编号；all 表示全部（默认）
                              可选：${MODULE_KEYS.join(', ')}
+  -c, --concurrent <N>       最大并发在线人数（正整数；0 或 all = 不限制，默认不限制）
   -k, --private-key <path>   私钥路径（默认同目录 license-private.pem）
   -h, --help                 显示帮助
 
 示例:
-  generate-license.exe -m A1B2C3D4E5F6 -e 2027-12-31 -M gl,cashier
+  generate-license.exe -m A1B2C3D4E5F6 -e 2027-12-31 -M gl,cashier -c 5
   generate-license.exe -m A1B2C3D4E5F6 -e 2027-12-31 -M all
 `)
     process.exit(0)
@@ -168,6 +170,10 @@ async function main() {
     printModuleMenu()
     modulesInput = await prompt('请输入授权模块编号或 key（逗号分隔，回车 = 全部）: ')
   }
+  let concurrentInput = args.concurrent
+  if (concurrentInput === null) {
+    concurrentInput = await prompt('请输入最大并发在线人数（正整数，回车 = 不限制）: ')
+  }
 
   if (!/^[0-9A-F]{12}$/.test(machineId)) {
     console.error('错误: 机器码应为 12 位十六进制字符')
@@ -176,6 +182,16 @@ async function main() {
   if (!isValidDateOnly(expires)) {
     console.error('错误: 截止日期格式无效，请使用 YYYY-MM-DD')
     process.exit(1)
+  }
+
+  const concurrentRaw = String(concurrentInput || '').trim().toLowerCase()
+  let concurrent = 0
+  if (concurrentRaw && concurrentRaw !== 'all' && concurrentRaw !== '0') {
+    if (!/^\d+$/.test(concurrentRaw) || Number(concurrentRaw) > 100000) {
+      console.error('错误: 最大并发在线人数应为正整数（0 或留空 = 不限制）')
+      process.exit(1)
+    }
+    concurrent = Number(concurrentRaw)
   }
 
   let modules
@@ -203,12 +219,13 @@ async function main() {
 
   const privateKeyPem = readFileSync(args.privateKey, 'utf8')
   const payload = {
-    v: 2,
+    v: concurrent > 0 ? 3 : 2,
     mid: machineId,
     exp: expires,
     iat: formatDateOnly(new Date()),
     mods: modules.mods,
   }
+  if (concurrent > 0) payload.cc = concurrent
   const code = buildLicenseCode(payload, privateKeyPem)
 
   console.log('')
@@ -218,6 +235,7 @@ async function main() {
   console.log(`机器码:   ${machineId}`)
   console.log(`有效期至: ${expires}（含当天）`)
   console.log(`授权模块: ${modules.names.join('、')}${modules.mods[0] === '*' ? '（全部）' : ''}`)
+  console.log(`并发授权: ${concurrent > 0 ? `${concurrent} 人同时在线` : '不限制'}`)
   if (modules.note) console.log(`提示:     ${modules.note}`)
   console.log(`签发日期: ${payload.iat}`)
   console.log(

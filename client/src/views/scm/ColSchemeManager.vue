@@ -96,7 +96,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft, Plus } from '@element-plus/icons-vue'
 import { scmApi, type ColScheme, type ColSchemeUser, type ScmDocType, type ScmDocFieldDef } from '@/api/scm'
-import { optColsFor, HEADER_OPT_COLS, type ColMeta } from '@/config/scmColumns'
+import { optColsFor, HEADER_OPT_COLS, LIST_CUSTOM_COL_PREFIX, listColsForType, type ColMeta } from '@/config/scmColumns'
 
 const router = useRouter()
 type Target = 'line' | 'list' | 'header' | 'footer'
@@ -118,7 +118,14 @@ const parseCfg = (s?: string): string[] => { try { return s ? JSON.parse(s) : []
 
 /** 当前范围可隐藏项：line/list 用静态列；header=标准表头字段(按类型配置)+表头自定义字段；footer=表尾自定义字段 */
 const optCols = computed<ColMeta[]>(() => {
-  if (target.value === 'line' || target.value === 'list') return optColsFor(target.value)
+  if (target.value === 'line') return optColsFor('line')
+  if (target.value === 'list') {
+    // 单据列表：与 DocList「列设置」同源（listColsForType）——该类型可用的标准列 + 表头/表尾自定义字段，必选列(单据号)除外
+    const t = docTypes.value.find(d => d.code === docType.value)
+    return listColsForType(docType.value, t, customFields.value)
+      .filter(c => !c.required)
+      .map(c => ({ key: c.key, label: c.key.startsWith(LIST_CUSTOM_COL_PREFIX) ? `${c.label}（${c.group}）` : c.label }))
+  }
   if (target.value === 'header') {
     const t = docTypes.value.find(d => d.code === docType.value)
     const cfg = new Set<string>([...parseCfg(t?.header_fields), 'operator', 'remark', 'tax_rate'])
@@ -170,7 +177,7 @@ async function onDocTypeChange() {
 
 /** 表头/表尾范围下，加载当前单据类型的自定义字段（仅 is_visible≠0，已全局隐藏的不必再进方案）。 */
 async function loadCustomFields() {
-  if (!isFieldScope.value || !docType.value) { customFields.value = []; return }
+  if (!(isFieldScope.value || target.value === 'list') || !docType.value) { customFields.value = []; return }
   try {
     const res = await scmApi.getDocFieldDefs(docType.value)
     customFields.value = res.code === 0 ? (res.data as ScmDocFieldDef[]).filter(f => f.is_visible !== 0) : []

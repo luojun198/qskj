@@ -10,7 +10,7 @@
       </div>
       <div class="header-actions">
         <el-button @click="resetConfig">重置</el-button>
-        <el-button :loading="exporting" @click="exportExcel"><el-icon><Download /></el-icon>导出完整结果</el-button>
+        <el-button :loading="exporting" @click="exportExcel"><el-icon><Download /></el-icon>另存</el-button>
         <el-button type="primary" :loading="loading" @click="runQuery(true)"><el-icon><Search /></el-icon>执行查询</el-button>
       </div>
     </header>

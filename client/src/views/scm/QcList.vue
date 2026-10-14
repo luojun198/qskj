@@ -9,6 +9,7 @@
         <el-radio-button value="FQC">完工检验</el-radio-button>
       </el-radio-group>
       <el-button type="primary" size="small" @click="openAdd"><el-icon><Plus /></el-icon>新增质检单</el-button>
+      <SaveAsButton :title="'质检单'" />
     </div>
     <el-table :data="rows" v-loading="loading" border stripe size="small" height="100%">
       <el-table-column label="质检单号" prop="qc_no" width="140" />

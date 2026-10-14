@@ -85,6 +85,9 @@ export interface JournalRow {
   /** 对方科目名称 / 按辅助类别拆开的值 { 类别id: 项目名 }（页面一个类别一列） */
   counter_account_name?: string | null
   aux_values?: Record<string, string>
+  /** 来源收付款单（收付款单审核写入的流水；收付款制证方式决定由哪一侧制证） */
+  scm_doc_type?: string | null
+  scm_doc_no?: string | null
 }
 
 export interface AuxColumn { id: string; code: string; name: string }
@@ -265,9 +268,35 @@ export interface CashierSearchResult {
   aux_columns: AuxColumn[]
 }
 
+/** 出纳账户档案（出纳独立账户） */
+export interface CashierAccountRecord {
+  id: string
+  code: string
+  name: string
+  kind: 'cash' | 'bank' | 'other'
+  currency_code: string | null
+  bank_name: string | null
+  bank_account_no: string | null
+  gl_account_code: string | null
+  gl_account_name: string | null
+  is_enabled: number
+  remark: string | null
+  journal_count?: number
+}
+
 export const cashierApi = {
   getAccounts: () =>
     request.get<CashierAccount[]>('/cashier/accounts'),
+
+  // 出纳账户档案
+  listAccountRecords: (kind?: string) =>
+    request.get<CashierAccountRecord[]>('/cashier/account-manage', { params: kind ? { kind } : undefined }),
+  createAccountRecord: (data: Partial<CashierAccountRecord>) =>
+    request.post<{ id: string }>('/cashier/account-manage', data),
+  updateAccountRecord: (id: string, data: Partial<CashierAccountRecord>) =>
+    request.put<{ ok: boolean }>(`/cashier/account-manage/${id}`, data),
+  deleteAccountRecord: (id: string) =>
+    request.delete<{ ok: boolean }>(`/cashier/account-manage/${id}`),
 
   // 出纳结账 / 反结账
   getPeriods: (year: number) =>
@@ -299,6 +328,8 @@ export const cashierApi = {
     /** FIX-253：传了才分页，不传返回全部行 */
     page?: number
     page_size?: number
+    /** 日期排序，默认 asc；desc 时余额仍是按时间累计的真实余额 */
+    sort_order?: 'asc' | 'desc'
   }) => request.get<JournalResult>('/cashier/journal', { params }),
 
   getJournalById: (id: string) =>
@@ -382,7 +413,7 @@ export const cashierApi = {
     request.delete<null>(`/cashier/bank-statement/import/schemes/${encodeURIComponent(id)}`),
 
   // 出纳 → 凭证（缺对方科目时由调用方自行处理提示与挂账，故 skipErrorToast）
-  generateVoucher: (data: { account_code: string; start_date?: string; end_date?: string; hangup_account_code?: string; ids?: string[] }) =>
+  generateVoucher: (data: { account_code: string; start_date?: string; end_date?: string; hangup_account_code?: string; ids?: string[]; voucher_type_id?: string }) =>
     request.post<{
       syncedCount: number
       voucherNos: string[]
@@ -398,7 +429,7 @@ export const cashierApi = {
 
   // 生成凭证预览：返回将生成凭证的日记账行（预览页二次确认用）
   previewGenerateVoucher: (data: { account_code: string; start_date?: string; end_date?: string; ids?: string[] }) =>
-    request.post<{ rows: { id: string; biz_date: string; seq: number | null; summary: string | null; debit: number; credit: number; counter_account: string | null }[] }>(
+    request.post<{ rows: { id: string; biz_date: string; seq: number | null; summary: string | null; debit: number; credit: number; counter_account: string | null; missing_aux?: string[]; scm_doc_type?: string; scm_doc_no?: string; auto_included?: boolean }[] }>(
       '/cashier/generate-voucher/preview', data, { skipErrorToast: true }
     ),
 

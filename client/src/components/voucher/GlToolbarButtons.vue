@@ -66,6 +66,9 @@
 </template>
 
 <script setup lang="ts">
+// 凭证页共用全局样式：用脚本 import 而非 <style src>。
+// 多个组件 <style src> 同一文件时，生产构建只编译一份且可能套用某个导入方的 scoped，导致其它页面样式丢失（FIX-344）
+import '@/views/voucher/voucher.styles.css'
 import { computed, type Component } from 'vue'
 import { ChevronDown } from 'lucide-vue-next'
 

@@ -13,6 +13,7 @@
           class="search-input"
           size="small"
         />
+        <el-button size="small" @click="router.push('/base/cash-flow-account-map')">科目现金流量项目</el-button>
         <el-button size="small" :loading="initLoading" @click="handleInitDefault">初始化标准项目</el-button>
         <el-button type="primary" size="small" @click="openDialog('add')">新增项目</el-button>
       </div>
@@ -34,6 +35,11 @@
           <el-tag size="small" :type="directionTagType(row.direction)">{{
             directionLabel(row.direction)
           }}</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column prop="kind" label="类别" :width="colWidth('kind', 90)">
+        <template #default="{ row }">
+          <el-tag size="small" effect="plain" :type="row.kind === 'supplement' ? 'warning' : 'info'">{{ row.kind === 'supplement' ? '附表' : '主表' }}</el-tag>
         </template>
       </el-table-column>
       <el-table-column prop="parent_code" label="上级编码" :width="colWidth('parent_code', 120)" />

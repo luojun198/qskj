@@ -4,6 +4,7 @@
       <span class="cat-title">物料分类</span>
       <el-button type="primary" size="small" @click="openAdd"><el-icon><Plus /></el-icon>新增分类</el-button>
       <el-button size="small" :loading="loading" @click="load"><el-icon><Refresh /></el-icon>刷新</el-button>
+      <SaveAsButton title="物料分类" />
       <span class="cat-hint">共 {{ rows.length }} 个分类</span>
     </div>
     <div class="cat-body">

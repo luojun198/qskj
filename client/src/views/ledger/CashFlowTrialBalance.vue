@@ -17,7 +17,7 @@
         <el-button type="primary" :loading="loading" @click="fetchAll"><el-icon><Search /></el-icon>查询</el-button>
         <FilterClearButton @clear="handleClearFilters" />
         <el-divider direction="vertical" />
-        <el-button plain :disabled="!canExport" @click="exportCurrentTab"><el-icon><Download /></el-icon>导出 Excel</el-button>
+        <el-button plain :disabled="!canExport" @click="exportCurrentTab"><el-icon><Download /></el-icon>另存</el-button>
         <el-button plain :disabled="!data && !checkData" @click="printPage"><el-icon><Printer /></el-icon>打印</el-button>
       </div>
     </div>
@@ -134,15 +134,15 @@
                 <span>{{ checkData.meta.scopeLabel }}</span>
                 <span class="meta-sep">|</span>
                 <span>
-                  共检查 {{ checkData.summary.totalCashEntries }} 笔现金/银行分录，
+                  共检查 {{ checkData.summary.totalCashEntries }} 张现金收付凭证，
                   <template v-if="checkData.summary.passed">全部合格</template>
                   <template v-else>
                     发现 {{ checkData.summary.issueCount }} 笔问题
                     <span v-if="checkData.summary.missingCount">
-                      （未指定 {{ checkData.summary.missingCount }}）
+                      （未设置 {{ checkData.summary.missingCount }}）
                     </span>
                     <span v-if="checkData.summary.invalidCodeCount">
-                      （无效编码 {{ checkData.summary.invalidCodeCount }}）
+                      （项目已停用 {{ checkData.summary.invalidCodeCount }}）
                     </span>
                   </template>
                 </span>
@@ -151,6 +151,7 @@
                 </el-tag>
               </div>
               <div class="check-actions">
+                <el-button plain size="small" @click="router.push('/base/cash-flow-account-map')">去设置科目现金流量项目</el-button>
                 <el-button plain size="small" @click="goVoucherQuery">在凭证查询中查看</el-button>
               </div>
             </div>
@@ -160,13 +161,13 @@
               type="success"
               :closable="false"
               show-icon
-              title="当前期间所有现金/银行分录均已正确指定有效的现金流量项目"
+              title="当前期间现金收付凭证的对方科目均已设置有效的现金流量项目"
               class="check-pass-alert"
             />
 
             <div class="table-section">
               <h4>
-                未指定现金流量项目
+                对方科目未设置现金流量项目
                 <span class="count-tag">（{{ checkData.summary.missingCount }} 笔）</span>
               </h4>
               <el-empty
@@ -189,7 +190,7 @@
 
             <div class="table-section">
               <h4>
-                无效现金流量项目编码
+                科目设置的现金流量项目已停用
                 <span class="count-tag">（{{ checkData.summary.invalidCodeCount }} 笔）</span>
               </h4>
               <el-empty
@@ -206,34 +207,11 @@
                 class="clickable-table"
                 @row-dblclick="openVoucher"
               >
-                <el-table-column prop="cashFlowCode" label="错误编码" width="100" />
+                <el-table-column prop="cashFlowCode" label="项目编码" width="100" />
                 <EntryColumns />
               </el-table>
             </div>
 
-            <div class="table-section">
-              <h4>
-                非现金科目误填现金流量项目
-                <span class="count-tag hint">（{{ checkData.summary.orphanCount }} 笔，参考提示）</span>
-              </h4>
-              <el-empty
-                v-if="checkData.summary.orphanCount === 0"
-                description="无此类提示"
-                :image-size="64"
-              />
-              <el-table
-                v-else
-                :data="checkData.orphanEntries"
-                border
-                stripe
-                size="small"
-                class="clickable-table"
-                @row-dblclick="openVoucher"
-              >
-                <el-table-column prop="cashFlowCode" label="现金流量编码" width="110" />
-                <EntryColumns />
-              </el-table>
-            </div>
           </template>
         </el-tab-pane>
       </el-tabs>
@@ -333,7 +311,7 @@ const EntryColumns = defineComponent({
       h(ElTableColumn, { prop: 'voucherDate', label: '日期', width: '110' }),
       h(ElTableColumn, { prop: 'voucherNo', label: '凭证号', width: '120' }),
       h(ElTableColumn, { prop: 'accountCode', label: '科目编码', width: '100' }),
-      h(ElTableColumn, { prop: 'accountName', label: '科目名称', minWidth: '140' }),
+      h(ElTableColumn, { prop: 'accountName', label: '对方科目', minWidth: '140' }),
       // FIX-155：default 是插槽不是 prop，必须走 h() 第三参数，否则三列渲染为空
       h(
         ElTableColumn,
@@ -522,22 +500,16 @@ async function exportCheckData() {
   }
   await exportStyledWorkbook(`现金流量凭证检查_${filters.value.year}_${filters.value.period}月.xlsx`, [
     {
-      sheetName: '未指定项目',
-      title: `未指定现金流量项目（${d.meta.scopeLabel}）`,
+      sheetName: '未设置项目',
+      title: `对方科目未设置现金流量项目（${d.meta.scopeLabel}）`,
       columns: entryExportColumns,
       rows: d.missingEntries,
     },
     {
-      sheetName: '无效编码',
-      title: `无效现金流量项目编码（${d.meta.scopeLabel}）`,
+      sheetName: '项目已停用',
+      title: `科目设置的现金流量项目已停用（${d.meta.scopeLabel}）`,
       columns: [codeColumn, ...entryExportColumns],
       rows: d.invalidCodeEntries,
-    },
-    {
-      sheetName: '非现金误填',
-      title: `非现金科目误填（${d.meta.scopeLabel}）`,
-      columns: [codeColumn, ...entryExportColumns],
-      rows: d.orphanEntries,
     },
   ])
 }

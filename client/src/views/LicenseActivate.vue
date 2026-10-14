@@ -41,6 +41,10 @@
           class="activate-alert"
         />
 
+        <p v-if="status?.activated" class="activate-hint">
+          并发授权：{{ status.maxConcurrent > 0 ? `最多 ${status.maxConcurrent} 人同时在线` : '不限制' }}
+        </p>
+
         <div v-if="status?.activated && licensedModuleNames.length" class="activate-modules">
           <span class="activate-label">已授权模块</span>
           <div class="activate-module-tags">

@@ -4,14 +4,19 @@
     <div class="filter-row" style="margin-bottom: 8px;">
       <el-button type="primary" size="small" :loading="openingNew" @click="openAdd"><el-icon><Plus /></el-icon>新增{{ pageLabel }}</el-button>
       <el-button size="small" :loading="loading" @click="load"><el-icon><Search /></el-icon>查询</el-button>
+      <SaveAsButton title="生产计划" />
+      <MultiSortPanel :options="sortOptions" :model-value="effectiveSortKeys" :default-keys="DEFAULT_SORT_KEYS" @change="onSortChanged" />
       <el-button size="small" @click="columnDialogVisible = true"><el-icon><Setting /></el-icon>列设置</el-button>
+      <!-- 审核 / 反审核常驻工具条（客户反馈：列表看不到审核按钮），未勾选时置灰并提示 -->
+      <el-divider direction="vertical" />
+      <el-button size="small" type="success" plain :disabled="!actionState.release.enabled" :title="selection.length ? actionState.release.reason : '请先勾选草稿计划'" @click="runBatchAction('release')">审核</el-button>
+      <el-button size="small" type="warning" plain :disabled="!actionState.unrelease.enabled" :title="selection.length ? actionState.unrelease.reason : '请先勾选已审核计划'" @click="runBatchAction('unrelease')">反审核</el-button>
       <template v-if="selection.length">
         <el-divider direction="vertical" />
         <span class="selection-hint">已选 {{ selection.length }} 张</span>
         <el-button size="small" :disabled="!actionState.order.enabled" :title="actionState.order.reason" @click="openOrder(selectedRow)">工单</el-button>
         <el-button size="small" :disabled="!actionState.edit.enabled" :title="actionState.edit.reason" @click="openEdit(selectedRow)">编辑</el-button>
         <el-button size="small" type="danger" plain :disabled="!actionState.delete.enabled" :title="actionState.delete.reason" @click="runBatchAction('delete')">删除草稿</el-button>
-        <el-button size="small" type="warning" plain :disabled="!actionState.unrelease.enabled" :title="actionState.unrelease.reason" @click="runBatchAction('unrelease')">反审核</el-button>
         <el-button size="small" type="warning" :disabled="!actionState.reopen.enabled" :title="actionState.reopen.reason" @click="runBatchAction('reopen')">重开</el-button>
         <el-button size="small" :disabled="!actionState.trace.enabled" :title="actionState.trace.reason" @click="openTrace">上下游</el-button>
         <ScmPushMenu v-if="actionState.push.enabled && selectedRow?.id" :source-kind="selectedRow.plan_type === 'outsource' ? 'outsource_plan' : 'production_plan'"
@@ -112,6 +117,8 @@ import { getProductionPlanBatchActionState, MAX_SCM_BATCH_SELECTION } from '@/ut
 import ColumnSettingsDialog from '@/components/common/ColumnSettingsDialog.vue'
 import { loadColumnSettings, saveColumnSettings, type ColumnSetting } from '@/utils/columnSettings'
 import FilterClearButton from '@/components/common/FilterClearButton.vue'
+import MultiSortPanel from '@/components/common/MultiSortPanel.vue'
+import { loadSortKeys, normalizeSortKeys, saveSortKeys, serializeSortKeys, type SortKey } from '@/utils/multiSort'
 
 const { tableRef, colWidth, onDragEnd, widths } = useListColumnWidth('scm_production_plan')
 function cw(key: string, fallback: number) { return colWidth(key, fallback) }
@@ -156,6 +163,21 @@ function updateColumns(columns: ColumnSetting[]) {
 function resetColumns() {
   updateColumns(planColumns.map(column => ({ ...column })))
 }
+// ── 多级排序（服务端）：按来源类型（生产 / 委外 / 全部）分别记忆 ──
+const DEFAULT_SORT_KEYS: SortKey[] = [{ key: 'code', order: 'desc' }]
+const sortStorageKey = computed(() => `scm_production_plan_sort:${planTypeFilter.value || 'all'}`)
+const sortOptions = computed(() => planColumns.filter(c => c.key !== 'supplier_code' || planTypeFilter.value !== 'self').map(c => ({ key: c.key, label: c.label })))
+const sortKeysState = ref<SortKey[] | null>(null)
+const effectiveSortKeys = computed<SortKey[]>(() => {
+  const stored = sortKeysState.value ?? loadSortKeys(sortStorageKey.value) ?? []
+  const keys = normalizeSortKeys(stored, sortOptions.value.map(o => o.key))
+  return keys.length ? keys : DEFAULT_SORT_KEYS
+})
+function onSortChanged(keys: SortKey[]) {
+  sortKeysState.value = keys
+  saveSortKeys(sortStorageKey.value, keys)
+  query()
+}
 // 生产评审 P1-6：服务端筛选 + 分页（plan_type 由地址栏决定）
 const filters = ref({ keyword: '', status: [] as string[], supplier_code: '', overdue: false })
 const dateRange = ref<string[] | null>(null)
@@ -175,7 +197,7 @@ async function load() {
       plan_type: planTypeFilter.value || undefined, keyword: filters.value.keyword || undefined,
       status: filters.value.status.length ? filters.value.status.join(',') : undefined,
       supplier_code: filters.value.supplier_code || undefined, overdue: filters.value.overdue ? '1' : undefined,
-      start_date: dateRange.value?.[0], end_date: dateRange.value?.[1], page: page.value, page_size: pageSize.value,
+      start_date: dateRange.value?.[0], end_date: dateRange.value?.[1], sort: serializeSortKeys(effectiveSortKeys.value), page: page.value, page_size: pageSize.value,
     })
     if (r.code === 0) { list.value = r.data.list; total.value = r.data.total }
   } finally { loading.value = false }
@@ -214,7 +236,7 @@ async function openAdd() {
 }
 function openEdit(row: any) { router.push({ name: 'ScmProductionPlanEdit', params: { id: row.id } }) }
 
-const ACTION_LABEL = { delete: '删除', unrelease: '反审核', reopen: '重开' } as const
+const ACTION_LABEL = { release: '审核', delete: '删除', unrelease: '反审核', reopen: '重开' } as const
 async function runBatchAction(action: keyof typeof ACTION_LABEL) {
   const ids = selection.value.map(row => row.id).filter(Boolean)
   if (!ids.length) return

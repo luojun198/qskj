@@ -30,13 +30,13 @@ export interface DeletableVoucherLike {
  */
 export function getVoucherUndeletableReason(
   voucher: DeletableVoucherLike,
-  ctx?: { db: Database; accountSetId: string }
+  ctx?: { db: Database; accountSetId: string; bypassSourceGuard?: boolean }
 ): string | null {
   if (voucher.status === 'posted') {
     return '已记账凭证不能删除'
   }
   if (!ctx) return getSourceImmutableReason(voucher, 'delete')
-  return getVoucherImmutableReason({ db: ctx.db, accountSetId: ctx.accountSetId, voucher, operation: 'delete' })
+  return getVoucherImmutableReason({ db: ctx.db, accountSetId: ctx.accountSetId, voucher, operation: 'delete', bypassSourceGuard: ctx.bypassSourceGuard })
 }
 
 /** 删除凭证主/分录/附件，并在同一事务内清理对端引用 */
@@ -63,6 +63,18 @@ export function deleteVoucherWithRefs(db: Database, accountSetId: string, vouche
     if (hasColumn(db, 'scm_overhead_variance_run', 'voucher_id')) {
       db.prepare('DELETE FROM scm_overhead_variance_run WHERE account_set_id=? AND voucher_id=? AND doc_id IS NULL').run(accountSetId, voucher.id)
       db.prepare('UPDATE scm_overhead_variance_run SET voucher_id=NULL WHERE account_set_id=? AND voucher_id=?').run(accountSetId, voucher.id)
+    }
+    // 固定资产回链清理：凭证没了，对应业务回到「未生成」（可在固定资产「凭证管理」重新生成），不留悬空 id
+    for (const [table, column] of [
+      ['fixed_asset', 'purchase_voucher_id'],
+      ['fixed_asset', 'scrap_voucher_id'],
+      ['fixed_asset_depr', 'voucher_id'],
+      ['fixed_asset_change', 'voucher_id'],
+      ['fixed_asset_inventory_item', 'voucher_id'],
+    ] as const) {
+      if (hasColumn(db, table, column)) {
+        db.prepare(`UPDATE ${table} SET ${column}=NULL WHERE ${column}=?`).run(voucher.id)
+      }
     }
     // 出纳日记账关联清理（迁移 127 voucher_id 列；老库无该列时跳过）：凭证没了，日记账应回到"未生成凭证"
     if (hasColumn(db, 'cashier_journal', 'voucher_id')) {

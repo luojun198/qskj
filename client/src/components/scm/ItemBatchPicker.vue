@@ -214,6 +214,8 @@ const props = withDefaults(defineProps<{
   warehouseCode?: string
   /** 出库类单据：打开时默认勾选「仅看有库存」（仅在有 warehouseCode 时生效） */
   stockOnlyDefault?: boolean
+  /** 默认「来源」筛选（与 ItemPicker 的 defaultSource 一致），可手动清除 */
+  defaultSource?: string
 }>(), { multiple: true })
 
 const emit = defineEmits<{
@@ -242,7 +244,7 @@ const page = ref(1)
 const pageSize = ref(200)  // 默认每页 200，避免编码靠后的成品(130xxx)落到第 2 页而看不到
 const keyword = ref('')
 const filterType = ref('')
-const sourceType = ref('')   // 工具栏「来源」筛选：'' = 全部；否则为 source_type 枚举
+const sourceType = ref(props.defaultSource || '')   // 工具栏「来源」筛选：'' = 全部；否则为 source_type 枚举
 const stockOnly = ref(false) // 工具栏「仅看有库存」（仅在有 warehouseCode 时生效）
 const groupMode = ref<'category' | 'source'>('category') // 左侧分组方式
 const activeFilter = ref<{ field: TreeNode['field']; value: string }>({ field: 'all', value: '' })
@@ -319,7 +321,7 @@ async function loadAllData() {
     // needStock：有 warehouseCode 或 stockOnlyDefault 时才显示「存量」列。
     // 查全仓（不传 warehouse_code），客户端按 warehouseCode 取本仓——与单据页口径一致。
     const [itemsRes, catRes, stockRes] = await Promise.all([
-      (scmApi.getItems as any)({ all: '1' }),
+      (scmApi.getItems as any)({ all: '1', for_pick: '1' }),
       scmApi.getCategories().catch(() => ({ code: -1, data: [] })),
       needStock
         ? scmApi.getStock({}).catch(() => ({ code: -1, data: [] }))
@@ -510,7 +512,7 @@ function updateFilteredList() {
 
   // 2.5 来源过滤（工具栏「来源」下拉，独立于左侧分组树）
   if (sourceType.value) {
-    items = items.filter(i => i.source_type === sourceType.value)
+    items = items.filter(i => (i.source_type || 'purchase') === sourceType.value)
   }
 
   // 2.6 仅看有库存（按全仓合计判断 _stock_total，而非本仓库存——避免当前仓库无货但其他仓有货的物料被漏掉）

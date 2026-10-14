@@ -16,8 +16,9 @@ describe('部署包数据库配置', () => {
 
     expect(script).toContain('echo set "ROOT=%%~dp0"')
     expect(script).toContain('echo set "DB_PATH=%%ROOT%%data\\finance.db"')
-    expect(script).toContain('echo if not exist "%%DB_PATH%%" ^(')
-    expect(script).toContain('echo   echo ERROR: Bundled database not found: %%DB_PATH%%')
+    // 不能把含路径的 echo 放进括号块：目录名带 ")" 如 deploy-final(2) 会让 cmd 解析失败而闪退
+    expect(script).toContain('echo if exist "%%DB_PATH%%" goto db_ok')
+    expect(script).toContain('echo echo ERROR: Bundled database not found: %%DB_PATH%%')
   })
 
   it('追加部署说明时不会覆盖已经生成的环境变量', () => {

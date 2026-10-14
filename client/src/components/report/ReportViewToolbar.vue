@@ -38,7 +38,7 @@
           生成报表
         </el-button>
         <el-button size="small" @click="emit('print')">打印</el-button>
-        <el-button size="small" :disabled="!canExport" @click="emit('export')">导出 Excel</el-button>
+        <el-button size="small" :disabled="!canExport" @click="emit('export')">另存</el-button>
       </div>
     </div>
     <el-alert

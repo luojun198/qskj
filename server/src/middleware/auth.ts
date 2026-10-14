@@ -57,6 +57,18 @@ export interface AuthRequest extends Request {
   accountScope?: AccountScopeContext
 }
 
+/** 公开接口里「如果带了有效 token 就取操作人名」，不校验会话、不拦截 */
+export function peekTokenUserName(req: Request): string | undefined {
+  const token = req.headers.authorization?.replace('Bearer ', '')
+  if (!token) return undefined
+  try {
+    const payload = jwt.verify(token, getJwtSecret()) as { userName?: string }
+    return payload.userName
+  } catch {
+    return undefined
+  }
+}
+
 export function authMiddleware(req: AuthRequest, res: Response, next: NextFunction) {
   const token = req.headers.authorization?.replace('Bearer ', '')
   if (!token) {

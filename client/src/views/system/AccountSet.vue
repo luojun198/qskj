@@ -172,13 +172,34 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- 删除账套期间：全屏锁定遮罩 + 进度（防止客户误以为卡死而重复操作/刷新） -->
+    <Teleport to="body">
+      <div v-if="deleting" class="delete-lock-mask" role="alertdialog" aria-live="polite">
+        <div class="delete-lock-card">
+          <div class="delete-lock-title">正在删除账套「{{ deleteInfo.name }}」</div>
+          <el-progress
+            :percentage="deleteInfo.percent"
+            :stroke-width="14"
+            :text-inside="true"
+            :striped="true"
+            :striped-flow="true"
+          />
+          <div class="delete-lock-label">{{ deleteInfo.label || '准备中' }}</div>
+          <div class="delete-lock-meta">已用时 {{ elapsedText }}</div>
+          <div class="delete-lock-tip">
+            数据量较大时需要较长时间，请耐心等待。期间请勿关闭或刷新页面，系统已暂时锁定其它操作。
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </PageListLayout>
 </template>
 
 <script setup lang="ts">
 import PageListLayout from '@/components/layout/PageListLayout.vue'
-import { ref, computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { useRouter, onBeforeRouteLeave } from 'vue-router'
 import type { FormInstance, FormRules } from 'element-plus'
 import request from '@/api/request'
 import { logout } from '@/api/auth'
@@ -395,14 +416,111 @@ async function handleDelete(row: any) {
       }
     )
     await request.delete(`/system/account-sets/${row.id}`, { data: { password } })
-    ElMessage.success('删除成功')
-    fetchData()
+    beginDeleteLock(row.name)
   } catch {
-    // 用户取消
+    // 用户取消 / 密码错误（错误提示由全局拦截器弹出）
   }
 }
 
+// ===== 删除进度与锁定 =====
+const deleting = ref(false)
+const deleteInfo = ref({ name: '', percent: 0, label: '' })
+const elapsedSec = ref(0)
+const elapsedText = computed(() => {
+  const s = elapsedSec.value
+  return s >= 60 ? `${Math.floor(s / 60)} 分 ${s % 60} 秒` : `${s} 秒`
+})
+let pollTimer: ReturnType<typeof setTimeout> | null = null
+let tickTimer: ReturnType<typeof setInterval> | null = null
+let pollFailures = 0
+let startedAt = 0
+
+function onBeforeUnload(e: BeforeUnloadEvent) {
+  e.preventDefault()
+  e.returnValue = ''
+}
+
+function beginDeleteLock(name: string, elapsedMs = 0) {
+  if (deleting.value) return
+  deleting.value = true
+  deleteInfo.value = { name, percent: 0, label: '准备中' }
+  startedAt = Date.now() - elapsedMs
+  elapsedSec.value = Math.floor(elapsedMs / 1000)
+  pollFailures = 0
+  window.addEventListener('beforeunload', onBeforeUnload)
+  tickTimer = setInterval(() => {
+    elapsedSec.value = Math.floor((Date.now() - startedAt) / 1000)
+  }, 1000)
+  pollProgress()
+}
+
+function endDeleteLock() {
+  deleting.value = false
+  if (pollTimer) clearTimeout(pollTimer)
+  if (tickTimer) clearInterval(tickTimer)
+  pollTimer = tickTimer = null
+  window.removeEventListener('beforeunload', onBeforeUnload)
+}
+
+async function pollProgress() {
+  try {
+    const res: any = await request.get('/system/account-sets/delete-progress', {
+      skipErrorToast: true,
+      skipAuthRedirect: true,
+    } as any)
+    pollFailures = 0
+    const p = res.data || {}
+    if (p.name || p.accountSetName) deleteInfo.value.name = p.accountSetName || deleteInfo.value.name
+    if (p.status === 'failed') {
+      endDeleteLock()
+      ElMessage.error(p.error || '删除账套失败')
+      fetchData()
+      return
+    }
+    if (p.status === 'done' || p.active === false) {
+      endDeleteLock()
+      ElMessage.success('删除成功')
+      fetchData()
+      return
+    }
+    deleteInfo.value.percent = p.percent ?? 0
+    deleteInfo.value.label = p.label ? `正在清理：${p.label}` : '准备中'
+  } catch {
+    // 单个大表 DELETE 期间服务短暂无响应属正常，连续多次失败才放弃
+    if (++pollFailures >= 30) {
+      endDeleteLock()
+      ElMessage.warning('无法获取删除进度，请刷新页面确认删除结果')
+      return
+    }
+  }
+  pollTimer = setTimeout(pollProgress, 800)
+}
+
+/** 刷新/重进页面时若后台仍在删除，恢复锁定遮罩 */
+async function resumeDeleteIfRunning() {
+  try {
+    const res: any = await request.get('/system/account-sets/delete-progress', {
+      skipErrorToast: true,
+      skipAuthRedirect: true,
+    } as any)
+    const p = res.data
+    if (p?.active) beginDeleteLock(p.accountSetName || '', p.elapsedMs || 0)
+  } catch {
+    // 忽略
+  }
+}
+
+onBeforeRouteLeave(() => {
+  if (deleting.value) {
+    ElMessage.warning('账套正在删除，请等待完成后再离开')
+    return false
+  }
+})
+
+onBeforeUnmount(endDeleteLock)
+
 onMounted(() => {
+  resumeDeleteIfRunning()
   fetchData()
   fetchTemplates()
   fetchStandardTemplates()
@@ -410,6 +528,48 @@ onMounted(() => {
 </script>
 
 <style scoped>
+/* === 删除账套锁定遮罩 === */
+.delete-lock-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 4000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  cursor: wait;
+}
+.delete-lock-card {
+  width: 460px;
+  max-width: 92vw;
+  padding: 20px 24px;
+  border-radius: 8px;
+  background: var(--el-bg-color, #fff);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+.delete-lock-title {
+  margin-bottom: 14px;
+  font-size: var(--cw-text-lg);
+  font-weight: 600;
+}
+.delete-lock-label {
+  margin-top: 10px;
+  color: var(--el-text-color-regular);
+}
+.delete-lock-meta {
+  margin-top: 4px;
+  color: var(--el-text-color-secondary);
+}
+.delete-lock-tip {
+  margin-top: 10px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: var(--el-color-warning-light-9);
+  color: var(--el-color-warning);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 /* === 与登录页"新增账套"对话框保持一致的紧凑样式 === */
 .create-account-dialog :deep(.el-dialog__header) {
   padding: 12px 16px !important;

@@ -36,7 +36,7 @@ function createDb() {
     CREATE TABLE scm_partner (id TEXT, account_set_id TEXT, code TEXT, name TEXT, partner_type TEXT, ar_account TEXT, ap_account TEXT, credit_limit REAL DEFAULT 0, credit_days INTEGER DEFAULT 0);
     CREATE TABLE scm_ar_ap_log (currency TEXT, exchange_rate REAL NOT NULL DEFAULT 1, amount_fc REAL, verified_fc REAL NOT NULL DEFAULT 0, id TEXT, account_set_id TEXT, partner_code TEXT, doc_type TEXT, doc_no TEXT,
       doc_date TEXT, due_date TEXT, direction TEXT, amount REAL, ar_account TEXT, ap_account TEXT,
-      cashier_journal_id TEXT, remark TEXT, verified_amount REAL NOT NULL DEFAULT 0, created_at TEXT DEFAULT (datetime('now')));
+      cashier_journal_id TEXT, remark TEXT, verified_amount REAL NOT NULL DEFAULT 0, created_at TEXT DEFAULT (datetime('now')), arap_side TEXT);
     CREATE TABLE scm_ar_ap_verify (id TEXT, account_set_id TEXT, partner_code TEXT, verify_no TEXT, verify_date TEXT,
       in_log_id TEXT, out_log_id TEXT, amount REAL, created_by TEXT, created_at TEXT);
     CREATE TABLE scm_stock (id TEXT, account_set_id TEXT, warehouse_code TEXT, item_code TEXT,
@@ -330,10 +330,12 @@ describe('FIX-204 退货冲减往来', () => {
     expect(verifyArAp(testDb, AID, { partner_code: 'P1', matches: [{ in_log_id: logOf('PI-001').id, out_log_id: 'pay1', amount: 500 }] }).count).toBe(1)
   })
 
-  it('无往来单位的退货不写台账', () => {
+  it('无往来单位的退货（存量脏数据）审核被拦截且不写台账', () => {
     const srId = seedDoc('SR', 'SR-002', [{ qty: 1, price: 100, amount: 100, tax_amount: 13 }])
     testDb.prepare('UPDATE scm_doc SET partner_code=NULL WHERE id=?').run(srId)
-    expect(callHandler(auditDocHandler, srId).body.code).toBe(0)
+    const r = callHandler(auditDocHandler, srId).body
+    expect(r.code).toBe(400)
+    expect(r.message).toMatch(/必须指定客户/)
     expect(logCount()).toBe(0)
   })
 })

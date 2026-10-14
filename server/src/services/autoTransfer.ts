@@ -20,6 +20,7 @@ import {
   type PostingContext,
 } from './voucherPosting.js'
 import { applyAuxItemIdToEntryFields } from '../utils/auxItemId.js'
+import { getGlStartDateError } from './voucherMutationGuard.js'
 import { isYearlyTransferDue } from '../utils/transferPeriodType.js'
 import { yuanToCents, MONEY_EPSILON } from '../utils/amountUtils.js'
 
@@ -469,13 +470,29 @@ export function getPeriodEndBalanceByCode(params: {
   return nonZeroRows[0]
 }
 
+/**
+ * 结转金额（带符号）：正数 = 余额在科目正常方向，按反方向转出；负数 = 余额反向（如收入被冲减成借方、
+ * 或补结转时差额为负），须按正常方向转出，否则会把差额再结反一遍、误差翻倍。
+ */
 function getTransferAmount(item: TransferItemConfig, endBalance: number) {
   const base = Math.abs(endBalance)
   if (base <= MONEY_EPSILON) return 0
-  if (item.transfer_type !== 'partial') return base
+  const sign = endBalance < 0 ? -1 : 1
+  if (item.transfer_type !== 'partial') return sign * base
   const rawRatio = Number(item.ratio ?? 100)
   const ratio = Number.isFinite(rawRatio) ? Math.max(0, Math.min(100, rawRatio)) : 100
-  return Number(((base * ratio) / 100).toFixed(2))
+  return sign * Number(((base * ratio) / 100).toFixed(2))
+}
+
+/** 科目正常余额方向的反方向；signedAmount 为负时取正常方向 */
+function transferOutDirection(accountDirection: string, signedAmount: number): 'debit' | 'credit' {
+  const out: 'debit' | 'credit' = accountDirection === 'credit' ? 'debit' : 'credit'
+  if (signedAmount >= 0) return out
+  return out === 'debit' ? 'credit' : 'debit'
+}
+
+function flipDirection(direction: 'debit' | 'credit'): 'debit' | 'credit' {
+  return direction === 'debit' ? 'credit' : 'debit'
 }
 
 export function buildEntriesFromTransferItems(params: {
@@ -552,12 +569,12 @@ export function buildEntriesFromTransferItems(params: {
           for (const childBalance of balanceResult) {
             const endBalance = Number(childBalance.end_balance || 0)
             const amount = getTransferAmount(sourceItem, endBalance)
-            if (amount <= MONEY_EPSILON) continue
+            if (Math.abs(amount) <= MONEY_EPSILON) continue
 
             const summary = String(sourceItem.summary || '').trim() || `${params.period}月结转`
             const childAccount = accountById.get(childBalance.account_id)
             if (!childAccount) continue
-            const fromDirection = childAccount.direction === 'credit' ? 'debit' : 'credit'
+            const fromDirection = transferOutDirection(childAccount.direction, amount)
             if (!sourceDirection) sourceDirection = childAccount.direction as 'debit' | 'credit'
 
             appendTransferEntry(
@@ -567,22 +584,22 @@ export function buildEntriesFromTransferItems(params: {
                 account_code: childBalance.account_code,
                 account_name: childBalance.account_name,
                 direction: fromDirection,
-                amount,
+                amount: Math.abs(amount),
                 summary,
               },
               childBalance.aux_item_id
             )
 
             targetTotalAmount += amount
-            transferredOutTotal += amount
+            transferredOutTotal += Math.abs(amount)
           }
         } else {
           // 处理返回单个对象的情况（明细科目）
           const endBalance = Number(balanceResult?.end_balance || 0)
           const amount = getTransferAmount(sourceItem, endBalance)
-          if (amount > MONEY_EPSILON) {
+          if (Math.abs(amount) > MONEY_EPSILON) {
             const summary = String(sourceItem.summary || '').trim() || `${params.period}月结转`
-            const fromDirection = fromAccount.direction === 'credit' ? 'debit' : 'credit'
+            const fromDirection = transferOutDirection(fromAccount.direction, amount)
             if (!sourceDirection) sourceDirection = fromAccount.direction as 'debit' | 'credit'
 
             appendTransferEntry(
@@ -592,31 +609,32 @@ export function buildEntriesFromTransferItems(params: {
                 account_code: fromAccount.code,
                 account_name: fromAccount.name,
                 direction: fromDirection,
-                amount,
+                amount: Math.abs(amount),
                 summary,
               },
               balanceResult?.aux_item_id
             )
 
             targetTotalAmount += amount
-            transferredOutTotal += amount
+            transferredOutTotal += Math.abs(amount)
           }
         }
       }
 
-      // 生成转入目标的汇总分录
-      if (targetTotalAmount > MONEY_EPSILON) {
-        const toDirection: 'debit' | 'credit' =
+      // 生成转入目标的汇总分录：targetTotalAmount 是带符号的净额，为负时转入方向取反
+      targetTotalAmount = Number(targetTotalAmount.toFixed(2))
+      if (Math.abs(targetTotalAmount) > MONEY_EPSILON) {
+        const baseDirection: 'debit' | 'credit' =
           sourceDirection || (toAccount.direction === 'credit' ? 'credit' : 'debit')
         entries.push({
           account_id: toAccount.id,
           account_code: toAccount.code,
           account_name: toAccount.name,
-          direction: toDirection,
-          amount: targetTotalAmount,
+          direction: targetTotalAmount >= 0 ? baseDirection : flipDirection(baseDirection),
+          amount: Math.abs(targetTotalAmount),
           summary: targetSummary,
         })
-        transferredInTotal += targetTotalAmount
+        transferredInTotal += Math.abs(targetTotalAmount)
       }
     }
   }
@@ -641,11 +659,11 @@ export function buildEntriesFromTransferItems(params: {
       for (const childBalance of balanceResult) {
         const endBalance = Number(childBalance.end_balance || 0)
         const amount = getTransferAmount(item, endBalance)
-        if (amount <= MONEY_EPSILON) continue
+        if (Math.abs(amount) <= MONEY_EPSILON) continue
 
         const childAccount = accountById.get(childBalance.account_id)
         if (!childAccount) continue
-        const fromDirection = childAccount.direction === 'credit' ? 'debit' : 'credit'
+        const fromDirection = transferOutDirection(childAccount.direction, amount)
 
         appendTransferEntry(
           entries,
@@ -654,38 +672,39 @@ export function buildEntriesFromTransferItems(params: {
             account_code: childBalance.account_code,
             account_name: childBalance.account_name,
             direction: fromDirection,
-            amount,
+            amount: Math.abs(amount),
             summary,
           },
           childBalance.aux_item_id
         )
 
         totalAmount += amount
-        transferredOutTotal += amount
+        transferredOutTotal += Math.abs(amount)
       }
 
-      // 生成转入分录（汇总金额）
-      // 转入方向 = 转出源（父科目）的余额方向；子科目继承父方向，所以用 fromAccount.direction 即可
-      if (totalAmount > MONEY_EPSILON) {
-        const toDirection: 'debit' | 'credit' =
+      // 生成转入分录（带符号净额）
+      // 转入方向 = 转出源（父科目）的余额方向；子科目继承父方向，所以用 fromAccount.direction 即可；净额为负时取反
+      totalAmount = Number(totalAmount.toFixed(2))
+      if (Math.abs(totalAmount) > MONEY_EPSILON) {
+        const baseDirection: 'debit' | 'credit' =
           fromAccount.direction === 'credit' ? 'credit' : 'debit'
         entries.push({
           account_id: toAccount.id,
           account_code: toAccount.code,
           account_name: toAccount.name,
-          direction: toDirection,
-          amount: totalAmount,
+          direction: totalAmount >= 0 ? baseDirection : flipDirection(baseDirection),
+          amount: Math.abs(totalAmount),
           summary,
         })
-        transferredInTotal += totalAmount
+        transferredInTotal += Math.abs(totalAmount)
       }
     } else {
       // 处理返回单个对象的情况（明细科目）
       const endBalance = Number(balanceResult?.end_balance || 0)
       const amount = getTransferAmount(item, endBalance)
-      if (amount > MONEY_EPSILON) {
-        const fromDirection = fromAccount.direction === 'credit' ? 'debit' : 'credit'
-        const toDirection = fromDirection === 'debit' ? 'credit' : 'debit'
+      if (Math.abs(amount) > MONEY_EPSILON) {
+        const fromDirection = transferOutDirection(fromAccount.direction, amount)
+        const toDirection = flipDirection(fromDirection)
 
         appendTransferEntry(
           entries,
@@ -694,7 +713,7 @@ export function buildEntriesFromTransferItems(params: {
             account_code: fromAccount.code,
             account_name: fromAccount.name,
             direction: fromDirection,
-            amount,
+            amount: Math.abs(amount),
             summary,
           },
           balanceResult?.aux_item_id
@@ -704,12 +723,12 @@ export function buildEntriesFromTransferItems(params: {
           account_code: toAccount.code,
           account_name: toAccount.name,
           direction: toDirection,
-          amount,
+          amount: Math.abs(amount),
           summary,
         })
 
-        transferredOutTotal += amount
-        transferredInTotal += amount
+        transferredOutTotal += Math.abs(amount)
+        transferredInTotal += Math.abs(amount)
       }
     }
   }
@@ -728,10 +747,12 @@ const EXISTING_TRANSFER_RUN_SQL = `
   LEFT JOIN vouchers v ON v.id = atr.voucher_id
   LEFT JOIN voucher_types vt ON vt.id = v.voucher_type_id
   WHERE atr.account_set_id=? AND atr.year=? AND atr.period=? AND atr.transfer_type_code=?
+  ORDER BY COALESCE(atr.seq, 1) ASC, datetime(atr.created_at) ASC
 `
 
-function getExistingTransferRunByType(params: {
-  db: { prepare: (sql: string) => { get: (...args: any[]) => any } }
+/** 本期该结转类型已生成的全部结转记录（v166 起允许多次：首结 + 补结差额），按先后排序 */
+function listExistingTransferRunsByType(params: {
+  db: { prepare: (sql: string) => { all: (...args: any[]) => any[] } }
   accountSetId: string
   year: number
   period: number
@@ -739,7 +760,33 @@ function getExistingTransferRunByType(params: {
 }) {
   return params.db
     .prepare(EXISTING_TRANSFER_RUN_SQL)
-    .get(params.accountSetId, params.year, params.period, params.transferTypeCode) as any
+    .all(params.accountSetId, params.year, params.period, params.transferTypeCode) as any[]
+}
+
+/**
+ * 已结转过的类型能否「补结差额」：
+ * - 结转金额取已记账余额，之前的结转凭证必须都已记账，否则差额里没扣掉它，会重复结转；
+ * - 按比例（<100%）结转时，对剩余余额再乘比例口径不对，只能「重新结转」。
+ */
+function getIncrementalTransferBlockReason(params: {
+  db: { prepare: (sql: string) => { all: (...args: any[]) => any[] } }
+  accountSetId: string
+  transferTypeCode: string
+  runs: any[]
+}): string | null {
+  const unposted = params.runs.filter(run => run.status !== 'posted')
+  if (unposted.length > 0) {
+    const nos = unposted.map(run => run.voucher_no || '?').join('、')
+    return `已有结转凭证 ${nos} 未记账，不能补结差额，请先记账或使用「重新结转」`
+  }
+  const partial = listTransferConfigItems({ db: params.db, accountSetId: params.accountSetId }).some(
+    item =>
+      item.type_code === params.transferTypeCode &&
+      item.transfer_type === 'partial' &&
+      Number(item.ratio ?? 100) < 100
+  )
+  if (partial) return '该结转类型含按比例结转规则，不能补结差额，请使用「重新结转」'
+  return null
 }
 
 /** 查询指定期间已生成的全部结转凭证（供结转工作台顶部展示） */
@@ -838,16 +885,39 @@ export function getAutoTransferStatus(params: {
     year: params.year,
     period: params.period,
   })
+  const runCount = Number(
+    (
+      params.db
+        .prepare(
+          'SELECT COUNT(*) AS c FROM auto_transfer_runs WHERE account_set_id=? AND year=? AND period=?'
+        )
+        .get(params.accountSetId, params.year, params.period) as any
+    )?.c || 0
+  )
+  // 本期未记账（且不是结转凭证本身）的凭证数：结转按已记账余额取数，这些凭证不会被结转，页面上提示
+  const unpostedCount = Number(
+    (
+      params.db
+        .prepare(
+          `SELECT COUNT(*) AS c FROM vouchers v
+           WHERE v.account_set_id=? AND v.year=? AND v.period=? AND v.status <> 'posted'
+             AND NOT EXISTS (SELECT 1 FROM auto_transfer_runs atr WHERE atr.voucher_id = v.id)`
+        )
+        .get(params.accountSetId, params.year, params.period) as any
+    )?.c || 0
+  )
   const closed = isPeriodClosed(closingRecord)
-  const alreadyGenerated = Boolean(existingRun)
+  const alreadyGenerated = Boolean(existingRun) || runCount > 0
   // 结转凭证已自动记账，允许撤销（撤销时会自动反记账）
-  const canRevoke = Boolean(existingRun) && !closed
+  const canRevoke = alreadyGenerated && !closed
 
   return {
     closed,
     existingRun,
     alreadyGenerated,
     canRevoke,
+    runCount,
+    unpostedCount,
   }
 }
 
@@ -1026,7 +1096,7 @@ export function buildAllTransferPreviews(params: {
   year: number
   period: number
 }) {
-  const { closed } = getAutoTransferStatus(params)
+  const { closed, unpostedCount } = getAutoTransferStatus(params)
   const generatedVouchers = listGeneratedTransferVouchersForPeriod(params)
 
   // 获取所有结转类型
@@ -1044,6 +1114,7 @@ export function buildAllTransferPreviews(params: {
   if (transferTypes.length === 0) {
     return {
       closed,
+      unpostedCount,
       blockedReason: closed ? '该期间已结账，不能生成自动结转凭证' : '未配置结转类型',
       generatedVouchers,
       summary: {
@@ -1061,27 +1132,56 @@ export function buildAllTransferPreviews(params: {
   const previews = []
 
   for (const type of transferTypes) {
-    const existingRun = getExistingTransferRunByType({
+    const existingRuns = listExistingTransferRunsByType({
       db: params.db,
       accountSetId: params.accountSetId,
       year: params.year,
       period: params.period,
       transferTypeCode: type.code,
     })
+    const existingRun = existingRuns.length > 0 ? existingRuns[existingRuns.length - 1] : null
 
     if (existingRun) {
+      // 已结转过：按当前已记账余额再算一次，得到的就是结转后新增的差额（之前的结转凭证已记账、已计入余额）
+      const blockReason = closed
+        ? '该期间已结账'
+        : getIncrementalTransferBlockReason({
+            db: params.db,
+            accountSetId: params.accountSetId,
+            transferTypeCode: type.code,
+            runs: existingRuns,
+          })
+      const preview = blockReason
+        ? null
+        : buildTransferPreviewByType({
+            db: params.db,
+            accountSetId: params.accountSetId,
+            year: params.year,
+            period: params.period,
+            transferTypeCode: type.code,
+          })
+      const entries = preview?.entries || []
+      const totals = calculateVoucherTotals(entries)
+      const unbalanced = entries.length > 0 && Math.abs(totals.debitTotal - totals.creditTotal) > 0.01
+      const hasDelta = entries.length > 0 && !unbalanced
       previews.push({
         transferTypeCode: type.code,
         transferTypeName: type.name,
         voucherType: type.voucher_type,
-        status: 'generated' as TransferPreviewStatus,
-        selectable: false,
-        disabledReason: '该结转类型已生成凭证',
+        status: (hasDelta ? 'ready' : 'generated') as TransferPreviewStatus,
+        selectable: hasDelta,
+        disabledReason: hasDelta
+          ? null
+          : blockReason || (unbalanced ? '差额借贷不平，不能补结' : '已结平，无差额'),
         emptyReason: null,
         alreadyGenerated: true,
+        incremental: hasDelta,
+        incrementalBlockedReason: blockReason,
+        runCount: existingRuns.length,
         existingRun,
-        entries: [],
-        totals: { debitTotal: 0, creditTotal: 0 },
+        existingRuns,
+        entries,
+        totals: { debitTotal: totals.debitTotal, creditTotal: totals.creditTotal },
       })
       continue
     }
@@ -1096,6 +1196,8 @@ export function buildAllTransferPreviews(params: {
         disabledReason: '该期间已结账，不能生成结转凭证',
         emptyReason: '该期间已结账',
         alreadyGenerated: false,
+        incremental: false,
+        runCount: 0,
         existingRun: null,
         entries: [],
         totals: { debitTotal: 0, creditTotal: 0 },
@@ -1136,6 +1238,8 @@ export function buildAllTransferPreviews(params: {
       disabledReason: status === 'ready' ? null : unbalanced ? '借贷不平，不能生成' : emptyReason,
       emptyReason,
       alreadyGenerated: false,
+      incremental: false,
+      runCount: 0,
       existingRun: null,
       entries: preview.entries,
       totals: {
@@ -1146,7 +1250,8 @@ export function buildAllTransferPreviews(params: {
   }
 
   const readyCount = previews.filter(preview => preview.status === 'ready').length
-  const generatedCount = previews.filter(preview => preview.status === 'generated').length
+  const generatedCount = previews.filter(preview => preview.alreadyGenerated).length
+  const incrementalCount = previews.filter(preview => preview.incremental).length
   const emptyCount = previews.filter(preview => preview.status === 'empty').length
   const notYetDueCount = previews.filter(preview => preview.status === 'notYetDue').length
   const unbalancedCount = previews.filter(preview => preview.status === 'unbalanced').length
@@ -1158,12 +1263,14 @@ export function buildAllTransferPreviews(params: {
 
   return {
     closed,
+    unpostedCount,
     blockedReason,
     generatedVouchers,
     summary: {
       totalTypes: previews.length,
       readyCount,
       generatedCount,
+      incrementalCount,
       emptyCount,
       notYetDueCount,
       unbalancedCount,
@@ -1382,12 +1489,30 @@ export function createTransferVoucherForType(params: {
   `)
   const insertEntry = params.db.prepare(VOUCHER_ENTRY_INSERT_SQL)
   const insertRun = params.db.prepare(`
-    INSERT INTO auto_transfer_runs (id, account_set_id, year, period, transfer_type, transfer_type_code, voucher_id, created_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO auto_transfer_runs (id, account_set_id, year, period, transfer_type, transfer_type_code, voucher_id, seq, created_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
 
+  // 同期同类型第几次结转；第 2 次起为「补结差额」，摘要与备注上标明
+  const seq =
+    Number(
+      (
+        params.db
+          .prepare(
+            `SELECT MAX(COALESCE(seq, 1)) AS m FROM auto_transfer_runs
+             WHERE account_set_id=? AND year=? AND period=? AND transfer_type_code=?`
+          )
+          .get(params.accountSetId, params.year, params.period, params.transferTypeCode) as any
+      )?.m || 0
+    ) + 1
+  const voucherEntries =
+    seq > 1
+      ? preview.entries.map(entry => ({ ...entry, summary: `${entry.summary || ''}（补结差额）` }))
+      : preview.entries
+
   const voucherDate = getAutoTransferVoucherDate(params.year, params.period)
-  const remark = buildAutoTransferRemark(params.year, params.period)
+  const remark =
+    buildAutoTransferRemark(params.year, params.period) + (seq > 1 ? `（第${seq}次，补结差额）` : '')
 
   const createTransaction = params.db.transaction(() => {
     // 创建凭证（状态直接设为已审核）
@@ -1414,7 +1539,7 @@ export function createTransferVoucherForType(params: {
       db: params.db as any,
       accountSetId: params.accountSetId,
       voucherId,
-      entries: preview.entries,
+      entries: voucherEntries,
       categories,
       itemMap,
     })
@@ -1429,6 +1554,7 @@ export function createTransferVoucherForType(params: {
       AUTO_TRANSFER_TYPE, // 保留旧字段兼容性
       params.transferTypeCode, // 新字段
       voucherId,
+      seq,
       params.userId || null
     )
 
@@ -1468,6 +1594,8 @@ export function createTransferVoucherForType(params: {
     error: null,
     voucherId,
     voucherNo,
+    seq,
+    incremental: seq > 1,
     entryCount: preview.entries.length,
   }
 }
@@ -1497,6 +1625,13 @@ export function createAllTransferVouchers(params: {
       results: [],
     }
   }
+
+  const startDateError = getGlStartDateError(
+    params.db,
+    params.accountSetId,
+    getAutoTransferVoucherDate(params.year, params.period)
+  )
+  if (startDateError) return { error: startDateError, results: [] }
 
   // 获取所有结转类型
   const transferTypes = params.db
@@ -1552,24 +1687,32 @@ export function createAllTransferVouchers(params: {
   const results = []
 
   for (const type of targetTypes) {
-    // 检查该类型是否已生成凭证
-    const existingRun = params.db
-      .prepare(
-        `SELECT id FROM auto_transfer_runs
-         WHERE account_set_id=? AND year=? AND period=? AND transfer_type_code=?`
-      )
-      .get(params.accountSetId, params.year, params.period, type.code) as any
-
-    if (existingRun) {
-      results.push({
+    // 已结转过的类型：只要允许补结，就按当前余额生成差额凭证（差额为 0 时下面会自动跳过）
+    const existingRuns = listExistingTransferRunsByType({
+      db: params.db,
+      accountSetId: params.accountSetId,
+      year: params.year,
+      period: params.period,
+      transferTypeCode: type.code,
+    })
+    if (existingRuns.length > 0) {
+      const blockReason = getIncrementalTransferBlockReason({
+        db: params.db,
+        accountSetId: params.accountSetId,
         transferTypeCode: type.code,
-        transferTypeName: type.name,
-        skipped: true,
-        reason: '该结转类型已生成凭证',
-        voucherId: null,
-        voucherNo: null,
+        runs: existingRuns,
       })
-      continue
+      if (blockReason) {
+        results.push({
+          transferTypeCode: type.code,
+          transferTypeName: type.name,
+          skipped: true,
+          reason: blockReason,
+          voucherId: null,
+          voucherNo: null,
+        })
+        continue
+      }
     }
 
     // 年末/年度结转：非 12 月跳过
@@ -1600,6 +1743,9 @@ export function createAllTransferVouchers(params: {
       transferTypeCode: type.code,
       transferTypeName: type.name,
       ...result,
+      ...(existingRuns.length > 0 && result.skipped && preview_isEmptyReason(result.reason)
+        ? { reason: '已结平，无差额' }
+        : {}),
     })
   }
 
@@ -1607,6 +1753,10 @@ export function createAllTransferVouchers(params: {
     error: null,
     results,
   }
+}
+
+function preview_isEmptyReason(reason: unknown) {
+  return typeof reason === 'string' && (reason.includes('没有可结转') || reason.includes('金额为0'))
 }
 
 export function validateAutoTransferRevoke(params: { existingRun: any; closed: boolean }) {
@@ -1635,6 +1785,8 @@ export function revokeAllTransferVouchers(params: {
   accountSetId: string
   year: number
   period: number
+  /** 只撤销这些结转类型（「重新结转」用）；不传 = 本期全部 */
+  transferTypeCodes?: string[]
 }) {
   const { closed } = getAutoTransferStatus({
     db: params.db,
@@ -1650,15 +1802,19 @@ export function revokeAllTransferVouchers(params: {
     }
   }
 
-  // 获取该期间所有结转凭证
-  const runs = params.db
-    .prepare(
-      `SELECT atr.*, v.voucher_no, v.status
-       FROM auto_transfer_runs atr
-       LEFT JOIN vouchers v ON v.id = atr.voucher_id
-       WHERE atr.account_set_id=? AND atr.year=? AND atr.period=?`
-    )
-    .all(params.accountSetId, params.year, params.period) as any[]
+  // 获取该期间所有结转凭证（后生成的先撤销：补结差额凭证先于首结凭证反记账）
+  const codeFilter = Array.isArray(params.transferTypeCodes) ? new Set(params.transferTypeCodes) : null
+  const runs = (
+    params.db
+      .prepare(
+        `SELECT atr.*, v.voucher_no, v.status
+         FROM auto_transfer_runs atr
+         LEFT JOIN vouchers v ON v.id = atr.voucher_id
+         WHERE atr.account_set_id=? AND atr.year=? AND atr.period=?
+         ORDER BY COALESCE(atr.seq, 1) DESC, datetime(atr.created_at) DESC`
+      )
+      .all(params.accountSetId, params.year, params.period) as any[]
+  ).filter(run => !codeFilter || codeFilter.has(run.transfer_type_code))
 
   if (runs.length === 0) {
     return {
@@ -1721,4 +1877,61 @@ export function revokeAllTransferVouchers(params: {
     error: null,
     results,
   }
+}
+
+/**
+ * 一键重新结转：先撤销所选类型本期已生成的全部结转凭证（含补结差额凭证），再按当前余额整体重新生成一张。
+ * 反结转按凭证逐张提交事务，若撤销中途失败则不再生成，页面可再次点击重试。
+ */
+export function redoTransferVouchers(params: {
+  db: Database
+  accountSetId: string
+  userId?: string | null
+  userName?: string | null
+  year: number
+  period: number
+  transferTypeCodes: string[]
+}) {
+  const codes = Array.from(
+    new Set((params.transferTypeCodes || []).map(code => String(code || '').trim()).filter(Boolean))
+  )
+  if (codes.length === 0) return { error: '请选择至少一个结转类型', revoked: [], results: [] }
+
+  const hasRuns = params.db
+    .prepare(
+      `SELECT COUNT(*) AS c FROM auto_transfer_runs
+       WHERE account_set_id=? AND year=? AND period=? AND transfer_type_code IN (${codes.map(() => '?').join(',')})`
+    )
+    .get(params.accountSetId, params.year, params.period, ...codes) as any
+  let revoked: any[] = []
+  if (Number(hasRuns?.c || 0) > 0) {
+    const revokeResult = revokeAllTransferVouchers({
+      db: params.db as any,
+      accountSetId: params.accountSetId,
+      year: params.year,
+      period: params.period,
+      transferTypeCodes: codes,
+    })
+    if (revokeResult.error) return { error: revokeResult.error, revoked: [], results: [] }
+    revoked = revokeResult.results
+    const failed = revoked.filter(r => !r.success)
+    if (failed.length > 0) {
+      return {
+        error: `撤销原结转凭证失败：${failed.map(r => `${r.voucherNo || ''} ${r.error || ''}`.trim()).join('；')}`,
+        revoked,
+        results: [],
+      }
+    }
+  }
+
+  const created = createAllTransferVouchers({
+    db: params.db,
+    accountSetId: params.accountSetId,
+    userId: params.userId,
+    userName: params.userName,
+    year: params.year,
+    period: params.period,
+    transferTypeCodes: codes,
+  })
+  return { error: created.error, revoked, results: created.results }
 }

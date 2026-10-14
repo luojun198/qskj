@@ -6,6 +6,7 @@ import {
   resolveSourceOverrunScope,
 } from './scmOverrunPolicy.js'
 import { isPlanFullyFinished, planSubstituteMap } from './scmProduction.js'
+import { hasWipCountTable } from './scmWipCount.js'
 
 const EPS = 0.000001
 
@@ -105,6 +106,49 @@ export function computeSourceLineUsedQty(
   return used
 }
 
+const DOC_NAME: Record<string, string> = {
+  WO: '委外发料单', PL: '领料单', PB: '补料单',
+  PQ: '采购询价单', PO: '采购订单', PI: '采购入库单', PR: '采购退货单', SQ: '销售报价单', SOa: '销售订单', SO: '销售出库单', SR: '销售退货单',
+}
+
+/**
+ * 来源数量超限提示（客户反馈：「本次 100 加已占用 100，超过来源数量上限 120」看不懂）。
+ * 说清：来源单据与数量、超收后的上限、被哪些单据占用（草稿单点名，提示先审核或删除）、本次超出多少。
+ */
+function sourceOverLimitMessage(
+  db: Database.Database, accountSetId: string, childDocType: string, sourceLineId: string,
+  parent: any, qty: number, used: number, maxQty: number, excludeDocId?: string,
+): string {
+  const exclude = excludeDocId ? ' AND d.id<>?' : ''
+  const tail: any[] = excludeDocId ? [excludeDocId] : []
+  const occupiers = new Map<string, { doc_no: string; status: string; qty: number }>()
+  const add = (row: any, q: number) => {
+    const hit = occupiers.get(row.id) || { doc_no: row.doc_no, status: row.status, qty: 0 }
+    hit.qty = r6(hit.qty + q)
+    occupiers.set(row.id, hit)
+  }
+  for (const row of db.prepare(`SELECT d.id, d.doc_no, d.status, COALESCE(SUM(l.qty),0) AS qty
+    FROM scm_doc_line l JOIN scm_doc d ON d.id=l.doc_id
+    WHERE d.account_set_id=? AND d.doc_type=? AND l.source_line_id=? AND d.status<>'voided'${exclude}
+    GROUP BY d.id ORDER BY d.doc_no`).all(accountSetId, childDocType, sourceLineId, ...tail) as any[]) add(row, Number(row.qty) || 0)
+  for (const row of db.prepare(`SELECT d.id, d.doc_no, d.status, l.field_values
+    FROM scm_doc_line l JOIN scm_doc d ON d.id=l.doc_id
+    WHERE d.account_set_id=? AND d.doc_type=? AND l.source_line_id IS NULL AND d.status<>'voided'${exclude}`).all(accountSetId, childDocType, ...tail) as any[]) {
+    const q = sourceLineAllocations(row.field_values).filter(a => a.source_line_id === sourceLineId).reduce((s, a) => s + a.qty, 0)
+    if (q > 0) add(row, q)
+  }
+  const childName = DOC_NAME[childDocType] || '下游单据'
+  const srcName = DOC_NAME[parent.src_type] || '来源单据'
+  const parentQty = r6(Number(parent.qty) || 0)
+  const limitText = maxQty > parentQty + EPS ? `，允许超收后上限 ${maxQty}` : ''
+  const list = [...occupiers.values()].map(o => `${o.doc_no}${o.status === 'draft' ? '（草稿）' : ''} ${o.qty}`)
+  const usedText = used > EPS ? `已被其他${childName}占用 ${used}${list.length ? `（${list.join('、')}）` : ''}` : '尚无其他单据占用'
+  const over = r6(used + qty - maxQty)
+  const hasDraft = [...occupiers.values()].some(o => o.status === 'draft')
+  return `物料 ${parent.item_code}：${srcName} ${parent.src_no} 数量 ${parentQty}${limitText}；${usedText}；本次 ${qty}，合计 ${r6(used + qty)}，超过来源数量上限 ${maxQty}（超出 ${over}）。`
+    + (hasDraft ? `请先审核或删除上述草稿${childName}，或减少本次数量。` : `请减少本次数量。`)
+}
+
 /** 新增、修改、审核共用的行级来源校验。修改/审核时 excludeDocId 排除本单旧明细。 */
 export function validateSourceLineQuantities(
   db: Database.Database,
@@ -152,8 +196,7 @@ export function validateSourceLineQuantities(
     const used = computeSourceLineUsedQty(db, accountSetId, childDocType, sourceLineId, excludeDocId)
     const maxQty = sourceLimit(db, accountSetId, childDocType, parent)
     if (used + current.qty > maxQty + EPS) {
-      const tolerance = maxQty > Number(parent.qty) + EPS ? `（含超收上限 ${maxQty}）` : ''
-      return `物料 ${parent.item_code} 本次数量 ${current.qty} 加已占用 ${used}，超过来源数量上限 ${maxQty}${tolerance}`
+      return sourceOverLimitMessage(db, accountSetId, childDocType, sourceLineId, parent, current.qty, used, maxQty, excludeDocId)
     }
   }
   return null
@@ -235,7 +278,17 @@ export function validatePlanIssueQuantities(
   }
   for (const [itemCode, qty] of incoming) {
     const need = needMap.get(itemCode)
-    if (need === undefined) return `物料 ${itemCode} 不在关联工单用料清单中（也不是用料的替代料），不能领用`
+    if (need === undefined) {
+      // 仅用于丰富提示文案，查不到不影响拦截
+      let planCode = ''; let itemName = ''
+      try {
+        planCode = (db.prepare('SELECT code FROM scm_production_plan WHERE id=? AND account_set_id=?').get(planId, accountSetId) as { code?: string } | undefined)?.code || ''
+        itemName = (db.prepare('SELECT name FROM scm_item WHERE account_set_id=? AND code=?').get(accountSetId, itemCode) as { name?: string } | undefined)?.name || ''
+      } catch { /* ignore */ }
+      const docName = DOC_NAME[docType] || (docType === 'WO' ? '委外发料单' : '领料单')
+      return `物料 ${itemCode}${itemName ? `（${itemName}）` : ''} 不在工单${planCode ? ` ${planCode} ` : ''}的用料清单中（也不是用料的替代料），${docName}不能领用。`
+        + '请删除该行，或先在「工单变更单」中为该工单追加此用料后再保存'
+    }
     const used = r6(usedMap.get(itemCode) || 0)
     const maxQty = getScmMaxAllowedQty(need, policy)
     if (used + qty > maxQty + EPS) return `物料 ${itemCode} 工单需求 ${r6(need)}，允许上限 ${maxQty}，已领/占用 ${used}，本次 ${qty}，禁止超领`
@@ -243,7 +296,11 @@ export function validatePlanIssueQuantities(
   return null
 }
 
-/** 退料上限：本单 + 其它退料（草稿/已审核）不得超过工单净已领（已审核领料/补料/委外发料）。 */
+/**
+ * 退料上限：本单 + 其它退料（草稿/已审核）不得超过工单「车间在制」——
+ * 净已领（已审核领料/补料/委外发料，扣其它退料）− 已随完工 / 报废按 BOM 消耗 − 已审核盘亏 + 已审核盘盈。
+ * 客户反馈：物料已随完工做成成品入库，却还能整笔退回原料仓，账面在制变负、成本被重复冲回。
+ */
 function validatePlanReturnQuantities(
   db: Database.Database,
   accountSetId: string,
@@ -267,9 +324,28 @@ function validatePlanReturnQuantities(
     if (!line?.item_code || !(Number(line.qty) > 0)) continue
     incoming.set(line.item_code, r6((incoming.get(line.item_code) || 0) + Number(line.qty)))
   }
+  // 已随完工 / 报废消耗（标准用量 ×（1+损耗率）×（已完工+已报废）），与在制品盘点「已消耗」同口径
+  const consumedRows = db.prepare(`SELECT l.item_code,
+      COALESCE(SUM(l.qty*(1+COALESCE(l.scrap_rate,0)/100.0)*(COALESCE(pp.finished_qty,0)+COALESCE(pp.scrap_qty,0))),0) AS qty
+    FROM scm_production_plan_line l JOIN scm_production_plan_product pp ON pp.id=l.product_id
+    WHERE l.account_set_id=? AND l.plan_id=? GROUP BY l.item_code`).all(accountSetId, planId) as any[]
+  const consumed = new Map(consumedRows.map(row => [row.item_code, r6(Number(row.qty) || 0)]))
+  const countAdj = new Map<string, number>()   // 已审核在制盘点：盘盈为正、盘亏为负
+  if (hasWipCountTable(db)) {
+    const adj = db.prepare(`SELECT l.item_code, COALESCE(SUM(l.diff_qty),0) AS qty FROM scm_plan_wip_count_line l
+      JOIN scm_plan_wip_count c ON c.id=l.count_id
+      WHERE c.account_set_id=? AND c.plan_id=? AND c.status='audited' GROUP BY l.item_code`).all(accountSetId, planId) as any[]
+    for (const row of adj) countAdj.set(row.item_code, r6(Number(row.qty) || 0))
+  }
   for (const [itemCode, qty] of incoming) {
-    const avail = r6(netIssued.get(itemCode) || 0)
-    if (qty > avail + EPS) return `物料 ${itemCode} 工单净已领 ${avail}（已扣其它退料），本次退料 ${qty} 超出`
+    const net = r6(netIssued.get(itemCode) || 0)
+    const used = consumed.get(itemCode) || 0
+    const avail = r6(Math.max(0, net - used + (countAdj.get(itemCode) || 0)))
+    if (qty > avail + EPS) {
+      return used > EPS
+        ? `物料 ${itemCode} 工单净已领 ${net}，已随完工/报废消耗 ${used}，车间在制可退 ${avail}，本次退料 ${qty} 超出（已做成成品的物料不能退回原料仓）`
+        : `物料 ${itemCode} 工单净已领 ${avail}（已扣其它退料），本次退料 ${qty} 超出`
+    }
   }
   return null
 }
@@ -311,7 +387,17 @@ export function validatePlanFinishQuantities(
     if (planQty === undefined) return `成品 ${itemCode} 不在关联工单中，不能完工入库`
     const used = r6(usedMap.get(itemCode) || 0)
     const maxQty = getScmMaxAllowedQty(planQty, policy)
-    if (used + qty > maxQty + EPS) return `成品 ${itemCode} 计划 ${r6(planQty)}，允许上限 ${maxQty}，已完工/报废/占用 ${used}，本次 ${qty}，禁止超完工`
+    if (used + qty > maxQty + EPS) {
+      // 点名占用计划数的草稿单（客户反馈：没有完工却提示「占用 50」，不知道被谁占了）
+      const drafts = db.prepare(`SELECT d.doc_no, COALESCE(SUM(l.qty),0) AS qty
+        FROM scm_doc_line l JOIN scm_doc d ON d.id=l.doc_id
+        WHERE d.account_set_id=? AND d.plan_id=? AND d.doc_type IN (${typePh}) AND d.status='draft' AND l.item_code=?${exclude}
+        GROUP BY d.id ORDER BY d.doc_no`).all(accountSetId, planId, ...countedTypes, itemCode, ...(excludeDocId ? [excludeDocId] : [])) as any[]
+      const draftText = drafts.length
+        ? `（其中未审核草稿 ${drafts.map(r => `${r.doc_no} ${r6(Number(r.qty) || 0)}`).join('、')}，请先审核或删除）`
+        : ''
+      return `成品 ${itemCode} 计划 ${r6(planQty)}，允许上限 ${maxQty}，已完工/报废/占用 ${used}${draftText}，本次 ${qty}，禁止超完工`
+    }
   }
   return null
 }
@@ -354,4 +440,37 @@ export function validateFinishKitting(
     if (actual + EPS < need) shortages.push(`${itemCode} 应领 ${need}，已领 ${actual}，缺 ${r6(need - actual)}`)
   }
   return shortages.length ? `完工数量未齐套：${shortages.slice(0, 8).join('；')}${shortages.length > 8 ? '……' : ''}` : null
+}
+
+/**
+ * 不生成凭证的单据类型：订单 / 询价 / 报价只是业务承诺，不动库存也不挂往来，账务由下游入库、出库单承担；
+ * MRP 计算单同理。与前端 utils/scmDoc.ts 的 NO_VOUCHER_DOC_TYPES 保持一致。
+ */
+export const NO_VOUCHER_DOC_TYPES: ReadonlySet<string> = new Set(['MRP', 'PQ', 'PO', 'SQ', 'SOa'])
+export function docTypeGeneratesVoucher(docType: string): boolean {
+  return !NO_VOUCHER_DOC_TYPES.has(docType)
+}
+
+/**
+ * 必须指定往来单位的单据：采购/销售链路上的询价、订单、入库、出库、退货。
+ * 往来单位为空时，审核后不会挂应付/应收，账实不一致，故在保存与审核阶段统一拦截。
+ * 与前端 DocForm.vue 的 PARTNER_REQUIRED_TYPES 保持一致。
+ */
+export const PARTNER_REQUIRED_DOC_TYPES: ReadonlySet<string> = new Set(['PQ', 'PO', 'PI', 'PR', 'SQ', 'SOa', 'SO', 'SR'])
+const PARTNER_ROLE_LABEL: Record<string, string> = {
+  PQ: '供应商', PO: '供应商', PI: '供应商', PR: '供应商',
+  SQ: '客户', SOa: '客户', SO: '客户', SR: '客户',
+}
+export function validateDocPartner(
+  db: Database.Database,
+  accountSetId: string,
+  docType: string,
+  partnerCode: string | null | undefined,
+): string | null {
+  if (!PARTNER_REQUIRED_DOC_TYPES.has(docType)) return null
+  const label = PARTNER_ROLE_LABEL[docType] || '往来单位'
+  const code = String(partnerCode ?? '').trim()
+  if (!code) return `必须指定${label}（往来单位）`
+  const hit = db.prepare('SELECT 1 FROM scm_partner WHERE account_set_id=? AND code=?').get(accountSetId, code)
+  return hit ? null : `${label}（往来单位）「${code}」不存在，请重新选择`
 }

@@ -5,10 +5,13 @@ import { getDb } from '../db/index.js'
 import { v4 as uuidv4 } from 'uuid'
 import { buildVoucherNo } from './voucherEntry.js'
 import { appendAccountScopeCondition, type AccountScopeContext } from './accountAuthorization.js'
-import { assertGlPeriodOpen } from './voucherMutationGuard.js'
+import { assertGlPeriodOpen, getGlStartDateError } from './voucherMutationGuard.js'
 import { assertCashierPeriodOpen, parseBizDate } from './cashierPeriodClosing.js'
 import { deleteVoucherWithRefs } from './voucherDelete.js'
 import { resolveExchangeRate } from './currencyService.js'
+import { createAccountAuxRequirementLookup, type AccountAuxRequirementLookup, type AuxCategoryBrief } from './auxRequirement.js'
+import { syncCashierAccountsFromGl, cashierGlCode, cashierCodeForGl, cashierLinkedGlCodes, ensureCashierAccountSchema } from './cashierAccount.js'
+import { getPaymentVoucherMode, getScmSourcesOfJournals, paymentDocLabel, type ScmJournalSource } from './paymentVoucherMode.js'
 
 export interface CashierAccount {
   code: string
@@ -18,23 +21,34 @@ export interface CashierAccount {
   /** FIX-260：外币科目标记与核算币种（出纳日记账币种跟科目走） */
   is_foreign: number
   currency_code: string | null
+  /** 出纳独立账户：类型（cash / bank / other）与关联总账科目（可空） */
+  kind?: string
+  gl_account_code?: string | null
+}
+
+/**
+ * 出纳账户的科目授权：关联了总账科目的按科目白名单过滤；未关联科目的独立账户不受科目授权限制
+ * （出纳账户本身不是科目，只受出纳模块权限控制）。alias 为 v_cashier_account 的别名。
+ */
+export function appendCashierViewScope(ctx: AccountScopeContext | undefined, alias: string, conditions: string[], params: any[]): void {
+  if (!ctx || ctx.bypass || !ctx.restricted) return
+  const inner: string[] = []
+  appendAccountScopeCondition(ctx, `${alias}.gl_account_id`, inner, params)
+  if (inner.length) conditions.push(`(${alias}.gl_account_id IS NULL OR (${inner.join(' AND ')}))`)
 }
 
 /** 现金/银行类末级科目（出纳日记账左侧科目树）；传入科目授权上下文则按白名单过滤 */
 export function listCashierAccounts(accountSetId: string, ctx?: AccountScopeContext): CashierAccount[] {
   const db = getDb()
-  const conditions: string[] = [
-    'a.account_set_id = ?',
-    'a.is_enabled = 1',
-    '(a.is_cash = 1 OR a.is_bank = 1)',
-    'NOT EXISTS (SELECT 1 FROM accounts c WHERE c.parent_id = a.id)',
-  ]
-  const params: string[] = [accountSetId]
-  appendAccountScopeCondition(ctx, 'a.id', conditions, params)
+  // 出纳独立账户：读「出纳账户」档案（总账新增的现金 / 银行末级科目会自动补成账户）
+  syncCashierAccountsFromGl(db, accountSetId)
+  const conditions: string[] = ['a.account_set_id = ?', 'a.is_enabled = 1']
+  const params: any[] = [accountSetId]
+  appendCashierViewScope(ctx, 'a', conditions, params)
   return db
     .prepare(
-      `SELECT a.code, a.name, a.is_cash, a.is_bank, COALESCE(a.is_foreign,0) is_foreign, a.currency_code
-       FROM accounts a
+      `SELECT a.code, a.name, a.is_cash, a.is_bank, a.is_foreign, a.currency_code, a.kind, a.gl_account_code
+       FROM v_cashier_account a
        WHERE ${conditions.join(' AND ')}
        ORDER BY a.code`
     )
@@ -53,11 +67,19 @@ export function appendCashierCodeScopeCondition(
   params: any[]
 ): void {
   if (!ctx || ctx.bypass || !ctx.restricted) return
+  ensureCashierAccountSchema(getDb())
+  // 出纳账户按关联科目判断授权（未关联的独立账户不受科目授权限制）；
+  // 尚未建出纳账户档案的历史编码回退按科目表判断（与改造前口径一致）
   const inner: string[] = ['sa.account_set_id = ?', `sa.code = ${codeColumn}`]
   const innerParams: any[] = [accountSetId]
-  appendAccountScopeCondition(ctx, 'sa.id', inner, innerParams)
-  conditions.push(`EXISTS (SELECT 1 FROM accounts sa WHERE ${inner.join(' AND ')})`)
-  params.push(...innerParams)
+  appendCashierViewScope(ctx, 'sa', inner, innerParams)
+  const legacy: string[] = ['sb.account_set_id = ?', `sb.code = ${codeColumn}`]
+  const legacyParams: any[] = [accountSetId]
+  appendAccountScopeCondition(ctx, 'sb.id', legacy, legacyParams)
+  conditions.push(`(EXISTS (SELECT 1 FROM v_cashier_account sa WHERE ${inner.join(' AND ')})
+    OR (NOT EXISTS (SELECT 1 FROM v_cashier_account sx WHERE sx.account_set_id = ? AND sx.code = ${codeColumn})
+        AND EXISTS (SELECT 1 FROM accounts sb WHERE ${legacy.join(' AND ')})))`)
+  params.push(...innerParams, accountSetId, ...legacyParams)
 }
 
 export interface JournalRow {
@@ -84,6 +106,9 @@ export interface JournalRow {
   voucher_no: number | null
   balance?: number
   base_balance?: number
+  /** 来源收付款单（收付款单审核写入的流水） */
+  scm_doc_type?: string | null
+  scm_doc_no?: string | null
 }
 
 /**
@@ -132,9 +157,15 @@ export function lookupCashierAccountCurrency(db: any, accountSetId: string, acco
   const base = getCashierBaseCurrency(db, accountSetId)
   let row: { is_foreign?: number; currency_code?: string | null } | undefined
   try {
-    row = db
-      .prepare('SELECT is_foreign, currency_code FROM accounts WHERE account_set_id=? AND code=? LIMIT 1')
-      .get(accountSetId, accountCode)
+    // 出纳账户档案的币别优先；老库无档案 / 非出纳编码（SCM 结算科目等）回退科目表
+    try {
+      row = db.prepare('SELECT is_foreign, currency_code FROM v_cashier_account WHERE account_set_id=? AND code=? LIMIT 1').get(accountSetId, accountCode)
+    } catch { row = undefined }
+    if (!row) {
+      row = db
+        .prepare('SELECT is_foreign, currency_code FROM accounts WHERE account_set_id=? AND code=? LIMIT 1')
+        .get(accountSetId, accountCode)
+    }
   } catch {
     return null
   }
@@ -392,10 +423,15 @@ export function enrichJournalRows(db: any, accountSetId: string, rows: JournalRo
     const cats = db.prepare('SELECT id, name FROM aux_categories WHERE account_set_id=?').all(accountSetId) as Array<{ id: string; name: string }>
     for (const c of cats) catName.set(c.id, c.name)
   }
+  // 来源收付款单：前端据此显示「收款单 RCV-xxx」并按收付款制证方式限制勾选 / 编辑 / 删除
+  const sources = getScmSourcesOfJournals(db, accountSetId, rows.map(r => r.id))
   for (const r of rows as any[]) {
     r.counter_account_name = r.counter_account ? nameOf.get(r.counter_account) || null : null
     const parts = Object.entries(r.aux_values as Record<string, string>).map(([cid, item]) => `${catName.get(cid) || cid}:${item}`)
     r.aux_text = parts.length ? parts.join('；') : null
+    const src = sources.get(r.id)
+    r.scm_doc_type = src?.doc_type || null
+    r.scm_doc_no = src?.doc_no || null
   }
 }
 
@@ -408,6 +444,8 @@ export function listJournal(params: {
   /** FIX-253：分页（1 起）；FIX-326 起强制分页，不传按第 1 页、每页 100 条，上限 1000 */
   page?: number
   pageSize?: number
+  /** 日期排序方向，默认升序；降序时余额仍是按时间累计的真实余额 */
+  sortOrder?: 'asc' | 'desc'
 }): {
   opening: number
   rows: JournalRow[]
@@ -462,7 +500,8 @@ export function listJournal(params: {
   }
   // 评审 P2 收尾：去掉 reconciled 筛选——筛掉部分行后逐行余额 / 期末只累加剩余行，数字失真；前端从未使用
   const whereSql = rowConds.join(' AND ')
-  const orderSql = 'ORDER BY biz_date, seq, created_at'
+  const desc = params.sortOrder === 'desc'
+  const orderSql = desc ? 'ORDER BY biz_date DESC, seq DESC, created_at DESC' : 'ORDER BY biz_date, seq, created_at'
 
   // FIX-253（十万级压测 P1-1）：合计与期末改由一条聚合 SQL 得出，不再依赖把全部行读进内存逐行累加——
   // 十万行时单次请求 30MB JSON、RSS +100MB。分页时本页首行之前的净额用同一排序的 LIMIT 子查询算出。
@@ -491,14 +530,23 @@ export function listJournal(params: {
        )`
     )
     .get(...rowParams, offset) as { net: number }
-  running += beforePage.net
   const rows = db
     .prepare(`SELECT * FROM cashier_journal WHERE ${whereSql} ${orderSql} LIMIT ? OFFSET ?`)
     .all(...rowParams, pageSize, offset) as JournalRow[]
 
-  for (const r of rows) {
-    running += r.debit - r.credit
-    r.balance = running
+  if (desc) {
+    // 降序：本页首行是时间上最靠后的，余额 = 期末 − 它之前（降序序）各页的净额，再逐行倒推
+    running = closing - beforePage.net
+    for (const r of rows) {
+      r.balance = running
+      running -= r.debit - r.credit
+    }
+  } else {
+    running += beforePage.net
+    for (const r of rows) {
+      running += r.debit - r.credit
+      r.balance = running
+    }
   }
   enrichJournalRows(db, accountSetId, rows)
 
@@ -546,6 +594,47 @@ export interface CashierMissingCounterRow {
   credit: number
 }
 
+/** 对方科目要求辅助核算但流水未填的记录 */
+export interface CashierMissingAuxRow extends CashierMissingCounterRow {
+  counter_account: string
+  /** 缺少的辅助类别名 */
+  missing_aux: string[]
+}
+
+/**
+ * 解析流水的 counter_aux_item_id（{ 类别id 或 类别code: 项目id }）为 类别 → 项目。
+ * 原实现只认类别 id，键为 code 时被静默丢弃。
+ */
+export function parseCounterAuxSelections(
+  raw: unknown,
+  lookup: AccountAuxRequirementLookup,
+): Map<string, { cat: AuxCategoryBrief; itemId: string }> {
+  const out = new Map<string, { cat: AuxCategoryBrief; itemId: string }>()
+  if (!raw) return out
+  let obj: Record<string, unknown> | null = null
+  try { obj = typeof raw === 'string' ? JSON.parse(raw) : (raw as Record<string, unknown>) } catch { obj = null }
+  if (!obj || typeof obj !== 'object') return out
+  for (const [key, value] of Object.entries(obj)) {
+    const itemId = typeof value === 'string' ? value : (value as any)?.id
+    if (!itemId) continue
+    const cat = lookup.categoryByKey(key)
+    if (cat && !out.has(cat.id)) out.set(cat.id, { cat, itemId: String(itemId) })
+  }
+  return out
+}
+
+/** 对方科目要求、但流水未填的辅助类别名 */
+export function cashierRowMissingAux(
+  lookup: AccountAuxRequirementLookup,
+  counterCode: string | null | undefined,
+  counterAux: unknown,
+): string[] {
+  const req = counterCode ? lookup(counterCode) : null
+  if (!req) return []
+  const sel = parseCounterAuxSelections(counterAux, lookup)
+  return req.categories.filter(c => !sel.has(c.id)).map(c => c.name)
+}
+
 /** 生成凭证预览行：与 missingRows / 明细同口径的日记账字段 */
 export interface CashierGeneratePreviewRow {
   id: string
@@ -555,11 +644,73 @@ export interface CashierGeneratePreviewRow {
   debit: number
   credit: number
   counter_account: string | null
+  /** 对方科目要求辅助核算但未填的类别名（生成凭证时会被拦截） */
+  missing_aux?: string[]
+  /** 来源收付款单（通过出纳制证模式下同单流水合并成一张凭证） */
+  scm_doc_type?: string
+  scm_doc_no?: string
+  /** 未勾选、因同单合并制证被自动带入的行 */
+  auto_included?: boolean
   /** FIX-260 */
   currency?: string
   exchange_rate?: number
   base_debit?: number
   base_credit?: number
+}
+
+/**
+ * 收付款制证方式（payment_voucher_mode）对出纳选行的约束：
+ *  - scm 模式：收付款单来源的流水由单据制证。勾选了来源行 → 报错；按日期区间批量 → 自动排除。
+ *  - cashier 模式：来源行按收付款单合并制证。单据已由供应链制证 → 报错；同单未勾选的行自动带入。
+ * 返回过滤 / 补齐后的行（j.* 全字段）及来源映射。
+ */
+function applyPaymentVoucherMode(
+  db: any, accountSetId: string, accountCode: string, rows: any[], byIds: boolean,
+): { rows: any[]; sources: Map<string, ScmJournalSource>; autoIds: Set<string>; error?: string } {
+  const autoIds = new Set<string>()
+  const sources = getScmSourcesOfJournals(db, accountSetId, rows.map(r => r.id))
+  if (!sources.size) return { rows, sources, autoIds }
+  const docLabel = (src: ScmJournalSource) => `${paymentDocLabel(src.doc_type)} ${src.doc_no}`
+  if (getPaymentVoucherMode(db, accountSetId) === 'scm') {
+    if (byIds) {
+      const docs = [...new Set(rows.filter(r => sources.has(r.id)).map(r => docLabel(sources.get(r.id)!)))]
+      return {
+        rows: [], sources, autoIds,
+        error: `有 ${rows.filter(r => sources.has(r.id)).length} 条流水来源于收付款单（${docs.slice(0, 5).join('、')}${docs.length > 5 ? ' 等' : ''}），系统参数「收付款制证方式」为收付款单直接生成凭证，请到收付款单生成凭证`,
+      }
+    }
+    return { rows: rows.filter(r => !sources.has(r.id)), sources, autoIds }
+  }
+  // cashier 模式：补齐同单其它流水，并校验单据未由供应链制证
+  const have = new Set(rows.map(r => r.id))
+  const docs = new Map<string, ScmJournalSource>()
+  for (const src of sources.values()) docs.set(`${src.doc_type}|${src.doc_no}`, src)
+  const out = [...rows]
+  for (const src of docs.values()) {
+    if (src.doc_voucher_id) {
+      const v = db.prepare('SELECT voucher_no FROM vouchers WHERE id=?').get(src.doc_voucher_id) as any
+      return { rows: [], sources, autoIds, error: `${docLabel(src)} 已由供应链生成凭证 ${v?.voucher_no || ''}，不能在出纳重复制证` }
+    }
+    const siblings = db.prepare(`
+      SELECT j.* FROM scm_ar_ap_log l JOIN cashier_journal j ON j.id=l.cashier_journal_id AND j.account_set_id=l.account_set_id
+      WHERE l.account_set_id=? AND l.doc_type=? AND l.doc_no=?
+    `).all(accountSetId, src.doc_type, src.doc_no) as any[]
+    for (const sib of siblings) {
+      if (have.has(sib.id)) continue
+      if (sib.voucher_no || sib.voucher_id) {
+        return { rows: [], sources, autoIds, error: `${docLabel(src)} 的部分流水已生成凭证 ${sib.voucher_no || ''}，请先删除该凭证后整单重新生成` }
+      }
+      if (sib.account_code !== accountCode) {
+        return { rows: [], sources, autoIds, error: `${docLabel(src)} 的流水分属不同出纳账户，无法合并制证` }
+      }
+      out.push(sib)
+      have.add(sib.id)
+      autoIds.add(sib.id)
+      sources.set(sib.id, src)
+    }
+  }
+  out.sort((a, b) => String(a.biz_date).localeCompare(String(b.biz_date)) || (Number(a.seq) || 0) - (Number(b.seq) || 0))
+  return { rows: out, sources, autoIds }
 }
 
 /**
@@ -573,7 +724,7 @@ export function previewCashierGenerate(params: {
   startDate?: string
   endDate?: string
   ids?: string[]
-}): { rows: CashierGeneratePreviewRow[] } {
+}): { rows: CashierGeneratePreviewRow[]; error?: string } {
   const { db, accountSetId, accountCode, startDate, endDate, ids } = params
 
   const conds = ['j.account_set_id=?', 'j.account_code=?', 'j.voucher_no IS NULL']
@@ -585,14 +736,29 @@ export function previewCashierGenerate(params: {
     conds.push(`j.id IN (${ids!.map(() => '?').join(',')})`)
     vals.push(...ids!)
   }
-  const rows = db.prepare(`
-    SELECT j.id, j.biz_date, j.seq, j.summary, j.debit, j.credit, j.counter_account,
-           j.currency, j.exchange_rate, j.base_debit, j.base_credit
-    FROM cashier_journal j
+  const selected = db.prepare(`
+    SELECT j.* FROM cashier_journal j
     WHERE ${conds.join(' AND ')}
     ORDER BY j.biz_date, j.seq
-  `).all(...vals) as CashierGeneratePreviewRow[]
-  return { rows }
+  `).all(...vals) as any[]
+  const moded = applyPaymentVoucherMode(db, accountSetId, accountCode, selected, byIds)
+  if (moded.error) return { rows: [], error: moded.error }
+  const auxLookup = createAccountAuxRequirementLookup(db, accountSetId)
+  return {
+    rows: moded.rows.map((j: any) => {
+      const r: CashierGeneratePreviewRow = {
+        id: j.id, biz_date: j.biz_date, seq: j.seq, summary: j.summary, debit: j.debit, credit: j.credit,
+        counter_account: j.counter_account, currency: j.currency, exchange_rate: j.exchange_rate,
+        base_debit: j.base_debit, base_credit: j.base_credit,
+      }
+      const src = moded.sources.get(j.id)
+      if (src) { r.scm_doc_type = src.doc_type; r.scm_doc_no = src.doc_no }
+      if (moded.autoIds.has(j.id)) r.auto_included = true
+      const missing = cashierRowMissingAux(auxLookup, r.counter_account, j.counter_aux_item_id)
+      if (missing.length) r.missing_aux = missing
+      return r
+    }),
+  }
 }
 
 /**
@@ -623,6 +789,8 @@ export function generateCashierVoucher(params: {
   endDate?: string
   makerName: string
   hangupAccountCode?: string
+  /** 本次指定的凭证类型（已校验）；优先于 cashier:default_voucher_type_id */
+  voucherTypeId?: string | null
   ids?: string[]
 }):
   | {
@@ -636,7 +804,7 @@ export function generateCashierVoucher(params: {
       hangupName: string | null
       details: CashierVoucherDetail[]
     }
-  | { error: string; missingRows?: CashierMissingCounterRow[] } {
+  | { error: string; missingRows?: CashierMissingCounterRow[]; missingAuxRows?: CashierMissingAuxRow[] } {
   const { db, accountSetId, accountCode, startDate, endDate, makerName, hangupAccountCode, ids } = params
 
   // 1. 查询未生成凭证的出纳日记账
@@ -650,18 +818,25 @@ export function generateCashierVoucher(params: {
     conds.push(`j.id IN (${ids!.map(() => '?').join(',')})`)
     vals.push(...ids!)
   }
-  const rows = db.prepare(`
+  const selected = db.prepare(`
     SELECT j.* FROM cashier_journal j
     WHERE ${conds.join(' AND ')}
     ORDER BY j.biz_date, j.seq
   `).all(...vals) as any[]
-  if (rows.length === 0) return { error: '所选范围内没有未生成凭证的记录' }
+  if (selected.length === 0) return { error: '所选范围内没有未生成凭证的记录' }
+  // 收付款制证方式：严格单侧制证（见 paymentVoucherMode.ts）
+  const moded = applyPaymentVoucherMode(db, accountSetId, accountCode, selected, byIds)
+  if (moded.error) return { error: moded.error }
+  const rows = moded.rows
+  if (rows.length === 0) return { error: '所选范围内没有未生成凭证的记录（收付款单来源的流水请到收付款单生成凭证）' }
 
   // P0-2：总账已结账（含已年结）期间不得再生成凭证，否则凭证永远无法记账、跨年期初也已固化
   const closedMonths = new Set<string>()
   for (const r of rows) {
     const ym = parseBizDate(r.biz_date)
     if (!ym) return { error: `日记账 ${r.biz_date} 日期格式不合法（${r.summary || r.id}）` }
+    const startDateError = getGlStartDateError(db, accountSetId, r.biz_date, '日记账日期')
+    if (startDateError) return { error: `${startDateError}（${r.summary || r.id}）` }
     const key = `${ym.year}-${ym.month}`
     if (closedMonths.has(key)) continue
     try {
@@ -674,8 +849,11 @@ export function generateCashierVoucher(params: {
 
   // 2. 校验对方科目（缺失时拦截或挂账）
   const lookup = db.prepare('SELECT id, name, is_foreign, currency_code FROM accounts WHERE account_set_id=? AND code=? LIMIT 1')
-  const cashAcc = lookup.get(accountSetId, accountCode) as any
-  if (!cashAcc) return { error: `科目 ${accountCode} 在账套中不存在` }
+  // 出纳独立账户：凭证上的现金 / 银行分录记到该账户关联的总账科目；未关联不能生成凭证
+  const cashGlCode = cashierGlCode(db, accountSetId, accountCode)
+  if (!cashGlCode) return { error: `出纳账户 ${accountCode} 未关联总账科目，请先在「出纳账户」中关联科目后再生成凭证` }
+  const cashAcc = lookup.get(accountSetId, cashGlCode) as any
+  if (!cashAcc) return { error: `出纳账户 ${accountCode} 关联的科目 ${cashGlCode} 在账套中不存在` }
   // FIX-260：币种跟科目走。外币现金/银行科目的分录写原币三字段；对方科目为外币时币种必须一致，
   // 非外币对方科目只记本位币（与总账 validateVoucherEntriesForeignCurrency 规则一致）。
   const baseCurrency = getCashierBaseCurrency(db, accountSetId)
@@ -712,15 +890,36 @@ export function generateCashierVoucher(params: {
       return { error: `对方科目 ${code} 的核算币种为 ${cur}，与出纳科目 ${accountCode}（${cashCurrency}）不一致，无法生成凭证` }
     }
   }
+  // 对方科目（含挂账科目）挂了辅助核算而流水未填：拦截，不再生成辅助项为空、过不了账的凭证
+  const auxLookup = createAccountAuxRequirementLookup(db, accountSetId)
+  const missingAuxRows: CashierMissingAuxRow[] = []
+  for (const r of rows) {
+    const counterCode = r.counter_account || hangupCode!
+    const missing = cashierRowMissingAux(auxLookup, counterCode, r.counter_aux_item_id)
+    if (missing.length) {
+      missingAuxRows.push({ id: r.id, biz_date: r.biz_date, seq: r.seq, summary: r.summary, debit: r.debit, credit: r.credit,
+        counter_account: counterCode, missing_aux: missing })
+    }
+  }
+  if (missingAuxRows.length > 0) {
+    const first = missingAuxRows[0]
+    return {
+      error: `有 ${missingAuxRows.length} 条记录的对方科目要求辅助核算但未填写（如 ${first.biz_date} ${first.summary || ''} 缺「${first.missing_aux.join('、')}」），请在日记账补填后再生成`,
+      missingAuxRows,
+    }
+  }
 
-  // 3. 取凭证类型：优先读系统参数 cashier:default_voucher_type_id，取不到则用 code 最小的
+  // 3. 取凭证类型：本次指定 > 系统参数 cashier:default_voucher_type_id > code 最小的
+  const requestedVt = params.voucherTypeId
+    ? db.prepare(`SELECT id, name FROM voucher_types WHERE (account_set_id=? OR account_set_id IS NULL) AND id=? LIMIT 1`).get(accountSetId, params.voucherTypeId) as any
+    : null
   const defaultVtParam = db.prepare(
     `SELECT param_value FROM system_params WHERE account_set_id=? AND param_key='cashier:default_voucher_type_id' LIMIT 1`
   ).get(accountSetId) as any
-  const vt = defaultVtParam?.param_value
+  const vt = requestedVt || (defaultVtParam?.param_value
     ? (db.prepare(`SELECT id, name FROM voucher_types WHERE account_set_id=? AND id=? LIMIT 1`).get(accountSetId, defaultVtParam.param_value) as any
       || db.prepare(`SELECT id, name FROM voucher_types WHERE (account_set_id=? OR account_set_id IS NULL) ORDER BY sort_order, code LIMIT 1`).get(accountSetId) as any)
-    : db.prepare(`SELECT id, name FROM voucher_types WHERE (account_set_id=? OR account_set_id IS NULL) ORDER BY sort_order, code LIMIT 1`).get(accountSetId) as any
+    : db.prepare(`SELECT id, name FROM voucher_types WHERE (account_set_id=? OR account_set_id IS NULL) ORDER BY sort_order, code LIMIT 1`).get(accountSetId) as any)
   const voucherTypeId = vt?.id || null
   const voucherTypeName: string = vt?.name || ''
 
@@ -743,9 +942,7 @@ export function generateCashierVoucher(params: {
     UPDATE cashier_journal SET voucher_year=?, voucher_month=?, voucher_type=?, voucher_no=?, voucher_id=?, updated_at=datetime('now') WHERE id=?
   `)
 
-  // 加载辅助类别映射（用于 ID 转 Code 及分配列）
-  const categories = db.prepare(`SELECT id, code, name FROM aux_categories WHERE account_set_id=?`).all(accountSetId) as any[]
-  const catMap = new Map(categories.map(c => [String(c.id), c]))
+  // 辅助项目名称（类别按 id / code 都能识别，见 parseCounterAuxSelections）
   const getItemName = db.prepare(`SELECT name FROM aux_items WHERE account_set_id=? AND id=? LIMIT 1`)
 
   const voucherNos: string[] = []
@@ -755,109 +952,130 @@ export function generateCashierVoucher(params: {
   let totalCredit = 0
   let hangupCount = 0
 
-  // 4. 每条日记账独立生成一张凭证（事务包裹全部）
+  // 4. 每条日记账独立生成一张凭证；收付款单来源的流水（通过出纳制证模式）同一单据合并成一张凭证（事务包裹全部）
+  const units: any[][] = []
+  const unitByDoc = new Map<string, any[]>()
+  for (const r of rows) {
+    const src = moded.sources.get(r.id)
+    if (!src) { units.push([r]); continue }
+    const key = `${src.doc_type}|${src.doc_no}`
+    let u = unitByDoc.get(key)
+    if (!u) { u = []; unitByDoc.set(key, u); units.push(u) }
+    u.push(r)
+  }
+
   const tx = db.transaction(() => {
-    for (const r of rows) {
-      const [year, month] = (r.biz_date as string).split('-').map(Number)
+    for (const unit of units) {
+      const head = unit[0]
+      const src = moded.sources.get(head.id)
+      const [year, month] = (head.biz_date as string).split('-').map(Number)
       // 本期最大号（含已生成的，确保号码不重复）
       const lastNo = (db.prepare(`
         SELECT CAST(CASE WHEN INSTR(voucher_no,'-')>0 THEN SUBSTR(voucher_no,INSTR(voucher_no,'-')+1) ELSE voucher_no END AS INTEGER) no
         FROM vouchers WHERE account_set_id=? AND year=? AND period=? ORDER BY no DESC LIMIT 1
       `).get(accountSetId, year, month) as any)?.no ?? 0
       const voucherNo = buildVoucherNo({ maxNo: lastNo, typeName: voucherTypeName || undefined })
-
-      const counterCode = r.counter_account || hangupCode!
-      const cAcc = lookup.get(accountSetId, counterCode) as any
-      // P2-1：金额统一保留两位，total_amount 与 amount_cents 口径一致
-      // FIX-260：外币行凭证金额取本位币（原币 × 汇率）；存量本位币行 base_* 与原币相同
-      const fcAmt = Math.round((r.debit > 0 ? r.debit : r.credit) * 100) / 100
-      const rate = cashIsForeign && Number(r.exchange_rate) > 0 ? Number(r.exchange_rate) : 1
-      const baseStored = r.debit > 0 ? Number(r.base_debit) : Number(r.base_credit)
-      const amt = cashIsForeign
-        ? (baseStored > 0 ? Math.round(baseStored * 100) / 100 : Math.round(fcAmt * rate * 100) / 100)
-        : fcAmt
       const voucherId = uuidv4()
-      const hungup = !r.counter_account
-      if (r.debit > 0) totalDebit += amt
-      else totalCredit += amt
-      if (hungup) hangupCount++
+      const remark = src ? `${paymentDocLabel(src.doc_type)}${src.doc_no}` : (head.summary || '出纳生成')
+      // 先插凭证头（金额待分录写完回填），分录外键依赖凭证头
+      insVoucher.run(voucherId, accountSetId, voucherNo, voucherTypeId, head.biz_date, year, month, 0, makerName, remark)
+      let voucherTotal = 0
+      let seq = 0
 
-      insVoucher.run(voucherId, accountSetId, voucherNo, voucherTypeId, r.biz_date, year, month, amt, makerName, r.summary || '出纳生成')
+      for (const r of unit) {
+        const counterCode = r.counter_account || hangupCode!
+        const cAcc = lookup.get(accountSetId, counterCode) as any
+        // P2-1：金额统一保留两位，total_amount 与 amount_cents 口径一致
+        // FIX-260：外币行凭证金额取本位币（原币 × 汇率）；存量本位币行 base_* 与原币相同
+        const fcAmt = Math.round((r.debit > 0 ? r.debit : r.credit) * 100) / 100
+        const rate = cashIsForeign && Number(r.exchange_rate) > 0 ? Number(r.exchange_rate) : 1
+        const baseStored = r.debit > 0 ? Number(r.base_debit) : Number(r.base_credit)
+        const amt = cashIsForeign
+          ? (baseStored > 0 ? Math.round(baseStored * 100) / 100 : Math.round(fcAmt * rate * 100) / 100)
+          : fcAmt
+        const hungup = !r.counter_account
+        if (r.debit > 0) totalDebit += amt
+        else totalCredit += amt
+        if (hungup) hangupCount++
+        voucherTotal += amt
 
-      // 解析辅助核算
-      const entryAux: any = {
-        dept_id: null, dept_name: null, project_id: null, project_name: null,
-        supplier_id: null, supplier_name: null, person_id: null, person_name: null,
-        func_class_id: null, func_class_name: null, aux_data: null
-      }
-      if (r.counter_aux_item_id) {
-        try {
-          const selections = JSON.parse(r.counter_aux_item_id) as Record<string, string>
-          const auxDataObj: Record<string, any> = {}
-          for (const [catId, itemId] of Object.entries(selections)) {
-            if (!itemId) continue
-            const cat = catMap.get(catId)
-            if (!cat) continue
-            const itemName = (getItemName.get(accountSetId, itemId) as any)?.name || ''
-            
-            // 分配到固定列或 aux_data
-            const code = cat.code
-            if (code === 'dept') { entryAux.dept_id = itemId; entryAux.dept_name = itemName }
-            else if (code === 'project' || code === 'proj') { entryAux.project_id = itemId; entryAux.project_name = itemName }
-            else if (code === 'supplier' || code === 'customer' || code === 'supp') { entryAux.supplier_id = itemId; entryAux.supplier_name = itemName }
-            else if (code === 'person' || code === 'pers') { entryAux.person_id = itemId; entryAux.person_name = itemName }
-            else if (code === 'func_class' || code === 'func') { entryAux.func_class_id = itemId; entryAux.func_class_name = itemName }
-            
-            // 所有项都放入 aux_data 供前端展示
-            auxDataObj[code] = { id: itemId, name: itemName }
-          }
-          if (Object.keys(auxDataObj).length > 0) {
-            entryAux.aux_data = JSON.stringify(auxDataObj)
-          }
-        } catch { /* ignore */ }
-      }
-
-      const runEntry = (seq: number, accId: any, accCode: string, accName: string, direction: string, hasAux: boolean, foreign: boolean) => {
-        const aux = hasAux ? entryAux : {
+        // 解析辅助核算
+        const entryAux: any = {
           dept_id: null, dept_name: null, project_id: null, project_name: null,
           supplier_id: null, supplier_name: null, person_id: null, person_name: null,
           func_class_id: null, func_class_name: null, aux_data: null
         }
-        insEntry.run(
-          uuidv4(), accountSetId, voucherId, seq, accId, accCode, accName, direction, amt, Math.round(amt * 100), r.summary || '出纳生成',
-          aux.dept_id, aux.dept_name, aux.project_id, aux.project_name,
-          aux.supplier_id, aux.supplier_name, aux.person_id, aux.person_name,
-          aux.func_class_id, aux.func_class_name, aux.aux_data,
-          foreign ? cashCurrency : null, foreign ? rate : null, foreign ? fcAmt : null
-        )
-      }
-      // 对方科目为同币种外币科目时同样带原币三字段（前面已拦截币种不一致）
-      const counterForeign = cashIsForeign && accountCurrency(cAcc) === cashCurrency
+        if (r.counter_aux_item_id) {
+          try {
+            const auxDataObj: Record<string, any> = {}
+            for (const { cat, itemId } of parseCounterAuxSelections(r.counter_aux_item_id, auxLookup).values()) {
+              const itemName = (getItemName.get(accountSetId, itemId) as any)?.name || ''
 
-      if (r.debit > 0) {
-        // 收入：借现金，贷对方
-        runEntry(1, cashAcc.id, accountCode, cashAcc.name, 'debit', false, cashIsForeign)
-        runEntry(2, cAcc.id, counterCode, cAcc.name, 'credit', true, counterForeign)
-      } else {
-        // 支出：借对方，贷现金
-        runEntry(1, cAcc.id, counterCode, cAcc.name, 'debit', true, counterForeign)
-        runEntry(2, cashAcc.id, accountCode, cashAcc.name, 'credit', false, cashIsForeign)
+              // 分配到固定列或 aux_data
+              const code = cat.code
+              if (code === 'dept') { entryAux.dept_id = itemId; entryAux.dept_name = itemName }
+              else if (code === 'project' || code === 'proj') { entryAux.project_id = itemId; entryAux.project_name = itemName }
+              else if (code === 'supplier' || code === 'customer' || code === 'supp') { entryAux.supplier_id = itemId; entryAux.supplier_name = itemName }
+              else if (code === 'person' || code === 'pers') { entryAux.person_id = itemId; entryAux.person_name = itemName }
+              else if (code === 'func_class' || code === 'func') { entryAux.func_class_id = itemId; entryAux.func_class_name = itemName }
+
+              // 所有项都放入 aux_data 供前端展示
+              auxDataObj[code] = { id: itemId, name: itemName }
+            }
+            if (Object.keys(auxDataObj).length > 0) {
+              entryAux.aux_data = JSON.stringify(auxDataObj)
+            }
+          } catch { /* ignore */ }
+        }
+
+        const runEntry = (accId: any, accCode: string, accName: string, direction: string, hasAux: boolean, foreign: boolean) => {
+          const aux = hasAux ? entryAux : {
+            dept_id: null, dept_name: null, project_id: null, project_name: null,
+            supplier_id: null, supplier_name: null, person_id: null, person_name: null,
+            func_class_id: null, func_class_name: null, aux_data: null
+          }
+          insEntry.run(
+            uuidv4(), accountSetId, voucherId, ++seq, accId, accCode, accName, direction, amt, Math.round(amt * 100), r.summary || '出纳生成',
+            aux.dept_id, aux.dept_name, aux.project_id, aux.project_name,
+            aux.supplier_id, aux.supplier_name, aux.person_id, aux.person_name,
+            aux.func_class_id, aux.func_class_name, aux.aux_data,
+            foreign ? cashCurrency : null, foreign ? rate : null, foreign ? fcAmt : null
+          )
+        }
+        // 对方科目为同币种外币科目时同样带原币三字段（前面已拦截币种不一致）
+        const counterForeign = cashIsForeign && accountCurrency(cAcc) === cashCurrency
+
+        if (r.debit > 0) {
+          // 收入：借现金，贷对方
+          runEntry(cashAcc.id, cashGlCode, cashAcc.name, 'debit', false, cashIsForeign)
+          runEntry(cAcc.id, counterCode, cAcc.name, 'credit', true, counterForeign)
+        } else {
+          // 支出：借对方，贷现金
+          runEntry(cAcc.id, counterCode, cAcc.name, 'debit', true, counterForeign)
+          runEntry(cashAcc.id, cashGlCode, cashAcc.name, 'credit', false, cashIsForeign)
+        }
+
+        updJournal.run(year, month, voucherTypeId, voucherNo, voucherId, r.id)
+        details.push({
+          voucherNo,
+          bizDate: r.biz_date,
+          summary: r.summary || null,
+          amount: amt,
+          direction: r.debit > 0 ? '收入' : '支出',
+          counterCode,
+          counterName: cAcc.name,
+          hungup,
+          ...(cashIsForeign ? { currency: cashCurrency, exchangeRate: rate, foreignAmount: fcAmt } : {}),
+        })
       }
 
-      updJournal.run(year, month, voucherTypeId, voucherNo, voucherId, r.id)
+      db.prepare('UPDATE vouchers SET total_amount=? WHERE id=?').run(Math.round(voucherTotal * 100) / 100, voucherId)
+      // 通过出纳制证：回写收付款单凭证号，单据据此显示已制证并禁止反审核
+      if (src?.doc_id) {
+        db.prepare('UPDATE scm_doc SET voucher_id=? WHERE id=? AND account_set_id=? AND voucher_id IS NULL').run(voucherId, src.doc_id, accountSetId)
+      }
       voucherNos.push(voucherNo)
       voucherIds.push(voucherId)
-      details.push({
-        voucherNo,
-        bizDate: r.biz_date,
-        summary: r.summary || null,
-        amount: amt,
-        direction: r.debit > 0 ? '收入' : '支出',
-        counterCode,
-        counterName: cAcc.name,
-        hungup,
-        ...(cashIsForeign ? { currency: cashCurrency, exchangeRate: rate, foreignAmount: fcAmt } : {}),
-      })
     }
   })
   tx()
@@ -903,11 +1121,12 @@ export function getAccountBalanceReport(params: {
   const currency = normalizeCashierCurrency(params.currency, getCashierBaseCurrency(db, accountSetId))
 
   // 现金+银行科目列表（按科目授权过滤）
-  const accConds = ['a.account_set_id=?', '(a.is_cash=1 OR a.is_bank=1)', 'NOT EXISTS (SELECT 1 FROM accounts c WHERE c.parent_id=a.id)']
+  syncCashierAccountsFromGl(db, accountSetId)
+  const accConds = ['a.account_set_id=?', 'a.is_enabled=1']
   const accParams: any[] = [accountSetId]
-  appendAccountScopeCondition(params.scope, 'a.id', accConds, accParams)
+  appendCashierViewScope(params.scope, 'a', accConds, accParams)
   const accounts = db.prepare(`
-    SELECT a.code, a.name FROM accounts a
+    SELECT a.code, a.name FROM v_cashier_account a
     WHERE ${accConds.join(' AND ')}
     ORDER BY a.code
   `).all(...accParams) as Array<{ code: string; name: string }>
@@ -1071,10 +1290,8 @@ export function syncCashierFromVoucher(params: {
   if (!cfg || cfg.param_value !== '1') return { synced: 0 }
 
   // 取现金/银行科目列表
-  const cashBankCodes = db.prepare(
-    'SELECT code FROM accounts WHERE account_set_id=? AND (is_cash=1 OR is_bank=1)'
-  ).all(accountSetId) as Array<{ code: string }>
-  const codeSet = new Set(cashBankCodes.map(a => a.code))
+  // 出纳独立账户：凭证分录科目 → 关联的出纳账户（无关联账户的现金 / 银行科目不同步）
+  const codeSet = cashierLinkedGlCodes(db, accountSetId)
   const hasCashEntry = entries.some(e => codeSet.has(e.account_code))
   if (!hasCashEntry) return { synced: 0 }
 
@@ -1119,11 +1336,13 @@ export function syncCashierFromVoucher(params: {
   const accountCurrencyCache = new Map<string, string>()
   for (const entry of entries) {
     if (!codeSet.has(entry.account_code)) continue
+    const cashierCode = cashierCodeForGl(db, accountSetId, entry.account_code)
+    if (!cashierCode) continue
     // FIX-260：币种跟科目走。外币出纳科目：原币 = 分录 foreign_amount（缺失时按汇率倒算），本位币 = amount
-    let currency = accountCurrencyCache.get(entry.account_code)
+    let currency = accountCurrencyCache.get(cashierCode)
     if (currency === undefined) {
-      currency = getCashierAccountCurrency(db, accountSetId, entry.account_code)
-      accountCurrencyCache.set(entry.account_code, currency)
+      currency = getCashierAccountCurrency(db, accountSetId, cashierCode)
+      accountCurrencyCache.set(cashierCode, currency)
     }
     const baseAmount = Math.round((Number(entry.amount) || 0) * 100) / 100
     let fcAmount = baseAmount
@@ -1141,14 +1360,14 @@ export function syncCashierFromVoucher(params: {
     const summary = entry.summary || '凭证'
 
     const existing =
-      (voucherId ? (findByVoucherId.get(accountSetId, entry.account_code, voucherId) as any) : null) ||
-      (find.get(accountSetId, entry.account_code, voucherYear, voucherMonth, vt, voucherNo) as any)
+      (voucherId ? (findByVoucherId.get(accountSetId, cashierCode, voucherId) as any) : null) ||
+      (find.get(accountSetId, cashierCode, voucherYear, voucherMonth, vt, voucherNo) as any)
     if (existing) {
       // 原行所在月份已结账同样拒绝改写
       if (existing.biz_date !== voucherDate) assertCashierPeriodOpen(db, accountSetId, existing.biz_date)
       update.run(debit, credit, currency, rate, baseDebit, baseCredit, summary, voucherDate, voucherYear, voucherMonth, voucherId, existing.id)
     } else {
-      insert.run(uuidv4(), accountSetId, entry.account_code, currency, voucherDate, summary, debit, credit,
+      insert.run(uuidv4(), accountSetId, cashierCode, currency, voucherDate, summary, debit, credit,
         rate, baseDebit, baseCredit, voucherYear, voucherMonth, vt, voucherNo, voucherId)
     }
     synced++
@@ -1217,7 +1436,9 @@ export function syncCashierCounterFromVoucher(params: {
   assertCashierPeriodOpen(db, accountSetId, journalRow.biz_date)
 
   // 2. 对方分录 = account_code ≠ 现金科目；必须恰好一条，否则歧义跳过
-  const counters = entries.filter(e => String(e.account_code) !== String(journalRow.account_code))
+  // 出纳账户编码换算成关联科目再比较（独立账户编码与凭证分录科目编码不同）
+  const cashGl = cashierGlCode(db, accountSetId, journalRow.account_code) || journalRow.account_code
+  const counters = entries.filter(e => String(e.account_code) !== String(cashGl))
   if (counters.length !== 1) return { updated: 0 }
   const newCounterCode = counters[0].account_code
 

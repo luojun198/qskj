@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid'
+import { initCashFlowForAccountSetSafe } from './cashFlowAccountMap.js'
 import { getDb, ensureAccountSetSecurityBootstrap, assertDatabaseIntegrity, checkpointDatabase } from '../db/index.js'
 import { importAcdToAccountSet, type ImportStats } from '../scripts/importAcdToCurrentAccountSet.js'
 import { cleanupAccountSetCascade } from './accountSetCleanup.js'
@@ -46,6 +47,7 @@ export async function acdImportService(params: AcdImportParams): Promise<AcdImpo
     ensureAccountSetSecurityBootstrap(accountSetId)
 
     const stats = await importAcdToAccountSet(accountSetId, params.acdBuffer)
+    initCashFlowForAccountSetSafe(db, accountSetId, stats.warnings)
     let standardReports = 0
     try {
       const standardReportResult = importAcdStandardReports(

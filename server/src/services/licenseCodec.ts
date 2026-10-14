@@ -7,9 +7,11 @@ export interface LicensePayload {
   iat: string
   /** v2 起：授权模块 key 列表，`'*'` 表示全部；v1 无此字段，视为全部 */
   mods?: string[]
+  /** v3 起：最大并发在线人数；缺省或 0 表示不限制 */
+  cc?: number
 }
 
-export const LICENSE_PAYLOAD_VERSIONS = [1, 2] as const
+export const LICENSE_PAYLOAD_VERSIONS = [1, 2, 3] as const
 
 export function toBase64Url(input: Buffer | string): string {
   const buf = typeof input === 'string' ? Buffer.from(input, 'utf8') : input
@@ -43,6 +45,9 @@ export function decodeLicensePayload(encoded: string): LicensePayload {
     ) {
       throw new Error('INVALID_PAYLOAD')
     }
+  }
+  if (parsed.cc !== undefined && (!Number.isInteger(parsed.cc) || parsed.cc < 0)) {
+    throw new Error('INVALID_PAYLOAD')
   }
   return parsed
 }

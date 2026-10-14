@@ -191,12 +191,12 @@ if errorlevel 1 (
   echo set "ROOT=%%~dp0"
   echo cd /d "%%ROOT%%"
   echo set "DB_PATH=%%ROOT%%data\finance.db"
-  echo if not exist "%%DB_PATH%%" ^(
-  echo   echo ERROR: Bundled database not found: %%DB_PATH%%
-  echo   echo This package will not create a new empty database.
-  echo   pause
-  echo   exit /b 1
-  echo ^)
+  echo if exist "%%DB_PATH%%" goto db_ok
+  echo echo ERROR: Bundled database not found: %%DB_PATH%%
+  echo echo This package will not create a new empty database.
+  echo pause
+  echo exit /b 1
+  echo :db_ok
   echo title CW Finance Server
   echo echo ========================================
   echo echo   CW Finance - Starting...

@@ -10,6 +10,7 @@
             <el-option label="凭证" value="voucher" />
             <el-option label="账册" value="ledger" />
             <el-option label="报表" value="report" />
+            <el-option label="业务单据" value="scm_doc" />
           </el-select>
         </el-form-item>
         <el-form-item label="业务键">
@@ -124,6 +125,14 @@
             </template>
           </div>
         </template>
+        <!-- 业务单据（进销存）：表头字段 + 明细表（第六份反馈：业务单据打印模板定制） -->
+        <template v-else-if="form.template_type === 'scm_doc'">
+          <button v-for="field in scmTextFields" :key="field.field" type="button" class="field-item" @click="addTextField(field as any)">
+            {{ field.title }}
+          </button>
+          <button type="button" class="field-item" @click="addEntriesTable">明细表</button>
+          <p class="summary-hint">点字段加到画布；明细表的列在右侧属性面板里勾选显示、调整顺序和宽度。合计、大写金额用左侧对应字段。</p>
+        </template>
         <div v-else ref="toolsRef" class="hiprint-tools" />
         <el-collapse class="advanced-tools">
           <el-collapse-item title="通用元素" name="generic">
@@ -188,6 +197,10 @@ import {
   uploadTemplateBackground,
 } from '@/api/printTemplate'
 import type { PrintTemplateType, HiprintPanel } from '@/types/print'
+import {
+  SCM_TABLE_FIELD, SCM_TEXT_FIELDS, buildDefaultScmPanel, buildSampleScmPrintData, buildScmTable, buildScmTableColumns, scmTemplateKey,
+} from '@/utils/hiprintScmProvider'
+import { DECIMAL_SCOPES } from '@/utils/scmDecimals'
 
 interface Props {
   templateId?: string
@@ -236,9 +249,13 @@ const baseDataStore = useBaseDataStore()
 let restoringTable = false
 let restoringTitle = false
 
-const voucherColumnCatalog = () => buildVoucherTableColumns(baseDataStore.auxCategories)
+const voucherColumnCatalog = () => (form.template_type === 'scm_doc' ? buildScmTableColumns() : buildVoucherTableColumns(baseDataStore.auxCategories))
+const scmTextFields = SCM_TEXT_FIELDS
 
-const designerFields = () => [
+const designerFields = () => form.template_type === 'scm_doc' ? [
+  ...SCM_TEXT_FIELDS.map(f => ({ text: f.title, field: f.field })),
+  { text: '明细表', field: SCM_TABLE_FIELD },
+] : [
   ...VOUCHER_TEXT_FIELDS.map(f => ({ text: f.title, field: f.field })),
   { text: '分录表', field: VOUCHER_TABLE_FIELD },
   ...baseDataStore.auxCategories
@@ -569,6 +586,14 @@ function bindTableGuards() {
 }
 
 const keyOptions = computed(() => {
+  if (form.template_type === 'scm_doc') {
+    return [
+      { label: '所有业务单据通用', value: scmTemplateKey('*') },
+      ...DECIMAL_SCOPES.filter(s => /^[A-Z]/.test(s.key)).map(s => ({ label: s.label, value: scmTemplateKey(s.key) })),
+      { label: '收款单', value: scmTemplateKey('RCV') },
+      { label: '付款单', value: scmTemplateKey('PAY') },
+    ]
+  }
   if (form.template_type === 'voucher') {
     return [
       { label: '记账凭证（标准）', value: 'voucher:standard' },
@@ -891,6 +916,15 @@ const addEntriesTable = () => {
   const top = tableTopPt(panel)
   const heightPt = tableHeightFor(panel, { options: { top } })
   panel.printElements = panel.printElements || []
+  if (form.template_type === 'scm_doc') {
+    const scmDraft = buildScmTable(10, 0, Math.max(form.paper_width - 20, 80), 40)
+    scmDraft.options.top = top
+    scmDraft.options.height = heightPt
+    panel.printElements.push(scmDraft)
+    tp.update(json)
+    bindTableGuards()
+    return
+  }
   const draft = buildEntriesTable(12, 0, widthMm, 0, baseDataStore.auxCategories)
   draft.options.top = top
   draft.options.height = heightPt
@@ -911,7 +945,7 @@ const handlePreview = async () => {
     const panel = tp.getJson()
     const mod = await loadHiprint()
     const previewTp = new mod.hiprint.PrintTemplate({ template: normalizePanelForRender(panel) })
-    const $html = previewTp.getHtml(buildSampleVoucherPrintData()) as any
+    const $html = previewTp.getHtml(form.template_type === 'scm_doc' ? buildSampleScmPrintData() : buildSampleVoucherPrintData()) as any
     const node = $html && ($html[0] || (typeof $html.get === 'function' && $html.get(0)))
     previewHtml.value = node ? node.outerHTML : String($html || '')
   } catch (e: any) {
@@ -951,6 +985,18 @@ onMounted(async () => {
     }
     const existing = await loadExisting()
     let seed = existing
+    if (!seed && !props.templateId && (props.preset === 'scm' || form.template_type === 'scm_doc')) {
+      // 业务单据：从内置起始版面开始（241×140 三联单宽度）
+      form.template_type = 'scm_doc'
+      form.template_key = props.defaultKey || scmTemplateKey('*')
+      form.paper_size = 'custom'
+      form.paper_width = 241
+      form.paper_height = 140
+      paperPreset.value = 'custom'
+      const keyLabel = keyOptions.value.find(o => o.value === form.template_key)?.label || '业务单据'
+      if (!form.name) form.name = `${keyLabel.replace('所有业务单据通用', '业务单据')}模板`
+      seed = buildDefaultScmPanel(241, 140) as unknown as { panels: HiprintPanel[] }
+    }
     if (!seed && !props.templateId) {
       const preset = (['standard', 'blank', 'a4'].includes(String(props.preset))
         ? props.preset

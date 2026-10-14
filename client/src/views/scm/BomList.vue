@@ -4,6 +4,7 @@
     <div class="filter-row" style="margin-bottom: 8px;">
       <el-button type="primary" size="small" @click="openAdd"><el-icon><Plus /></el-icon>新增BOM</el-button>
       <el-button size="small" @click="openWhereUsed()"><el-icon><Search /></el-icon>反查用途</el-button>
+      <SaveAsButton :title="'BOM 清单'" />
     </div>
 
     <div class="page-body">

@@ -4,6 +4,7 @@
       <el-button v-permission="'asset:change'" type="primary" :icon="Plus" @click="router.push('/asset/change')">
         登记变动
       </el-button>
+      <SaveAsButton title="资产变动记录" size="default" />
     </template>
 
     <template #filters>
@@ -77,10 +78,10 @@
           min-width="200"
           show-overflow-tooltip
         />
-        <el-table-column label="变动前" width="120" align="right">
+        <el-table-column label="变动前" min-width="140" align="right" show-overflow-tooltip>
           <template #default="{ row }">{{ beforeText(row) }}</template>
         </el-table-column>
-        <el-table-column label="变动后" width="120" align="right">
+        <el-table-column label="变动后" min-width="120" align="right" show-overflow-tooltip>
           <template #default="{ row }">{{ afterText(row) }}</template>
         </el-table-column>
         <el-table-column label="金额" width="120" align="right">
@@ -204,8 +205,54 @@ function readableText(row: AssetChangeRow, value: string | null): string {
   return value
 }
 
+/** 快照字段的中文名（old_text 里存的 JSON 键） */
+const SNAPSHOT_LABELS: Record<string, string> = {
+  salvage_rate: '残值率',
+  salvage_value: '残值',
+  use_months: '使用月数',
+  dept_code: '部门',
+  user_name: '使用人',
+  keeper: '保管人',
+  install_place: '存放地点',
+}
+
+/** old_text 为撤销用的 JSON 快照时解析出对象，否则返回 null */
+function parseSnapshot(text: string | null): Record<string, any> | null {
+  if (typeof text !== 'string' || !text.startsWith('{')) return null
+  try {
+    const o = JSON.parse(text)
+    return o && typeof o === 'object' ? o : null
+  } catch {
+    return null
+  }
+}
+
+/** 快照 → 中文可读文案，如「部门：财务部；使用人：张三」 */
+function snapshotText(snap: Record<string, any>): string {
+  const parts: string[] = []
+  for (const [k, v] of Object.entries(snap)) {
+    if (v == null || v === '') continue
+    const label = SNAPSHOT_LABELS[k] || k
+    let val: string = String(v)
+    if (k === 'dept_code') val = dicts.value?.dept.find(d => d.code === v)?.name || val
+    else if (k === 'salvage_rate') val = `${(Number(v) * 100).toFixed(2).replace(/\.00$/, '')}%`
+    else if (k === 'use_months') val = `${v}个月`
+    else if (k === 'salvage_value') val = fmtAmt(Number(v))
+    parts.push(`${label}：${val}`)
+  }
+  return parts.length ? parts.join('；') : '-'
+}
+
 function beforeText(row: AssetChangeRow): string {
-  if (row.old_text != null && row.old_text !== '') return readableText(row, row.old_text)
+  if (row.old_text != null && row.old_text !== '') {
+    const snap = parseSnapshot(row.old_text)
+    if (snap) {
+      // 原值类变动：快照仅供撤销使用，界面展示变动前原值
+      if (row.old_value != null) return fmtAmt(row.old_value)
+      return snapshotText(snap)
+    }
+    return readableText(row, row.old_text)
+  }
   return row.old_value != null ? fmtAmt(row.old_value) : '-'
 }
 

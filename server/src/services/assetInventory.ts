@@ -3,6 +3,7 @@
  */
 import { todayStr } from '../utils/localDate.js'
 import type { Database } from 'better-sqlite3'
+import { assertNotBeforeGlStart } from './voucherMutationGuard.js'
 import { v4 as uuidv4 } from 'uuid'
 import {
   insertAssetVoucher,
@@ -330,6 +331,7 @@ function completeInventoryInner(params: {
   assertPeriodOpen(db, accountSetId, parseInt(invDate.split('-')[0]), parseInt(invDate.split('-')[1]))
   // P1-20：盘点日期不得晚于当前月份
   assertNotAfterCurrentPeriod(parseInt(invDate.split('-')[0]), parseInt(invDate.split('-')[1]), '盘点日期')
+  assertNotBeforeGlStart(db, accountSetId, invDate, '盘点日期')
 
   // P0-4 / P1-21：已处置卡片、快照不一致、状态与数量差不匹配的明细一律拒绝完成
   validateInventoryItemsForComplete(db, accountSetId, inventoryId)
@@ -738,6 +740,49 @@ function generateInventoryVoucher(params: {
     totalSurplusValue,
     totalDeficitValue,
   }
+}
+
+/**
+ * 凭证管理「重新生成」：对已完成盘点、但盘点凭证已被删除的记录重做盘盈盘亏凭证。
+ * 明细行保存了盘点时的账面快照（book_*），因此可事后重放；回写明细行 voucher_id。
+ */
+export function regenerateInventoryVoucher(params: {
+  db: Database
+  accountSetId: string
+  inventoryId: string
+  accumAccount?: string
+  surplusAccount?: string
+  deficitAccount?: string
+  operatorName?: string
+  voucherTypeId?: string | null
+}): { voucherId: string; voucherNo: string } {
+  const { db, accountSetId, inventoryId } = params
+  const inv = db.prepare(
+    'SELECT status FROM fixed_asset_inventory WHERE id=? AND account_set_id=?'
+  ).get(inventoryId, accountSetId) as { status: string } | undefined
+  if (!inv) throw new Error('盘点记录不存在')
+  if (inv.status !== 'completed') throw new Error('盘点尚未完成，凭证在完成盘点时生成')
+  const existing = db.prepare(
+    `SELECT i.voucher_id FROM fixed_asset_inventory_item i JOIN vouchers v ON v.id = i.voucher_id
+      WHERE i.inventory_id = ? AND i.voucher_id IS NOT NULL LIMIT 1`
+  ).get(inventoryId)
+  if (existing) throw new Error('该盘点已有凭证，请先删除后再重新生成')
+
+  const result = db.transaction(() => {
+    const r = generateInventoryVoucher({
+      db, accountSetId, inventoryId,
+      accumAccount: params.accumAccount || '1602',
+      surplusAccount: params.surplusAccount || '6901',
+      deficitAccount: params.deficitAccount || '1901',
+      operatorName: params.operatorName || '系统',
+      voucherTypeId: params.voucherTypeId ?? null,
+    })
+    db.prepare(
+      "UPDATE fixed_asset_inventory_item SET voucher_id=? WHERE inventory_id=? AND actual_status IN ('surplus','deficit','damaged')"
+    ).run(r.voucherId, inventoryId)
+    return r
+  })()
+  return { voucherId: result.voucherId, voucherNo: result.voucherNo }
 }
 
 // ── 删除盘点 ─────────────────────────────────────────────────

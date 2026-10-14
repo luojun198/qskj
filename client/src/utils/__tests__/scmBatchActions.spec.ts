@@ -159,6 +159,16 @@ describe('供应链列表批量选择规则', () => {
       { id: 'P1', code: 'PP-001', status: 'draft' },
       { id: 'P2', code: 'PP-002', status: 'draft' },
     ]).delete.enabled).toBe(true)
+    // 列表批量审核：全部草稿才开放，混入已审核则禁用；未勾选时禁用
+    expect(getProductionPlanBatchActionState([
+      { id: 'P1', code: 'PP-001', status: 'draft' },
+      { id: 'P2', code: 'PP-002', status: 'draft' },
+    ]).release.enabled).toBe(true)
+    expect(getProductionPlanBatchActionState([
+      { id: 'P1', code: 'PP-001', status: 'draft' },
+      { id: 'P2', code: 'PP-002', status: 'released' },
+    ]).release.enabled).toBe(false)
+    expect(getProductionPlanBatchActionState([]).release.enabled).toBe(false)
     expect(getProductionPlanBatchActionState([
       { id: 'P1', code: 'PP-001', status: 'released', doc_count: 0 },
       { id: 'P2', code: 'PP-002', status: 'released', doc_count: 0 },
@@ -177,5 +187,25 @@ describe('供应链列表批量选择规则', () => {
     expect(state.order.enabled).toBe(false)
     expect(state.unrelease.enabled).toBe(false)
     expect(state.unrelease.reason).toContain('下游')
+  })
+})
+
+describe('订单类单据不生成凭证', () => {
+  it('采购订单 / 销售订单 / 询价 / 报价已审核也不开放生成凭证', () => {
+    for (const t of ['PO', 'SOa', 'PQ', 'SQ']) {
+      const state = getDocBatchActionState([doc({ doc_type: t, status: 'audited' })])
+      expect(state.genVoucher.enabled).toBe(false)
+      expect(state.genVoucher.reason).toContain('不生成凭证')
+    }
+  })
+
+  it('混选订单与入库单时整体禁用生成凭证', () => {
+    const state = getDocBatchActionState([doc({ doc_type: 'PI', status: 'audited' }), doc({ id: 'D2', doc_type: 'PO', status: 'audited' })])
+    expect(state.genVoucher.enabled).toBe(false)
+  })
+
+  it('已审核未制证的采购入库仍可生成凭证', () => {
+    const state = getDocBatchActionState([doc({ doc_type: 'PI', status: 'audited' })])
+    expect(state.genVoucher.enabled).toBe(true)
   })
 })

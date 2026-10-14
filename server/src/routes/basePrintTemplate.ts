@@ -145,17 +145,19 @@ router.post(
 
     // 检查模版是否存在
     const template = db
-      .prepare('SELECT id FROM print_templates WHERE id = ? AND account_set_id = ?')
-      .get(id, req.accountSetId || '')
+      .prepare('SELECT id, template_type, template_key FROM print_templates WHERE id = ? AND account_set_id = ?')
+      .get(id, req.accountSetId || '') as { id: string; template_type: string | null; template_key: string | null } | undefined
 
     if (!template) {
       return res.status(404).json({ code: 404, message: '打印模版不存在' })
     }
 
-    // 取消当前默认模版
-    db.prepare('UPDATE print_templates SET is_default = 0 WHERE account_set_id = ?').run(
-      req.accountSetId || ''
-    )
+    // 取消同一类模版（同 template_type + template_key）的当前默认。
+    // 原来只按账套清，给明细账设默认会把凭证、总账等其他类型的默认一起清掉（FIX，第五份反馈复核时发现）
+    db.prepare(
+      `UPDATE print_templates SET is_default = 0
+       WHERE account_set_id = ? AND COALESCE(template_type, '') = COALESCE(?, '') AND COALESCE(template_key, '') = COALESCE(?, '')`
+    ).run(req.accountSetId || '', template.template_type, template.template_key)
 
     // 设置新的默认模版
     db.prepare('UPDATE print_templates SET is_default = 1, updated_at = datetime(\'now\') WHERE id = ?').run(

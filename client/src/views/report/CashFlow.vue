@@ -15,7 +15,7 @@
         </el-select>
         <el-button type="primary" size="small" @click="fetchData">查询</el-button>
         <FilterClearButton size="small" @clear="handleClearFilters" />
-        <el-button size="small" @click="exportData">导出 Excel</el-button>
+        <el-button size="small" @click="exportData">另存</el-button>
         <el-button size="small" @click="printData">打印</el-button>
       </div>
     </div>

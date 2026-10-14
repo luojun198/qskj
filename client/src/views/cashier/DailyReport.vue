@@ -10,7 +10,7 @@
     />
     <div class="toolbar-row">
       <el-checkbox v-model="includeZero" @change="load">显示零发生额账户</el-checkbox>
-      <el-button plain :disabled="!report?.rows.length" @click="handleExport"><el-icon><Download /></el-icon>导出</el-button>
+      <el-button plain :disabled="!report?.rows.length" @click="handleExport"><el-icon><Download /></el-icon>另存</el-button>
       <el-button plain :disabled="!report?.rows.length" @click="handlePrint"><el-icon><Printer /></el-icon>打印</el-button>
       <span class="tip">双击一行可查看该账户的出纳流水账</span>
     </div>

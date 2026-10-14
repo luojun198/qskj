@@ -13,7 +13,7 @@
       <el-checkbox v-model="onlyOverdue" size="small" @change="query">仅看逾期</el-checkbox>
       <el-button type="primary" size="small" :loading="loading" @click="query">查询</el-button>
       <FilterClearButton size="small" @clear="clear" />
-      <el-button type="success" plain size="small" :loading="exporting" @click="exportExcel">导出Excel</el-button>
+      <el-button type="success" plain size="small" :loading="exporting" @click="exportExcel">另存</el-button>
     </div>
     <div class="summary-grid">
       <div><span>订单行</span><b>{{ summary.lines || 0 }}</b></div>

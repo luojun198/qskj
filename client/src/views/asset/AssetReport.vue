@@ -1,6 +1,9 @@
 <template>
   <div class="page page-asset-report">
-    
+    <!-- 第五份反馈：资产报表 / 折旧查询表要能另存；按当前页签导出 -->
+    <div class="report-saveas">
+      <SaveAsButton :title="ASSET_REPORT_TAB_TITLES[activeTab] || '资产报表'" />
+    </div>
     <el-tabs v-model="activeTab" class="report-tabs">
       <!-- 折旧汇总表 -->
       <el-tab-pane label="折旧汇总表" name="depr-summary">
@@ -9,12 +12,37 @@
           <el-radio-group v-model="deprSummaryGroupBy" @change="loadDeprSummary">
             <el-radio-button value="category">按类别</el-radio-button>
             <el-radio-button value="dept">按部门</el-radio-button>
+            <el-radio-button value="asset">按资产</el-radio-button>
           </el-radio-group>
-          <span class="filter-hint" v-if="deprSummaryRows.length">
+          <span class="filter-hint" v-if="deprSummaryRows.length || deprAssetRows.length">
             合计本月折旧：<b class="total-amt">¥{{ fmtAmt(deprSummaryTotal) }}</b>
           </span>
         </div>
-        <el-table ref="t1Ref" :data="deprSummaryRows" size="small" border stripe max-height="420"
+        <!-- 按资产：每项资产一行（第六份反馈：按类别汇总看不到资产明细） -->
+        <el-table v-if="deprSummaryGroupBy === 'asset'" :data="deprAssetRows" size="small" border stripe max-height="520"
+          show-summary :summary-method="deprAssetSummary">
+          <el-table-column label="资产编号" prop="asset_no" width="110" />
+          <el-table-column label="资产名称" prop="asset_name" min-width="160" show-overflow-tooltip />
+          <el-table-column label="类别" prop="category_name" width="110" show-overflow-tooltip />
+          <el-table-column label="使用部门" prop="dept_name" width="110" show-overflow-tooltip />
+          <el-table-column label="折旧方法" width="110">
+            <template #default="{ row }">{{ DEPR_METHODS[row.depr_method] || row.depr_method }}</template>
+          </el-table-column>
+          <el-table-column label="原值" prop="original_value" width="120" align="right">
+            <template #default="{ row }">{{ fmtAmt(row.original_value) }}</template>
+          </el-table-column>
+          <el-table-column label="本月折旧" prop="month_depr" width="120" align="right">
+            <template #default="{ row }"><span class="depr-amt">{{ fmtAmt(row.month_depr) }}</span></template>
+          </el-table-column>
+          <el-table-column label="累计折旧" prop="accum_depr" width="120" align="right">
+            <template #default="{ row }">{{ fmtAmt(row.accum_depr) }}</template>
+          </el-table-column>
+          <el-table-column label="净值" prop="net_value" width="120" align="right">
+            <template #default="{ row }">{{ fmtAmt(row.net_value) }}</template>
+          </el-table-column>
+          <el-table-column label="费用科目" prop="expense_account" width="110" />
+        </el-table>
+        <el-table v-else ref="t1Ref" :data="deprSummaryRows" size="small" border stripe max-height="420"
           @row-click="showDeprSummaryDetail" highlight-current-row style="cursor:pointer" @header-dragend="t1Drag">
           <el-table-column :label="deprSummaryGroupBy === 'category' ? '类别编码' : '部门编码'" prop="group_code" :width="t1Cw('group_code', 100)" />
           <el-table-column :label="deprSummaryGroupBy === 'category' ? '类别名称' : '部门名称'" prop="group_name" min-width="140" :width="t1Widths.group_name" />
@@ -32,7 +60,7 @@
             <template #default="{ row }">{{ fmtAmt(row.total_net_value) }}</template>
           </el-table-column>
         </el-table>
-        <el-empty v-if="!deprSummaryRows.length && deprSummaryLoaded" description="所选期间无折旧数据" />
+        <el-empty v-if="!(deprSummaryGroupBy === 'asset' ? deprAssetRows.length : deprSummaryRows.length) && deprSummaryLoaded" description="所选期间无折旧数据" />
 
         <!-- 下钻明细弹窗 -->
         <el-dialog v-model="deprDetailVisible" :title="deprDetailTitle" width="900px" draggable>
@@ -357,6 +385,16 @@ const REPORT_TABS = ['depr-summary', 'depr-allocation', 'category-summary', 'dep
 const route = useRoute()
 const initialTab = typeof route.query.tab === 'string' && REPORT_TABS.includes(route.query.tab) ? route.query.tab : 'depr-summary'
 const activeTab = ref(initialTab)
+const ASSET_REPORT_TAB_TITLES: Record<string, string> = {
+  'depr-summary': '折旧汇总表',
+  'depr-allocation': '折旧分配表',
+  'category-summary': '资产分类汇总',
+  'dept-summary': '资产部门汇总',
+  'expiry-warning': '资产到期提示',
+  'change-summary': '资产增减变动',
+  changes: '资产变动记录',
+  'depr-forecast': '折旧预测',
+}
 const dictStatus = ref<{ code: string; name: string }[]>([])
 
 const fmtAmt = (v: number) =>
@@ -373,9 +411,28 @@ const deprDetailVisible = ref(false)
 const deprDetailTitle = ref('')
 const deprDetailRows = ref<any[]>([])
 
+const deprAssetRows = ref<any[]>([])
+function deprAssetSummary({ columns }: { columns: any[] }) {
+  const sum = (k: string) => deprAssetRows.value.reduce((s, r) => s + (Number(r[k]) || 0), 0)
+  return columns.map((c, i) => {
+    if (i === 0) return '合计'
+    if (i === 1) return `${deprAssetRows.value.length} 项`
+    return ['original_value', 'month_depr', 'accum_depr', 'net_value'].includes(c.property) ? fmtAmt(sum(c.property)) : ''
+  })
+}
+
 async function loadDeprSummary() {
   if (!deprSummaryPeriod.value) return
   const [y, m] = deprSummaryPeriod.value.split('-').map(Number)
+  if (deprSummaryGroupBy.value === 'asset') {
+    const r = await fixedAssetApi.getDeprSummaryDetail({ year: y, month: m, group_by: 'asset' })
+    if (r.code === 0) {
+      deprAssetRows.value = r.data
+      deprSummaryTotal.value = Math.round(r.data.reduce((s: number, x: any) => s + (Number(x.month_depr) || 0), 0) * 100) / 100
+      deprSummaryLoaded.value = true
+    }
+    return
+  }
   const res = await fixedAssetApi.getDeprSummary({ year: y, month: m, group_by: deprSummaryGroupBy.value })
   if (res.code === 0) {
     deprSummaryRows.value = res.data.rows
@@ -604,6 +661,8 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.page-asset-report { position: relative; }
+.report-saveas { position: absolute; top: 6px; right: 16px; z-index: 2; }
 .page-asset-report { display: flex; flex-direction: column; height: 100%; }
 .report-tabs { flex: 1; display: flex; flex-direction: column; padding: 0; overflow: hidden; }
 .report-tabs :deep(.el-tabs__content) { flex: 1; overflow: auto; padding-top: 8px; }

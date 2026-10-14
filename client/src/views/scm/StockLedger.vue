@@ -21,7 +21,7 @@
       </el-select>
       <el-button type="primary" :loading="loading" @click="query">查询</el-button>
       <FilterClearButton size="small" @clear="handleClearFilters" />
-      <el-button type="success" plain :loading="exporting" @click="exportExcel">导出Excel</el-button>
+      <el-button type="success" plain :loading="exporting" @click="exportExcel">另存</el-button>
     </div>
     <div class="summary-grid">
       <div><span>期初数量</span><b>{{ num(summary.opening_qty) }}</b></div><div><span>期初金额</span><b>{{ money(summary.opening_amount) }}</b></div>
@@ -42,7 +42,7 @@
         <el-table-column label="收入金额" width="110" align="right"><template #default="{ row }">{{ cellMoney(row.in_amount) }}</template></el-table-column>
         <el-table-column label="发出数量" width="100" align="right"><template #default="{ row }">{{ cell(row.out_qty) }}</template></el-table-column>
         <el-table-column label="发出金额" width="110" align="right"><template #default="{ row }">{{ cellMoney(row.out_amount) }}</template></el-table-column>
-        <el-table-column label="单位成本" width="100" align="right"><template #default="{ row }">{{ money(row.unit_cost) }}</template></el-table-column>
+        <el-table-column label="单位成本" width="100" align="right"><template #default="{ row }">{{ unitPrice(row.unit_cost) }}</template></el-table-column>
         <el-table-column label="结存数量" width="105" align="right"><template #default="{ row }">{{ num(row.running_qty) }}</template></el-table-column>
         <el-table-column label="结存金额" width="115" align="right"><template #default="{ row }">{{ money(row.running_amount) }}</template></el-table-column>
       </el-table>
@@ -53,6 +53,7 @@
 
 <script setup lang="ts">
 import { todayStr } from '@/utils/format'
+import { useScmDecimalsStore } from '@/stores/scmDecimals'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useReloadOnActivated } from '@/composables/useReloadOnActivated'
 import { useRoute, useRouter } from 'vue-router'
@@ -90,7 +91,11 @@ function handleClearFilters() {
   load()
 }
 const params = () => ({ ...filters.value, ...(hasDateRange.value ? { start_date: dateRange.value![0], end_date: dateRange.value![1] } : {}), page: page.value, page_size: pageSize.value, sort_order: sortOrder.value })
-const num = (v: any) => (Number(v) || 0).toLocaleString('zh-CN', { maximumFractionDigits: 6 }); const money = (v: any) => (Number(v) || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+// 小数位：系统参数 → 供应链 → 小数位设置 →「收发台账」
+const decStore = useScmDecimalsStore()
+void decStore.load()
+const num = (v: any) => decStore.qty(Number(v) || 0, 'stock_ledger'); const money = (v: any) => decStore.amount(Number(v) || 0, 'stock_ledger')
+const unitPrice = (v: any) => decStore.price(Number(v) || 0, 'stock_ledger')
 const cell = (v: any) => Number(v) ? num(v) : ''; const cellMoney = (v: any) => Number(v) ? money(v) : ''
 let loadSequence = 0
 async function load() {

@@ -86,22 +86,27 @@
   min-width: max-content;
 }
 
-/* 筛选栏与工具按钮同行：占满剩余宽度，去掉自身卡片外观 */
-.gl-toolbar:has(.gl-toolbar-filter) {
+/* 筛选栏与工具按钮同行：占满剩余宽度，去掉自身卡片外观。
+   VoucherFilterBar 是多根组件（卡片 + 弹窗），外部传的 class 落不到卡片上，
+   因此用 .voucher-filter-card 匹配，不能只靠 .gl-toolbar-filter */
+.gl-toolbar:has(> .voucher-filter-card) {
   min-width: 0;
   width: 100%;
+  /* 屏幕不够宽时筛选栏整体换到第二行，而不是把「查询」等按钮挤出可视区 */
+  flex-wrap: wrap;
+  row-gap: 4px;
 }
 
-.gl-toolbar .gl-toolbar-filter.voucher-filter-card {
-  flex: 1 1 320px;
-  min-width: 320px;
+.gl-toolbar-card .gl-toolbar > .voucher-filter-card {
+  flex: 1 1 min-content;
+  min-width: min-content;
   margin-left: 8px;
   border: none !important;
   background: transparent !important;
   box-shadow: none !important;
 }
 
-.gl-toolbar .gl-toolbar-filter.voucher-filter-card .el-card__body {
+.gl-toolbar > .voucher-filter-card .el-card__body {
   padding: 0 !important;
 }
 
@@ -247,6 +252,122 @@
 
 .gl-tool-menu__item--reverse .gl-tool-menu__icon {
   color: var(--el-color-danger, #f56c6c);
+}
+
+/* ========== 底部状态栏（查询 / 审核页）：合计 + 加载状态 + 分页合并为一行，纯文字不单独分区，节约垂直高度 ========== */
+.voucher-list-page .list-status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: nowrap;
+  gap: 14px;
+  min-height: 28px;
+  margin-top: 0;
+  padding: 0 8px;
+  /* 列表下边线：把表格最后一行与状态栏明确隔开 */
+  border-top: 1px solid var(--el-border-color, #dcdfe6);
+  background: var(--el-fill-color-lighter, #fafafa);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.list-status-bar .status-item {
+  flex-shrink: 0;
+  font-size: var(--cw-text-sm, 12px);
+  color: var(--wb-text-2, #4d6068);
+  white-space: nowrap;
+}
+
+.list-status-bar .status-item b {
+  margin-left: 2px;
+  font-weight: 600;
+  color: var(--wb-text, #1f2d33);
+}
+
+.list-status-bar .status-item b.summary-debit {
+  color: var(--el-color-primary, #409eff);
+}
+
+.list-status-bar .status-item b.summary-credit {
+  color: var(--el-color-danger, #f56c6c);
+}
+
+.list-status-bar .status-item b.summary-error {
+  color: var(--el-color-danger, #f56c6c);
+}
+
+.list-status-bar .status-hint {
+  color: var(--wb-text-3, #8a9aa1);
+}
+
+/* 底部状态栏文字保持清晰：深色 + 12px，不做淡化 */
+.list-status-bar .status-item,
+.list-status-bar .pagination-text {
+  font-size: 12px;
+  color: var(--wb-text-2, #4d6068);
+}
+
+.list-status-bar .status-hint {
+  color: var(--wb-text-2, #4d6068);
+}
+
+.list-status-bar .status-item b {
+  font-weight: 600;
+  color: var(--wb-text, #1f2d33);
+}
+
+.list-status-bar .status-item b.summary-debit {
+  color: var(--el-color-primary, #409eff);
+}
+
+.list-status-bar .status-item b.summary-credit {
+  color: var(--el-color-danger, #f56c6c);
+}
+
+/* 「每次加载」下拉：收窄、压低，字号与同行文字一致并垂直居中 */
+.list-status-bar .page-size-select {
+  width: 72px;
+}
+
+.list-status-bar .page-size-select .el-select__wrapper {
+  min-height: 20px !important;
+  height: 20px !important;
+  padding: 0 2px !important;
+  font-size: 12px;
+  line-height: 20px;
+  align-items: center;
+  /* 无框文字样式：看起来就是「20条 ▾」，仍可点选 */
+  background: transparent !important;
+  box-shadow: none !important;
+  border: none !important;
+}
+
+.list-status-bar .page-size-select .el-select__selection,
+.list-status-bar .page-size-select .el-select__selected-item,
+.list-status-bar .page-size-select .el-select__placeholder {
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.list-status-bar .page-size-select .el-select__suffix .el-icon {
+  font-size: 12px;
+}
+
+/* 「继续加载」等按钮：文字链接样式，不占框 */
+.list-status-bar .el-button {
+  height: 20px;
+  padding: 0 2px;
+  border: none !important;
+  background: transparent !important;
+  color: var(--el-color-primary, #409eff);
+}
+
+.list-status-bar .status-right {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 8px;
+  margin-left: auto;
 }
 
 /* 批量正向 / 逆向操作着色（凭证管理页） */
@@ -450,12 +571,23 @@
 .voucher-list-page .voucher-audit-table-v2 .el-table-v2__row.is-selected .el-table-v2__row-cell {
   background-color: var(--voucher-row-selected) !important;
   color: var(--voucher-row-selected-text);
-  font-weight: 500;
 }
 .voucher-list-page .gl-entry-table-v2 .el-table-v2__row.voucher-selected:hover .el-table-v2__row-cell,
 .voucher-list-page .voucher-audit-table-v2 .el-table-v2__row.voucher-selected:hover .el-table-v2__row-cell,
 .voucher-list-page .voucher-audit-table-v2 .el-table-v2__row.is-selected:hover .el-table-v2__row-cell {
   background-color: var(--voucher-row-selected-hover) !important;
+}
+
+/* 横向滚动条不压最后一行：组件横向溢出时用 footer-height 在表体下方让出一条轨道（见 virtualTableHBarGap），
+   这里放开 __main 的裁剪并把滚动条（组件内联 bottom:2px）下移进轨道。表头 / 表体各自有 overflow:hidden 的容器，不影响内容裁剪 */
+.gl-entry-table-v2 .el-table-v2__main,
+.voucher-audit-table-v2 .el-table-v2__main {
+  overflow: visible;
+}
+
+.gl-entry-table-v2 .el-table-v2__main .el-vl__horizontal,
+.voucher-audit-table-v2 .el-table-v2__main .el-vl__horizontal {
+  bottom: -9px !important;
 }
 
 /* 表头列宽拖动手把 */
@@ -476,12 +608,15 @@
   white-space: nowrap;
 }
 
-.vt-header-cell--center .vt-header-cell__title {
+/* 凭证相关列表：列头文字一律居中（与列内容对齐方式无关） */
+.vt-header-cell__title {
   text-align: center;
 }
 
-.vt-header-cell--right .vt-header-cell__title {
-  text-align: right;
+.voucher-list-page .el-table th.el-table__cell > .cell,
+.voucher-list-page .el-table-v2__header-cell {
+  text-align: center;
+  justify-content: center;
 }
 
 .vt-header-cell__resizer {
@@ -526,7 +661,6 @@
 
 .voucher-list-page .el-table__body tr.is-selected td.el-table__cell {
   background-color: var(--surface-brand-soft) !important;
-  font-weight: 600;
 }
 
 /* 审核页批量操作栏 —— 单行横向排列，节省垂直空间 */
@@ -571,4 +705,85 @@
 
 .gl-sub-bar .gl-sub-bar__account-display {
   flex: 0 0 auto;
+}
+
+/* ========== 凭证列表简洁样式（参照金蝶「查凭证」，录入 / 管理 / 查询三页共用） ==========
+ * 白底不做斑马纹、细灰线、凭证间深一档分隔线、微软雅黑 + 系统 ClearType 渲染、单元格单行省略；
+ * 凭证级列（vt-col-head）凭证内部不画横线，视觉上等同合并单元格。 */
+.voucher-list-page {
+  --vd-font: 'Microsoft YaHei', '微软雅黑', 'PingFang SC', 'Hiragino Sans GB', sans-serif;
+  --vd-line: #e4e7ec;
+  --vd-line-group: #c9d0d9;
+  --vd-head-bg: #f5f7fa;
+  --vd-text: #262626;
+  --vd-hover: #f5f8fc;
+  --vd-selected: #e6f0ff;
+}
+.voucher-list-page .gl-entry-table-v2,
+.voucher-list-page .voucher-audit-table-v2 {
+  --voucher-grid-line: var(--vd-line);
+  font-family: var(--vd-font);
+  -webkit-font-smoothing: auto;
+  -moz-osx-font-smoothing: auto;
+}
+.voucher-list-page .gl-entry-table-v2 .el-table-v2__header-cell,
+.voucher-list-page .voucher-audit-table-v2 .el-table-v2__header-cell {
+  background-color: var(--vd-head-bg) !important;
+  color: var(--vd-text) !important;
+  font-family: var(--vd-font) !important;
+  font-weight: 600;
+  font-size: 13px;
+  padding: 0 8px;
+  user-select: none;
+}
+.voucher-list-page .gl-entry-table-v2 .el-table-v2__row-cell,
+.voucher-list-page .voucher-audit-table-v2 .el-table-v2__row-cell {
+  padding: 0 8px;
+  font-size: 13px;
+  color: var(--vd-text);
+  line-height: 20px;
+  overflow: hidden;
+  font-variant-numeric: tabular-nums;
+}
+.voucher-list-page .gl-entry-table-v2 .el-table-v2__row.voucher-group-even .el-table-v2__row-cell,
+.voucher-list-page .gl-entry-table-v2 .el-table-v2__row.voucher-group-odd .el-table-v2__row-cell,
+.voucher-list-page .voucher-audit-table-v2 .el-table-v2__row.voucher-group-even .el-table-v2__row-cell,
+.voucher-list-page .voucher-audit-table-v2 .el-table-v2__row.voucher-group-odd .el-table-v2__row-cell {
+  background-color: #ffffff !important;
+}
+.voucher-list-page .gl-entry-table-v2 .el-table-v2__row:hover .el-table-v2__row-cell,
+.voucher-list-page .voucher-audit-table-v2 .el-table-v2__row:hover .el-table-v2__row-cell {
+  background-color: var(--vd-hover) !important;
+}
+.voucher-list-page .gl-entry-table-v2 .el-table-v2__row.voucher-selected .el-table-v2__row-cell,
+.voucher-list-page .voucher-audit-table-v2 .el-table-v2__row.voucher-selected .el-table-v2__row-cell,
+.voucher-list-page .voucher-audit-table-v2 .el-table-v2__row.is-selected .el-table-v2__row-cell {
+  background-color: var(--vd-selected) !important;
+  color: var(--vd-text) !important;
+  font-weight: 400 !important;
+}
+.voucher-list-page .gl-entry-table-v2 .vt-cell-text,
+.voucher-list-page .voucher-audit-table-v2 .vt-cell-text {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.voucher-list-page .gl-entry-table-v2 .el-table-v2__row.voucher-last-row .el-table-v2__row-cell,
+.voucher-list-page .voucher-audit-table-v2 .el-table-v2__row.voucher-last-row .el-table-v2__row-cell {
+  box-shadow: inset -1px 0 0 var(--vd-line), inset 0 -1px 0 var(--vd-line-group) !important;
+}
+.voucher-list-page .gl-entry-table-v2 .el-table-v2__row.voucher-last-row .el-table-v2__row-cell:first-child,
+.voucher-list-page .voucher-audit-table-v2 .el-table-v2__row.voucher-last-row .el-table-v2__row-cell:first-child {
+  box-shadow: inset 1px 0 0 var(--vd-line), inset -1px 0 0 var(--vd-line), inset 0 -1px 0 var(--vd-line-group) !important;
+}
+.voucher-list-page .gl-entry-table-v2 .el-table-v2__row:not(.voucher-last-row) .el-table-v2__row-cell.vt-col-head,
+.voucher-list-page .voucher-audit-table-v2 .el-table-v2__row:not(.voucher-last-row) .el-table-v2__row-cell.vt-col-head {
+  box-shadow: inset -1px 0 0 var(--vd-line) !important;
+}
+.voucher-list-page .gl-entry-table-v2 .el-table-v2__row:not(.voucher-last-row) .el-table-v2__row-cell.vt-col-head:first-child,
+.voucher-list-page .voucher-audit-table-v2 .el-table-v2__row:not(.voucher-last-row) .el-table-v2__row-cell.vt-col-head:first-child {
+  box-shadow: inset 1px 0 0 var(--vd-line), inset -1px 0 0 var(--vd-line) !important;
 }

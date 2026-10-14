@@ -14,6 +14,7 @@
           :accounts="accounts"
           :aux-items-map="auxItemsMap"
           enable-status
+          status-quick
           enable-year-period
           enable-voucher-type
           enable-account
@@ -37,6 +38,7 @@
       :flat-list="flatList"
       :loading-more="loadingMore"
       :has-more="hasMore"
+      :show-load-status="false"
       :is-selectable-row="isSelectableRow"
       :get-row-class="getRowClass"
       :aux-categories="auxCategories"
@@ -54,7 +56,8 @@
       @unpost="unPost"
     />
 
-    <div class="pagination-bar">
+    <!-- 底部状态（一行纯文字，不单独分区）：左 已选 | 中 加载状态 | 右 条数与每次加载 -->
+    <div class="pagination-bar toolbar list-status-bar">
       <span class="pagination-text batch-selected-text">
         {{
           selectAllMode
@@ -62,23 +65,32 @@
             : `已选 ${selectedVoucherCount} 张`
         }}
       </span>
-      <span class="pagination-text">
-        共 {{ pagination.total }} 条 · 已加载 {{ loadedVoucherCount }} 条
-      </span>
-      <template v-if="softCapReached">
-        <span class="pagination-text">已加载较多，自动滚动已暂停</span>
-        <el-button size="small" plain :loading="loading || loadingMore" @click="loadMore">
-          继续加载
-        </el-button>
+      <template v-if="flatList.length > 0">
+        <span class="status-item">借方合计 <b class="summary-debit">{{ formatAmount(totalDebit) }}</b></span>
+        <span class="status-item">贷方合计 <b class="summary-credit">{{ formatAmount(totalCredit) }}</b></span>
       </template>
-      <span class="pagination-text">每次加载</span>
-      <el-select v-model="pagination.pageSize" style="width: 95px" @change="handlePageSizeChange">
-        <el-option label="20条" :value="20" />
-        <el-option label="50条" :value="50" />
-        <el-option label="100条" :value="100" />
-        <el-option label="200条" :value="200" />
-        <el-option label="全部" :value="-1" />
-      </el-select>
+      <span v-if="flatList.length > 0 && (loadingMore || !hasMore)" class="status-item status-hint">
+        {{ loadingMore ? '加载中…' : '已全部加载' }}
+      </span>
+      <span class="status-right">
+        <span class="pagination-text">
+          共 {{ pagination.total }} 条 · 已加载 {{ loadedVoucherCount }} 条
+        </span>
+        <template v-if="softCapReached">
+          <span class="pagination-text">已加载较多，自动滚动已暂停</span>
+          <el-button size="small" plain :loading="loading || loadingMore" @click="loadMore">
+            继续加载
+          </el-button>
+        </template>
+        <span class="pagination-text">每次加载</span>
+        <el-select v-model="pagination.pageSize" class="page-size-select" @change="handlePageSizeChange">
+          <el-option label="20条" :value="20" />
+          <el-option label="50条" :value="50" />
+          <el-option label="100条" :value="100" />
+          <el-option label="200条" :value="200" />
+          <el-option label="全部" :value="-1" />
+        </el-select>
+      </span>
     </div>
 
     <BatchAuditDialog
@@ -132,6 +144,9 @@
 </template>
 
 <script setup lang="ts">
+// 凭证页共用全局样式：用脚本 import 而非 <style src>。
+// 多个组件 <style src> 同一文件时，生产构建只编译一份且可能套用某个导入方的 scoped，导致其它页面样式丢失（FIX-344）
+import '@/views/voucher/voucher.styles.css'
 import { computed, onMounted, onActivated, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
@@ -200,7 +215,9 @@ const baseVisibleCols: ColSetting[] = [
   { key: 'account_name', label: '科目名称', visible: true },
   { key: 'debit_amt', label: '借方金额', visible: true },
   { key: 'credit_amt', label: '贷方金额', visible: true },
-  { key: 'operator_info', label: '经办信息', visible: true },
+  { key: 'maker_name', label: '制单', visible: true },
+  { key: 'auditor_name', label: '审核', visible: true },
+  { key: 'poster_name', label: '记账', visible: true },
   { key: 'status', label: '状态', visible: true },
 ]
 
@@ -271,6 +288,33 @@ const {
   enableSearchMemory: true,
   searchMemoryKey: 'voucher-audit-filters',
 })
+
+// 借贷合计：随 flatList 增量累加，避免每次全表 reduce
+const totalDebit = ref(0)
+const totalCredit = ref(0)
+let totalsScannedLen = 0
+
+watch(
+  () => flatList.value,
+  rows => {
+    if (rows.length < totalsScannedLen) {
+      totalDebit.value = 0
+      totalCredit.value = 0
+      totalsScannedLen = 0
+    }
+    for (let i = totalsScannedLen; i < rows.length; i++) {
+      const row = rows[i]
+      if (row.direction === 'debit') totalDebit.value += Number(row.amount) || 0
+      else if (row.direction === 'credit') totalCredit.value += Number(row.amount) || 0
+    }
+    totalsScannedLen = rows.length
+  },
+  { immediate: true }
+)
+
+function formatAmount(value: number): string {
+  return value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
 
 // 已加载的凭证张数（flatList 是分录行，不能直接用）
 const loadedVoucherCount = computed(() => list.value.length)
@@ -939,7 +983,7 @@ const glToolbarButtons = computed<GlToolbarButton[]>(() => [
   },
   {
     key: 'save',
-    group: 'more',
+    // 第五份反馈：客户找不到「另存」（原收在「更多」里），提到工具栏常驻
     name: '另存',
     icon: Download,
     tooltip: '导出为 Excel 文件',
@@ -1089,4 +1133,3 @@ useKeyboardShortcuts([
 ])
 </script>
 
-<style src="./voucher.styles.css"></style>

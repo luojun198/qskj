@@ -8,6 +8,7 @@
       </el-select>
       <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="开始" end-placeholder="结束" size="small" style="width:230px" @change="query" />
       <el-button size="small" :loading="loading" @click="query">查询</el-button>
+      <SaveAsButton :handler="exportAll" />
       <span class="hint">变更单从「工单详情 → 变更」发起；审核后写回工单并留痕，不可反审核</span>
     </div>
     <el-table :data="rows" v-loading="loading" border stripe size="small" height="100%" @row-dblclick="open">
@@ -37,6 +38,8 @@ import { onActivated, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { scmApi } from '@/api/scm'
+import { exportStyledTable } from '@/utils/exportStyledExcel'
+import { exportDateStamp } from '@/utils/exportElTable'
 import { scmProductionPlanOrderRoute } from '@/utils/scmDocNavigation'
 
 const router = useRouter()
@@ -52,6 +55,30 @@ async function load() {
   } finally { loading.value = false }
 }
 function query() { page.value = 1; load() }
+
+/** 另存：按当前筛选导出全部（不只当前页） */
+async function exportAll() {
+  const all: any[] = []
+  for (let p = 1; ; p++) {
+    const r = await scmApi.getPlanChanges({ ...filters.value, start_date: dateRange.value?.[0], end_date: dateRange.value?.[1], page: p, page_size: 200 })
+    all.push(...r.data.list)
+    if (!r.data.list.length || all.length >= r.data.total) break
+  }
+  await exportStyledTable({
+    fileName: `工单变更单_${exportDateStamp()}.xlsx`, title: '工单变更单',
+    columns: [
+      { label: '变更单号', value: (r: any) => r.change_no },
+      { label: '日期', value: (r: any) => r.change_date },
+      { label: '工单', value: (r: any) => r.plan_code },
+      { label: '原因', value: (r: any) => r.reason },
+      { label: '变更内容', value: (r: any) => r.diff_summary },
+      { label: '状态', value: (r: any) => (r.status === 'audited' ? '已审核' : '草稿') },
+      { label: '制单', value: (r: any) => r.maker },
+      { label: '审核', value: (r: any) => r.auditor },
+    ],
+    rows: all,
+  })
+}
 function open(row: any) { router.push({ name: 'ScmPlanChangeForm', params: { id: row.id } }) }
 function openPlan(row: any) { router.push(scmProductionPlanOrderRoute(row.plan_id, row.plan_type === 'outsource' ? 'outsource' : 'self')) }
 async function audit(row: any) {

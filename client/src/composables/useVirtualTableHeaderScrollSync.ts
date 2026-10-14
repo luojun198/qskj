@@ -34,6 +34,13 @@ export function useVirtualTableHeaderScrollSync(rootRef: Ref<any>) {
     if (Math.abs(header.scrollLeft - target) > 0.5) header.scrollLeft = target
   }
 
+  /** 表体（或拖列宽重绘后）滚动位置变化时，把表头拉到同一位置：拖宽最右侧列时总宽变化，表头会停在旧位置导致整体错位 */
+  const onAnyScroll = (e: Event) => {
+    if (!header || e.target === header) return
+    const body = bodyScroller()
+    if (body && e.target === body) onHeaderScroll()
+  }
+
   const bind = () => {
     const el = rootEl()?.querySelector<HTMLElement>('.el-table-v2__header-wrapper') ?? null
     if (el === header) return
@@ -47,6 +54,7 @@ export function useVirtualTableHeaderScrollSync(rootRef: Ref<any>) {
     // el-auto-resizer / v-if 会重建表格 DOM，表头节点变化时重新绑定
     const root = rootEl()
     if (root) {
+      root.addEventListener('scroll', onAnyScroll, { capture: true, passive: true })
       observer = new MutationObserver(bind)
       observer.observe(root, { childList: true, subtree: true })
     }
@@ -54,7 +62,9 @@ export function useVirtualTableHeaderScrollSync(rootRef: Ref<any>) {
 
   onBeforeUnmount(() => {
     header?.removeEventListener('scroll', onHeaderScroll)
+    rootEl()?.removeEventListener('scroll', onAnyScroll, { capture: true } as any)
     observer?.disconnect()
     header = null
   })
+  return { sync: onHeaderScroll }
 }

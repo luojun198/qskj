@@ -4,6 +4,8 @@
       :key="designerSessionKey"
       :template-id="templateId"
       :preset="preset"
+      :default-type="defaultType"
+      :default-key="defaultKey"
       @save="handleSave"
       @cancel="goBack"
     />
@@ -25,6 +27,9 @@ const templateId = computed(() => {
 })
 
 const preset = computed(() => String(route.query.preset || 'standard'))
+// 业务单据模板：?preset=scm&key=scm:SOa（从打印模板列表或单据打印页「设计模板」进入）
+const defaultType = computed(() => (route.query.preset === 'scm' ? 'scm_doc' : 'voucher') as any)
+const defaultKey = computed(() => (typeof route.query.key === 'string' ? route.query.key : undefined))
 
 /** 本次打开的设计会话。新建保存后 URL 会带上 id，但不能换 key，否则 hiprint 画布被拆掉，只能返回重进。 */
 const designerSessionKey = ref(templateId.value || `new:${preset.value}`)

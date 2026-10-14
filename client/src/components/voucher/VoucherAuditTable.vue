@@ -11,16 +11,20 @@
             :width="width"
             :height="Math.max(height, 160)"
             :row-height="VOUCHER_VIRTUAL_ROW_HEIGHT"
+            :footer-height="virtualTableHBarGap(virtualColumns, width)"
             :header-height="34"
             :row-class="rowClass"
             :row-event-handlers="rowEventHandlers"
             fixed
-          />
+          >
+            <!-- 不用 el-table-v2 自带的空状态图：数据刷新瞬间它会浮在旧行上（客户截图「暂无数据」盖在凭证上），空状态由下方文字提示 -->
+            <template #empty><span /></template>
+          </el-table-v2>
         </template>
       </el-auto-resizer>
       <div v-if="!flatList.length && !loading" class="voucher-audit-table__empty">暂无数据</div>
     </div>
-    <div v-if="flatList.length > 0 && (loadingMore || !hasMore)" class="infinite-scroll-status">
+    <div v-if="showLoadStatus && flatList.length > 0 && (loadingMore || !hasMore)" class="infinite-scroll-status">
       <span v-if="loadingMore" class="infinite-scroll-status__loading">
         <el-icon class="is-loading"><Loading /></el-icon>
         加载中…
@@ -37,8 +41,9 @@ import { Loading } from '@element-plus/icons-vue'
 import { useFillHeightTable } from '@/composables/useFillHeightTable'
 import { useVirtualTableColumnResize } from '@/composables/useVirtualTableColumnResize'
 import { useVirtualTableHeaderScrollSync } from '@/composables/useVirtualTableHeaderScrollSync'
-import { formatMoney, statusType, statusText } from '@/composables/useVoucherAuditData'
-import { VOUCHER_VIRTUAL_ROW_HEIGHT } from '@/composables/useVoucherEntryVirtualColumns'
+import { statusType, statusText } from '@/composables/useVoucherAuditData'
+import { formatAmount } from '@/utils/format'
+import { VOUCHER_VIRTUAL_ROW_HEIGHT, virtualTableHBarGap } from '@/composables/useVoucherEntryVirtualColumns'
 import { discoverAuxColumnsFromRows, type AuxColumnDef } from '@/utils/voucherFlatList'
 import { accountDisplayRevision, accountNameByMode } from '@/utils/voucherAccountDisplay'
 
@@ -54,6 +59,8 @@ interface Props {
   /** audit：审核/记账操作列 + 勾选；query：打印/删除；preview：只读预览（无勾选、无操作列，供生成凭证二次确认） */
   mode?: 'audit' | 'query' | 'preview'
   loading?: boolean
+  /** 表格下方自带的「加载中 / 已全部加载」行；页面把该状态并入底部状态栏时传 false */
+  showLoadStatus?: boolean
   highlightText?: (text: string | number | null | undefined) => string
   getCellClassNameFn?: (params: { row: any }) => string
   orderedColumnKeys?: string[]
@@ -74,6 +81,7 @@ const props = withDefaults(defineProps<Props>(), {
   orderedColumnKeys: () => [],
   loadingMore: false,
   hasMore: false,
+  showLoadStatus: true,
 })
 
 // 查询 / 审核页：容器由 .page 的 flex 布局撑满（见 common.css），不要再写死像素高度，
@@ -82,7 +90,7 @@ const props = withDefaults(defineProps<Props>(), {
 const containerRef =
   props.mode === 'preview' ? useFillHeightTable().containerRef : ref<HTMLElement>()
 // 表头被拖选自动滚动时与表体错位 → 强制回同步
-useVirtualTableHeaderScrollSync(containerRef)
+const { sync: syncHeaderScroll } = useVirtualTableHeaderScrollSync(containerRef)
 
 const emit = defineEmits<{
   'selection-change': [rows: any[]]
@@ -107,7 +115,7 @@ function colVisible(prop: string) {
 const BASE_COLUMN_KEYS = ['voucher_date', 'voucher_no', 'voucher_type_name', 'summary', 'account_code', 'account_name', 'debit_amt', 'credit_amt']
 const renderColumnKeys = computed(() => props.orderedColumnKeys.length
   ? props.orderedColumnKeys.filter(colVisible)
-  : [...BASE_COLUMN_KEYS.filter(colVisible), ...visibleAuxColumns.value.map(column => column.prop), ...['operator_info', 'status'].filter(colVisible)])
+  : [...BASE_COLUMN_KEYS.filter(colVisible), ...visibleAuxColumns.value.map(column => column.prop), ...['maker_name', 'auditor_name', 'poster_name', 'status'].filter(colVisible)])
 
 function auxColumnByProp(prop: string) {
   if (prop === 'dept_name') return { code: 'dept', name: '部门', prop }
@@ -131,7 +139,9 @@ const DEFAULT_COL_WIDTHS: Record<string, number> = {
   account_name: 160,
   debit_amt: 130,
   credit_amt: 130,
-  operator_info: 240,
+  maker_name: 90,
+  auditor_name: 90,
+  poster_name: 90,
   status: 120,
 }
 
@@ -154,6 +164,7 @@ const { resizableHeader } = useVirtualTableColumnResize({
   getWidth: key => colWidth(key, defaultWidthOf(key)),
   onResize: (key, width) => {
     draftWidths.value = { ...draftWidths.value, [key]: width }
+    nextTick(() => requestAnimationFrame(syncHeaderScroll))
   },
   onResizeEnd: (key, width, oldWidth) => {
     // 与 el-table header-dragend 的 column 结构兼容（resolveTableColumnKey 读 columnKey / property）
@@ -162,6 +173,7 @@ const { resizableHeader } = useVirtualTableColumnResize({
       const next = { ...draftWidths.value }
       delete next[key]
       draftWidths.value = next
+      nextTick(() => requestAnimationFrame(syncHeaderScroll))
     })
   },
 })
@@ -209,7 +221,10 @@ function toggleAllSelection() {
 // ========== 行事件 ==========
 
 function rowClass({ rowData }: { rowData: any }) {
-  return props.getRowClass({ row: rowData })
+  // 凭证末行：凭证级列（日期 / 凭证号 / 状态…）只在这一行画横线，视觉上等同合并单元格
+  const count = Number(rowData?._voucherEntryCount) || 1
+  const last = (Number(rowData?._voucherRowIndex) || 0) >= count - 1 ? ' voucher-last-row' : ''
+  return `${props.getRowClass({ row: rowData }) || ''}${last}`
 }
 
 const rowEventHandlers = {
@@ -269,6 +284,14 @@ watch(
   { immediate: true }
 )
 
+// 列表重新加载（行数变少 / 清空）时滚回顶部：虚拟表格停在旧滚动位置会出现整片空白（客户截图）
+watch(
+  () => props.flatList.length,
+  (len, oldLen) => {
+    if (oldLen !== undefined && len < oldLen) nextTick(() => (tableRef.value as any)?.scrollToTop?.(0))
+  }
+)
+
 const visibleAuxColumns = computed(() =>
   discoveredAuxColumns.value.filter(col => colVisible(col.prop))
 )
@@ -285,15 +308,24 @@ function cell(render: (row: any) => unknown): CellRenderer {
   return (({ rowData }: { rowData: any }) => render(rowData)) as unknown as CellRenderer
 }
 
+/** 单行省略：摘要 / 科目名过长时不再折行溢出到相邻行（客户截图里文字互相叠压），悬停看全文 */
+function oneLine(content: unknown, plain: unknown) {
+  const title = String(plain ?? '')
+  return h('span', { class: 'vt-cell-text', title: title || undefined }, [content as any])
+}
+
 function textCell(value: unknown) {
   const text = String(value ?? '')
-  if (props.highlightText) return h('span', { innerHTML: props.highlightText(text) })
-  return text
+  if (props.highlightText) return oneLine(h('span', { innerHTML: props.highlightText(text) }), text)
+  return oneLine(text, text)
 }
 
 function headerOnly(row: any, value: unknown) {
-  return isHeaderRow(row) ? String(value ?? '') : ''
+  return isHeaderRow(row) ? oneLine(String(value ?? ''), value) : ''
 }
+
+/** 凭证级列：凭证内部不画横线（合并单元格效果） */
+const VOUCHER_HEAD_KEYS = new Set(['voucher_date', 'voucher_no', 'voucher_type_name', 'maker_name', 'auditor_name', 'poster_name', 'status'])
 
 function actionButton(label: string, type: string, onClick: () => void) {
   return h(
@@ -337,15 +369,6 @@ function renderStatus(row: any) {
   return h('span', { class: 'voucher-status-cell' }, tags)
 }
 
-function renderOperatorInfo(row: any) {
-  if (!isHeaderRow(row)) return ''
-  return h('span', { class: 'operator-info' }, [
-    h('span', `制单 ${row.maker_name || '-'}`),
-    h('span', `审核 ${row.auditor_name || '-'}`),
-    h('span', `记账 ${row.poster_name || '-'}`),
-  ])
-}
-
 type Align = 'left' | 'center' | 'right'
 
 const BASE_COLUMN_DEFS: Record<string, { title: string; align?: Align; render: (row: any) => unknown }> = {
@@ -355,9 +378,11 @@ const BASE_COLUMN_DEFS: Record<string, { title: string; align?: Align; render: (
   summary: { title: '摘要', render: row => textCell(row.summary) },
   account_code: { title: '科目编码', render: row => textCell(row.account_code) },
   account_name: { title: '科目名称', render: row => textCell(accountNameByMode(row)) },
-  debit_amt: { title: '借方金额', align: 'right', render: row => (row.direction === 'debit' ? formatMoney(row.amount) : '') },
-  credit_amt: { title: '贷方金额', align: 'right', render: row => (row.direction === 'credit' ? formatMoney(row.amount) : '') },
-  operator_info: { title: '经办信息', render: renderOperatorInfo },
+  debit_amt: { title: '借方金额', align: 'right', render: row => (row.direction === 'debit' ? oneLine(formatAmount(row.amount), formatAmount(row.amount)) : '') },
+  credit_amt: { title: '贷方金额', align: 'right', render: row => (row.direction === 'credit' ? oneLine(formatAmount(row.amount), formatAmount(row.amount)) : '') },
+  maker_name: { title: '制单', render: row => headerOnly(row, row.maker_name || '-') },
+  auditor_name: { title: '审核', render: row => headerOnly(row, row.auditor_name || '-') },
+  poster_name: { title: '记账', render: row => headerOnly(row, row.poster_name || '-') },
   status: { title: '状态', render: renderStatus },
 }
 
@@ -372,6 +397,7 @@ function buildColumn(key: string): Column<any> | undefined {
       width: colWidth(key, defaultWidthOf(key)),
       // 摘要列吸收剩余宽度，避免列宽总和不足时右侧固定的操作列被空白隔开；拖动出的宽度仍是下限
       flexGrow: key === 'summary' ? 1 : undefined,
+      class: VOUCHER_HEAD_KEYS.has(key) ? 'vt-col-head' : undefined,
       headerCellRenderer: resizableHeader(key, base.title, base.align),
       cellRenderer: cell(base.render),
     }
@@ -384,7 +410,7 @@ function buildColumn(key: string): Column<any> | undefined {
     title: aux.name,
     width: colWidth(key, defaultWidthOf(key)),
     headerCellRenderer: resizableHeader(key, aux.name),
-    cellRenderer: cell(row => String(row[key] ?? '')),
+    cellRenderer: cell(row => oneLine(String(row[key] ?? ''), row[key])),
   }
 }
 
@@ -396,6 +422,7 @@ const virtualColumns = computed<Column<any>[]>(() => {
       key: '__selection__',
       width: colWidth('__selection__', 40),
       align: 'center',
+      class: 'vt-col-head',
       headerCellRenderer: resizableHeader(
         '__selection__',
         () =>
@@ -434,7 +461,7 @@ const virtualColumns = computed<Column<any>[]>(() => {
     key: '操作',
     title: '操作',
     width: colWidth('操作', defaultWidthOf('操作')),
-    class: 'audit-action-col',
+    class: 'audit-action-col vt-col-head',
     headerCellRenderer: resizableHeader('操作', '操作'),
     cellRenderer: cell(renderActions),
   })
@@ -507,14 +534,6 @@ defineExpose({ tableRef, containerRef })
   align-items: center;
   gap: 4px;
   white-space: nowrap;
-}
-
-.operator-info {
-  display: inline-flex;
-  gap: 10px;
-  white-space: nowrap;
-  font-size: 12px;
-  color: #606266;
 }
 
 /* 操作列由 cellRenderer（h()）渲染，不带 scoped 属性，此处 scoped 选择器不会命中；

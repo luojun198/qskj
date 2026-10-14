@@ -89,6 +89,7 @@ const ROUTE_PERMISSION_MAP: Record<string, string | string[]> = {
   '/report/dynamic': 'report:define',
   '/base/print-template': 'system:print',
   '/base/cash-flow-items': 'base:cashitem',
+  '/base/cash-flow-account-map': 'base:cashitem',
   '/base/currency': 'base:currency',
   '/base/fund-source': 'base:project',
   '/voucher/entry': 'voucher:entry',
@@ -97,6 +98,8 @@ const ROUTE_PERMISSION_MAP: Record<string, string | string[]> = {
   '/voucher/auto-transfer': 'period:carry',
   '/voucher/fx-reval': 'period:carry',
   '/voucher/query': 'voucher:query',
+  // 业务凭证中心：进销存 / 出纳 / 固定资产任一业务权限即可进入，页内按来源再细分
+  '/voucher/biz-center': ['scm:purchase', 'scm:sale', 'scm:inventory', 'scm:opening', 'scm:arap', 'scm:production', 'scm:outsource', 'cashier:voucher', 'cashier:journal', 'asset:view'],
   '/voucher/period-close': ['period:close', 'period:unclose'],
   // ⚠️ 历史命名错位，勿"顺手对齐"：
   //   /ledger/general  页面是「科目余额表」，权限 key 为 ledger:balance
@@ -128,6 +131,7 @@ const ROUTE_PERMISSION_MAP: Record<string, string | string[]> = {
   '/system/user': 'system:user',
   '/system/role': 'system:role',
   '/system/param': 'system:init',
+  '/system/license': 'system:init',
   '/system/log': 'period:log',
   '/security/backup': ['system:backup', 'system:restore'],
   '/cashier/journal': 'cashier:journal',
@@ -144,6 +148,7 @@ const ROUTE_PERMISSION_MAP: Record<string, string | string[]> = {
   '/cashier/reset': 'cashier:initbal',
   '/cashier/period-close': 'cashier:param',
   '/cashier/settle-type': 'cashier:dict',
+  '/cashier/accounts-manage': 'cashier:dict',
   // 与 server/src/routes/fixedAsset.ts 的 ASSET_PERMISSION_RULES 保持一致，
   // 否则会出现「菜单可见但操作 403」
   '/asset/list': 'asset:view',
@@ -153,6 +158,9 @@ const ROUTE_PERMISSION_MAP: Record<string, string | string[]> = {
   '/asset/import': 'asset:edit',
   '/asset/depreciation': 'asset:depr',
   '/asset/depreciation/reverse': 'asset:depr',
+  // 凭证管理：进入需 asset:view；删除 / 重新生成按凭证类型由后端细分权限
+  '/asset/vouchers': 'asset:view',
+  '/asset/vouchers/regenerate': 'asset:view',
   '/asset/report': 'asset:report',
   '/asset/inventory': 'asset:inventory',
   '/asset/dict': 'asset:dict',
@@ -165,6 +173,10 @@ const ROUTE_PERMISSION_MAP: Record<string, string | string[]> = {
   '/scm/customers': 'scm:partner',
   '/scm/warehouses': 'scm:warehouse',
   '/scm/bins': 'scm:warehouse',
+  '/scm/col-schemes': 'scm:colscheme',
+  '/scm/doc-field-defs': 'scm:colscheme',
+  '/scm/acd-import': 'scm:import',
+  '/scm/master-import': ['scm:item', 'scm:partner'],
   '/scm/stock': 'scm:stock',
   // 单据页一条路径承载多业务域（doc_type 由查询参数区分），路由守卫放行任一业务域，后端按域细化校验
   '/scm/docs': ['scm:purchase', 'scm:sale', 'scm:inventory', 'scm:opening', 'scm:production', 'scm:outsource', 'scm:arap'],
@@ -173,12 +185,18 @@ const ROUTE_PERMISSION_MAP: Record<string, string | string[]> = {
   '/scm/report/sales/summary': 'scm:report',
   '/scm/report/sales/execution': 'scm:report',
   '/scm/report/sales/detail': 'scm:report',
+  '/scm/report/sales/return': 'scm:report',
+  '/scm/report/sales/return-query': 'scm:report',
+  '/scm/report/sales/invoice-query': 'scm:report',
   '/scm/report/sales/ranking': 'scm:report',
   '/scm/report/sales/profit': 'scm:report',
   '/scm/report/sales/trend': 'scm:report',
   '/scm/report/purchase/summary': 'scm:report',
   '/scm/report/purchase/detail': 'scm:report',
   '/scm/report/purchase/order-tracking': 'scm:report',
+  '/scm/report/purchase/return': 'scm:report',
+  '/scm/report/purchase/return-query': 'scm:report',
+  '/scm/report/purchase/invoice-query': 'scm:report',
   '/scm/report/purchase/ranking': 'scm:report',
   '/scm/report/purchase/cost': 'scm:report',
   '/scm/report/purchase/trend': 'scm:report',
@@ -199,6 +217,7 @@ const ROUTE_PERMISSION_MAP: Record<string, string | string[]> = {
   '/scm/routings': ['scm:production', 'scm:outsource'],
   '/scm/work-reports': ['scm:production', 'scm:outsource'],
   '/scm/plan-changes': 'scm:production',
+  '/scm/order-changes': ['scm:purchase', 'scm:sale'],
   '/scm/schedule': 'scm:production',
   '/scm/kitting': ['scm:production', 'scm:outsource'],
   '/scm/mrp': ['scm:production', 'scm:outsource'],
@@ -208,9 +227,13 @@ const ROUTE_PERMISSION_MAP: Record<string, string | string[]> = {
   '/scm/arap': 'scm:arap',
   '/scm/arap-detail': 'scm:arap',
   '/scm/arap-verify': 'scm:arap',
+  '/scm/arap-verify-records': 'scm:arap',
   '/scm/arap-due': 'scm:arap',
   '/scm/arap-statement': 'scm:arap',
   '/scm/arap-statement/print': 'scm:arap',
+  '/scm/statements': 'scm:arap',
+  '/scm/statements/new': 'scm:arap',
+  '/scm/statements/detail-report': 'scm:arap',
   '/scm/arap-aging': 'scm:arap',
   '/scm/arap-fx-reval': 'scm:arap',
   '/scm/report/stock-alert': 'scm:report',
@@ -220,6 +243,7 @@ const ROUTE_PERMISSION_MAP: Record<string, string | string[]> = {
   '/scm/serials': 'scm:stock',
   '/scm/report/batch-alert': 'scm:report',
   '/report/cash-flow': 'ledger:cashflow',
+  '/report/cash-flow-auto': 'ledger:cashflow',
   // 首页取数规则：系统参数维护者与工作台使用者都可进入（与历史行为一致，工作台内有直达链接）
   '/system/dashboard-rules': ['system:init', DASHBOARD_PERMISSION],
   '/aux/dept': 'base:dept',
@@ -424,6 +448,13 @@ function getStaticNavApps(enableCashFlow: boolean, enableForeignCurrency = false
   ]
   if (enableCashFlow) {
     financeReportItems.push({
+      path: '/report/cash-flow-auto',
+      title: '现金流量表',
+      permission: 'ledger:cashflow',
+      requiresCashFlow: true,
+      icon: 'Waves',
+    })
+    financeReportItems.push({
       path: '/report/cash-flow',
       title: '现金流量表(估算)',
       permission: 'ledger:cashflow',
@@ -447,6 +478,7 @@ function getStaticNavApps(enableCashFlow: boolean, enableForeignCurrency = false
             { path: '/voucher/entry', title: '凭证录入', permission: 'voucher:entry', icon: 'FilePen' },
             { path: '/voucher/audit', title: '审核记账', permission: ['voucher:audit', 'voucher:post', 'voucher:unpost'], icon: 'FileCheck2' },
             { path: '/voucher/query', title: '凭证查询', permission: 'voucher:query', icon: 'FileSearch' },
+            { path: '/voucher/biz-center', title: '业务凭证', permission: ['scm:purchase', 'scm:sale', 'scm:inventory', 'scm:opening', 'scm:arap', 'scm:production', 'scm:outsource', 'cashier:voucher', 'cashier:journal', 'asset:view'], icon: 'Workflow' },
             { path: '/voucher/fx-reval', title: '期末调汇', permission: 'period:carry', icon: 'Coins', requiresForeignCurrency: true },
             { path: '/voucher/auto-transfer', title: '凭证结转', permission: 'period:carry', icon: 'ArrowRightLeft' },
             { path: '/voucher/period-close', title: '期间结账', permission: ['period:close', 'period:unclose'], icon: 'CalendarCheck' },
@@ -497,6 +529,7 @@ function getStaticNavApps(enableCashFlow: boolean, enableForeignCurrency = false
           key: 'cashier-setup',
           label: '出纳设置',
           items: [
+            { path: '/cashier/accounts-manage', title: '出纳账户', permission: 'cashier:dict', icon: 'Landmark' },
             { path: '/cashier/settle-type', title: '结算方式', permission: 'cashier:dict', icon: 'CreditCard' },
             { path: '/cashier/init-balance', title: '出纳期初', permission: 'cashier:initbal', icon: 'Coins' },
             { path: '/cashier/period-close', title: '出纳结账', permission: 'cashier:param', icon: 'CalendarCheck' },
@@ -521,6 +554,7 @@ function getStaticNavApps(enableCashFlow: boolean, enableForeignCurrency = false
             { path: '/asset/requisition', title: '领用归还', permission: 'asset:requisition', icon: 'UserCheck' },
             { path: '/asset/depreciation', title: '折旧计提', permission: 'asset:depr', icon: 'TrendingDown' },
             { path: '/asset/inventory', title: '资产盘点', permission: 'asset:inventory', icon: 'ClipboardCheck' },
+            { path: '/asset/vouchers', title: '凭证管理', permission: 'asset:view', icon: 'FilePen' },
           ],
         },
         {
@@ -548,6 +582,7 @@ function getStaticNavApps(enableCashFlow: boolean, enableForeignCurrency = false
           items: [
             { path: '/scm/docs?doc_type=PQ', title: '采购询价', permission: 'scm:purchase', icon: 'MessageSquareQuote' },
             { path: '/scm/docs?doc_type=PO', title: '采购订单', permission: 'scm:purchase', icon: 'ClipboardList' },
+            { path: '/scm/order-changes?doc_type=PO', title: '采购订单变更', permission: 'scm:purchase', icon: 'FilePenLine' },
             { path: '/scm/docs?doc_type=PI', title: '采购入库', permission: 'scm:purchase', icon: 'PackagePlus' },
             { path: '/scm/docs?doc_type=PR', title: '采购退货', permission: 'scm:purchase', icon: 'Undo2' },
             { path: '/scm/docs?doc_type=RP', title: '采购发票', permission: 'scm:purchase', icon: 'Receipt' },
@@ -568,6 +603,9 @@ function getStaticNavApps(enableCashFlow: boolean, enableForeignCurrency = false
             { path: '/scm/report/purchase/summary', title: '采购汇总表', permission: 'scm:report', icon: 'Table2' },
             { path: '/scm/report/purchase/detail', title: '采购明细表', permission: 'scm:report', icon: 'ListOrdered' },
             { path: '/scm/report/purchase/order-tracking', title: '采购订单执行表', permission: 'scm:report', icon: 'ListChecks' },
+            { path: '/scm/report/purchase/return', title: '采购退货统计表', permission: 'scm:report', icon: 'Undo2' },
+            { path: '/scm/report/purchase/return-query', title: '采购退货查询表', permission: 'scm:report', icon: 'FileSearch' },
+            { path: '/scm/report/purchase/invoice-query', title: '采购发票查询表', permission: 'scm:report', icon: 'Receipt' },
             { path: '/scm/report/purchase/ranking', title: '采购排行榜', permission: 'scm:report', icon: 'Trophy' },
             { path: '/scm/report/purchase/cost', title: '采购成本分析', permission: 'scm:report', icon: 'Calculator' },
             { path: '/scm/report/purchase/trend', title: '采购趋势分析', permission: 'scm:report', icon: 'LineChart' },
@@ -589,6 +627,7 @@ function getStaticNavApps(enableCashFlow: boolean, enableForeignCurrency = false
           items: [
             { path: '/scm/docs?doc_type=SQ', title: '销售报价', permission: 'scm:sale', icon: 'MessageSquareQuote' },
             { path: '/scm/docs?doc_type=SOa', title: '销售订单', permission: 'scm:sale', icon: 'ClipboardList' },
+            { path: '/scm/order-changes?doc_type=SOa', title: '销售订单变更', permission: 'scm:sale', icon: 'FilePenLine' },
             { path: '/scm/docs?doc_type=SO', title: '销售发货', permission: 'scm:sale', icon: 'Truck' },
             { path: '/scm/docs?doc_type=SR', title: '销售退货', permission: 'scm:sale', icon: 'Undo2' },
             { path: '/scm/docs?doc_type=RS', title: '销售发票', permission: 'scm:sale', icon: 'Receipt' },
@@ -601,6 +640,9 @@ function getStaticNavApps(enableCashFlow: boolean, enableForeignCurrency = false
           items: [
             { path: '/scm/report/sales/summary', title: '销售汇总表', permission: 'scm:report', icon: 'Table2' },
             { path: '/scm/report/sales/detail', title: '销售明细表', permission: 'scm:report', icon: 'ListOrdered' },
+            { path: '/scm/report/sales/return', title: '销售退货统计表', permission: 'scm:report', icon: 'Undo2' },
+            { path: '/scm/report/sales/return-query', title: '销售退货查询表', permission: 'scm:report', icon: 'FileSearch' },
+            { path: '/scm/report/sales/invoice-query', title: '销售发票查询表', permission: 'scm:report', icon: 'Receipt' },
             { path: '/scm/report/sales/ranking', title: '销售排行榜', permission: 'scm:report', icon: 'Trophy' },
             { path: '/scm/report/sales/profit', title: '销售毛利分析', permission: 'scm:report', icon: 'Percent' },
             { path: '/scm/report/sales/execution', title: '销售订单执行表', permission: 'scm:report', icon: 'ListChecks' },
@@ -623,12 +665,16 @@ function getStaticNavApps(enableCashFlow: boolean, enableForeignCurrency = false
           label: '库存单据',
           module: 'scm',
           items: [
-            { path: '/scm/docs?doc_type=OI', title: '其他入库', permission: 'scm:inventory', icon: 'PackagePlus' },
-            { path: '/scm/docs?doc_type=OO', title: '其他出库', permission: 'scm:inventory', icon: 'PackageMinus' },
+            // 第五份反馈：无订单的入库 / 出库（含未启用生产时的生产领用、成品入库，按「收发类别」带对方科目）
+            { path: '/scm/docs?doc_type=OI', title: '入库单（其他入库）', permission: 'scm:inventory', icon: 'PackagePlus' },
+            { path: '/scm/docs?doc_type=OO', title: '出库单（其他出库）', permission: 'scm:inventory', icon: 'PackageMinus' },
             { path: '/scm/docs?doc_type=TR', title: '调拨单', permission: 'scm:inventory', icon: 'ArrowLeftRight' },
             { path: '/scm/docs?doc_type=CK', title: '盘点单', permission: 'scm:inventory', icon: 'ClipboardCheck' },
             // 期初入库是建立库存的唯一入口，生产/委外单独授权时也必须可见
             { path: '/scm/docs?doc_type=IS', title: '期初入库', permission: ['scm:inventory', 'scm:opening'], module: SHARED_SCM_MODULES, icon: 'PackageOpen' },
+            // 组装/拆卸同时挂在「生产制造 › 生产单据」；这里给库存人员一个快捷入口，授权口径与生产一致
+            { path: '/scm/docs?doc_type=AS', title: '组装单', permission: 'scm:production', module: 'production', icon: 'Combine' },
+            { path: '/scm/docs?doc_type=DS', title: '拆卸单', permission: 'scm:production', module: 'production', icon: 'Split' },
           ],
         },
         {
@@ -678,7 +724,12 @@ function getStaticNavApps(enableCashFlow: boolean, enableForeignCurrency = false
           label: '核销对账',
           items: [
             { path: '/scm/arap-verify', title: '往来核销', permission: 'scm:arap', icon: 'BadgeCheck' },
-            { path: '/scm/arap-statement', title: '对账单', permission: 'scm:arap', icon: 'ScrollText' },
+            { path: '/scm/arap-verify-records', title: '核销单记录', permission: 'scm:arap', icon: 'ListChecks' },
+            // 第五份反馈：应收 / 应付对账单分开入口（应收只选客户、应付只选供应商）
+            { path: '/scm/statements?direction=ar', title: '应收对账单', permission: 'scm:arap', icon: 'ScrollText' },
+            { path: '/scm/statements?direction=ap', title: '应付对账单', permission: 'scm:arap', icon: 'ScrollText' },
+            { path: '/scm/statements/detail-report', title: '对账明细表', permission: 'scm:arap', icon: 'ListChecks' },
+            { path: '/scm/arap-statement', title: '往来对账查询', permission: 'scm:arap', icon: 'FileSearch' },
             { path: '/scm/arap-fx-reval', title: '往来汇率重估', permission: 'scm:arap', icon: 'Coins' },
           ],
         },
@@ -783,7 +834,7 @@ function getStaticNavApps(enableCashFlow: boolean, enableForeignCurrency = false
       key: 'basedata',
       title: '基础资料',
       icon: 'Database',
-      description: '财务、出纳、资产与供应链档案',
+      description: '财务、资产、出纳、供应链与公共档案',
       sections: [
         {
           key: 'basedata-finance',
@@ -791,11 +842,16 @@ function getStaticNavApps(enableCashFlow: boolean, enableForeignCurrency = false
           module: 'gl',
           items: [
             { path: '/base/account', title: '会计科目', permission: 'base:account', icon: 'BookMarked' },
-            { path: '/base/account-set-info', title: '套账信息', permission: 'system:init', icon: 'IdCard' },
             { path: '/base/init-balance', title: '期初余额', permission: 'period:init', icon: 'Coins' },
             { path: '/base/voucher-type', title: '凭证类型', permission: 'base:vtype', icon: 'Tags' },
             { path: '/voucher/template', title: '凭证模版', permission: 'base:template', icon: 'LayoutTemplate' },
             { path: '/base/transfer-type', title: '结转维护', permission: 'base:transfer', icon: 'ArrowRightLeft' },
+            ...(enableCashFlow
+              ? [
+                  { path: '/base/cash-flow-items', title: '现金流量项目', permission: 'base:cashitem', requiresCashFlow: true, icon: 'Waves' } as NavItem,
+                  { path: '/base/cash-flow-account-map', title: '科目现金流量项目', permission: 'base:cashitem', requiresCashFlow: true, icon: 'Split' } as NavItem,
+                ]
+              : []),
             ...(enableForeignCurrency
               ? [
                   {
@@ -807,15 +863,7 @@ function getStaticNavApps(enableCashFlow: boolean, enableForeignCurrency = false
                   } as NavItem,
                 ]
               : []),
-          ],
-        },
-        {
-          key: 'basedata-cashier',
-          label: '出纳档案',
-          module: 'cashier',
-          items: [
-            { path: '/cashier/settle-type', title: '结算方式', permission: 'cashier:dict', icon: 'CreditCard' },
-            { path: '/cashier/init-balance', title: '出纳期初', permission: 'cashier:initbal', icon: 'Coins' },
+            { path: '/report/dynamic', title: '报表维护', permission: 'report:define', icon: 'FileSpreadsheet' },
           ],
         },
         {
@@ -823,6 +871,16 @@ function getStaticNavApps(enableCashFlow: boolean, enableForeignCurrency = false
           label: '资产档案',
           module: 'asset',
           items: [{ path: '/asset/dict', title: '资产档案字典', permission: 'asset:dict', icon: 'FolderCog' }],
+        },
+        {
+          key: 'basedata-cashier',
+          label: '出纳档案',
+          module: 'cashier',
+          items: [
+            { path: '/cashier/accounts-manage', title: '出纳账户', permission: 'cashier:dict', icon: 'Landmark' },
+            { path: '/cashier/settle-type', title: '结算方式', permission: 'cashier:dict', icon: 'CreditCard' },
+            { path: '/cashier/init-balance', title: '出纳期初', permission: 'cashier:initbal', icon: 'Coins' },
+          ],
         },
         {
           // 物料/分类/单位/仓库/货位是进销存、生产、委外共用的基础档案，
@@ -838,13 +896,21 @@ function getStaticNavApps(enableCashFlow: boolean, enableForeignCurrency = false
             { path: '/scm/partners', title: '往来单位', permission: 'scm:partner', module: ['scm', 'outsource'], icon: 'UsersRound' },
             { path: '/scm/warehouses', title: '仓库档案', permission: 'scm:warehouse', icon: 'Warehouse' },
             { path: '/scm/bins', title: '货位档案', permission: 'scm:warehouse', icon: 'Grid3x3' },
+            // 供应链单据的自定义字段与列方案
+            { path: '/scm/doc-field-defs', title: '单据自定义字段', permission: 'scm:colscheme', icon: 'Tags' },
+            { path: '/scm/col-schemes', title: '列方案设置', permission: 'scm:colscheme', icon: 'SlidersHorizontal' },
+            // 业务单据生成总账凭证的科目与辅助核算对应（原在「系统参数 → 供应链」）
+            { path: '/base/scm-voucher-setting', title: '进销存凭证设置', permission: 'scm:param', icon: 'FileCog' },
+            // 润衡进销存备份导入到当前账套（与「账套管理」里的财务 ACD 导入相互独立）
+            { path: '/scm/acd-import', title: '进销存ACD导入', permission: 'scm:import', module: 'scm', icon: 'DatabaseBackup' },
           ],
         },
         {
-          key: 'basedata-print',
-          label: '报表与打印',
+          // 跨模块共用的配置：分区本身不限模块，按各项自身的模块授权显示
+          key: 'basedata-common',
+          label: '公共档案',
           items: [
-            { path: '/report/dynamic', title: '报表维护', permission: 'report:define', module: 'gl', icon: 'FileSpreadsheet' },
+            { path: '/base/account-set-info', title: '套账信息', permission: 'system:init', module: 'gl', icon: 'IdCard' },
             { path: '/base/print-template', title: '打印模版', permission: 'system:print', module: 'gl', icon: 'Printer' },
           ],
         },
@@ -869,7 +935,8 @@ function getStaticNavApps(enableCashFlow: boolean, enableForeignCurrency = false
           key: 'system-settings',
           label: '系统设置',
           items: [
-            { path: '/system/param', title: '系统参数', permission: 'system:init', icon: 'SlidersHorizontal' },
+            // 系统参数不再单列菜单，直接嵌在「系统管理」主页（/system/param 重定向到主页）
+            { path: '/system/license', title: '注册信息', permission: 'system:init', icon: 'BadgeCheck' },
             { path: '/system/dashboard-rules', title: '首页取数规则', permission: 'system:init', icon: 'Gauge' },
             { path: '/base/keyboard-shortcuts', title: '快捷键维护', permission: 'system:init', icon: 'Zap' },
           ],
@@ -1051,6 +1118,11 @@ export function getRoutePermissions(path: string): string[] | undefined {
 
   if (normalized === '/base/print-template' || normalized.startsWith('/base/print-template/')) {
     return ['system:print']
+  }
+
+  // 对账单查看 / 打印：/scm/statements/:id、/scm/statements/:id/print
+  if (normalized.startsWith('/scm/statements/')) {
+    return ['scm:arap']
   }
 
   return undefined

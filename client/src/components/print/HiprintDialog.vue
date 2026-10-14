@@ -41,6 +41,67 @@
           <el-option label="大" value="large" />
         </el-select>
       </template>
+      <template v-if="voucherPrint">
+        <span class="label">纸张</span>
+        <el-select
+          v-model="paperMode"
+          size="small"
+          style="width: 150px"
+          :disabled="mergeMode"
+          @change="handlePaperModeChange"
+        >
+          <el-option label="适应打印机纸张" value="fit" />
+          <el-option :label="actualPaperLabel" value="actual" />
+        </el-select>
+        <el-tooltip placement="bottom" :show-after="200">
+          <template #content>
+            <div class="paper-mode-tip">
+              <b>适应打印机纸张</b>（推荐）：在打印面板里自选纸张和横向/纵向，凭证按比例自动缩放填满，不变形；<br />
+              <b>凭证纸 1:1</b>：按模板尺寸原样打印，需先在打印机里建好同尺寸纸型，适合套打预印凭证纸。<br />
+              选择会记在本电脑上。
+            </div>
+          </template>
+          <el-icon class="paper-mode-help"><QuestionFilled /></el-icon>
+        </el-tooltip>
+        <el-popover placement="bottom" :width="300" trigger="click">
+          <template #reference>
+            <el-button size="small">边距{{ marginsSummary }}</el-button>
+          </template>
+          <div class="margin-panel">
+            <div class="margin-panel__grid">
+              <template v-for="side in MARGIN_SIDES" :key="side.key">
+                <span class="margin-panel__label">{{ side.label }}</span>
+                <el-input-number
+                  v-model="margins[side.key]"
+                  size="small"
+                  :min="VOUCHER_MARGIN_MIN_MM"
+                  :max="VOUCHER_MARGIN_MAX_MM"
+                  :step="0.5"
+                  :precision="1"
+                  controls-position="right"
+                  style="width: 96px"
+                  @change="handleMarginsChange"
+                />
+                <span class="margin-panel__unit">mm</span>
+              </template>
+            </div>
+            <div class="margin-panel__tip">
+              边距是纸边到凭证内容的距离，默认取模板自身边距。改哪边内容就贴到哪边；四边围出的区域装不下时等比缩小，不变形。设置记在本电脑上。
+            </div>
+            <div class="margin-panel__actions">
+              <el-button size="small" link type="primary" @click="resetMargins">恢复模板默认</el-button>
+            </div>
+          </div>
+        </el-popover>
+      </template>
+      <el-checkbox
+        v-if="allowMergeA4"
+        v-model="mergeMode"
+        size="small"
+        @change="renderPreview"
+      >
+        合打（A4 一页 2 张）
+      </el-checkbox>
       <div class="spacer" />
       <el-button size="small" :loading="rendering" @click="renderPreview">刷新预览</el-button>
       <el-button size="small" :loading="exportingPdf" @click="handleExportPdf">
@@ -59,8 +120,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, shallowRef, computed, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import { QuestionFilled } from '@element-plus/icons-vue'
 import { getApplicableTemplates, getPrintTemplate } from '@/api/printTemplate'
 import {
   loadHiprint,
@@ -70,9 +132,29 @@ import {
   wrapRawPrintPaper,
   printRawHtml,
   renderElementToPdfBlob,
+  renderElementsToPdfBlob,
+  canMergeA4,
+  groupPapersIntoA4Sheets,
+  printMergedSheets,
+  ensureMergeSheetStyle,
   paperDimensionsMm,
   normalizePanelForRender,
   hiprintBrowserPrintOptions,
+  fitVoucherTableCells,
+  printVoucherPapers,
+  panelSizeMm,
+  loadVoucherPaperMode,
+  saveVoucherPaperMode,
+  loadVoucherMargins,
+  saveVoucherMargins,
+  normalizeVoucherMargins,
+  applyVoucherMargins,
+  panelContentBoxMm,
+  templateVoucherMargins,
+  VOUCHER_MARGIN_MIN_MM,
+  VOUCHER_MARGIN_MAX_MM,
+  type VoucherPrintMargins,
+  type VoucherPaperMode,
   PRINT_FONT_SIZE_MAP,
   type PrintFontSizeKey,
 } from '@/utils/printTemplateHiprint'
@@ -108,6 +190,22 @@ interface Props {
   rawHtmlPreview?: boolean
   /** 显示字号选择（小/中/大），默认中=12px */
   showFontSize?: boolean
+  /** 显示「合打」开关（凭证连打：一张 A4 上下各打一张） */
+  allowMergeA4?: boolean
+  /** 合打开关初始值 */
+  mergeA4?: boolean
+  /**
+   * 字段模式下按面板加工打印数据（如凭证按模板固定行数切页）；
+   * 不传则直接用 printData
+   */
+  preparePrintData?: (panel: unknown) => unknown
+  /**
+   * 凭证打印：显示「纸张」模式（适应打印机纸张 / 凭证纸 1:1）、分录单元格防撑高，
+   * 打印改走自建 iframe（预览 DOM 即打印内容）
+   */
+  voucherPrint?: boolean
+  /** 打开时预选的模板（如进销存单据打印页已选中的自定义模板）；不在可选列表里时按默认模板 */
+  initialTemplateId?: string
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -118,6 +216,9 @@ const props = withDefaults(defineProps<Props>(), {
   rawHtmlPreview: false,
   showFontSize: false,
   autoPrint: false,
+  allowMergeA4: false,
+  mergeA4: false,
+  voucherPrint: false,
 })
 
 const emit = defineEmits<{ 'update:modelValue': [value: boolean] }>()
@@ -138,6 +239,74 @@ const exportingPdf = ref(false)
 const previewEmpty = ref(false)
 const previewRef = ref<HTMLElement | null>(null)
 const fontSizeKey = ref<PrintFontSizeKey>('medium')
+const mergeMode = ref(props.mergeA4)
+const paperMode = ref<VoucherPaperMode>(loadVoucherPaperMode())
+/** 最近一次预览用的面板（取纸张尺寸） */
+const currentPanel = shallowRef<unknown>(null)
+
+const actualPaperLabel = computed(() => {
+  const size = panelSizeMm(currentPanel.value)
+  return size ? `凭证纸 1:1（${size.width}×${size.height}）` : '凭证纸 1:1'
+})
+
+function handlePaperModeChange(mode: VoucherPaperMode) {
+  saveVoucherPaperMode(mode)
+}
+
+const MARGIN_SIDES: Array<{ key: keyof VoucherPrintMargins; label: string }> = [
+  { key: 'top', label: '上' },
+  { key: 'bottom', label: '下' },
+  { key: 'left', label: '左' },
+  { key: 'right', label: '右' },
+]
+/** 本电脑保存的边距；null = 用模板自身边距 */
+const savedMargins = ref<VoucherPrintMargins | null>(loadVoucherMargins())
+/** 弹窗里编辑的四向边距（mm）：没调过时显示模板自身边距 */
+const margins = ref<VoucherPrintMargins>({ top: 0, bottom: 0, left: 0, right: 0 })
+const marginsSummary = computed(() => {
+  const m = savedMargins.value
+  return m ? `（上${m.top} 下${m.bottom} 左${m.left} 右${m.right}）` : ''
+})
+
+/** 把边距套到预览纸面上（打印直接用预览 DOM，所以打印也带上） */
+function applyMarginsToPreview() {
+  if (!props.voucherPrint || !previewRef.value) return
+  const paper = panelSizeMm(currentPanel.value)
+  const box = panelContentBoxMm(currentPanel.value)
+  if (!paper || !box) return
+  margins.value = savedMargins.value ? { ...savedMargins.value } : templateVoucherMargins(box, paper)
+  applyVoucherMargins(previewRef.value, margins.value, box, paper)
+}
+
+function handleMarginsChange() {
+  savedMargins.value = normalizeVoucherMargins(margins.value)
+  saveVoucherMargins(savedMargins.value)
+  applyMarginsToPreview()
+}
+
+function resetMargins() {
+  savedMargins.value = null
+  saveVoucherMargins(null)
+  applyMarginsToPreview()
+}
+
+/** 本次渲染是否真正按合打输出（模板高于半张 A4 时回退逐张） */
+let mergeWarned = false
+function shouldMerge(panel: unknown): boolean {
+  if (!props.allowMergeA4 || !mergeMode.value) return false
+  if (canMergeA4(panel)) return true
+  if (!mergeWarned) {
+    mergeWarned = true
+    ElMessage.warning('当前打印模板高度超过半张 A4，无法合打，已按逐张打印')
+  }
+  return false
+}
+
+/** hiprint getHtml 的结果转成 DOM 节点 */
+function htmlToNode($html: any): Node | string {
+  const node = $html && ($html[0] || (typeof $html.get === 'function' && $html.get(0)))
+  return node || String($html)
+}
 
 function resolvePrintHtml(): string {
   if (!props.getPrintHtml) return ''
@@ -162,7 +331,8 @@ const loadTemplates = async () => {
     })
     if (res.code === 0) {
       templates.value = res.data
-      const def = res.data.find(t => t.is_default) || res.data[0]
+      const preset = props.initialTemplateId ? res.data.find(t => t.id === props.initialTemplateId) : undefined
+      const def = preset || res.data.find(t => t.is_default) || res.data[0]
       selectedTemplateId.value = def ? def.id : ''
     }
   } catch (e: any) {
@@ -172,6 +342,10 @@ const loadTemplates = async () => {
   } finally {
     loadingTemplates.value = false
   }
+}
+
+function fieldPrintData(panel: unknown) {
+  return props.preparePrintData ? props.preparePrintData(panel) : props.printData
 }
 
 /** 取得当前要用的 hiprint 面板（有自定义模板用其 panel，否则用内置单 HTML 面板） */
@@ -194,12 +368,14 @@ const resolvePanelAndData = async (): Promise<{ panel: any; data: any } | null> 
   // normalizePanelForRender：把非表格元素钉在设计坐标上（否则 hiprint 打印时会让分录表
   // 后面的签章行跟着表格真实高度下移，和设计器对不上），并注入合计行的求和渲染函数
   if (Array.isArray(designedPanels) && designedPanels.length > 0 && props.printData) {
-    return { panel: normalizePanelForRender(detail!.panel), data: props.printData }
+    const panel = normalizePanelForRender(detail!.panel)
+    return { panel, data: fieldPrintData(panel) }
   }
 
   // 字段模式但无自定义模板：用内置默认面板（凭证默认模板）
   if (props.printData && props.defaultPanelBuilder) {
-    return { panel: normalizePanelForRender(props.defaultPanelBuilder()), data: props.printData }
+    const panel = normalizePanelForRender(props.defaultPanelBuilder())
+    return { panel, data: fieldPrintData(panel) }
   }
 
   // 否则 html 模式：用模板纸张/底图包一个单 html 面板
@@ -251,12 +427,21 @@ const renderPreview = async () => {
       return
     }
     currentTp = new mod.hiprint.PrintTemplate({ template: resolved.panel })
+    currentPanel.value = resolved.panel
     if (previewRef.value) {
       previewRef.value.innerHTML = ''
-      const $html = currentTp.getHtml(resolved.data) as any
-      const node = $html && ($html[0] || (typeof $html.get === 'function' && $html.get(0)))
-      if (node) previewRef.value.appendChild(node)
-      else previewRef.value.innerHTML = String($html)
+      const node = htmlToNode(currentTp.getHtml(resolved.data))
+      if (typeof node === 'string') previewRef.value.innerHTML = node
+      else previewRef.value.appendChild(node)
+      // 长摘要缩字 / 两行显示，不让行高被撑开（打印直接用这份 DOM）
+      if (props.voucherPrint) {
+        fitVoucherTableCells(previewRef.value)
+        applyMarginsToPreview()
+      }
+      if (shouldMerge(resolved.panel)) {
+        ensureMergeSheetStyle()
+        groupPapersIntoA4Sheets(previewRef.value)
+      }
     }
   } catch (e: any) {
     ElMessage.error('预览失败：' + (e?.message || e))
@@ -289,6 +474,10 @@ const handlePrint = async () => {
       printRawHtml(html, rawPrintOptions())
       return
     }
+    if (props.voucherPrint) {
+      await printVoucherFromPreview()
+      return
+    }
     const mod = await loadHiprint()
     const resolved = await resolvePanelAndData()
     if (!resolved) {
@@ -296,6 +485,16 @@ const handlePrint = async () => {
       return
     }
     const tp = new mod.hiprint.PrintTemplate({ template: resolved.panel })
+    if (shouldMerge(resolved.panel)) {
+      // 合打：渲染出逐张纸面后每 2 张拼进一张 A4，自建 iframe 打印
+      const box = document.createElement('div')
+      const node = htmlToNode(tp.getHtml(resolved.data))
+      if (typeof node === 'string') box.innerHTML = node
+      else box.appendChild(node)
+      groupPapersIntoA4Sheets(box)
+      printMergedSheets(box.innerHTML, props.title)
+      return
+    }
     // 第三参：把 print-lock.css 与项目覆盖样式带进打印 iframe（否则表格无网格线、纸张失效）
     tp.print(resolved.data, {}, hiprintBrowserPrintOptions())
   } catch (e: any) {
@@ -303,6 +502,30 @@ const handlePrint = async () => {
   } finally {
     printing.value = false
   }
+}
+
+/**
+ * 凭证打印：直接打印预览里的纸面（已按行数切页、已防撑高），所见即所得；
+ * @page 由我们按纸张模式写，不再用 hiprint 写死的 `size: 宽mm 高mm`（会让打印面板丢失横向选项）。
+ */
+async function printVoucherFromPreview() {
+  if (!previewRef.value?.querySelector('.hiprint-printPaper')) await renderPreview()
+  const box = previewRef.value
+  if (!box || !box.querySelector('.hiprint-printPaper')) {
+    ElMessage.warning('无可打印内容')
+    return
+  }
+  if (box.querySelector('.cw-merge-sheet')) {
+    printMergedSheets(box.innerHTML, props.title)
+    return
+  }
+  const size = panelSizeMm(currentPanel.value) || paperDimensionsMm(props.defaultPaper, props.defaultOrientation)
+  printVoucherPapers(box, {
+    mode: paperMode.value,
+    widthMm: size.width,
+    heightMm: size.height,
+    title: props.title,
+  })
 }
 
 const handleExportPdf = async () => {
@@ -325,6 +548,19 @@ const handleExportPdf = async () => {
     const resolved = await resolvePanelAndData()
     if (!resolved) {
       ElMessage.warning('无可打印内容')
+      return
+    }
+    if (shouldMerge(resolved.panel)) {
+      const sheets = Array.from(
+        previewRef.value?.querySelectorAll<HTMLElement>('.cw-merge-sheet') || []
+      )
+      if (sheets.length === 0) {
+        ElMessage.warning('请先刷新预览')
+        return
+      }
+      const blob = await renderElementsToPdfBlob(sheets, { width: 210, height: 297 })
+      downloadBlob(blob, `${props.title || '打印'}.pdf`)
+      ElMessage.success('PDF 已导出')
       return
     }
     const tp = new mod.hiprint.PrintTemplate({ template: resolved.panel })
@@ -371,7 +607,10 @@ const handleOpened = async () => {
 watch(
   () => props.modelValue,
   v => {
-    if (!v) {
+    if (v) {
+      mergeMode.value = props.mergeA4
+      mergeWarned = false
+    } else {
       autoPrinted = false
       if (previewRef.value) previewRef.value.innerHTML = ''
     }
@@ -407,6 +646,37 @@ watch(
   font-size: 13px;
   color: #606266;
 }
+.hiprint-toolbar .paper-mode-help {
+  color: #909399;
+  cursor: help;
+}
+.margin-panel__grid {
+  display: grid;
+  grid-template-columns: 24px 96px 24px;
+  row-gap: 8px;
+  column-gap: 6px;
+  align-items: center;
+  justify-content: center;
+}
+.margin-panel__label,
+.margin-panel__unit {
+  font-size: 13px;
+  color: #606266;
+}
+.margin-panel__tip {
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #909399;
+}
+.margin-panel__actions {
+  margin-top: 6px;
+  text-align: right;
+}
+.paper-mode-tip {
+  max-width: 320px;
+  line-height: 1.6;
+}
 .hiprint-toolbar .spacer {
   flex: 1;
 }
@@ -431,5 +701,12 @@ watch(
 }
 .hiprint-preview :deep(.cw-raw-paper) {
   margin: 0 auto;
+}
+/* 合打预览：A4 纸之间留灰色间隔 */
+.hiprint-preview :deep(.cw-merge-root) {
+  background: #f5f7fa;
+}
+.hiprint-preview :deep(.cw-merge-sheet + .cw-merge-sheet) {
+  margin-top: 12px;
 }
 </style>

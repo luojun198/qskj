@@ -26,7 +26,7 @@
       <FilterClearButton @clear="handleClearFilters" />
       <el-divider direction="vertical" />
       <el-button plain @click="openImportDialog"><el-icon><Upload /></el-icon>导入</el-button>
-      <el-button plain :disabled="!rows.length" @click="handleExport"><el-icon><Download /></el-icon>导出</el-button>
+      <el-button plain :disabled="!rows.length" @click="handleExport"><el-icon><Download /></el-icon>另存</el-button>
       <el-button plain :loading="swapping" @click="handleBatchSwap"><el-icon><Connection /></el-icon>借贷互换</el-button>
       <el-divider direction="vertical" />
       <el-button plain @click="goReconcile"><el-icon><Connection /></el-icon>出纳对账</el-button>
@@ -57,11 +57,15 @@
         @selection-change="val => selectedRows = val"
         @current-change="val => tableRef.currentRow = val"
       >
-        <el-table-column type="selection" width="40" align="center" fixed="left" />
+        <el-table-column type="selection" width="40" align="center" fixed="left" :selectable="isRowSelectable" />
         <template v-for="column in orderedVisibleJournalColumns" :key="column.key">
         <el-table-column v-if="column.key === 'biz_date'" column-key="biz_date" label="日期" prop="biz_date" :width="cw('biz_date',100)" />
         <el-table-column v-else-if="column.key === 'seq'" column-key="seq" label="序号" prop="seq" :width="cw('seq',50)" align="center" />
-        <el-table-column v-else-if="column.key === 'summary'" column-key="summary" label="摘要" prop="summary" :width="cw('summary',140)" show-overflow-tooltip />
+        <el-table-column v-else-if="column.key === 'summary'" column-key="summary" label="摘要" prop="summary" :width="cw('summary',140)" show-overflow-tooltip>
+          <template #default="{ row }">
+            <el-tag v-if="row.scm_doc_no" size="small" type="warning" effect="plain" class="scm-source-tag">{{ scmSourceLabel(row) }}</el-tag>{{ row.summary }}
+          </template>
+        </el-table-column>
         <el-table-column v-else-if="column.key === 'counter_account'" column-key="counter_account" label="对方科目" :width="cw('counter_account',120)" show-overflow-tooltip>
           <template #default="{ row }">{{ formatCounterAccount(row.counter_account) }}</template>
         </el-table-column>
@@ -106,18 +110,22 @@
             <template v-if="row.voucher_no">
               <el-tag type="success" size="small" effect="plain">已生成</el-tag>
               <span style="margin-left:4px;white-space:nowrap">{{ voucherNoLabel(row) }}</span>
-              <el-button link type="danger" size="small" style="margin-left:4px" @click.stop="handleRowDeleteVoucher(row)">删凭证</el-button>
+              <el-button v-if="!isScmVoucherRow(row)" link type="danger" size="small" style="margin-left:4px" @click.stop="handleRowDeleteVoucher(row)">删凭证</el-button>
             </template>
             <template v-else>
               <el-tag type="info" size="small" effect="plain">未生成</el-tag>
-              <el-button link type="primary" size="small" style="margin-left:4px" @click.stop="handleRowGenerate(row)">生成</el-button>
+              <el-button v-if="!isScmVoucherRow(row)" link type="primary" size="small" style="margin-left:4px" @click.stop="handleRowGenerate(row)">生成</el-button>
+              <span v-else class="scm-voucher-hint">在{{ row.scm_doc_type === 'PAY' ? '付款单' : '收款单' }}制证</span>
             </template>
           </template>
         </el-table-column>
         </template>
         <el-table-column label="操作" column-key="操作" :width="cw('操作', 70)" align="center" fixed="right">
           <template #default="{ row }">
-            <el-button link type="danger" size="small" @click.stop="handleDelete(row.id)">删除</el-button>
+            <el-tooltip v-if="row.scm_doc_no" :content="`由${scmSourceLabel(row)}审核生成，请在供应链反审核单据`" placement="left">
+              <el-button link type="danger" size="small" disabled>删除</el-button>
+            </el-tooltip>
+            <el-button v-else link type="danger" size="small" @click.stop="handleDelete(row.id)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -159,11 +167,19 @@
           @navigate="handleNavigate"
         />
       </div>
+      <el-alert
+        v-if="editScmLocked"
+        type="warning"
+        :closable="false"
+        show-icon
+        style="margin-bottom: 12px"
+        :title="`该记录由${scmSourceLabel(editRow!)}审核生成：日期、金额、汇率、对方科目和辅助项随单据走，如需修改请在供应链反审核单据；摘要、票据号等可直接修改。`"
+      />
       <el-form :model="form" label-width="74px" size="small" @keydown.ctrl.enter.prevent="!editRow && !saving && handleSave(true)">
         <el-row :gutter="15">
           <el-col :span="6">
             <el-form-item label="日期" required>
-              <el-date-picker v-model="form.biz_date" type="date" value-format="YYYY-MM-DD" style="width:100%" />
+              <el-date-picker v-model="form.biz_date" type="date" value-format="YYYY-MM-DD" style="width:100%" :disabled-date="disabledBeforeGlStart" :disabled="editScmLocked" />
             </el-form-item>
           </el-col>
           <el-col :span="18">
@@ -180,6 +196,7 @@
                 v-model="form.counter_account"
                 filterable
                 clearable
+                :disabled="editScmLocked"
                 placeholder="输入编码或名称检索"
                 style="width:100%"
                 popper-class="counter-account-popper"
@@ -205,6 +222,7 @@
                 :precision="2"
                 :min="0"
                 :controls="false"
+                :disabled="editScmLocked"
                 style="width:100%"
                 @change="onDebitChange"
               />
@@ -218,10 +236,11 @@
                   :precision="2"
                   :min="0"
                   :controls="false"
+                  :disabled="editScmLocked"
                   style="flex: 1"
                   @change="onCreditChange"
                 />
-                <el-button @click="swapFormDebitCredit" title="借贷互换" plain style="padding: 0 6px;">
+                <el-button @click="swapFormDebitCredit" title="借贷互换" plain style="padding: 0 6px;" :disabled="editScmLocked">
                   <el-icon><Connection /></el-icon>
                 </el-button>
               </div>
@@ -239,10 +258,11 @@
                   :precision="rateDecimals"
                   :min="0"
                   :controls="false"
+                  :disabled="editScmLocked"
                   style="flex:1"
                   @change="rateTouched = true"
                 />
-                <el-button link type="primary" size="small" :loading="rateLoading" @click="loadDefaultRate(true)">取默认</el-button>
+                <el-button link type="primary" size="small" :loading="rateLoading" :disabled="editScmLocked" @click="loadDefaultRate(true)">取默认</el-button>
               </div>
             </el-form-item>
           </el-col>
@@ -265,12 +285,13 @@
               :key="catId"
               :span="12"
             >
-              <el-form-item :label="getAuxCategoryName(catId)">
+              <el-form-item :label="getAuxCategoryName(catId)" required>
                 <el-select
                   v-model="counterAuxSelections[catId]"
                   filterable
                   clearable
-                  placeholder="选择辅助项目（可选）"
+                  :disabled="editScmLocked"
+                  :placeholder="`对方科目要求，请选择${getAuxCategoryName(catId)}`"
                   style="width:100%"
                   @visible-change="(v: boolean) => v && auxItems.onDropdownOpen(catId)"
                 >
@@ -417,6 +438,9 @@
 // P2-7：默认日期用本地时间（此前 toISOString 取 UTC，东八区 0~8 点会落到前一天）
 import { formatDate } from '@/utils/format'
 import { ref, computed, onMounted, onActivated, nextTick, watch } from 'vue'
+import { useSystemParamsStore } from '@/stores/systemParams'
+import { useGlStartDate } from '@/composables/useGlStartDate'
+const { disabledBeforeGlStart } = useGlStartDate()
 import { useRoute, useRouter } from 'vue-router'
 import type ExcelJS from 'exceljs'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -742,13 +766,29 @@ const counterAccountAuxCategoryIds = computed((): string[] => {
   if (!code) return []
   const acc = (baseData.accounts as any[]).find(a => a.code === code)
   if (!acc?.is_aux || !acc?.aux_types) return []
+  let keys: string[] = []
+  const raw = acc.aux_types
   try {
-    const parsed = typeof acc.aux_types === 'string' ? JSON.parse(acc.aux_types) : acc.aux_types
-    if (Array.isArray(parsed)) return parsed as string[]
-    if (parsed && typeof parsed === 'object') return Object.keys(parsed)
-  } catch { /* ignore */ }
-  return []
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
+    if (Array.isArray(parsed)) keys = parsed.map(String)
+    else if (parsed && typeof parsed === 'object') keys = Object.keys(parsed)
+  } catch {
+    // 兼容逗号分隔的旧格式（dept,project）
+    if (typeof raw === 'string') keys = raw.split(',').map(k => k.trim()).filter(Boolean)
+  }
+  // 键可能是类别 id 也可能是类别 code，统一成 id（与服务端判定口径一致）
+  const ids: string[] = []
+  for (const k of keys) {
+    const cat = (baseData.auxCategories as any[]).find(c => String(c.id) === k || c.code === k)
+    const id = cat ? String(cat.id) : k
+    if (!ids.includes(id)) ids.push(id)
+  }
+  return ids
 })
+
+/** 对方科目要求、但尚未选择的辅助类别名 */
+const counterAuxMissingNames = computed(() =>
+  counterAccountAuxCategoryIds.value.filter(id => !counterAuxSelections.value[id]).map(getAuxCategoryName))
 
 const auxCategoryMap = computed(() => {
   const map = new Map<string, string>()
@@ -1067,6 +1107,17 @@ function resetAddForm(keepDate?: string) {
 // FIX-260：新增外币流水时改日期 → 重新取该期间默认汇率（用户手改过则保留）
 watch(() => form.value.biz_date, () => { if (dialogVisible.value && !editRow.value) loadDefaultRate() })
 
+// ── 收付款单来源流水（收付款制证方式，见系统参数 → 公共参数） ──
+const systemParams = useSystemParamsStore()
+systemParams.load()
+const scmSourceLabel = (row: Pick<JournalRow, 'scm_doc_type' | 'scm_doc_no'>) =>
+  `${row.scm_doc_type === 'PAY' ? '付款单' : '收款单'} ${row.scm_doc_no ?? ''}`
+/** 收付款单直接制证模式下的来源行：凭证在单据侧生成 / 删除，出纳不能对其制证 */
+const isScmVoucherRow = (row: JournalRow) =>
+  !!row.scm_doc_no && systemParams.paymentVoucherMode !== 'cashier'
+const isRowSelectable = (row: JournalRow) => !isScmVoucherRow(row)
+const editScmLocked = computed(() => !!editRow.value?.scm_doc_no)
+
 function openEditDialog(row: JournalRow) {
   editRow.value = row
   form.value = { ...row }
@@ -1075,7 +1126,13 @@ function openEditDialog(row: JournalRow) {
   attachments.value = []
   queuedFiles.value = []
   if (row.counter_aux_item_id) {
-    try { Object.assign(counterAuxSelections.value, JSON.parse(row.counter_aux_item_id)) } catch { /* ignore */ }
+    try {
+      // 旧数据的键可能是类别 code，统一转成类别 id，与选择器的键一致
+      for (const [k, v] of Object.entries(JSON.parse(row.counter_aux_item_id) as Record<string, string>)) {
+        const cat = (baseData.auxCategories as any[]).find(c => String(c.id) === k || c.code === k)
+        counterAuxSelections.value[cat ? String(cat.id) : k] = v
+      }
+    } catch { /* ignore */ }
   }
   dialogVisible.value = true
   fetchAttachments(row.id)
@@ -1119,6 +1176,16 @@ async function handleSave(keepOpen = false) {
   if (!form.value.debit && !form.value.credit) return ElMessage.warning('借方或贷方金额不能同时为零')
   if (form.value.debit && form.value.credit) return ElMessage.warning('借方和贷方不能同时有值')
   if (isForeignAccount.value && !(Number(form.value.exchange_rate) > 0)) return ElMessage.warning('请填写大于 0 的汇率')
+  // 对方科目挂了辅助核算而未选：只提醒，可继续保存（生成凭证时会被拦截）
+  if (counterAuxMissingNames.value.length) {
+    try {
+      await ElMessageBox.confirm(
+        `对方科目 ${form.value.counter_account} 挂了「${counterAuxMissingNames.value.join('、')}」辅助核算，当前未选择。\n不补填的话，这条流水生成凭证时会被拦截。仍要保存吗？`,
+        '辅助核算未填写',
+        { confirmButtonText: '仍要保存', cancelButtonText: '返回填写', type: 'warning' },
+      )
+    } catch { return }
+  }
   const selected = Object.fromEntries(Object.entries(counterAuxSelections.value).filter(([, v]) => v))
   const counter_aux_item_id = Object.keys(selected).length > 0 ? JSON.stringify(selected) : null
   saving.value = true
@@ -1553,6 +1620,14 @@ async function handleExport() {
 </script>
 
 <style scoped>
+.scm-source-tag {
+  margin-right: 4px;
+}
+.scm-voucher-hint {
+  margin-left: 4px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
 .page-cashier-journal { display: flex; flex-direction: column; height: 100%; }
 .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .balance-summary { display: flex; align-items: center; gap: 18px; min-width: 0; overflow-x: auto; white-space: nowrap; font-size: var(--cw-text-base); }

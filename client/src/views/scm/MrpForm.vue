@@ -7,6 +7,7 @@
         <el-tag v-if="!isNew" :type="doc.status === 'audited' ? 'success' : 'info'" size="small">{{ doc.status === 'audited' ? '已审核' : '草稿' }}</el-tag>
       </div>
       <div class="header-actions">
+        <SaveAsButton doc :title="doc.doc_no ? `MRP计算单 ${doc.doc_no}` : 'MRP计算单'" />
         <template v-if="editable">
           <el-button @click="save(false)" :loading="saving">保存</el-button>
           <el-button v-if="isNew || adjustmentsDirty" type="primary" @click="calculate" :loading="calculating"><el-icon><Refresh /></el-icon>{{ isNew ? '保存并计算' : '保存并重新计算' }}</el-button>
@@ -35,7 +36,7 @@
 
     <el-card shadow="never" class="head-card">
       <el-form :model="doc" inline label-width="90px">
-        <el-form-item label="计算日期"><el-date-picker v-model="doc.doc_date" value-format="YYYY-MM-DD" :disabled="!editable" /></el-form-item>
+        <el-form-item label="计算日期"><el-date-picker v-model="doc.doc_date" value-format="YYYY-MM-DD" :disabled="!editable" :disabled-date="disabledBeforeGlStart" /></el-form-item>
         <el-form-item label="安全库存"><el-switch v-model="includeSafetyStock" :disabled="!editable" active-text="纳入" inactive-text="不纳入" /></el-form-item>
         <el-form-item label="追加调整"><el-checkbox v-model="showAdjustments" :disabled="!editable">启用</el-checkbox></el-form-item>
         <el-form-item v-if="showAdjustments" label="需求放大"><el-input-number v-model="demandMultiplier" :disabled="!editable" :min="0" :max="1000" :precision="2" controls-position="right" @change="markAdjustmentsDirty" /><span class="unit-suffix">%</span></el-form-item>
@@ -53,13 +54,13 @@
         <el-input v-model="sourceKeyword" placeholder="搜索单号" clearable style="width:190px" @keyup.enter="loadOptions" />
         <el-button :loading="optionsLoading" @click="loadOptions">查询</el-button>
       </div>
-      <el-table v-if="isNew && editable" :data="sourceOptions" border size="small" max-height="210" class="option-table">
+      <el-table v-col-width="'scm_MrpForm_1'" v-if="isNew && editable" :data="sourceOptions" border size="small" max-height="210" class="option-table">
         <el-table-column label="选择" width="70" align="center"><template #default="{ row }"><el-checkbox :model-value="hasRef(row.kind,row.id)" :disabled="!row.eligible && !hasRef(row.kind,row.id)" @change="toggleRef(row,$event)" /></template></el-table-column>
         <el-table-column label="单号" prop="source_no" min-width="160" /><el-table-column label="日期" prop="doc_date" width="110" />
         <el-table-column label="数量" width="100" align="right"><template #default="{ row }">{{ fmt(row.total_qty) }}</template></el-table-column>
-        <el-table-column label="状态" width="100"><template #default="{ row }"><el-tag :type="row.eligible ? 'success' : 'info'" size="small">{{ row.eligible ? '可选择' : row.reason }}</el-tag></template></el-table-column>
+        <el-table-column label="状态" width="200"><template #default="{ row }"><el-tooltip :disabled="row.eligible" :content="row.reason" placement="top"><el-tag :type="row.eligible ? 'success' : 'info'" size="small" class="mrp-src-reason">{{ row.eligible ? '可选择' : row.reason }}</el-tag></el-tooltip></template></el-table-column>
       </el-table>
-      <el-table v-if="sourceSummaries.length" data-testid="source-summary-table" :data="sourceSummaries" border stripe size="small" max-height="220" class="source-summary-table">
+      <el-table v-col-width="'scm_MrpForm_2'" v-if="sourceSummaries.length" data-testid="source-summary-table" :data="sourceSummaries" border stripe size="small" max-height="220" class="source-summary-table">
         <el-table-column label="来源类型" width="100"><template #default="{ row }">{{ kindLabel(row.kind) }}</template></el-table-column>
         <el-table-column label="来源单号" min-width="160"><template #default="{ row }"><el-button link type="primary" @click="openSourceSummary(row)">{{ row.source_no }}</el-button></template></el-table-column>
       </el-table>
@@ -72,7 +73,7 @@
 
     <el-card v-if="sources.length" shadow="never" class="demand-card">
       <template #header><div class="card-title"><b>需求明细</b><span>来源单冻结到本次 MRP 的原始需求</span></div></template>
-      <el-table data-testid="source-demand-table" :data="sources" border stripe size="small" max-height="240">
+      <el-table v-col-width="'scm_MrpForm_3'" data-testid="source-demand-table" :data="sources" border stripe size="small" max-height="240">
         <el-table-column label="来源单号" min-width="150"><template #default="{ row }"><el-button link type="primary" @click="openSource({ kind: row.source_kind, id: row.source_id })">{{ row.source_no }}</el-button></template></el-table-column>
         <el-table-column label="来源行" width="75" align="center"><template #default="{ row }">{{ row.source_line_seq || '-' }}</template></el-table-column>
         <el-table-column label="物料编码" prop="item_code" min-width="120" />
@@ -91,7 +92,7 @@
 
     <el-card v-if="showAdjustments && targetRows.length" shadow="never" class="target-card">
       <template #header><div class="card-title"><b>物料目标需求量</b><span>填写后覆盖该物料按比例和固定追加汇总出的需求量</span></div></template>
-      <el-table :data="targetRows" border stripe size="small" max-height="220">
+      <el-table v-col-width="'scm_MrpForm_4'" :data="targetRows" border stripe size="small" max-height="220">
         <el-table-column label="物料编码" prop="item_code" min-width="130" />
         <el-table-column label="物料名称" prop="item_name" min-width="150" />
         <el-table-column label="最终需求合计" width="130" align="right"><template #default="{ row }">{{ fmt(row.final_qty) }}</template></el-table-column>
@@ -101,7 +102,7 @@
 
     <el-card shadow="never" class="result-card">
       <template #header><div class="card-title"><b>净需求结果</b><span v-if="doc.field_values?.calculated_at">计算时间：{{ doc.field_values.calculated_at }}</span></div></template>
-      <el-table :data="lines" border stripe size="small" height="100%">
+      <el-table v-col-width="'scm_MrpForm_5'" :data="lines" border stripe size="small" height="100%">
         <el-table-column label="层级" width="65" align="center"><template #default="{ row }">L{{ row.field_values.level }}</template></el-table-column>
         <el-table-column label="物料" min-width="190"><template #default="{ row }">{{ row.item_code }} {{ row.item_name }}</template></el-table-column>
         <el-table-column label="父件" min-width="140" show-overflow-tooltip><template #default="{ row }">{{ (row.field_values.parent_item_codes || []).join('、') || '-' }}</template></el-table-column>
@@ -125,6 +126,8 @@
 <script setup lang="ts">
 import { todayStr } from '@/utils/format'
 import { computed, onMounted, ref, watch } from 'vue'
+import { useGlStartDate } from '@/composables/useGlStartDate'
+const { disabledBeforeGlStart } = useGlStartDate()
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft, Refresh } from '@element-plus/icons-vue'
@@ -218,6 +221,7 @@ watch(()=>route.fullPath,()=>{if(tabsStore.activeKey!==myTabKey)return;if(isScmM
 </script>
 
 <style scoped>
+.mrp-src-reason { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .adj-mark { color: var(--el-color-warning); font-weight: 600; }
 .mrp-form-page{display:flex;flex-direction:column;height:100%;padding:var(--page-pad);gap:var(--block-gap);overflow:auto}.form-header{display:flex;align-items:center;justify-content:space-between}.header-left,.header-actions,.source-toolbar,.card-title{display:flex;align-items:center;gap:8px}.sep{color:var(--el-text-color-secondary)}.head-card :deep(.el-card__body){padding:10px 14px}.head-card :deep(.el-form-item){margin-bottom:0}.remark-item{min-width:360px;flex:1}.source-card :deep(.el-card__body){padding:10px 12px}.card-title{justify-content:space-between}.card-title span{font-size:12px;color:var(--el-text-color-secondary)}.source-toolbar{margin-bottom:8px}.option-table{margin-bottom:8px}.source-summary-table{margin-top:8px}.selected-title{font-size: var(--cw-text-base);color:var(--el-text-color-secondary);margin:8px 0 6px}.selected-list{display:flex;gap:6px;flex-wrap:wrap;min-height:32px}.source-tag{cursor:pointer}.selected-list :deep(.el-empty){padding:4px;width:100%}.demand-card :deep(.el-card__body){padding:0}.result-card{flex:1;min-height:260px;display:flex;flex-direction:column}.result-card :deep(.el-card__body){flex:1;min-height:0;padding:0}.net{color:var(--el-color-danger)}
 </style>

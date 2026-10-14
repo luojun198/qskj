@@ -32,6 +32,7 @@
       :flat-list="draftFlatList"
       :loading="draftLoading"
       :sort-config="sortConfig"
+      :sorts="voucherSorts"
       :aux-categories="auxCategories"
       :voucher-types="voucherTypes"
       :accounts="accounts"
@@ -40,10 +41,11 @@
       :has-more="draftHasMore"
       :soft-cap-reached="draftSoftCapReached"
       :selected-voucher-id="selectedDraftId"
-      @refresh="() => fetchDraftVouchers()"
+      @refresh="() => refreshDrafts()"
       @edit="handleEdit"
       @delete="handleDeleteDraft"
       @sort-change="handleSortChange"
+      @sorts-change="handleSortsChange"
       @row-click="handleDraftRowClick"
       @row-dblclick="handleDraftDblclick"
       @page-change="handlePageChange"
@@ -181,8 +183,6 @@
       :is-balanced="isBalanced"
       :current-entry-aux-categories="currentEntryAuxCategories"
       :is-parent-account="isParentAccount"
-      :enable-cash-flow="enableCashFlow"
-      :cash-flow-items="cashFlowItems"
       :enable-foreign-currency="enableForeignCurrency"
       :resolve-exchange-rate="resolveEntryExchangeRate"
       :get-aux-item-names="getAuxItemNames"
@@ -242,6 +242,9 @@
 </template>
 
 <script setup lang="ts">
+// 凭证页共用全局样式：用脚本 import 而非 <style src>。
+// 多个组件 <style src> 同一文件时，生产构建只编译一份且可能套用某个导入方的 scoped，导致其它页面样式丢失（FIX-344）
+import '@/views/voucher/voucher.styles.css'
 import { todayStr } from '@/utils/format'
 import { ref, computed, watch, onMounted, onActivated, nextTick, shallowRef } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -272,7 +275,6 @@ import {
 import { useVoucherReverse } from '@/composables/useVoucherReverse'
 import dayjs from 'dayjs'
 import request from '@/api/request'
-import { getCashFlowItems } from '@/api/cashFlow'
 import VoucherDraftList from '@/components/voucher/VoucherDraftList.vue'
 import { useTableInfiniteScroll } from '@/composables/useTableInfiniteScroll'
 import VoucherBatchDelete from '@/components/voucher/VoucherBatchDelete.vue'
@@ -300,13 +302,14 @@ import { useKeyboardShortcuts, commonShortcuts } from '@/composables/useKeyboard
 import { useOperationHistory } from '@/composables/useOperationHistory'
 import { performanceMonitor } from '@/utils/performanceMonitor'
 import { exportVouchersToExcel, fetchAllVouchers } from '@/utils/voucherExport'
+import { DEFAULT_VOUCHER_SORTS } from '@/composables/useVoucherQuery'
+import { serializeSortKeys, type SortKey } from '@/utils/multiSort'
 import { voucherExcelApi } from '@/api/voucherExcel'
 import { exportVouchersForImport } from '@/utils/voucherExcelFormat'
 import { buildVoucherFlatRows } from '@/utils/voucherFlatList'
 import { VOUCHER_LIST_SOFT_CAP } from '@/utils/voucherListPerf'
 import { useSystemParamsStore } from '@/stores/systemParams'
 import { useUserStore } from '@/stores/user'
-import { accountNeedsCashFlowItem } from '@/utils/accountCashFlow'
 import { useBaseDataStore } from '@/stores/baseData'
 import { buildEntryKey, useVoucherModalReturnStore } from '@/stores/voucherModalReturn'
 import { useVoucherModalRestore } from '@/composables/useVoucherModalRestore'
@@ -353,9 +356,7 @@ const draftFilters = ref({
 const systemParamsStore = useSystemParamsStore()
 const userStore = useUserStore()
 const directPrint = computed(() => systemParamsStore.directPrint)
-const enableCashFlow = computed(() => systemParamsStore.enableCashFlow)
 const enableForeignCurrency = computed(() => systemParamsStore.enableForeignCurrency)
-const cashFlowItems = ref<Array<{ code: string; name: string }>>([])
 
 async function resolveEntryExchangeRate(currencyCode: string): Promise<number> {
   try {
@@ -460,6 +461,7 @@ const { scrollToTop: scrollDraftListToTop, isOverSoftCap } = useTableInfiniteScr
   watchSource: () => draftFlatList.value.length,
   // 录入页已切 el-table-v2，软上限放宽
   maxAutoRows: 3000,
+  scrollTableToTop: () => draftListRef.value?.scrollToTop?.() === true,
 })
 const draftSoftCapReached = computed(() => isOverSoftCap() && draftHasMore.value)
 const selectedDraftId = ref<string>('')
@@ -540,6 +542,7 @@ function handleResetOrder() {
     field: 'voucher_date',
     order: 'asc',
   }
+  voucherSorts.value = DEFAULT_VOUCHER_SORTS.map(k => ({ ...k }))
   draftFilters.value.keyword = ''
   draftFilters.value.status = 'unposted'
   fetchDraftVouchers()
@@ -559,7 +562,7 @@ const glToolbarButtons = computed(() => [
     name: '刷新',
     icon: RotateCw,
     tooltip: '刷新凭证列表',
-    action: () => fetchDraftVouchers(),
+    action: () => refreshDrafts(),
   },
   {
     key: 'add',
@@ -1025,7 +1028,16 @@ const sortConfig = ref({
   order: 'asc' as 'asc' | 'desc',
 })
 
-// 列表排序交给后端（请求已带 sortField/sortOrder），前端不再全量拷贝排序
+// 多级排序（默认：凭证类型 ↑ › 凭证日期 ↑），由后端按 sorts 排序
+const voucherSorts = ref<SortKey[]>(DEFAULT_VOUCHER_SORTS.map(k => ({ ...k })))
+
+function handleSortsChange(sorts: SortKey[]) {
+  voucherSorts.value = sorts.map(k => ({ ...k }))
+  draftPagination.value.page = 1
+  void fetchDraftVouchers()
+}
+
+// 列表排序交给后端（请求已带 sorts），前端不再全量拷贝排序
 const sortedVouchers = computed(() => draftVouchers.value)
 
 // 导航信息
@@ -1481,6 +1493,10 @@ async function handleSubmit(options?: { keepOpen?: boolean }) {
     showWarning('请选择凭证日期')
     return
   }
+  if (voucherTypes.value.length > 0 && !form.value.voucher_type_id) {
+    showWarning('请选择凭证类型')
+    return
+  }
   if (Math.abs(totalDebit.value - totalCredit.value) > 0.01) {
     showError('借贷不平衡')
     return
@@ -1498,15 +1514,6 @@ async function handleSubmit(options?: { keepOpen?: boolean }) {
   for (const entry of validEntries) {
     const acc = accounts.value.find(a => a.id === entry.account_id)
     if (!acc) continue
-
-    if (enableCashFlow.value) {
-      const needCashFlow = accountNeedsCashFlowItem(acc)
-      if (needCashFlow && !String(entry.cash_flow_code || '').trim()) {
-        showError(`科目「${entry.account_name}」须选择现金流量项目`)
-        setCurrentEntry(entry)
-        return
-      }
-    }
 
     if (enableForeignCurrency.value && Number((acc as any).is_foreign) === 1) {
       if (!(Number(entry.foreign_amount) > 0)) {
@@ -1729,21 +1736,36 @@ const duplicateWarnings = computed(() => {
   return warnings
 })
 
+// 每次请求递增；追加加载返回时若令牌已变（期间发生了整表重载），丢弃结果
+let draftFetchToken = 0
+
+/**
+ * 取未记账凭证。
+ * - append：滚动到底追加下一页；
+ * - 其余（保存 / 删除 / 审核后重载）：从第 1 页一次取回「已加载的页数 × 每页条数」，
+ *   保持列表长度与滚动位置。原实现只取当前页码那一页，滚动加载到第 N 页后重载，
+ *   列表缩成第 N 页甚至被清空，虚拟表格顶部出现大块空白并叠着「暂无数据」（第四份反馈 Q4）。
+ */
 async function fetchDraftVouchers(opts: { append?: boolean } = {}) {
   const append = opts.append === true
-  if (draftLoading.value || draftLoadingMore.value) return
+  if (draftLoading.value) return
+  if (append && draftLoadingMore.value) return
+  const token = ++draftFetchToken
   if (append) {
     draftLoadingMore.value = true
   } else {
+    draftLoadingMore.value = false
     draftLoading.value = true
   }
+  const loadedPages = Math.max(1, draftPagination.value.page)
   try {
     await performanceMonitor.measure('fetchDraftVouchers', async () => {
       const params: any = {
-        page: draftPagination.value.page,
-        pageSize: draftPagination.value.pageSize,
+        page: append ? draftPagination.value.page : 1,
+        pageSize: append ? draftPagination.value.pageSize : draftPagination.value.pageSize * loadedPages,
         sortField: sortConfig.value.field,
         sortOrder: sortConfig.value.order,
+        sorts: serializeSortKeys(voucherSorts.value),
       }
 
       if (draftFilters.value.status) {
@@ -1775,6 +1797,7 @@ async function fetchDraftVouchers(opts: { append?: boolean } = {}) {
       // 后端返回 { code, data, total }，total 在顶层而不是 data 里
       const nextList = res.data || []
       const nextTotal = res.total ?? 0
+      if (token !== draftFetchToken) return
 
       if (append) {
         const prevCount = draftVouchers.value.length
@@ -1790,13 +1813,8 @@ async function fetchDraftVouchers(opts: { append?: boolean } = {}) {
         return
       }
 
-      const maxPage = Math.max(1, Math.ceil(nextTotal / Math.max(1, draftPagination.value.pageSize)))
-      if (nextList.length === 0 && nextTotal > 0 && draftPagination.value.page > maxPage) {
-        draftPagination.value.page = maxPage
-        draftLoading.value = false
-        await fetchDraftVouchers()
-        return
-      }
+      // 已加载页数按实际返回条数折算，下次追加从这里续
+      draftPagination.value.page = Math.max(1, Math.ceil(nextList.length / Math.max(1, draftPagination.value.pageSize)))
       draftVouchers.value = nextList
       draftPagination.value.total = nextTotal
       draftAuxCache.clear()
@@ -1806,12 +1824,20 @@ async function fetchDraftVouchers(opts: { append?: boolean } = {}) {
       })
     })
   } finally {
-    if (append) {
+    if (token === draftFetchToken) {
       draftLoadingMore.value = false
-    } else {
+      draftLoading.value = false
+    } else if (!append) {
       draftLoading.value = false
     }
   }
+}
+
+/** 工具栏「刷新」/ F5：回到第 1 页重新取数并滚回顶部 */
+async function refreshDrafts() {
+  draftPagination.value.page = 1
+  await fetchDraftVouchers()
+  await scrollDraftListToTop()
 }
 
 /** 滚到底部时加载下一页并追加 */
@@ -1878,32 +1904,9 @@ async function handleRenumber() {
   }
 }
 
-async function cashFlowItemsFromAux(): Promise<Array<{ code: string; name: string }>> {
-  const cat = auxCategories.value.find(c => c.code === 'cash_flow')
-  if (!cat) return []
-  const list = await voucherAux.fetchAuxItems(String(cat.id), { limit: 500 })
-  return list.map(i => ({ code: i.code || '', name: i.name }))
-}
-
-async function loadCashFlowItems() {
-  try {
-    const res = await getCashFlowItems(userStore.accountSetId)
-    let items = (res.data || []).map(item => ({
-      code: item.code,
-      name: item.name,
-    }))
-    if (items.length === 0) {
-      items = await cashFlowItemsFromAux()
-    }
-    cashFlowItems.value = items
-  } catch {
-    cashFlowItems.value = await cashFlowItemsFromAux()
-  }
-}
-
 async function fetchOptions(force = false) {
   await performanceMonitor.measure('fetchOptions', async () => {
-    // 互不依赖的基础数据并行拉取；现金流量项目依赖 enable_cash_flow 参数，放在其后
+    // 互不依赖的基础数据并行拉取（现金流量项目已改为按科目设置自动取数，录入不再加载）
     await Promise.all([
       systemParamsStore.load(force),
       baseDataStore.loadVoucherTypes(force),
@@ -1911,7 +1914,6 @@ async function fetchOptions(force = false) {
       baseDataStore.loadAuxCategories(force),
       loadAccountSetStartDate(),
     ])
-    await loadCashFlowItems()
     // 加载完辅助核算类别后，为现有分录补充动态字段
     ensureAuxFields()
   })
@@ -2138,7 +2140,6 @@ onActivated(() => {
 })
 
 // 键盘快捷键（凭证表单内：Ctrl+S 保存、Ctrl+Enter 保存并新增，见 VoucherEntryForm）
-useKeyboardShortcuts([commonShortcuts.refresh(() => fetchDraftVouchers())])
+useKeyboardShortcuts([commonShortcuts.refresh(() => refreshDrafts())])
 </script>
 
-<style src="./voucher.styles.css"></style>

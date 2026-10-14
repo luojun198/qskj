@@ -142,13 +142,15 @@ export function queryDeprDetail(params: {
   accountSetId: string
   year: number
   month: number
-  groupBy: 'category' | 'dept'
-  groupCode: string
+  groupBy: 'category' | 'dept' | 'asset'
+  /** 不传：全部资产逐项列出（折旧汇总表「按资产」视图） */
+  groupCode?: string | null
 }): DeprDetailRow[] {
   const { db, accountSetId, year, month, groupBy, groupCode } = params
   const eop = periodEndDate(year, month)
 
   const whereField = groupBy === 'category' ? 'fa.category_code' : DEPR_DEPT_SQL
+  const filterByGroup = groupBy !== 'asset' && groupCode !== undefined && groupCode !== null && groupCode !== ''
 
   return db.prepare(`
     SELECT
@@ -168,9 +170,9 @@ export function queryDeprDetail(params: {
     LEFT JOIN fixed_asset_category fc ON fc.account_set_id = fa.account_set_id AND fc.code = fa.category_code
     LEFT JOIN fixed_asset_dept fd2 ON fd2.account_set_id = fa.account_set_id AND fd2.code = ${DEPR_DEPT_SQL}
     LEFT JOIN fixed_asset_purpose fp ON fp.account_set_id = fa.account_set_id AND fp.code = fa.purpose_code
-    WHERE fd.account_set_id = ? AND fd.year = ? AND fd.month = ? AND ${whereField} = ?
+    WHERE fd.account_set_id = ? AND fd.year = ? AND fd.month = ? ${filterByGroup ? `AND ${whereField} = ?` : ''}
     ORDER BY fa.asset_no
-  `).all(eop, eop, eop, accountSetId, year, month, groupCode) as DeprDetailRow[]
+  `).all(eop, eop, eop, accountSetId, year, month, ...(filterByGroup ? [groupCode] : [])) as DeprDetailRow[]
 }
 
 // ── 折旧分配表（按费用科目汇总） ──────────────────────────────

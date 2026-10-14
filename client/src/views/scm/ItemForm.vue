@@ -49,7 +49,7 @@
             <el-col :span="8">
               <el-form-item label="编号" required>
                 <el-input v-model="form.code" :disabled="!!editId">
-                  <template v-if="!editId" #append>{{ expectedCodeLen }}位</template>
+                  <template v-if="!editId && itemCodeMode === 'level'" #append>{{ expectedCodeLen }}位</template>
                 </el-input>
               </el-form-item>
             </el-col>
@@ -311,6 +311,8 @@ const customItemTypes = ref<Record<string, string>>({})
 const dynamicItemTypes = computed(() => ({ ...ITEM_TYPES, ...customItemTypes.value }))
 const activeFieldDefs = ref<ScmItemFieldDef[]>([])
 const itemLevels = ref(4)
+// 物料编码方式：level=分级编码（默认）；rule=按「材料 / 成品」编码规则自动取号（供应链参数配置）
+const itemCodeMode = ref<'level' | 'rule'>('level')
 const itemCodeLengths = ref([2, 2, 2, 2])
 const form = ref<Partial<ScmItem>>({})
 const saving = ref(false)
@@ -328,7 +330,8 @@ async function loadParams() {
   try {
     const r = await scmApi.getParams()
     for (const p of r.data as any[]) {
-      if (p.param_key === 'scm:item_levels') itemLevels.value = parseInt(p.param_value) || 4
+      if (p.param_key === 'scm:item_code_mode') itemCodeMode.value = p.param_value === 'rule' ? 'rule' : 'level'
+      else if (p.param_key === 'scm:item_levels') itemLevels.value = parseInt(p.param_value) || 4
       else if (p.param_key === 'scm:item_code_lengths') {
         try { itemCodeLengths.value = JSON.parse(p.param_value).map(Number) }
         catch { itemCodeLengths.value = (p.param_value || '2,2,2,2').split(',').map(Number) }
@@ -393,6 +396,7 @@ function getExpectedLen(level: number): number {
 const expectedCodeLen = computed(() => getExpectedLen(getFormLevel()))
 
 function validateCodeLength(): string | null {
+  if (itemCodeMode.value === 'rule') return null
   const code = form.value.code || ''
   const level = getFormLevel()
   if (level > itemLevels.value) return `最大物料级次为 ${itemLevels.value} 级，无法继续向下新增`
@@ -425,12 +429,26 @@ function buildNextCode(parentId: string | null): string {
   }, 0)
   return prefix + String(maxNo + 1).padStart(segLen, '0')
 }
+// 规则编码：按物料属性取各自规则（未单独设置的沿用材料规则），取号接口见 GET /scm/items/next-no
+async function applyRuleCode() {
+  if (editId.value || itemCodeMode.value !== 'rule') return
+  try {
+    const f = form.value as any
+    const r = await scmApi.getItemNextNo(f.item_type, { category_code: f.category_code, subcategory_code: f.subcategory_code })
+    if (r.code === 0 && !editId.value) form.value.code = r.data.next_no
+  } catch { /* 取号失败可手填 */ }
+}
 function onParentChange(newPid: string) {
-  if (!editId.value) form.value.code = buildNextCode(newPid || null)
+  if (editId.value) return
+  if (itemCodeMode.value === 'rule') return applyRuleCode()
+  form.value.code = buildNextCode(newPid || null)
 }
 watch(() => form.value.parent_id, (newPid) => {
-  if (!editId.value) form.value.code = buildNextCode((newPid as string) || null)
+  if (editId.value) return
+  if (itemCodeMode.value === 'rule') return applyRuleCode()
+  form.value.code = buildNextCode((newPid as string) || null)
 })
+watch(() => [form.value.item_type, (form.value as any).category_code, (form.value as any).subcategory_code], () => { applyRuleCode() })
 
 // ── 副单位 ────────────────────────────────────────────────────────────────
 function addSecondaryUnit() {
@@ -447,7 +465,8 @@ function newForm(parent?: ScmItem | null) {
     source_type: 'purchase', primary_unit_code: '', secondary_units: [],
     parent_id: parent?.id || '', field_values: {},
   }
-  form.value.code = buildNextCode(parent?.id || null)
+  if (itemCodeMode.value === 'rule') applyRuleCode()
+  else form.value.code = buildNextCode(parent?.id || null)
 }
 function editForm(row: ScmItem) {
   form.value = {

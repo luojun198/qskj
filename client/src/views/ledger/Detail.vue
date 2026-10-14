@@ -43,7 +43,7 @@
         <el-button type="primary" @click="handleQuery"><el-icon><Search /></el-icon>查询</el-button>
         <FilterClearButton @clear="handleClearFilters" />
         <el-divider direction="vertical" />
-        <el-button plain @click="exportData"><el-icon><Download /></el-icon>导出 Excel</el-button>
+        <el-button plain @click="exportData"><el-icon><Download /></el-icon>另存</el-button>
         <el-button plain @click="printPage"><el-icon><Printer /></el-icon>打印</el-button>
         <el-button plain @click="openBatchDialog('print')">连续打印</el-button>
         <el-button plain @click="openBatchDialog('export')">批量另存</el-button>

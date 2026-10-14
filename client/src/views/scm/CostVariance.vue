@@ -6,6 +6,7 @@
         range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期"
         value-format="YYYY-MM-DD" :clearable="false" style="width: 240px" />
       <el-button type="primary" size="small" :loading="loading" @click="load"><el-icon><Refresh /></el-icon>查询</el-button>
+      <SaveAsButton title="成本差异" />
       <FilterClearButton size="small" @clear="handleClearFilters" />
       <el-radio-group v-model="filterType" size="small">
         <el-radio-button value="">全部</el-radio-button>

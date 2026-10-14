@@ -74,7 +74,7 @@ describe('固定销售报表服务', () => {
 
   it('返回固定报表、分组及当前账套筛选元数据', () => {
     const meta = getSalesFixedReportMeta(db, 'a1')
-    expect(meta.reports.map(report => report.code)).toEqual(['summary', 'detail', 'ranking', 'profit', 'trend'])
+    expect(meta.reports.map(report => report.code)).toEqual(['summary', 'detail', 'return', 'ranking', 'profit', 'trend'])
     expect(meta.groupings.summary).toContainEqual({ value: 'batch_product', label: '批次 + 产品' })
     expect(meta.options.partners.map(item => item.value)).toEqual(['C01', 'C02', 'C03'])
     expect(meta.options.biz_people).toEqual([{ label: '张三', value: '张三' }, { label: '李四', value: '李四' }])
@@ -87,6 +87,19 @@ describe('固定销售报表服务', () => {
     expect(result.rows.find(row => row.partner_code === 'C01')).toMatchObject({ item_code: 'I01', qty: 8, sales_amount: 800, cost_amount: 480, profit: 320 })
     expect(result.summary).toMatchObject({ qty: 14, sales_amount: 1900, cost_amount: 1030, profit: 870 })
     expect(result.columns.find(column => column.key === 'item_name')?.label).toBe('产品名称')
+  })
+
+  it('销售退货统计表只统计退货单，退货数量金额按正数展示', () => {
+    const result = runSalesFixedReport(db, 'a1', { report_code: 'return', grouping: 'customer_product', filters })
+    expect(result.rows).toHaveLength(1)
+    expect(result.rows[0]).toMatchObject({ partner_code: 'C01', item_code: 'I01', qty: 2, sales_amount: 200, cost_amount: 120 })
+    expect(result.summary).toMatchObject({ qty: 2, sales_amount: 200 })
+    expect(result.columns.find(column => column.key === 'qty')?.label).toBe('退货数量')
+    expect(result.columns.find(column => column.key === 'sales_amount')?.label).toBe('退货金额')
+    // 前端传入「销售出库」业务类型也不能混入出库单
+    const forced = runSalesFixedReport(db, 'a1', { report_code: 'return', grouping: 'customer', filters: { ...filters, source_types: ['SO'] } })
+    expect(forced.summary).toMatchObject({ qty: 2 })
+    expect(() => runSalesFixedReport(db, 'a1', { report_code: 'return', grouping: 'warehouse', filters })).toThrow('统计方式无效')
   })
 
   it('P2-14 全部币种（ALL）按记账汇率折本位币汇总；单币种仍按原币', () => {

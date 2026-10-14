@@ -7,7 +7,7 @@ import { round2Symmetric } from '../utils/amountUtils.js'
 import type { Database } from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
 import { assertCashierPeriodOpen, normalizeBizDate, parseBizDate } from './cashierPeriodClosing.js'
-import { assertGlPeriodOpen } from './voucherMutationGuard.js'
+import { assertGlPeriodOpen, assertNotBeforeGlStart } from './voucherMutationGuard.js'
 import {
   computeBaseAmounts, getCashierAccountCurrency, getCashierBaseCurrency, resolveCashierRate,
 } from './cashierQuery.js'
@@ -26,6 +26,7 @@ export function assertJournalDateWritable(db: Database, accountSetId: string, ra
   assertCashierPeriodOpen(db, accountSetId, bizDate)
   const ym = parseBizDate(bizDate)!
   assertGlPeriodOpen(db, accountSetId, ym.year, ym.month)
+  assertNotBeforeGlStart(db, accountSetId, bizDate, '日记账日期')
   return bizDate
 }
 

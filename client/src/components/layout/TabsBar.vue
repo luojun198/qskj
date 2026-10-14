@@ -11,7 +11,6 @@
         @contextmenu.prevent="onContextMenu($event, t)"
         @mousedown.middle.prevent="!t.pinned && onClose(t)"
       >
-        <span class="tab-item__dot" />
         <span class="tab-item__label">{{ t.title }}</span>
         <span v-if="!t.pinned" class="tab-item__close" title="关闭" @click.stop="onClose(t)">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
@@ -196,26 +195,26 @@ onBeforeUnmount(() => {
 .tabs-bar__actions:empty { display: none; }
 .tab-item {
   display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; min-width: 0; max-width: 180px;
-  height: 24px; padding: 0 10px; border-radius: 12px; cursor: pointer; user-select: none;
+  /* 纯文字页签：无底框，当前页用主题色文字 + 下划线标识 */
+  height: 100%; padding: 0 8px; cursor: pointer; user-select: none;
   font-size: var(--cw-text-base); color: var(--el-text-color-regular); overflow: hidden;
-  background: var(--el-fill-color-light); border: 1px solid transparent; transition: background .12s, color .12s, border-color .12s;
+  background: transparent; transition: color .12s;
 }
 .tab-item.is-pinned { max-width: 120px; }
-.tab-item:hover { background: var(--el-fill-color); }
-.tab-item.is-active { color: #fff; background: var(--el-color-primary, #12C7AE); border-color: var(--el-color-primary, #12C7AE); }
-.tab-item__dot, .tabs-more-item__dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .55; flex-shrink: 0; }
-.tab-item.is-active .tab-item__dot { opacity: 1; }
+.tab-item:hover { color: #1677ff; }
+/* 当前页签只用蓝色文字标识 */
+.tab-item.is-active { color: #1677ff; font-weight: 600; }
+.tabs-more-item__dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .55; flex-shrink: 0; }
 .tab-item__label { flex: 0 1 auto; white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .tab-item__close { display: inline-flex; width: 14px; height: 14px; border-radius: 50%; align-items: center; justify-content: center; opacity: .6; flex-shrink: 0; }
-.tab-item__close:hover { opacity: 1; background: rgba(0,0,0,.12); }
-.tab-item.is-active .tab-item__close:hover { background: rgba(255,255,255,.25); }
+.tab-item__close:hover { opacity: 1; background: rgba(0,0,0,.08); }
 .tab-item__close svg, .tabs-more-item__close svg { width: 9px; height: 9px; }
 .tabs-more-btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 5px; flex-shrink: 0;
-  height: 24px; padding: 0 10px; border: 1px solid var(--el-border-color); border-radius: 12px;
-  background: var(--el-bg-color); color: var(--el-text-color-regular); font-size: 12px; cursor: pointer;
+  height: 22px; padding: 0 6px; border: none; border-radius: 4px;
+  background: transparent; color: var(--el-text-color-regular); font-size: 12px; cursor: pointer;
 }
-.tabs-more-btn:hover, .tabs-more-btn.has-hidden { color: var(--el-color-primary); border-color: var(--el-color-primary-light-5); background: var(--el-color-primary-light-9); }
+.tabs-more-btn:hover, .tabs-more-btn.has-hidden { color: var(--el-color-primary); }
 .tabs-more-btn svg { width: 14px; height: 14px; }
 .tabs-more-panel__head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .tabs-more-panel__head strong { font-size: var(--cw-text-base); color: var(--el-text-color-primary); }

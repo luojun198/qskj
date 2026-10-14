@@ -12,8 +12,11 @@ import { todayStr } from '../utils/localDate.js'
 import type Database from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
 import { assertCashierPeriodOpen, normalizeBizDate, parseBizDate } from './cashierPeriodClosing.js'
-import { assertGlPeriodOpen } from './voucherMutationGuard.js'
+import { assertGlPeriodOpen, assertNotBeforeGlStart } from './voucherMutationGuard.js'
 import { lookupCashierAccountCurrency, getCashierBaseCurrency, normalizeCashierCurrency } from './cashierQuery.js'
+import { loadScmAuxContext, resolveDocAuxRefs } from './scmVoucherAux.js'
+import { syncJournalAux } from './cashierJournalAux.js'
+import { nextAuxNo } from './scmNoRule.js'
 import { docExchangeRate, getScmBaseCurrency, isScmBaseCurrency, normalizeScmCurrency, toBase } from './scmCurrency.js'
 
 /**
@@ -114,6 +117,17 @@ export function applyPayment(db: Database.Database, accountSetId: string, doc: a
     (id, account_set_id, account_code, currency, biz_date, summary, debit, credit, exchange_rate, base_debit, base_credit, settle_type, counter_account, created_by)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 
+  // 对方科目（应收 / 应付）挂了往来辅助时，按「进销存凭证设置」的对应关系带上辅助项，
+  // 出纳据此再生成凭证时辅助核算不丢；对不上时不拦截审核（制证环节才严格校验）
+  const auxCtx = loadScmAuxContext(db, accountSetId)
+  const counterAux: Record<string, string> = {}
+  for (const [key, itemId] of Object.entries(resolveDocAuxRefs(auxCtx, doc, arApCode).refs)) {
+    const cat = auxCtx.categories.find(c => key === `_${c.code}_id`)
+    if (cat) counterAux[cat.id] = itemId
+  }
+  const counterAuxJson = Object.keys(counterAux).length ? JSON.stringify(counterAux) : null
+  const setCounterAux = counterAuxJson ? db.prepare('UPDATE cashier_journal SET counter_aux_item_id=? WHERE id=?') : null
+
   const matches: Array<{ in_log_id: string; out_log_id: string; amount: number }> = []
   for (const l of lines) {
     const amount = Math.round(Number(l.amount || 0) * 100) / 100
@@ -131,6 +145,10 @@ export function applyPayment(db: Database.Database, accountSetId: string, doc: a
       isReceive ? cjAmount : 0, isReceive ? 0 : cjAmount, cjRate,
       isReceive ? baseAmount : 0, isReceive ? 0 : baseAmount, settleType, arApCode, operator
     )
+    if (setCounterAux) {
+      setCounterAux.run(counterAuxJson, journalId)
+      syncJournalAux(db, accountSetId, journalId, counterAuxJson)
+    }
 
     // 往来台账：收付款均为核销，往来余额减少 → direction='out'（out 行不参与账龄，到期日=单据日）
     const outLogId = uuidv4()
@@ -176,6 +194,9 @@ export function applyInvoice(
   const total = sumGrossAmount(lines)
   if (total <= 0 || !doc.partner_code) return { mode: 'skip', amount: 0 }
 
+  // ⓪ 明细带来源行（选源单 / 下推）：按行计差额，可多张源单、可分批开票（第四份反馈 Q7）
+  if (lines.some(l => l.source_line_id)) return applyInvoiceByLines(db, accountSetId, doc, lines, total)
+
   // ① 有来源单据：校正来源单据的暂估台账，不新增
   const srcLog = doc.source_doc_id ? findSourceArApLog(db, accountSetId, doc.source_doc_id) : null
   if (srcLog) {
@@ -202,6 +223,101 @@ export function applyInvoice(
   return { mode: 'create', amount: total }
 }
 
+export interface InvoiceLineDiff {
+  line: any
+  parent: { id: string; doc_id: string; doc_no: string; doc_type: string; item_code: string; qty: number; amount: number; tax_amount: number }
+  /** 本发票行对应的来源暂估额（按开票数量折算） */
+  baseAmt: number
+  baseTax: number
+  /** 差额 = 发票行 − 来源暂估 */
+  dAmt: number
+  dTax: number
+}
+
+/**
+ * 发票行逐行对照来源行：来源暂估额按「开票数量 / 来源数量」折算（只填金额、不填数量时取整行），
+ * 差额 = 发票行金额 − 折算暂估额。来源行找不到的发票行不在结果里，按独立发票处理。
+ */
+export function invoiceLineDiffs(db: Database.Database, accountSetId: string, lines: any[]): InvoiceLineDiff[] {
+  const ids = [...new Set(lines.map(l => l.source_line_id).filter(Boolean))] as string[]
+  if (!ids.length) return []
+  const parents = db.prepare(`SELECT pl.id, pl.qty, pl.amount, pl.tax_amount, pl.item_code, d.id AS doc_id, d.doc_no, d.doc_type
+    FROM scm_doc_line pl JOIN scm_doc d ON d.id=pl.doc_id
+    WHERE pl.id IN (${ids.map(() => '?').join(',')}) AND d.account_set_id=?`).all(...ids, accountSetId) as any[]
+  const byId = new Map(parents.map(p => [p.id, p]))
+  const out: InvoiceLineDiff[] = []
+  for (const l of lines) {
+    const p = l.source_line_id ? byId.get(l.source_line_id) : null
+    if (!p) continue
+    const pq = Number(p.qty) || 0, lq = Number(l.qty) || 0
+    const ratio = pq > 0 && lq > 0 ? lq / pq : 1
+    const baseAmt = r2(Number(p.amount || 0) * ratio)
+    const baseTax = r2(Number(p.tax_amount || 0) * ratio)
+    out.push({
+      line: l, parent: p, baseAmt, baseTax,
+      dAmt: r2(Number(l.amount || 0) - baseAmt),
+      dTax: r2(Number(l.tax_amount || 0) - baseTax),
+    })
+  }
+  return out
+}
+
+/** 发票按行校正来源单暂估台账；每张来源单写一条调整记录供反审核精确回退 */
+function applyInvoiceByLines(
+  db: Database.Database, accountSetId: string, doc: any, lines: any[], total: number,
+): { mode: 'adjust' | 'create'; amount: number; sourceDocNo?: string } {
+  const diffs = invoiceLineDiffs(db, accountSetId, lines)
+  const matched = new Set(diffs.map(d => d.line))
+  let unsourced = sumGrossAmount(lines.filter(l => !matched.has(l)))
+  const groups = new Map<string, { doc_id: string; doc_no: string; delta: number; gross: number }>()
+  for (const d of diffs) {
+    const g = groups.get(d.parent.doc_id) || { doc_id: d.parent.doc_id, doc_no: d.parent.doc_no, delta: 0, gross: 0 }
+    g.delta = r2(g.delta + d.dAmt + d.dTax)
+    g.gross = r2(g.gross + Number(d.line.amount || 0) + Number(d.line.tax_amount || 0))
+    groups.set(d.parent.doc_id, g)
+  }
+  const invCur = logCurrency(db, accountSetId, doc).currency
+  const insAdj = db.prepare(`INSERT INTO scm_invoice_arap_adjust (id, account_set_id, invoice_id, invoice_no, src_doc_id, src_log_id, delta_fc, delta_base)
+    VALUES (?,?,?,?,?,?,?,?)`)
+  const adjusted: string[] = []
+  for (const g of groups.values()) {
+    const srcLog = findSourceArApLog(db, accountSetId, g.doc_id)
+    // 来源单没挂往来（无往来单位等）：这部分按独立发票挂账
+    if (!srcLog) { unsourced = r2(unsourced + g.gross); continue }
+    if (srcLog.currency && srcLog.currency !== invCur) {
+      throw new Error(`发票币别 ${invCur} 与来源单据「${srcLog.doc_no}」币别 ${srcLog.currency} 不一致，不能校正其往来挂账`)
+    }
+    const curFc = Number(srcLog.amount_fc ?? srcLog.amount) || 0
+    const nextFc = r2(curFc + g.delta)
+    const verifiedFc = Number(srcLog.verified_fc ?? srcLog.verified_amount) || 0
+    if (nextFc < r2(verifiedFc) - 0.005) {
+      throw new Error(`按发票校正后来源单据「${srcLog.doc_no}」往来额 ${nextFc} 小于已核销金额 ${verifiedFc}，请先反核销`)
+    }
+    const rate = Number(srcLog.exchange_rate) || 1
+    const nextBase = toBase(nextFc, rate)
+    const deltaBase = r2(nextBase - (Number(srcLog.amount) || 0))
+    db.prepare('UPDATE scm_ar_ap_log SET amount=?, amount_fc=?, remark=? WHERE id=?')
+      .run(nextBase, nextFc, `${srcLog.remark ? srcLog.remark + ' ' : ''}[发票 ${doc.doc_no}]`, srcLog.id)
+    insAdj.run(uuidv4(), accountSetId, doc.id || null, doc.doc_no, g.doc_id, srcLog.id, g.delta, deltaBase)
+    adjusted.push(srcLog.doc_no)
+  }
+  if (unsourced > 0.005) applyInvoiceLog(db, accountSetId, doc, unsourced)
+  return adjusted.length
+    ? { mode: 'adjust', amount: total, sourceDocNo: adjusted.join('、') }
+    : { mode: 'create', amount: total }
+}
+
+/** 本发票按行校正过的调整记录（老库没有该表时视为无） */
+function invoiceAdjustRows(db: Database.Database, accountSetId: string, doc: any): any[] {
+  try {
+    return db.prepare('SELECT * FROM scm_invoice_arap_adjust WHERE account_set_id=? AND (invoice_id=? OR (invoice_id IS NULL AND invoice_no=?))')
+      .all(accountSetId, doc.id || '', doc.doc_no) as any[]
+  } catch (e: any) {
+    if (/no such table/i.test(String(e?.message || ''))) return []
+    throw e
+  }
+}
+
 /** 取来源单据（SO/PI 等）挂出的那条应收应付台账 */
 function findSourceArApLog(db: Database.Database, accountSetId: string, sourceDocId: string): any {
   const src = db.prepare(
@@ -220,6 +336,26 @@ function findSourceArApLog(db: Database.Database, accountSetId: string, sourceDo
  * 校正过来源单据的，按来源单据的行重算价税合计还原；独立发票的直接删除自己的台账。
  */
 export function reverseInvoice(db: Database.Database, accountSetId: string, doc: any): void {
+  // 按行校正过的发票：按调整记录逐笔回减，再删除自己挂的独立部分
+  const adjs = invoiceAdjustRows(db, accountSetId, doc)
+  if (adjs.length) {
+    const tag = `[发票 ${doc.doc_no}]`
+    for (const a of adjs) {
+      const log = db.prepare('SELECT * FROM scm_ar_ap_log WHERE id=?').get(a.src_log_id) as any
+      if (!log) continue
+      const nextFc = r2((Number(log.amount_fc ?? log.amount) || 0) - Number(a.delta_fc || 0))
+      const verifiedFc = Number(log.verified_fc ?? log.verified_amount) || 0
+      if (nextFc < r2(verifiedFc) - 0.005) {
+        throw new Error(`还原后来源单据「${log.doc_no}」往来额 ${nextFc} 小于已核销金额 ${verifiedFc}，请先反核销`)
+      }
+      const nextBase = r2((Number(log.amount) || 0) - Number(a.delta_base || 0))
+      const remark = log.remark ? String(log.remark).split(tag).join('').replace(/\s{2,}/g, ' ').trim() || null : null
+      db.prepare('UPDATE scm_ar_ap_log SET amount=?, amount_fc=?, remark=? WHERE id=?').run(nextBase, nextFc, remark, log.id)
+    }
+    db.prepare('DELETE FROM scm_invoice_arap_adjust WHERE id IN (' + adjs.map(() => '?').join(',') + ')').run(...adjs.map(a => a.id))
+    reversePayment(db, accountSetId, doc)
+    return
+  }
   const srcLog = doc.source_doc_id ? findSourceArApLog(db, accountSetId, doc.source_doc_id) : null
   if (srcLog) {
     const srcLines = db.prepare('SELECT amount, tax_amount FROM scm_doc_line WHERE doc_id=?')
@@ -331,7 +467,84 @@ export function applyOutsourceFeePayable(db: Database.Database, accountSetId: st
   )
 }
 
+/**
+ * 审核组装单（AS）加工费挂往来（价税合计 = 不含税加工费 + 税额）：委托加工(entrust) → 加工厂应付；受托加工(contract) → 客户应收。
+ * 同一 doc_type 两种方向都可能，写 arap_side 显式标注（读侧统一走 arapSideSql / logSide）。
+ */
+export function applyAssemblyProcessFee(db: Database.Database, accountSetId: string, doc: any, feeFc: number, taxFc = 0) {
+  const side: 'ar' | 'ap' | null = doc.process_mode === 'contract' ? 'ar' : doc.process_mode === 'entrust' ? 'ap' : null
+  const tax = Math.round((Number(taxFc) || 0) * 100) / 100
+  const amountFc = Math.round(((Number(feeFc) || 0) + tax) * 100) / 100
+  if (!side || !doc.partner_code || !(amountFc > 0)) return
+  const partner = db.prepare('SELECT * FROM scm_partner WHERE account_set_id=? AND code=?').get(accountSetId, doc.partner_code) as any
+  const fx = logCurrency(db, accountSetId, doc)
+  db.prepare(`INSERT INTO scm_ar_ap_log
+    (id, account_set_id, partner_code, doc_type, doc_no, doc_date, due_date, direction, amount, ar_account, ap_account, cashier_journal_id, remark, currency, exchange_rate, amount_fc, arap_side)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    uuidv4(), accountSetId, doc.partner_code, doc.doc_type, doc.doc_no, doc.doc_date, computeDueDate(doc, partner),
+    'in', toBase(amountFc, fx.rate),
+    side === 'ar' ? (partner?.ar_account || '1131') : null,
+    side === 'ap' ? (partner?.ap_account || '2121') : null,
+    null, `${doc.doc_no} ${side === 'ar' ? '受托' : '委托'}加工费${tax > 0 ? `（其中税额 ${tax}）` : ''}`, fx.currency, fx.rate, amountFc, side,
+  )
+}
+
 /** 回退收付款：先回退该收付款日志参与的全部核销，再删除往来台账和出纳流水。 */
+/**
+ * 退货冲上游（第四份反馈 Q5）：退货单（PR/SR）审核后，按明细的 source_line_id 找到上游单据
+ * （PR→PI/WI，SR→SO），用本退货的 out 台账自动核销上游单据的 in 台账（「退货冲应付 / 冲应收」）。
+ *
+ * 原来退货只挂一条 out 台账，之后被当作「预付 / 预收」去冲销入库单，付款单上入库单的「已付」
+ * 就把退货额算了进去。改为审核即冲上游：每个上游单据的冲减额 = min(该上游对应退货行价税合计,
+ * 上游未清额, 退货剩余可用额)；冲不完的部分留在退货 out 台账上，可在收付款单作负数源单抵扣。
+ * 币别不一致的上游跳过（不能跨币核销）。反审核退货由 reversePayment 按 out 台账一并撤销。
+ */
+export function applyReturnSourceVerify(
+  db: Database.Database, accountSetId: string, doc: any, lines: any[], operator?: string
+): { verify_no: string; count: number } {
+  const none = { verify_no: '', count: 0 }
+  if ((doc.doc_type !== 'PR' && doc.doc_type !== 'SR') || !doc.partner_code) return none
+  const outLog = db.prepare(`SELECT id, currency, COALESCE(amount_fc, amount) AS amount_fc, COALESCE(verified_fc, verified_amount) AS verified_fc
+    FROM scm_ar_ap_log WHERE account_set_id=? AND doc_type=? AND doc_no=? AND direction='out' ORDER BY rowid LIMIT 1`)
+    .get(accountSetId, doc.doc_type, doc.doc_no) as any
+  if (!outLog) return none
+  const srcIds = [...new Set(lines.map(l => l.source_line_id).filter(Boolean))] as string[]
+  if (!srcIds.length) return none
+  const ph = srcIds.map(() => '?').join(',')
+  const parents = db.prepare(`SELECT pl.id AS line_id, d.doc_type, d.doc_no FROM scm_doc_line pl
+    JOIN scm_doc d ON d.id=pl.doc_id WHERE pl.id IN (${ph}) AND d.account_set_id=?`).all(...srcIds, accountSetId) as any[]
+  const parentByLine = new Map(parents.map(p => [p.line_id, p]))
+  const allowed = doc.doc_type === 'PR' ? ['PI', 'WI'] : ['SO']
+  // 按上游单据汇总退货行价税合计
+  const portion = new Map<string, { doc_type: string; doc_no: string; amount: number }>()
+  for (const l of lines) {
+    const p = l.source_line_id ? parentByLine.get(l.source_line_id) : null
+    if (!p || !allowed.includes(p.doc_type)) continue
+    const key = `${p.doc_type}:${p.doc_no}`
+    const cur = portion.get(key) || { doc_type: p.doc_type, doc_no: p.doc_no, amount: 0 }
+    cur.amount = r2(cur.amount + (Number(l.amount) || 0) + (Number(l.tax_amount) || 0))
+    portion.set(key, cur)
+  }
+  if (!portion.size) return none
+  let remaining = r2(Number(outLog.amount_fc) - Number(outLog.verified_fc))
+  const getIn = db.prepare(`SELECT id, currency, COALESCE(amount_fc, amount) AS amount_fc, COALESCE(verified_fc, verified_amount) AS verified_fc
+    FROM scm_ar_ap_log WHERE account_set_id=? AND doc_type=? AND doc_no=? AND direction='in' AND partner_code=? ORDER BY rowid LIMIT 1`)
+  const matches: Array<{ in_log_id: string; out_log_id: string; amount: number }> = []
+  for (const p of portion.values()) {
+    if (remaining <= 0.005) break
+    const inLog = getIn.get(accountSetId, p.doc_type, p.doc_no, doc.partner_code) as any
+    if (!inLog) continue
+    if (inLog.currency && outLog.currency && inLog.currency !== outLog.currency) continue
+    const open = r2(Number(inLog.amount_fc) - Number(inLog.verified_fc))
+    const amt = r2(Math.min(p.amount, open, remaining))
+    if (amt <= 0.005) continue
+    matches.push({ in_log_id: inLog.id, out_log_id: outLog.id, amount: amt })
+    remaining = r2(remaining - amt)
+  }
+  if (!matches.length) return none
+  return verifyArAp(db, accountSetId, { partner_code: doc.partner_code, verify_date: doc.doc_date, operator, matches })
+}
+
 export function reversePayment(db: Database.Database, accountSetId: string, doc: any) {
   const logs = db.prepare('SELECT id, cashier_journal_id FROM scm_ar_ap_log WHERE account_set_id=? AND doc_type=? AND doc_no=?')
     .all(accountSetId, doc.doc_type, doc.doc_no) as any[]
@@ -364,12 +577,28 @@ export function reversePayment(db: Database.Database, accountSetId: string, doc:
 const AR_DOC_TYPES = ['SO', 'SR', 'RS', 'RCV']
 const AP_DOC_TYPES = ['PI', 'PR', 'RP', 'PAY', 'WI', 'OP']
 
-/** 返回 doc_type 过滤子句；alias 为表别名（如 'l'），无别名传空串 */
+/**
+ * 台账行的应收/应付归属（SQL 表达式）：arap_side 显式值优先，否则按 doc_type 推断。
+ * 组装单（AS）的加工费既可能是应收（受托加工）也可能是应付（委托加工），只能靠 arap_side 区分。
+ */
+export function arapSideSql(alias = ''): string {
+  const p = alias ? `${alias}.` : ''
+  const list = (arr: string[]) => arr.map(t => `'${t}'`).join(',')
+  return `COALESCE(${p}arap_side, CASE WHEN ${p}doc_type IN (${list(AR_DOC_TYPES)}) THEN 'ar' WHEN ${p}doc_type IN (${list(AP_DOC_TYPES)}) THEN 'ap' END)`
+}
+
+/** 台账行的应收/应付归属（JS 版，口径同 arapSideSql） */
+export function logSide(row: { doc_type?: string | null; arap_side?: string | null } | null | undefined): 'ar' | 'ap' | null {
+  if (!row) return null
+  if (row.arap_side === 'ar' || row.arap_side === 'ap') return row.arap_side
+  const t = String(row.doc_type || '')
+  return AR_DOC_TYPES.includes(t) ? 'ar' : AP_DOC_TYPES.includes(t) ? 'ap' : null
+}
+
+/** 返回应收/应付过滤子句；alias 为表别名（如 'l'），无别名传空串 */
 function arapDocTypeCond(arapType: string | undefined, alias = '') {
-  const col = alias ? `${alias}.doc_type` : 'doc_type'
-  const set = arapType === 'ar' ? AR_DOC_TYPES : arapType === 'ap' ? AP_DOC_TYPES : null
-  if (!set) return { sql: '', params: [] as string[] }
-  return { sql: `${col} IN (${set.map(() => '?').join(',')})`, params: set }
+  if (arapType !== 'ar' && arapType !== 'ap') return { sql: '', params: [] as string[] }
+  return { sql: `${arapSideSql(alias)}=?`, params: [arapType] }
 }
 
 function enrichStatementRows(db: Database.Database, accountSetId: string, rows: any[]) {
@@ -395,7 +624,9 @@ function enrichStatementRows(db: Database.Database, accountSetId: string, rows: 
   return rows.map(row => {
     const isSettlement = ['PAY', 'RCV'].includes(row.doc_type)
     const isAdjustment = ['PR', 'SR'].includes(row.doc_type)
-    return { ...row, business_label: labels[row.doc_type] || row.doc_type,
+    const side = logSide(row)
+    const label = row.doc_type === 'AS' ? (side === 'ar' ? '受托加工费' : '委托加工费') : (labels[row.doc_type] || row.doc_type)
+    return { ...row, arap_side: side, business_label: label,
       increase_amount: row.direction === 'in' && !isAdjustment ? Number(row.amount) || 0 : 0,
       settlement_amount: isSettlement ? Number(row.amount) || 0 : 0,
       adjustment_amount: isAdjustment || (row.direction === 'out' && !isSettlement) ? Number(row.amount) || 0 : 0,
@@ -447,19 +678,18 @@ export function getAllPartnerLedger(db: Database.Database, accountSetId: string,
  */
 export function getPartnerBalanceSummary(db: Database.Database, accountSetId: string, startDate?: string, endDate?: string, arapType?: string) {
   const r2 = (n: number) => Math.round((Number(n) || 0) * 100) / 100
-  const arTypesSql = AR_DOC_TYPES.map(t => `'${t}'`).join(',')
-  const apTypesSql = AP_DOC_TYPES.map(t => `'${t}'`).join(',')
+  const sideSql = arapSideSql()
   type Opening = { ar: number; ap: number }
   const openingMap = new Map<string, Opening>()
   if (startDate) {
     const arapOb = arapDocTypeCond(arapType)
     const obs = db.prepare(`SELECT partner_code,
         COALESCE(SUM(CASE
-          WHEN doc_type IN (${arTypesSql}) AND direction='in' THEN amount
-          WHEN doc_type IN (${arTypesSql}) AND direction='out' THEN -amount ELSE 0 END),0) ar_opening,
+          WHEN ${sideSql}='ar' AND direction='in' THEN amount
+          WHEN ${sideSql}='ar' AND direction='out' THEN -amount ELSE 0 END),0) ar_opening,
         COALESCE(SUM(CASE
-          WHEN doc_type IN (${apTypesSql}) AND direction='in' THEN amount
-          WHEN doc_type IN (${apTypesSql}) AND direction='out' THEN -amount ELSE 0 END),0) ap_opening
+          WHEN ${sideSql}='ap' AND direction='in' THEN amount
+          WHEN ${sideSql}='ap' AND direction='out' THEN -amount ELSE 0 END),0) ap_opening
       FROM scm_ar_ap_log WHERE account_set_id=? AND doc_date<?${arapOb.sql ? ' AND ' + arapOb.sql : ''}
       GROUP BY partner_code`).all(accountSetId, startDate, ...arapOb.params) as any[]
     for (const o of obs) openingMap.set(o.partner_code, { ar: Number(o.ar_opening) || 0, ap: Number(o.ap_opening) || 0 })
@@ -471,10 +701,10 @@ export function getPartnerBalanceSummary(db: Database.Database, accountSetId: st
   if (endDate) { conds.push('doc_date<=?'); ps.push(endDate) }
   if (arapMain.sql) { conds.push(arapMain.sql); ps.push(...arapMain.params) }
   const rows = db.prepare(`SELECT partner_code,
-      COALESCE(SUM(CASE WHEN doc_type IN (${arTypesSql}) AND direction='in'  THEN amount ELSE 0 END),0) AS receivable_amount,
-      COALESCE(SUM(CASE WHEN doc_type IN (${arTypesSql}) AND direction='out' THEN amount ELSE 0 END),0) AS received_amount,
-      COALESCE(SUM(CASE WHEN doc_type IN (${apTypesSql}) AND direction='in'  THEN amount ELSE 0 END),0) AS payable_amount,
-      COALESCE(SUM(CASE WHEN doc_type IN (${apTypesSql}) AND direction='out' THEN amount ELSE 0 END),0) AS paid_amount
+      COALESCE(SUM(CASE WHEN ${sideSql}='ar' AND direction='in'  THEN amount ELSE 0 END),0) AS receivable_amount,
+      COALESCE(SUM(CASE WHEN ${sideSql}='ar' AND direction='out' THEN amount ELSE 0 END),0) AS received_amount,
+      COALESCE(SUM(CASE WHEN ${sideSql}='ap' AND direction='in'  THEN amount ELSE 0 END),0) AS payable_amount,
+      COALESCE(SUM(CASE WHEN ${sideSql}='ap' AND direction='out' THEN amount ELSE 0 END),0) AS paid_amount
     FROM scm_ar_ap_log WHERE ${conds.join(' AND ')} GROUP BY partner_code`).all(...ps) as any[]
   // 合并期初 + 本期；余额分别保留应收、应付，净额仅用于“全部往来”的期末净额列。
   const codes = new Set<string>([...openingMap.keys(), ...rows.map((r: any) => r.partner_code)])
@@ -550,6 +780,8 @@ const r2 = (n: number) => Math.round((Number(n) || 0) * 100) / 100
 
 /** 核销单号：HX-YYYYMM-NNN（账套内按月流水） */
 function nextVerifyNo(db: Database.Database, accountSetId: string): string {
+  const custom = nextAuxNo(db, accountSetId, 'HX', 'scm_ar_ap_verify', 'verify_no')
+  if (custom) return custom
   const now = new Date()
   const prefix = `HX-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}-`
   const rows = db.prepare('SELECT verify_no FROM scm_ar_ap_verify WHERE account_set_id=? AND verify_no LIKE ?').all(accountSetId, `${prefix}%`) as Array<{ verify_no: string }>
@@ -565,12 +797,14 @@ function nextVerifyNo(db: Database.Database, accountSetId: string): string {
  * 未核销明细：返回某往来单位 应收应付方(in) 与 收付款/预收预付方(out) 的未核销行。
  * side: 'ar'(应收) / 'ap'(应付)；不传则全部。
  */
-export function getOpenItems(db: Database.Database, accountSetId: string, partnerCode: string, side?: 'ar' | 'ap') {
+export function getOpenItems(db: Database.Database, accountSetId: string, partnerCode: string, side?: 'ar' | 'ap', opts: { includeSettled?: boolean } = {}) {
   const arap = arapDocTypeCond(side === 'ar' ? 'ar' : side === 'ap' ? 'ap' : undefined, 'l')
   const extra = arap.sql ? ' AND ' + arap.sql : ''
   // 多币种：open_amount 为**原币**未清（核销按原币），open_amount_base 为本位币未清（汇总口径）
   const q = (dir: 'in' | 'out') => db.prepare(
     `SELECT l.*, (COALESCE(l.amount_fc, l.amount) - COALESCE(l.verified_fc, l.verified_amount)) AS open_amount,
+       ROUND(COALESCE(l.amount_fc, l.amount),2) AS doc_amount,
+       ROUND(COALESCE(l.verified_fc, l.verified_amount),2) AS settled_amount,
        (l.amount - l.verified_amount) AS open_amount_base,
        CAST((julianday('now') - julianday(COALESCE(l.due_date, l.doc_date))) AS INTEGER) AS overdue_days
      FROM scm_ar_ap_log l
@@ -578,17 +812,41 @@ export function getOpenItems(db: Database.Database, accountSetId: string, partne
        AND (COALESCE(l.amount_fc, l.amount) - COALESCE(l.verified_fc, l.verified_amount)) > 0.005${extra}
      ORDER BY COALESCE(l.due_date, l.doc_date), l.created_at`
   ).all(accountSetId, partnerCode, dir, ...arap.params) as any[]
-  const inItems = q('in')     // 应收/应付（待核销）
-  const outItems = q('out')   // 收付款 / 未核销即预收预付
+  const withSide = (rows: any[]) => rows.map(r => ({ ...r, arap_side: logSide(r) }))
+  const inItems = withSide(q('in'))     // 应收/应付（待核销）
+  const outItems = withSide(q('out'))   // 收付款 / 未核销即预收预付
   const sum = (rows: any[]) => r2(rows.reduce((s, r) => s + (Number(r.open_amount_base) || 0), 0))
+  // 已核销完毕的收付款（客户反馈：核销后右侧预收款消失，不好查账）：只读展示，带上核销去向（核销单号）
+  // 同时返回 in 方（已核销完的应收应付源单），并带 doc_id/doc_status 供前端点回原单；
+  // 单据本身核销后仍保留在 scm_doc，这里只是把它从"未核销"视图的消失补成可追溯。
+  const settledQ = (dir: 'in' | 'out') => opts.includeSettled ? db.prepare(
+    `SELECT l.*, 0 AS open_amount, 0 AS open_amount_base,
+       ROUND(COALESCE(l.amount_fc, l.amount),2) AS doc_amount,
+       ROUND(COALESCE(l.verified_fc, l.verified_amount),2) AS settled_amount,
+       d.id AS doc_id, d.status AS doc_status,
+       (SELECT GROUP_CONCAT(DISTINCT v.verify_no) FROM scm_ar_ap_verify v WHERE v.${dir}_log_id=l.id) AS verify_nos
+     FROM scm_ar_ap_log l
+     LEFT JOIN scm_doc d ON d.account_set_id=l.account_set_id AND d.doc_type=l.doc_type AND d.doc_no=l.doc_no
+     WHERE l.account_set_id=? AND l.partner_code=? AND l.direction=?
+       AND (COALESCE(l.amount_fc, l.amount) - COALESCE(l.verified_fc, l.verified_amount)) <= 0.005
+       AND COALESCE(l.verified_fc, l.verified_amount) > 0.005${extra}
+     ORDER BY l.doc_date DESC, l.created_at DESC LIMIT 500`
+  ).all(accountSetId, partnerCode, dir, ...arap.params) as any[] : []
+  const settledOut = withSide(settledQ('out'))
+  const settledIn = withSide(settledQ('in'))
   return {
     in_items: inItems, out_items: outItems,
+    settled_out_items: settledOut,
+    settled_in_items: settledIn,
     open_in: sum(inItems),            // 未收/未付合计（本位币）
     advance: sum(outItems),           // 预收/预付余额（本位币）
   }
 }
 
-/** 收付款单可选择的应收应付源单。RCV=销售发货，PAY=采购/委外入库。 */
+/** 收付款单可选源单类型（组装单 AS 再按台账 arap_side 区分应收/应付）；保存校验 validatePaymentData 共用 */
+export const PAYMENT_SOURCE_TYPES: Record<'RCV' | 'PAY', string[]> = { RCV: ['SO', 'AS'], PAY: ['PI', 'WI', 'OP', 'AS'] }
+
+/** 收付款单可选择的应收应付源单。RCV=销售发货/受托加工，PAY=采购/委外入库/委托加工。 */
 export function getPaymentSources(
   db: Database.Database,
   accountSetId: string,
@@ -596,13 +854,16 @@ export function getPaymentSources(
   paymentDocType: 'RCV' | 'PAY',
   currency?: string | null,
 ) {
-  const sourceTypes = paymentDocType === 'RCV' ? ['SO'] : ['PI', 'WI', 'OP']
+  const sourceTypes = PAYMENT_SOURCE_TYPES[paymentDocType]
   const ph = sourceTypes.map(() => '?').join(',')
+  const side = paymentDocType === 'RCV' ? 'ar' : 'ap'
   // 多币种：只列同币别的源单（核销须同币别），金额为原币
   const cur = currency ? (isScmBaseCurrency(db, accountSetId, currency) ? getScmBaseCurrency(db, accountSetId) : normalizeScmCurrency(currency)) : ''
   const curSql = cur ? " AND COALESCE(l.currency, '') IN (?, '')" : ''
   const curParams = cur ? [cur] : []
-  return db.prepare(`SELECT
+  // 第四份反馈 Q5：已核销额拆成「退货冲减」与「已收 / 已付」两列，退货不再算进已付
+  const returnType = paymentDocType === 'RCV' ? 'SR' : 'PR'
+  const rows = db.prepare(`SELECT
       l.id AS arap_source_log_id,
       d.id AS source_doc_id,
       l.doc_type AS source_doc_type,
@@ -611,15 +872,55 @@ export function getPaymentSources(
       l.due_date,
       l.currency,
       ROUND(COALESCE(l.amount_fc, l.amount),2) AS source_amount,
-      ROUND(COALESCE(l.verified_fc, l.verified_amount),2) AS settled_amount,
+      ROUND(COALESCE((SELECT SUM(v.amount) FROM scm_ar_ap_verify v JOIN scm_ar_ap_log lo ON lo.id=v.out_log_id
+        WHERE v.in_log_id=l.id AND lo.doc_type=?),0),2) AS return_offset_amount,
+      ROUND(COALESCE(l.verified_fc, l.verified_amount),2) AS verified_total,
       ROUND(COALESCE(l.amount_fc, l.amount)-COALESCE(l.verified_fc, l.verified_amount),2) AS open_amount,
       l.remark
     FROM scm_ar_ap_log l
     JOIN scm_doc d ON d.account_set_id=l.account_set_id AND d.doc_type=l.doc_type AND d.doc_no=l.doc_no
     WHERE l.account_set_id=? AND l.partner_code=? AND l.direction='in'
-      AND l.doc_type IN (${ph}) AND d.status='audited'${curSql}
+      AND l.doc_type IN (${ph}) AND ${arapSideSql('l')}=? AND d.status='audited'${curSql}
       AND (COALESCE(l.amount_fc, l.amount)-COALESCE(l.verified_fc, l.verified_amount))>0.005
-    ORDER BY l.doc_date, l.created_at`).all(accountSetId, partnerCode, ...sourceTypes, ...curParams) as any[]
+    ORDER BY l.doc_date, l.created_at`).all(returnType, accountSetId, partnerCode, ...sourceTypes, side, ...curParams) as any[]
+  for (const r of rows) {
+    r.settled_amount = r2(Number(r.verified_total) - Number(r.return_offset_amount))
+    delete r.verified_total
+  }
+  return rows
+}
+
+/**
+ * 收付款单「未冲减的退货」：退货 out 台账仍有余额（无上游，或冲完上游还有剩余），
+ * 在收付款单源单表里以负数行列示，供「冲抵」使用（第四份反馈 Q5）。
+ */
+export function getOpenReturnsForPayment(
+  db: Database.Database,
+  accountSetId: string,
+  partnerCode: string,
+  paymentDocType: 'RCV' | 'PAY',
+  currency?: string | null,
+) {
+  const returnType = paymentDocType === 'RCV' ? 'SR' : 'PR'
+  const cur = currency ? (isScmBaseCurrency(db, accountSetId, currency) ? getScmBaseCurrency(db, accountSetId) : normalizeScmCurrency(currency)) : ''
+  const curSql = cur ? " AND COALESCE(l.currency, '') IN (?, '')" : ''
+  return db.prepare(`SELECT
+      l.id AS arap_log_id,
+      d.id AS source_doc_id,
+      l.doc_type AS source_doc_type,
+      l.doc_no AS source_doc_no,
+      l.doc_date AS source_doc_date,
+      l.currency,
+      ROUND(COALESCE(l.amount_fc, l.amount),2) AS source_amount,
+      ROUND(COALESCE(l.verified_fc, l.verified_amount),2) AS offset_amount,
+      ROUND(COALESCE(l.amount_fc, l.amount)-COALESCE(l.verified_fc, l.verified_amount),2) AS open_amount,
+      l.remark
+    FROM scm_ar_ap_log l
+    JOIN scm_doc d ON d.account_set_id=l.account_set_id AND d.doc_type=l.doc_type AND d.doc_no=l.doc_no
+    WHERE l.account_set_id=? AND l.partner_code=? AND l.direction='out' AND l.doc_type=?
+      AND d.status='audited'${curSql}
+      AND (COALESCE(l.amount_fc, l.amount)-COALESCE(l.verified_fc, l.verified_amount))>0.005
+    ORDER BY l.doc_date, l.created_at`).all(accountSetId, partnerCode, returnType, ...(cur ? [cur] : [])) as any[]
 }
 
 /**
@@ -642,6 +943,7 @@ export function verifyArAp(db: Database.Database, accountSetId: string, params: 
     VALUES (?,?,?,?,?,?,?,?,?, datetime('now'))`)
   const verifyNo = nextVerifyNo(db, accountSetId)
   const verifyDate = params.verify_date || todayStr()
+  assertNotBeforeGlStart(db, accountSetId, verifyDate, '核销日期')
   const run = db.transaction(() => {
     for (const m of valid) {
       const amt = r2(m.amount)
@@ -652,8 +954,9 @@ export function verifyArAp(db: Database.Database, accountSetId: string, params: 
       if (inRow.partner_code !== partner_code || outRow.partner_code !== partner_code) throw new Error('核销双方往来单位不一致')
       // FIX-215：业务方向必须一致——应收只能用收款/销售退货核销，应付只能用付款/采购退货核销。
       // 原来只校验 in/out，客户兼供应商时收款单可把应付核销掉，应收账龄虚增、应付账龄虚减。
-      const inIsAr = AR_DOC_TYPES.includes(inRow.doc_type), inIsAp = AP_DOC_TYPES.includes(inRow.doc_type)
-      const outIsAr = AR_DOC_TYPES.includes(outRow.doc_type), outIsAp = AP_DOC_TYPES.includes(outRow.doc_type)
+      const inSide = logSide(inRow), outSide = logSide(outRow)
+      const inIsAr = inSide === 'ar', inIsAp = inSide === 'ap'
+      const outIsAr = outSide === 'ar', outIsAp = outSide === 'ap'
       if ((inIsAr && !outIsAr) || (inIsAp && !outIsAp)) {
         throw new Error(`核销业务方向不一致：${inIsAr ? '应收' : '应付'}「${inRow.doc_type}」不能用「${outRow.doc_type}」核销`)
       }
@@ -672,10 +975,61 @@ export function verifyArAp(db: Database.Database, accountSetId: string, params: 
   return { verify_no: verifyNo, count: valid.length }
 }
 
+/**
+ * 核销行是否为「退货冲上游」：out 方是 PR/SR，in 方正是该退货单明细所引用的上游单据（PI/SO 等）。
+ * 由退货单审核自动生成（applyReturnSourceVerify），随退货单反审核撤销。
+ */
+const RETURN_AUTO_VERIFY_SQL = `EXISTS (SELECT 1 FROM scm_ar_ap_log lo4
+    JOIN scm_doc d4 ON d4.account_set_id=lo4.account_set_id AND d4.doc_type=lo4.doc_type AND d4.doc_no=lo4.doc_no
+    JOIN scm_doc_line dl4 ON dl4.doc_id=d4.id
+    JOIN scm_doc_line pl4 ON pl4.id=dl4.source_line_id
+    JOIN scm_doc pd4 ON pd4.id=pl4.doc_id
+    JOIN scm_ar_ap_log li4 ON li4.id=v.in_log_id AND li4.doc_type=pd4.doc_type AND li4.doc_no=pd4.doc_no
+    WHERE lo4.id=v.out_log_id AND lo4.doc_type IN ('PR','SR'))`
+
+/**
+ * 核销行是否由收付款单「选源单」自动生成：out 方是 RCV/PAY，且该收付款单有明细行指向本行的 in 方源单。
+ * 这类核销随收付款单审核产生、随反审核撤销，不能在核销单列表单独删除。
+ */
+const AUTO_VERIFY_SQL = `(EXISTS (SELECT 1 FROM scm_ar_ap_log lo2
+    JOIN scm_doc d2 ON d2.account_set_id=lo2.account_set_id AND d2.doc_type=lo2.doc_type AND d2.doc_no=lo2.doc_no
+    JOIN scm_doc_line dl2 ON dl2.doc_id=d2.id
+    WHERE lo2.id=v.out_log_id AND lo2.doc_type IN ('RCV','PAY') AND dl2.arap_source_log_id=v.in_log_id)
+  OR ${RETURN_AUTO_VERIFY_SQL})`
+
+/** 核销业务类型：按应收应付方 / 核销方单据类型 + 生成方式命名（参照金蝶「预收冲应收」等） */
+export function verifyBizType(inType: string, outTypes: string[], auto: boolean, inSide?: string | null): { side: 'ar' | 'ap'; label: string } {
+  const side: 'ar' | 'ap' = logSide({ doc_type: inType, arap_side: inSide }) === 'ap' ? 'ap' : 'ar'
+  const uniq = [...new Set(outTypes.filter(Boolean))]
+  if (uniq.length !== 1) return { side, label: side === 'ar' ? '应收核销' : '应付核销' }
+  const out = uniq[0]
+  if (side === 'ar') {
+    if (out === 'RCV') return { side, label: auto ? '收款核销应收' : '预收冲应收' }
+    if (out === 'SR') return { side, label: '退货冲应收' }
+    return { side, label: '应收核销' }
+  }
+  if (out === 'PAY') return { side, label: auto ? '付款核销应付' : '预付冲应付' }
+  if (out === 'PR') return { side, label: '退货冲应付' }
+  return { side, label: '应付核销' }
+}
+
 /** 反核销：删除该核销单的所有明细，并回退两侧 verified_amount。 */
 export function cancelVerify(db: Database.Database, accountSetId: string, verifyNo: string): { count: number } {
-  const rows = db.prepare('SELECT id, in_log_id, out_log_id, amount FROM scm_ar_ap_verify WHERE account_set_id=? AND verify_no=?').all(accountSetId, verifyNo) as any[]
+  const rows = db.prepare('SELECT id, in_log_id, out_log_id, amount, verify_date FROM scm_ar_ap_verify WHERE account_set_id=? AND verify_no=?').all(accountSetId, verifyNo) as any[]
   if (!rows.length) throw new Error('核销单不存在')
+  // 核销日期所在总账期间已结账：删除核销会改动已结账期间的账龄/对账口径，须先取消结账
+  const ym = /^(\d{4})-(\d{2})/.exec(String(rows[0].verify_date || ''))
+  if (ym) assertGlPeriodOpen(db, accountSetId, Number(ym[1]), Number(ym[2]))
+  // 收付款单选源单自动生成的核销：单独删掉会让收付款单「已选源单」与往来台账脱节，须反审核收付款单撤销
+  const auto = db.prepare(`SELECT lo.doc_type, lo.doc_no FROM scm_ar_ap_verify v
+    JOIN scm_ar_ap_log lo ON lo.id=v.out_log_id
+    WHERE v.account_set_id=? AND v.verify_no=? AND ${AUTO_VERIFY_SQL} LIMIT 1`).get(accountSetId, verifyNo) as any
+  if (auto) {
+    if (auto.doc_type === 'PR' || auto.doc_type === 'SR') {
+      throw new Error(`核销单「${verifyNo}」由${auto.doc_type === 'PR' ? '采购退货单' : '销售退货单'}「${auto.doc_no}」审核时自动冲减上游单据生成，请反审核该退货单撤销核销`)
+    }
+    throw new Error(`核销单「${verifyNo}」由${auto.doc_type === 'RCV' ? '收款单' : '付款单'}「${auto.doc_no}」选源单自动生成，请反审核该单据撤销核销`)
+  }
   const del = db.prepare('DELETE FROM scm_ar_ap_verify WHERE id=?')
   const run = db.transaction(() => {
     for (const r of rows) {
@@ -696,6 +1050,111 @@ export function listVerifies(db: Database.Database, accountSetId: string, partne
       COUNT(*) AS line_count, ROUND(SUM(v.amount),2) AS total_amount, MAX(v.created_by) AS created_by, MAX(v.created_at) AS created_at
     FROM scm_ar_ap_verify v LEFT JOIN scm_partner p ON p.account_set_id=v.account_set_id AND p.code=v.partner_code
     WHERE ${conds.join(' AND ')} GROUP BY v.verify_no ORDER BY v.created_at DESC`).all(...ps) as any[]
+}
+
+export interface VerifyRecordQuery {
+  date_from?: string
+  date_to?: string
+  partner_code?: string
+  keyword?: string
+  side?: 'ar' | 'ap' | ''
+  gen_mode?: 'auto' | 'manual' | ''
+  page?: number
+  page_size?: number
+}
+
+/**
+ * 核销单记录（全页面列表，参照金蝶「核销单记录」）：跨往来单位，按核销单号汇总，
+ * 带业务类型（预收冲应收 / 收款核销应收 …）、生成方式（手动 / 收付款单自动）。
+ */
+export function listVerifyRecords(db: Database.Database, accountSetId: string, q: VerifyRecordQuery = {}) {
+  const conds = ['v.account_set_id=?']; const ps: any[] = [accountSetId]
+  if (q.date_from) { conds.push('v.verify_date>=?'); ps.push(q.date_from) }
+  if (q.date_to) { conds.push('v.verify_date<=?'); ps.push(q.date_to) }
+  if (q.partner_code) { conds.push('v.partner_code=?'); ps.push(q.partner_code) }
+  const kw = String(q.keyword || '').trim()
+  if (kw) {
+    // 关键字：核销单号 / 往来单位编码名称 / 参与核销的单据号（命中任一行即整张核销单入选）
+    conds.push(`v.verify_no IN (SELECT v3.verify_no FROM scm_ar_ap_verify v3
+      LEFT JOIN scm_partner p3 ON p3.account_set_id=v3.account_set_id AND p3.code=v3.partner_code
+      LEFT JOIN scm_ar_ap_log li3 ON li3.id=v3.in_log_id
+      LEFT JOIN scm_ar_ap_log lo3 ON lo3.id=v3.out_log_id
+      WHERE v3.account_set_id=? AND (v3.verify_no LIKE ? OR v3.partner_code LIKE ? OR p3.name LIKE ? OR li3.doc_no LIKE ? OR lo3.doc_no LIKE ?))`)
+    ps.push(accountSetId, ...Array(5).fill(`%${kw}%`))
+  }
+  const rows = db.prepare(`SELECT v.verify_no, v.partner_code, p.name AS partner_name, MAX(v.verify_date) AS verify_date,
+      COUNT(*) AS line_count, ROUND(SUM(v.amount),2) AS total_amount, MAX(v.created_by) AS created_by, MAX(v.created_at) AS created_at,
+      MIN(li.doc_type) AS in_type, MIN(li.arap_side) AS in_side, GROUP_CONCAT(DISTINCT lo.doc_type) AS out_types,
+      GROUP_CONCAT(DISTINCT li.doc_no) AS in_doc_nos, GROUP_CONCAT(DISTINCT lo.doc_no) AS out_doc_nos,
+      MAX(CASE WHEN ${AUTO_VERIFY_SQL} THEN 1 ELSE 0 END) AS is_auto
+    FROM scm_ar_ap_verify v
+    LEFT JOIN scm_partner p ON p.account_set_id=v.account_set_id AND p.code=v.partner_code
+    LEFT JOIN scm_ar_ap_log li ON li.id=v.in_log_id
+    LEFT JOIN scm_ar_ap_log lo ON lo.id=v.out_log_id
+    WHERE ${conds.join(' AND ')}
+    GROUP BY v.verify_no ORDER BY MAX(v.verify_date) DESC, MAX(v.created_at) DESC`).all(...ps) as any[]
+  let list = rows.map(r => {
+    const auto = Number(r.is_auto) === 1
+    const biz = verifyBizType(String(r.in_type || ''), String(r.out_types || '').split(','), auto, r.in_side)
+    return {
+      verify_no: r.verify_no, verify_date: r.verify_date, partner_code: r.partner_code, partner_name: r.partner_name || '',
+      side: biz.side, biz_type: biz.label, gen_mode: auto ? 'auto' : 'manual',
+      line_count: r.line_count, total_amount: r.total_amount, created_by: r.created_by || '', created_at: r.created_at,
+      in_doc_nos: String(r.in_doc_nos || ''), out_doc_nos: String(r.out_doc_nos || ''),
+    }
+  })
+  if (q.side) list = list.filter(r => r.side === q.side)
+  if (q.gen_mode) list = list.filter(r => r.gen_mode === q.gen_mode)
+  const total = list.length
+  const totalAmount = r2(list.reduce((s, r) => s + (Number(r.total_amount) || 0), 0))
+  const pageSize = Math.min(500, Math.max(1, Number(q.page_size) || 50))
+  const page = Math.max(1, Number(q.page) || 1)
+  return { list: list.slice((page - 1) * pageSize, page * pageSize), total, total_amount: totalAmount, page, page_size: pageSize }
+}
+
+/** 核销单详情：上表 = 收付款 / 退货方（out），下表 = 应收应付方（in），各自带单据金额、已核销、未核销、本次核销。 */
+export function getVerifyDetail(db: Database.Database, accountSetId: string, verifyNo: string) {
+  const rows = db.prepare(`SELECT v.*, (CASE WHEN ${AUTO_VERIFY_SQL} THEN 1 ELSE 0 END) AS is_auto
+    FROM scm_ar_ap_verify v WHERE v.account_set_id=? AND v.verify_no=? ORDER BY v.created_at, v.id`).all(accountSetId, verifyNo) as any[]
+  if (!rows.length) return null
+  const getLog = db.prepare(`SELECT l.id, l.doc_type, l.arap_side, l.doc_no, l.doc_date, l.currency, l.remark,
+      ROUND(COALESCE(l.amount_fc, l.amount),2) AS doc_amount,
+      ROUND(COALESCE(l.verified_fc, l.verified_amount),2) AS verified_amount,
+      d.id AS doc_id, d.status AS doc_status
+    FROM scm_ar_ap_log l
+    LEFT JOIN scm_doc d ON d.account_set_id=l.account_set_id AND d.doc_type=l.doc_type AND d.doc_no=l.doc_no
+    WHERE l.id=?`)
+  const collect = (key: 'in_log_id' | 'out_log_id') => {
+    const map = new Map<string, any>()
+    for (const r of rows) {
+      const id = String(r[key])
+      const hit = map.get(id)
+      if (hit) { hit.this_amount = r2(hit.this_amount + Number(r.amount)); continue }
+      const log = getLog.get(id) as any
+      map.set(id, {
+        log_id: id, doc_id: log?.doc_id || '', doc_type: log?.doc_type || '', arap_side: logSide(log), doc_no: log?.doc_no || '', doc_date: log?.doc_date || '',
+        doc_status: log?.doc_status || '', currency: log?.currency || '', remark: log?.remark || '',
+        doc_amount: Number(log?.doc_amount) || 0, verified_amount: Number(log?.verified_amount) || 0,
+        open_amount: r2((Number(log?.doc_amount) || 0) - (Number(log?.verified_amount) || 0)),
+        this_amount: r2(Number(r.amount)),
+      })
+    }
+    return [...map.values()]
+  }
+  const inItems = collect('in_log_id')
+  const outItems = collect('out_log_id')
+  const auto = rows.some(r => Number(r.is_auto) === 1)
+  const biz = verifyBizType(inItems[0]?.doc_type || '', outItems.map(o => o.doc_type), auto, inItems[0]?.arap_side)
+  const partner = db.prepare('SELECT name FROM scm_partner WHERE account_set_id=? AND code=?').get(accountSetId, rows[0].partner_code) as any
+  const source = auto ? outItems.find(o => o.doc_type === 'RCV' || o.doc_type === 'PAY') : null
+  return {
+    verify_no: verifyNo, verify_date: rows[0].verify_date, partner_code: rows[0].partner_code, partner_name: partner?.name || '',
+    side: biz.side, biz_type: biz.label, gen_mode: auto ? 'auto' : 'manual',
+    source_doc_no: source?.doc_no || '', source_doc_type: source?.doc_type || '',
+    total_amount: r2(rows.reduce((s, r) => s + Number(r.amount), 0)),
+    created_by: rows[0].created_by || '', created_at: rows[0].created_at,
+    out_items: outItems, in_items: inItems,
+  }
 }
 
 // ── 到期账龄 / 到期提醒 / 信用额度（Phase 2 & 3） ─────────────────────────
@@ -746,11 +1205,10 @@ export function getDueReminder(db: Database.Database, accountSetId: string, asOf
 
 /** 某客户未核销应收总额（信用占用核心）。 */
 export function getPartnerOpenAr(db: Database.Database, accountSetId: string, partnerCode: string): number {
-  const ph = AR_DOC_TYPES.map(() => '?').join(',')
   // 未核销的销售退货(SR, direction=out) 同样冲减客户欠款（FIX-204）；未核销收款属预收，不抵占用
   const r = db.prepare(`SELECT COALESCE(SUM(CASE WHEN direction='in' THEN amount - verified_amount
       WHEN doc_type='SR' THEN -(amount - verified_amount) ELSE 0 END),0) v FROM scm_ar_ap_log
-    WHERE account_set_id=? AND partner_code=? AND doc_type IN (${ph})`).get(accountSetId, partnerCode, ...AR_DOC_TYPES) as any
+    WHERE account_set_id=? AND partner_code=? AND ${arapSideSql()}='ar'`).get(accountSetId, partnerCode) as any
   return Math.round((Number(r?.v) || 0) * 100) / 100
 }
 
@@ -763,12 +1221,16 @@ export function getPartnerCredit(db: Database.Database, accountSetId: string, pa
 }
 
 /** 反审核安全网：该单据(doc_no)对应的往来台账行是否已参与核销（verified_amount>0）。 */
-export function getDocVerifiedInfo(db: Database.Database, accountSetId: string, docNo: string): { verified: boolean; verify_nos: string[] } {
+export function getDocVerifiedInfo(
+  db: Database.Database, accountSetId: string, docNo: string, opts: { excludeReturnAuto?: boolean } = {}
+): { verified: boolean; verify_nos: string[] } {
   const logs = db.prepare('SELECT id FROM scm_ar_ap_log WHERE account_set_id=? AND doc_no=? AND COALESCE(verified_fc, verified_amount) > 0.005').all(accountSetId, docNo) as any[]
   if (!logs.length) return { verified: false, verify_nos: [] }
-  const nos = db.prepare(`SELECT DISTINCT verify_no FROM scm_ar_ap_verify
-    WHERE account_set_id=? AND (in_log_id IN (SELECT id FROM scm_ar_ap_log WHERE account_set_id=? AND doc_no=?)
-       OR out_log_id IN (SELECT id FROM scm_ar_ap_log WHERE account_set_id=? AND doc_no=?))`)
+  // 退货单反审核时，自身「退货冲上游」的自动核销由 reversePayment 一并撤销，不算拦截项
+  const exclude = opts.excludeReturnAuto ? ` AND NOT ${RETURN_AUTO_VERIFY_SQL}` : ''
+  const nos = db.prepare(`SELECT DISTINCT v.verify_no FROM scm_ar_ap_verify v
+    WHERE v.account_set_id=? AND (v.in_log_id IN (SELECT id FROM scm_ar_ap_log WHERE account_set_id=? AND doc_no=?)
+       OR v.out_log_id IN (SELECT id FROM scm_ar_ap_log WHERE account_set_id=? AND doc_no=?))${exclude}`)
     .all(accountSetId, accountSetId, docNo, accountSetId, docNo) as any[]
-  return { verified: true, verify_nos: nos.map(n => n.verify_no) }
+  return { verified: nos.length > 0, verify_nos: nos.map(n => n.verify_no) }
 }

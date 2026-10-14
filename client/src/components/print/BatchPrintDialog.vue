@@ -44,6 +44,12 @@
             <el-input v-model="filterForm.voucherNoEnd" placeholder="如 999 或 记-999" style="width: 120px" clearable />
           </div>
         </el-form-item>
+        <el-form-item label="打印方式">
+          <el-radio-group v-model="mergeA4">
+            <el-radio :value="false">逐张打印</el-radio>
+            <el-radio :value="true">合打（A4 一页 2 张）</el-radio>
+          </el-radio-group>
+        </el-form-item>
         <el-form-item>
           <el-button type="primary" :loading="loading" @click="handleQuery">查询</el-button>
         </el-form-item>
@@ -56,7 +62,8 @@
       <div v-else-if="!queried" class="result-state">设置筛选条件后点击查询，再预览打印。</div>
       <div v-else-if="queriedIds.length === 0" class="result-state">未找到符合条件的凭证</div>
       <div v-else class="result-state">
-        已找到 <strong>{{ queriedIds.length }}</strong> 张凭证，可预览后打印。
+        已找到 <strong>{{ queriedIds.length }}</strong> 张凭证<template v-if="mergeA4">，合打约需 A4 纸
+        <strong>{{ Math.ceil(queriedIds.length / 2) }}</strong> 张（分录超页的凭证另计）</template>，可预览后打印。
       </div>
     </div>
 
@@ -68,7 +75,12 @@
     </template>
   </el-dialog>
 
-  <VoucherHiprintDialog v-model="hiprintVisible" :voucher-ids="queriedIds" mode="batch" />
+  <VoucherHiprintDialog
+    v-model="hiprintVisible"
+    :voucher-ids="queriedIds"
+    mode="batch"
+    :merge-a4="mergeA4"
+  />
 </template>
 
 <script setup lang="ts">
@@ -111,6 +123,24 @@ const queried = ref(false)
 const voucherTypes = ref<any[]>([])
 const voucherDataList = ref<VoucherPrintData[]>([])
 const hiprintVisible = ref(false)
+
+// 打印方式（逐张 / 合打）记在本机，下次打开沿用
+const MERGE_A4_STORAGE_KEY = 'cw.voucherBatchPrint.mergeA4'
+function readMergeA4(): boolean {
+  try {
+    return localStorage.getItem(MERGE_A4_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+const mergeA4 = ref(readMergeA4())
+watch(mergeA4, v => {
+  try {
+    localStorage.setItem(MERGE_A4_STORAGE_KEY, v ? '1' : '0')
+  } catch {
+    /* 忽略 */
+  }
+})
 
 const queriedIds = computed(() => voucherDataList.value.map(v => v.id).filter(Boolean))
 

@@ -11,7 +11,7 @@
     />
 
     <div class="toolbar-row">
-      <el-button plain :disabled="!rows.length" @click="handleExport"><el-icon><Download /></el-icon>导出全部</el-button>
+      <el-button plain :disabled="!rows.length" @click="handleExport"><el-icon><Download /></el-icon>另存</el-button>
       <el-button plain :disabled="!rows.length" @click="handlePrint"><el-icon><Printer /></el-icon>打印</el-button>
       <span class="tip">共 {{ total }} 条；合计按全部筛选结果计算，不受分页影响</span>
     </div>

@@ -10,6 +10,10 @@ export const useSystemParamsStore = defineStore('systemParams', () => {
   const baseCurrency = ref('RMB')
   const allowDirectPost = ref(false)
   const requireAudit = ref(true)
+  /** 收付款制证方式：scm=收付款单直接生成凭证（默认），cashier=通过出纳生成凭证（后端在未注册出纳模块时按 scm 处理） */
+  const paymentVoucherMode = ref<'scm' | 'cashier'>('scm')
+  /** 进销存：物料 / 往来单位须审核后才能在单据中使用（scm:master_audit_required，默认关闭） */
+  const masterAuditRequired = ref(false)
   // 当前会计区间：由后端 /system/params 的 meta 给出（最新已过账凭证的 year/period，
   // 无凭证时回退账套 fiscal_year + 当前月），供报表等页面作为默认年度/期间。
   const currentYear = ref<number>(new Date().getFullYear())
@@ -40,7 +44,11 @@ export const useSystemParamsStore = defineStore('systemParams', () => {
       const meta = (res as any).meta || {}
       if (Number.isInteger(meta.current_year)) currentYear.value = meta.current_year
       if (Number.isInteger(meta.current_period)) currentPeriod.value = meta.current_period
+      paymentVoucherMode.value = 'scm'
+      masterAuditRequired.value = false
       for (const p of params) {
+        if (p.param_key === 'scm:master_audit_required') masterAuditRequired.value = p.param_value === '1'
+        if (p.param_key === 'payment_voucher_mode') paymentVoucherMode.value = p.param_value === 'cashier' ? 'cashier' : 'scm'
         if (p.param_key === 'direct_print') directPrint.value = p.param_value === 'true'
         if (p.param_key === 'enable_cash_flow') enableCashFlow.value = p.param_value === 'true'
         if (p.param_key === 'enable_foreign_currency')
@@ -68,6 +76,8 @@ export const useSystemParamsStore = defineStore('systemParams', () => {
     baseCurrency,
     allowDirectPost,
     requireAudit,
+    paymentVoucherMode,
+    masterAuditRequired,
     currentYear,
     currentPeriod,
     startDate,

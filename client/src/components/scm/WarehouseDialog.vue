@@ -16,6 +16,12 @@
           <el-col :span="12"><el-form-item label="负责人"><el-input v-model="form.keeper" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="联系电话"><el-input v-model="form.phone" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="对应往来单位"><el-input v-model="form.partner_code" placeholder="外仓可填供应商/客户编号" /></el-form-item></el-col>
+          <el-col :span="24">
+            <el-form-item label="客供仓">
+              <el-switch v-model="form.is_customer_supplied" :active-value="1" :inactive-value="0" />
+              <span class="cs-hint">客户提供的材料放这里：出入库只记数量与往来单位，不计成本（受托加工用）</span>
+            </el-form-item>
+          </el-col>
           <el-col :span="24"><el-form-item label="仓库地址"><el-input v-model="form.address" /></el-form-item></el-col>
           <el-col :span="24"><el-form-item label="备注"><el-input v-model="form.remark" type="textarea" :rows="1" /></el-form-item></el-col>
         </el-row>
@@ -44,7 +50,7 @@ const form = ref<Partial<ScmWarehouse>>({})
 const saving = ref(false)
 
 async function resetForNew() {
-  form.value = {}
+  form.value = { is_customer_supplied: 0 }
   try { const r = await scmApi.getWarehouseNextNo(); if (r.code === 0) form.value.code = r.data.next_no } catch { /* 取号失败可手填 */ }
 }
 watch(() => props.modelValue, v => { visible.value = v; if (v) { if (props.row) form.value = { ...props.row }; else resetForNew() } }, { immediate: true })
@@ -72,3 +78,7 @@ function onDialogKeydown(e: KeyboardEvent) {
   else handleSave(false)
 }
 </script>
+
+<style scoped>
+.cs-hint { margin-left: 8px; font-size: 12px; color: var(--el-text-color-secondary); }
+</style>

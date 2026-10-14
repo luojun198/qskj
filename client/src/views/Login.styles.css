@@ -142,7 +142,7 @@
 /* 登录按钮 */
 .login-form :deep(.el-button--primary) {
   width: 100%;
-  height: 38px;
+  height: 38px !important; /* 全局按钮统一 26px，登录按钮保持大尺寸 */
   border-radius: 10px !important;
   font-size: 14px !important;
   font-weight: 600 !important;

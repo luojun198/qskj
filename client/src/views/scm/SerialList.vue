@@ -10,6 +10,7 @@
         <el-option value="out" label="已出库" />
       </el-select>
       <el-button type="primary" plain size="small" :loading="loading" @click="load"><el-icon><Search /></el-icon>查询</el-button>
+      <SaveAsButton title="序列号" />
       <FilterClearButton size="small" @clear="handleClearFilters" />
       <span class="rpt-hint">共 {{ rows.length }} 条（最多 500）</span>
     </div>

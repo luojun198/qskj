@@ -73,3 +73,17 @@ export function substituteStock(db: Database.Database, aid: string, comp: BomCom
     return { item_code: s.item_code, sub_priority: s.sub_priority, on_hand: Math.max(0, Number(row?.q) || 0) }
   })
 }
+
+/**
+ * BOM 必须至少有一行「主件」：计划用料、领料 / 委外发料、成本上卷只取主件，
+ * 全部选成副产品 / 联产品时计划用料为 0、委外发料无物料可发（客户反馈）。
+ */
+export function bomLinesError(lines: unknown): string | null {
+  if (!Array.isArray(lines)) return null
+  const valid = lines.filter((l: any) => l && l.item_code)
+  if (!valid.length) return null
+  if (!valid.some((l: any) => (l.line_type || 'component') === 'component')) {
+    return 'BOM 至少需要一行「主件」组件：副产品 / 联产品不计入用料，全部选成副产品时计划将没有用料、无法领料或委外发料'
+  }
+  return null
+}

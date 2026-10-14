@@ -24,13 +24,3 @@ export function filterAuxCategoriesForProjectList<T extends { code: string }>(li
 export function filterAuxCategoriesForAccount<T extends { code: string }>(list: T[]): T[] {
   return list.filter(c => !isAuxCategoryExcludedFromAccount(c.code))
 }
-
-/** 凭证录入：仅现金/银行科目需指定现金流量项目 */
-export function accountNeedsCashFlowItem(acc: {
-  is_cash?: number | null
-  is_bank?: number | null
-  require_cash_flow?: number | null
-} | null | undefined): boolean {
-  if (!acc) return false
-  return Number(acc.is_cash) === 1 || Number(acc.is_bank) === 1
-}

@@ -104,6 +104,10 @@ function shortLabel(title: string): string {
   align-items: stretch;
   background: linear-gradient(180deg, #0f3d3a 0%, #0b2f2d 100%);
   color: rgba(255, 255, 255, 0.72);
+  /* 与凭证录入列表一致：微软雅黑 + 系统 ClearType 渲染，字形清晰锐利（参照金蝶左侧导航） */
+  font-family: 'Microsoft YaHei', '微软雅黑', 'PingFang SC', 'Hiragino Sans GB', sans-serif;
+  -webkit-font-smoothing: auto;
+  -moz-osx-font-smoothing: auto;
   user-select: none;
   position: relative;
   z-index: 2;
@@ -152,6 +156,8 @@ function shortLabel(title: string): string {
 }
 
 .app-rail__item {
+  /* 导航项是 <button>，浏览器默认不继承字体（会退成 Arial），这里显式继承外层的微软雅黑 */
+  font-family: inherit;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -220,9 +226,9 @@ function shortLabel(title: string): string {
 }
 
 .app-rail__label {
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1;
-  letter-spacing: 0.2px;
+  letter-spacing: 0;
   white-space: nowrap;
 }
 

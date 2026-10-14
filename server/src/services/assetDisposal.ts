@@ -4,6 +4,7 @@
  * 处理资产减少（出售/报废/损毁/盘亏/捐赠等），可选生成清理凭证
  */
 import type { Database } from 'better-sqlite3'
+import { assertNotBeforeGlStart } from './voucherMutationGuard.js'
 import { fallbackOriginalAccount } from './assetAccountResolver.js'
 import { v4 as uuidv4 } from 'uuid'
 import {
@@ -81,6 +82,7 @@ export function disposeAsset(params: DisposalParams): DisposalResult {
     parseInt(scrapDate.split('-')[0]),
     parseInt(scrapDate.split('-')[1])
   )
+  assertNotBeforeGlStart(db, accountSetId, scrapDate, '处置日期')
   // P1-20：处置日期不得晚于当前月份
   assertNotAfterCurrentPeriod(parseInt(scrapDate.split('-')[0]), parseInt(scrapDate.split('-')[1]), '处置日期')
 
@@ -336,6 +338,64 @@ function generateDisposalVoucher(params: VoucherGenParams): string {
   })
 
   return result.voucherId
+}
+
+/**
+ * 凭证管理「重新生成」：对已处置、但处置凭证已被删除的卡片重做清理凭证。
+ * 卡片处置后原值 / 累折 / 净值被锁定，直接取卡片现值；处置收入 / 费用未入库，由调用方重新给定。
+ * 回写 scrap_voucher_id 由本函数完成。
+ */
+export function regenerateDisposalVoucher(params: {
+  db: Database
+  accountSetId: string
+  assetId: string
+  disposalIncome?: number
+  disposalExpense?: number
+  accumAccount?: string
+  clearingAccount?: string
+  operatorName?: string
+  voucherTypeId?: string | null
+}): { voucherId: string; voucherNo: string } {
+  const { db, accountSetId, assetId } = params
+  const asset = db.prepare('SELECT * FROM fixed_asset WHERE id=? AND account_set_id=?').get(assetId, accountSetId) as any
+  if (!asset) throw new Error('资产不存在')
+  if (!asset.scrap_date) throw new Error('该资产未处置，无法生成处置凭证')
+  if (asset.scrap_voucher_id && db.prepare('SELECT 1 FROM vouchers WHERE id=?').get(asset.scrap_voucher_id)) {
+    throw new Error('该资产已有处置凭证，请先删除后再重新生成')
+  }
+  const scrapDate = String(asset.scrap_date).slice(0, 10)
+  assertPeriodOpen(db, accountSetId, parseInt(scrapDate.split('-')[0]), parseInt(scrapDate.split('-')[1]))
+
+  const income = Math.max(0, Number(params.disposalIncome || 0))
+  const expense = Math.max(0, Number(params.disposalExpense || 0))
+  const netValue = Number(asset.net_value || 0)
+  const gainLoss = Math.round((income - expense - netValue) * 100) / 100
+  const changeRow = db.prepare(
+    "SELECT change_type_code FROM fixed_asset_change WHERE account_set_id=? AND asset_no=? AND change_kind='dispose' ORDER BY rowid DESC LIMIT 1"
+  ).get(accountSetId, asset.asset_no) as { change_type_code: string | null } | undefined
+  const changeTypeName = changeRow?.change_type_code
+    ? (db.prepare('SELECT name FROM fixed_asset_change_type WHERE account_set_id=? AND code=?').get(accountSetId, changeRow.change_type_code) as any)?.name ?? null
+    : null
+
+  const vid = generateDisposalVoucher({
+    db, accountSetId, asset, scrapDate,
+    scrapReason: asset.scrap_reason ?? null,
+    changeTypeName,
+    originalValue: asset.original_value,
+    accumDepr: asset.accum_depr,
+    netValue,
+    salvageValue: asset.salvage_value || 0,
+    disposalIncome: income,
+    disposalExpense: expense,
+    disposalGainLoss: gainLoss,
+    accumAccount: params.accumAccount || '1602',
+    clearingAccount: params.clearingAccount || '1606',
+    operatorName: params.operatorName || '系统',
+    voucherTypeId: params.voucherTypeId ?? null,
+  })
+  db.prepare('UPDATE fixed_asset SET scrap_voucher_id=? WHERE id=?').run(vid, assetId)
+  const row = db.prepare('SELECT voucher_no FROM vouchers WHERE id=?').get(vid) as { voucher_no: string } | undefined
+  return { voucherId: vid, voucherNo: row?.voucher_no ?? '' }
 }
 
 // ── 撤销处置 ─────────────────────────────────────────────

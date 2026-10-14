@@ -130,6 +130,18 @@ describe('出纳生成凭证 generateCashierVoucher', () => {
     expect(j.voucher_month).toBe(9)
   })
 
+  it('本次指定的凭证类型优先于出纳默认参数', () => {
+    db.prepare("INSERT INTO voucher_types (id, account_set_id, name, code, sort_order) VALUES ('vt2', ?, '收', '2', 2)").run(ASID)
+    db.prepare("INSERT INTO system_params VALUES ('p1', ?, 'cashier:default_voucher_type_id', 'vt1')").run(ASID)
+    addJournal(db, { id: 'j1', debit: 100, counter_account: '1122' })
+    addJournal(db, { id: 'j2', debit: 50, counter_account: '1122' })
+    generateCashierVoucher({ db, accountSetId: ASID, accountCode: '1001', makerName: 't', ids: ['j1'], voucherTypeId: 'vt2' })
+    generateCashierVoucher({ db, accountSetId: ASID, accountCode: '1001', makerName: 't', ids: ['j2'] })
+    const typeOf = (jid: string) => (db.prepare('SELECT v.voucher_type_id t FROM cashier_journal j JOIN vouchers v ON v.id=j.voucher_id WHERE j.id=?').get(jid) as any).t
+    expect(typeOf('j1')).toBe('vt2')
+    expect(typeOf('j2')).toBe('vt1')
+  })
+
   it('P0-2：总账已结账期间不允许生成出纳凭证', () => {
     db.exec(`CREATE TABLE period_closing (id TEXT PRIMARY KEY, account_set_id TEXT, year INTEGER, period INTEGER, status TEXT)`)
     db.prepare("INSERT INTO period_closing VALUES ('pc', ?, 2026, 9, 'closed')").run(ASID)

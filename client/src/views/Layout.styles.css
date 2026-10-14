@@ -90,12 +90,8 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 28px;
-  padding: 0 10px 0 5px;
-  border-radius: 8px;
-  background: #ffffff;
-  border: 1px solid rgba(18, 199, 174, 0.15);
-  box-shadow: 0 2px 8px rgba(18, 199, 174, 0.04);
+  /* 去掉胶囊底框，只留图标 + 文字（节约视觉与垂直空间） */
+  padding: 0 4px;
 }
 
 .info-chip__label {
@@ -108,9 +104,8 @@
 
 .info-chip__icon,
 .info-chip__avatar {
-  width: 20px;
-  height: 20px;
-  border-radius: 6px;
+  width: 16px;
+  height: 16px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -123,21 +118,13 @@
   height: 13px;
 }
 
-.info-chip--account {
-  border-color: rgba(212, 175, 55, 0.28);
-  background: linear-gradient(180deg, #fffdf6 0%, #fff7e6 100%);
+/* 账套名称按内容自适应宽度，完整显示（不再截断成省略号） */
+.info-chip--account .info-chip__text {
+  max-width: none;
 }
 
 .info-chip--account .info-chip__icon {
-  background: linear-gradient(135deg, #fff7e6 0%, #ffe7ba 100%);
   color: #ad6800;
-  box-shadow: 0 2px 5px rgba(212, 175, 55, 0.22);
-}
-
-.info-chip--user {
-  border-color: rgba(24, 144, 255, 0.35);
-  background: linear-gradient(180deg, #e6f4ff 0%, #d6e8ff 100%);
-  box-shadow: 0 1px 4px rgba(24, 144, 255, 0.12);
 }
 
 .info-chip--user .info-chip__label {
@@ -150,9 +137,7 @@
 }
 
 .info-chip--user .info-chip__icon {
-  background: linear-gradient(135deg, #4096ff 0%, #1677ff 100%);
-  color: #fff;
-  box-shadow: 0 2px 5px rgba(22, 119, 255, 0.35);
+  color: #1677ff;
 }
 
 .info-chip__text {
@@ -170,22 +155,14 @@
 .header-actions {
   display: flex;
   align-items: center;
-  gap: 3px;
-  padding: 1px 3px;
-  border-radius: 10px;
-  background: linear-gradient(180deg, #ffffff 0%, #f8f9fb 100%);
-  border: 1px solid rgba(44, 62, 80, 0.1);
-  box-shadow:
-    0 2px 8px rgba(44, 62, 80, 0.06),
-    inset 0 1px 0 rgba(255, 255, 255, 0.95);
+  gap: 2px;
 }
 
-.header-actions--switch {
-  gap: 6px;
-}
-
+/* 两组按钮之间只用一条细竖线分隔，不再各自套分组框 */
+.header-actions--switch,
 .header-actions--right {
-  margin-left: 4px;
+  padding-left: 8px;
+  border-left: 1px solid rgba(44, 62, 80, 0.12);
 }
 
 .header-actions__divider {
@@ -205,33 +182,26 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  height: 26px;
-  padding: 0 8px 0 3px;
-  border: 1px solid transparent;
-  border-radius: 8px;
+  height: 22px;
+  padding: 0 6px 0 2px;
+  border: none;
+  border-radius: 4px;
   background: transparent;
   color: var(--cw-ink-primary);
   font-size: var(--cw-text-sm);
   font-weight: 600;
   cursor: pointer;
-  transition:
-    transform 0.18s ease,
-    box-shadow 0.18s ease,
-    background 0.18s ease,
-    border-color 0.18s ease,
-    color 0.18s ease;
+  transition: background 0.15s ease, color 0.15s ease;
   white-space: nowrap;
 }
 
 .header-action-btn__icon {
-  width: 20px;
-  height: 20px;
-  border-radius: 6px;
+  width: 16px;
+  height: 16px;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  transition: transform 0.18s ease, box-shadow 0.18s ease;
 }
 
 .header-action-btn__icon svg {
@@ -245,44 +215,27 @@
 }
 
 .header-action-btn--home .header-action-btn__icon {
-  background: linear-gradient(135deg, #fff7e6 0%, #ffd591 100%);
   color: #ad4e00;
-  box-shadow: 0 2px 6px rgba(250, 173, 20, 0.22);
 }
 
 .header-action-btn--back .header-action-btn__icon {
-  background: linear-gradient(135deg, #e6f4ff 0%, #bae0ff 100%);
   color: #0958d9;
-  box-shadow: 0 2px 6px rgba(24, 144, 255, 0.2);
 }
 
 .header-action-btn--operator .header-action-btn__icon {
-  background: linear-gradient(135deg, #f9f0ff 0%, #d3adf7 100%);
   color: #531dab;
-  box-shadow: 0 2px 6px rgba(114, 46, 209, 0.18);
 }
 
 .header-action-btn--account .header-action-btn__icon {
-  background: linear-gradient(135deg, #f6ffed 0%, #b7eb8f 100%);
   color: #237804;
-  box-shadow: 0 2px 6px rgba(82, 196, 26, 0.2);
 }
 
 .header-action-btn--logout .header-action-btn__icon {
-  background: linear-gradient(135deg, #fff1f0 0%, #ffccc7 100%);
   color: var(--cw-red-primary);
-  box-shadow: 0 2px 6px rgba(200, 16, 46, 0.18);
 }
 
 .header-action-btn:hover:not(:disabled) {
-  transform: translateY(-1px);
-  background: #ffffff;
-  border-color: rgba(18, 199, 174, 0.2);
-  box-shadow: 0 4px 12px rgba(18, 199, 174, 0.08);
-}
-
-.header-action-btn:hover:not(:disabled) .header-action-btn__icon {
-  transform: scale(1.06);
+  background: rgba(0, 0, 0, 0.04);
 }
 
 .header-action-btn--home:hover:not(:disabled) {
@@ -303,12 +256,6 @@
 
 .header-action-btn--logout:hover:not(:disabled) {
   color: var(--cw-red-primary);
-  background: rgba(200, 16, 46, 0.04);
-  border-color: rgba(200, 16, 46, 0.12);
-}
-
-.header-action-btn:active:not(:disabled) {
-  transform: translateY(0);
 }
 
 .header-action-btn:disabled {
@@ -319,30 +266,6 @@
 
 .header-action-btn:disabled .header-action-btn__icon {
   box-shadow: none;
-}
-
-/* 性能模式切换按钮 */
-.header-action-btn--perf .header-action-btn__icon {
-  background: linear-gradient(135deg, #f0f5ff 0%, #adc6ff 100%);
-  color: #1d39c4;
-  box-shadow: 0 2px 6px rgba(29, 57, 196, 0.16);
-}
-
-/* 省电模式激活时：琥珀色提示 */
-html.cw-light-mode .header-action-btn--perf .header-action-btn__icon {
-  background: linear-gradient(135deg, #fffbe6 0%, #ffe58f 100%) !important;
-  color: #ad6800 !important;
-  box-shadow: 0 2px 6px rgba(250, 173, 20, 0.28) !important;
-}
-
-.header-action-btn--perf:hover:not(:disabled) {
-  color: #1d39c4;
-}
-
-html.cw-light-mode .header-action-btn--perf:hover:not(:disabled) {
-  color: #ad6800 !important;
-  background: rgba(250, 173, 20, 0.06) !important;
-  border-color: rgba(250, 173, 20, 0.2) !important;
 }
 
 /* 账套徽章（兼容旧类名） */
@@ -525,6 +448,7 @@ html.cw-light-mode .header-action-btn--perf:hover:not(:disabled) {
 .main .page.auto-transfer-page,
 .main .page.voucher-type-page,
 .main .page.cash-flow-items-page,
+.main .page.cfm-page,
 .main .print-template-page {
   flex: 1 1 0;
   min-height: 0;
@@ -619,8 +543,6 @@ html.cw-light-mode .header-action-btn--perf:hover:not(:disabled) {
 
   .header-actions {
     gap: 3px;
-    padding: 4px;
-    border-radius: 12px;
   }
 
   .header-actions__divider {

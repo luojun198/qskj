@@ -148,6 +148,8 @@ export function buildVoucherFlatRows(
         row.voucher_type_abbr = abbr
         row.voucher_seq = seq
         row.voucher_no = v.voucher_no
+        // 第五份反馈：录入列表与凭证查询统一显示「记-1」样式的凭证号
+        row.voucher_code = `${abbr}-${getVoucherSeq(v.voucher_no, false)}`
       } else {
         row.voucher_no = `${abbr}-${seq}`
         row.year = v.year

@@ -42,6 +42,14 @@ describe('viewKey', () => {
       .not.toBe(getViewKey('/scm/docs?doc_type=RCV&payment_mode=advance', 'acct', 'ScmDocList'))
   })
 
+  it('应收 / 应付对账单列表各占一个标签，其他筛选 query 不区分', () => {
+    const ar = getViewKey('/scm/statements?direction=ar', 'A', 'ScmStatementList')
+    const ap = getViewKey('/scm/statements?direction=ap', 'A', 'ScmStatementList')
+    expect(ar).not.toBe(ap)
+    expect(getViewKey('/scm/statements?direction=ar&status=draft', 'A', 'ScmStatementList')).toBe(ar)
+    expect(getViewKey('/scm/statements/new?direction=ap', 'A', 'ScmStatementNew')).not.toBe(getViewKey('/scm/statements/new?direction=ar', 'A', 'ScmStatementNew'))
+  })
+
   it('打印模板设计器新建与保存后带 id 的地址共用标签', () => {
     expect(getViewKey('/base/print-template/design', 'acct', 'PrintTemplateDesigner'))
       .toBe(getViewKey('/base/print-template/design/abc', 'acct', 'PrintTemplateDesigner'))

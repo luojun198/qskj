@@ -11,6 +11,7 @@
  */
 import {
   appendCashierCodeScopeCondition,
+  appendCashierViewScope,
   getCashierBaseCurrency,
   normalizeCashierCurrency,
   resolveCashierRate,
@@ -21,6 +22,13 @@ import {
   type JournalRow,
 } from './cashierQuery.js'
 import { appendAccountScopeCondition, type AccountScopeContext } from './accountAuthorization.js'
+import { syncCashierAccountsFromGl, ensureCashierAccountSchema } from './cashierAccount.js'
+import { SCM_LINKED_JOURNAL_SQL } from './paymentVoucherMode.js'
+
+/** 进销存未启用的账套没有往来台账表 */
+function hasScmArApLog(db: Db): boolean {
+  return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='scm_ar_ap_log'").get()
+}
 
 type Db = any
 
@@ -49,6 +57,8 @@ export interface CashierReportFilter {
   amountDirection?: 'all' | 'income' | 'expense'
   minAmount?: number
   maxAmount?: number
+  /** 排除收付款单审核写入的流水（收付款单直接制证模式下，这些流水不属于出纳待制证） */
+  excludeScmPayment?: boolean
   scope?: AccountScopeContext
 }
 
@@ -118,6 +128,7 @@ export function parseReportFilterParams(
     amountDirection: dir === 'income' || dir === 'expense' ? dir : undefined,
     minAmount: num(b.min_amount),
     maxAmount: num(b.max_amount),
+    excludeScmPayment: b.exclude_scm_payment === 1 || b.exclude_scm_payment === '1' || b.exclude_scm_payment === true || b.exclude_scm_payment === 'true',
     scope,
   }
 }
@@ -139,6 +150,7 @@ export function buildJournalWhere(
   f: CashierReportFilter,
   opts: { skipDate?: boolean; skipCurrency?: boolean } = {}
 ): JournalWhere {
+  ensureCashierAccountSchema(db as any)
   const conds: string[] = ['j.account_set_id = ?']
   const params: any[] = [f.accountSetId]
   let needVoucherJoin = false
@@ -151,7 +163,7 @@ export function buildJournalWhere(
   }
   if (f.accountType === 'cash' || f.accountType === 'bank') {
     conds.push(
-      `EXISTS (SELECT 1 FROM accounts ta WHERE ta.account_set_id = j.account_set_id AND ta.code = j.account_code AND ta.${f.accountType === 'cash' ? 'is_cash' : 'is_bank'} = 1)`
+      `EXISTS (SELECT 1 FROM v_cashier_account ta WHERE ta.account_set_id = j.account_set_id AND ta.code = j.account_code AND ta.${f.accountType === 'cash' ? 'is_cash' : 'is_bank'} = 1)`
     )
   }
   if (!opts.skipCurrency) {
@@ -197,6 +209,8 @@ export function buildJournalWhere(
     conds.push(`(${parts.join(' OR ')})`)
   }
 
+  if (f.excludeScmPayment && hasScmArApLog(db)) conds.push(`NOT ${SCM_LINKED_JOURNAL_SQL}`)
+
   // 辅助项目：多类别 AND；类别内项目 OR；项目含 AUX_NONE 表示「未指定」
   for (const a of f.aux || []) {
     if (!a.categoryId) continue
@@ -228,15 +242,14 @@ export function listScopedCashierAccounts(
   db: Db,
   f: Pick<CashierReportFilter, 'accountSetId' | 'scope'>
 ): Array<{ code: string; name: string; is_cash: number; is_bank: number; is_foreign: number; currency_code: string | null }> {
-  const conds = [
-    'a.account_set_id = ?', 'a.is_enabled = 1', '(a.is_cash = 1 OR a.is_bank = 1)',
-    'NOT EXISTS (SELECT 1 FROM accounts c WHERE c.parent_id = a.id)',
-  ]
+  // 出纳独立账户：读「出纳账户」档案（与 listCashierAccounts 同口径）
+  syncCashierAccountsFromGl(db as any, f.accountSetId)
+  const conds = ['a.account_set_id = ?', 'a.is_enabled = 1']
   const params: any[] = [f.accountSetId]
-  appendAccountScopeCondition(f.scope, 'a.id', conds, params)
+  appendCashierViewScope(f.scope, 'a', conds, params)
   return db.prepare(
-    `SELECT a.code, a.name, a.is_cash, a.is_bank, COALESCE(a.is_foreign,0) AS is_foreign, a.currency_code
-     FROM accounts a WHERE ${conds.join(' AND ')} ORDER BY a.code`
+    `SELECT a.code, a.name, a.is_cash, a.is_bank, a.is_foreign, a.currency_code
+     FROM v_cashier_account a WHERE ${conds.join(' AND ')} ORDER BY a.code`
   ).all(...params)
 }
 
@@ -460,7 +473,7 @@ function dimensionSql(dim: string, idx: number): { joins: string[]; key: string;
   const a = `d${idx}`
   switch (dim) {
     case 'account':
-      return { joins: [`LEFT JOIN accounts ${a} ON ${a}.account_set_id = j.account_set_id AND ${a}.code = j.account_code`],
+      return { joins: [`LEFT JOIN v_cashier_account ${a} ON ${a}.account_set_id = j.account_set_id AND ${a}.code = j.account_code`],
         key: 'j.account_code', name: `COALESCE(${a}.name, j.account_code)`, params: [] }
     case 'currency':
       return { joins: [], key: 'j.currency', name: 'j.currency', params: [] }
@@ -496,6 +509,7 @@ function dimensionSql(dim: string, idx: number): { joins: string[]; key: string;
 
 /** 多维汇总：维度可任意有序组合，返回逐级小计的树（含总计），金额先取整到分再累加 */
 export function getSummaryReport(db: Db, f: CashierReportFilter, groupBy: string[]): SummaryReport {
+  ensureCashierAccountSchema(db as any)
   const dims = groupBy.filter(Boolean)
   if (!dims.length) throw new Error('请至少选择一个汇总维度')
   if (dims.length > SUMMARY_MAX_DIMS) throw new Error(`汇总维度最多 ${SUMMARY_MAX_DIMS} 个`)
@@ -648,6 +662,9 @@ export interface SearchRow {
   voucher_year: number | null
   voucher_month: number | null
   voucher_status: string | null
+  /** 来源收付款单（收付款单审核写入的流水） */
+  scm_doc_type?: string | null
+  scm_doc_no?: string | null
   /** 按辅助类别拆开的值：{ 类别id: 项目名 } */
   aux_values?: Record<string, string>
 }
@@ -664,6 +681,7 @@ export interface SearchResult {
 }
 
 export function searchJournalsReport(db: Db, f: CashierReportFilter, page = 1, pageSize = 100): SearchResult {
+  ensureCashierAccountSchema(db as any)
   const cur = resolveReportCurrency(db, f)
   const { d: dCol, c: cCol } = amountColumns(cur.all)
   const where = buildJournalWhere(db, f)
@@ -685,13 +703,15 @@ export function searchJournalsReport(db: Db, f: CashierReportFilter, page = 1, p
       j.debit, j.credit, j.base_debit, j.base_credit, j.settle_type, st.name AS settle_type_name, j.bill_no, j.counter_unit,
       j.counter_account, ca.name AS counter_account_name, j.reconciled, j.voucher_id, j.voucher_no, j.voucher_year, j.voucher_month,
       v.status AS voucher_status,
+      ${hasScmArApLog(db) ? `(SELECT sl.doc_type FROM scm_ar_ap_log sl WHERE sl.account_set_id = j.account_set_id AND sl.cashier_journal_id = j.id AND sl.doc_type IN ('RCV','PAY') LIMIT 1) AS scm_doc_type,
+      (SELECT sl.doc_no FROM scm_ar_ap_log sl WHERE sl.account_set_id = j.account_set_id AND sl.cashier_journal_id = j.id AND sl.doc_type IN ('RCV','PAY') LIMIT 1) AS scm_doc_no,` : ''}
       (SELECT group_concat(ac.name || ':' || COALESCE(ai.name, ax.item_id), '；')
          FROM cashier_journal_aux ax
          JOIN aux_categories ac ON ac.id = ax.category_id
          LEFT JOIN aux_items ai ON ai.id = ax.item_id
         WHERE ax.journal_id = j.id) AS aux_text
     FROM cashier_journal j
-    LEFT JOIN accounts a ON a.account_set_id = j.account_set_id AND a.code = j.account_code
+    LEFT JOIN v_cashier_account a ON a.account_set_id = j.account_set_id AND a.code = j.account_code
     LEFT JOIN accounts ca ON ca.account_set_id = j.account_set_id AND ca.code = j.counter_account
     LEFT JOIN settle_type st ON st.account_set_id = j.account_set_id AND st.code = j.settle_type
     ${voucherJoin}
@@ -745,7 +765,7 @@ export function listJournalFiltered<B extends {
   totalBaseCredit: number
 }>(
   db: Db,
-  params: { accountSetId: string; accountCode: string; startDate?: string; endDate?: string; page?: number; pageSize?: number },
+  params: { accountSetId: string; accountCode: string; startDate?: string; endDate?: string; page?: number; pageSize?: number; sortOrder?: 'asc' | 'desc' },
   detail: CashierReportFilter,
   base: B
 ): B & { rows: JournalRow[]; total: number; page: number; pageSize: number; filtered: true; filteredTotalDebit: number; filteredTotalCredit: number } {
@@ -782,7 +802,7 @@ export function listJournalFiltered<B extends {
     SELECT j.*, v.status AS voucher_status FROM ${windowed} j
     LEFT JOIN vouchers v ON v.id = j.voucher_id
     WHERE ${where.conds.join(' AND ')}
-    ORDER BY j.biz_date, j.seq, j.created_at, j.id
+    ${params.sortOrder === 'desc' ? 'ORDER BY j.biz_date DESC, j.seq DESC, j.created_at DESC, j.id DESC' : 'ORDER BY j.biz_date, j.seq, j.created_at, j.id'}
     LIMIT ? OFFSET ?
   `).all(...baseParams, ...where.params, pageSize, (page - 1) * pageSize) as any[]).map(r => {
     const { run_cents, ...rest } = r

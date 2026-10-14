@@ -22,7 +22,7 @@
         </div>
         <div class="module-head__side">
           <span class="module-head__stat">{{ currentApp.sections.length }} 个分组 · {{ availableItems.length }} 项功能</span>
-          <div v-if="currentFlowConfig?.layout !== 'gl-workspace' && currentFlowConfig?.layout !== 'asset-workspace' && currentFlowConfig?.layout !== 'cashier-workspace'" class="module-head__actions">
+          <div v-if="!isWorkspaceLayout" class="module-head__actions">
             <router-link v-if="primaryEntry" class="module-btn module-btn--primary" :to="primaryEntry.path">
               <component :is="getIcon(primaryEntry)" :size="14" :stroke-width="1.8" />
               {{ primaryEntry.title }}
@@ -49,6 +49,10 @@
         v-else-if="currentFlowConfig && currentFlowConfig.layout === 'cashier-workspace'"
         :available-items="flowAvailableItems"
       />
+      <ArapWorkspace
+        v-else-if="currentFlowConfig && currentFlowConfig.layout === 'arap-workspace'"
+        :available-items="flowAvailableItems"
+      />
       <template v-else-if="currentFlowConfig && currentFlowConfig.layout === 'flow'">
         <ProcessFlow
           :config="currentFlowConfig"
@@ -61,6 +65,11 @@
           :iconResolver="getIcon"
           heading="其他功能"
         />
+      </template>
+      <!-- 系统管理：功能入口压成一条，下方直接是系统参数 -->
+      <template v-else-if="isSystemApp">
+        <BentoGrid :app="currentApp" :iconResolver="getIcon" compact />
+        <SystemParam v-if="canEditParams" class="wb-card module-params" />
       </template>
       <template v-else>
         <BentoGrid :app="currentApp" :iconResolver="getIcon" />
@@ -84,7 +93,7 @@
 import { computed, inject, nextTick, onActivated, onMounted, ref, watch, type Component, type Ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { Warning } from '@element-plus/icons-vue'
-import { flattenNavApp, flattenNavApps, type NavApp, type NavItem } from '@/config/navigation'
+import { canAccessRoute, flattenNavApp, flattenNavApps, type NavApp, type NavItem } from '@/config/navigation'
 import { resolveNavIcon } from '@/config/navIcons'
 import { collectFlowCoveredPaths, groupFlowMap, normalizeNavPath } from '@/config/flowConfig'
 import { resolveNavAppTitle } from '@/utils/groupNavigation'
@@ -93,7 +102,11 @@ import BentoGrid from './components/BentoGrid.vue'
 import GlWorkspace from './components/GlWorkspace.vue'
 import AssetWorkspace from './components/AssetWorkspace.vue'
 import CashierWorkspace from './components/CashierWorkspace.vue'
+import ArapWorkspace from './components/ArapWorkspace.vue'
 import NavFunctionSearch from '@/components/layout/NavFunctionSearch.vue'
+import SystemParam from './system/Param.vue'
+import { useUserStore } from '@/stores/user'
+import { useLicenseStore } from '@/stores/license'
 
 const route = useRoute()
 
@@ -123,6 +136,17 @@ const currentFlowConfig = computed(() => {
   if (!currentApp.value) return null
   return groupFlowMap[currentApp.value.title] || null
 })
+
+/** 系统参数直接嵌在系统管理主页（原「系统参数」菜单已取消），按 system:init 权限显示 */
+const isSystemApp = computed(() => currentApp.value?.key === 'system')
+// store 只在系统管理主页才取，其他模块首页不依赖用户/注册信息
+const canEditParams = computed(() =>
+  isSystemApp.value && canAccessRoute('/system/param', useUserStore().permissions, useLicenseStore().modules)
+)
+
+/** 专用工作台布局自带入口，头部不再显示主/次按钮 */
+const WORKSPACE_LAYOUTS = new Set(['gl-workspace', 'asset-workspace', 'cashier-workspace', 'arap-workspace'])
+const isWorkspaceLayout = computed(() => isSystemApp.value || WORKSPACE_LAYOUTS.has(currentFlowConfig.value?.layout || ''))
 
 /** 流程（主干 + 分支 + 辅助）已展示的入口，下方宫格不再重复 */
 const remainderApp = computed<NavApp | null>(() => {
@@ -338,6 +362,11 @@ function getIcon(target: NavItem | string): Component {
   border-color: var(--mint-600);
   background: var(--mint-600);
   color: #fff;
+}
+
+/* 嵌入的系统参数卡 */
+.module-params {
+  padding: 6px 8px 8px;
 }
 
 /* ---- 空状态 ---- */

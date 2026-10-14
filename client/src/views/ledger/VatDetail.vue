@@ -22,7 +22,7 @@
         <FilterClearButton @clear="handleClearFilters" />
         <el-divider direction="vertical" />
         <el-button plain :disabled="loading || rows.length === 0" @click="exportData">
-          <el-icon><Download /></el-icon>导出 Excel
+          <el-icon><Download /></el-icon>另存
         </el-button>
         <el-button plain :disabled="loading || rows.length === 0" @click="printPage">
           <el-icon><Printer /></el-icon>打印

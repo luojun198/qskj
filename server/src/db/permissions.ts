@@ -118,6 +118,7 @@ export const PERMISSIONS: PermissionDef[] = [
   // ── 供应链 ──────────────────────────────────────────
   { code: 'scm:item',         name: '物料档案',     module: 'scm',     moduleName: '供应链' },
   { code: 'scm:partner',      name: '往来单位档案', module: 'scm',     moduleName: '供应链' },
+  { code: 'scm:master-audit', name: '档案审核（物料 / 往来单位）', module: 'scm', moduleName: '供应链' },
   { code: 'scm:warehouse',    name: '仓库档案',     module: 'scm',     moduleName: '供应链' },
   { code: 'scm:category',     name: '物料分类',     module: 'scm',     moduleName: '供应链' },
   { code: 'scm:stock',        name: '库存查询',     module: 'scm',     moduleName: '供应链' },
@@ -130,7 +131,9 @@ export const PERMISSIONS: PermissionDef[] = [
   { code: 'scm:inventory',    name: '库存业务单据', module: 'scm',     moduleName: '供应链' },
   { code: 'scm:production',   name: '生产业务单据', module: 'scm',     moduleName: '供应链' },
   { code: 'scm:outsource',    name: '委外业务单据', module: 'scm',     moduleName: '供应链' },
+  { code: 'scm:outsource-price', name: '委外加工单价修改', module: 'scm', moduleName: '供应链' },
   { code: 'scm:arap',         name: '往来收付/对账', module: 'scm',     moduleName: '供应链' },
+  { code: 'scm:verify-delete', name: '核销单删除（取消核销）', module: 'scm', moduleName: '供应链' },
   { code: 'scm:report',       name: '供应链报表',   module: 'scm',     moduleName: '供应链' },
   // 跨单据操作权限
   { code: 'scm:audit',        name: '单据审核/反审核', module: 'scm',  moduleName: '供应链' },
@@ -209,7 +212,7 @@ export const ACD_PERMISSION_CATALOG: AcdPermissionEntry[] = [
 
   // ── 往来 / 合同：CW 归在供应链的往来收付里 ────────────
   { acdCode: '43A', acdName: '期初往来单据', cw: ['scm:arap'] },
-  { acdCode: '43B', acdName: '单据核销',     cw: ['scm:arap'] },
+  { acdCode: '43B', acdName: '单据核销',     cw: ['scm:arap', 'scm:verify-delete'] },
   { acdCode: '43C', acdName: '往来信息查询', cw: ['scm:arap'] },
   { acdCode: '43M', acdName: '合同档案管理', cw: ['scm:arap'] },
   { acdCode: '43N', acdName: '合同帐款查询', cw: ['scm:arap'] },

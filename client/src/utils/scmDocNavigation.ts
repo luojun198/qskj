@@ -48,6 +48,8 @@ export interface ScmDocNavContext {
   list_doc_type?: string
   /** 原列表是否为菜单固定类型入口，决定返回时使用 doc_type 还是 filter_doc_type。 */
   fixed_doc_type?: boolean
+  /** 原列表的多级排序串（key:asc,key2:desc），详情页翻页(首/上一/下一/尾)据此与列表同序。 */
+  sort?: string
 }
 
 export interface ScmDocPagerState {
@@ -135,6 +137,7 @@ export function readScmDocNavContext(query: LocationQuery): ScmDocNavContext {
     from_list: queryText(query.nav_from_list) === '1',
     list_doc_type: queryText(query.nav_list_doc_type),
     fixed_doc_type: queryText(query.nav_fixed_doc_type) === '1',
+    sort: queryText(query.nav_sort) || undefined,
   }
 }
 
@@ -150,6 +153,7 @@ export function scmDocNavContextToDetailQuery(context?: ScmDocNavContext): Locat
   if (context.page && context.page > 1) query.nav_page = String(context.page)
   if (context.list_doc_type) query.nav_list_doc_type = context.list_doc_type
   if (context.fixed_doc_type) query.nav_fixed_doc_type = '1'
+  if (context.sort) query.nav_sort = context.sort
   return query
 }
 
@@ -162,6 +166,7 @@ export function scmDocNavContextToIdsParams(docType: string, context?: ScmDocNav
     start_date: context?.start_date || undefined,
     end_date: context?.end_date || undefined,
     payment_mode: context?.payment_mode,
+    sort: context?.sort || undefined,
   }
 }
 

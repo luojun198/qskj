@@ -33,6 +33,7 @@
       v-if="browsable && browseVisible"
       v-model="browseVisible"
       :multiple="browseMultiple"
+      :default-source="defaultSource"
       @confirm="onBrowseConfirm"
     />
 
@@ -53,6 +54,7 @@
           </el-radio-group>
           <el-checkbox v-if="warehouseCode || defaultStockOnly" v-model="stockOnly" size="small" class="ip-filter__stock">仅看有库存</el-checkbox>
         </div>
+        <div v-if="sourceFallback" class="ip-fallback">没有「{{ SOURCE_TYPES[sourceFilter as keyof typeof SOURCE_TYPES] }}」来源的匹配物料，已显示全部</div>
         <el-table
           v-loading="loading"
           :data="displayCandidates"
@@ -116,6 +118,8 @@ const props = withDefaults(defineProps<{
   browseMultiple?: boolean
   /** 出库类单据：默认只显示有库存的物料（仅在传了 warehouseCode 时生效，可手动切换查看全部） */
   defaultStockOnly?: boolean
+  /** 默认「来源」筛选（purchase / outsource / self / assembly）：如委外计划选成品默认委外；可手动切回全部 */
+  defaultSource?: string
 }>(), { modelValue: '', placeholder: '输入编号/名称进行搜索', autoOpen: false, focusSearch: false, browsable: true, browseMultiple: false, defaultStockOnly: false })
 
 const emit = defineEmits<{
@@ -152,7 +156,8 @@ const showPanel = ref(false)
 const loading = ref(false)
 const candidates = ref<any[]>([])
 const activeCandidateIndex = ref(-1)
-const sourceFilter = ref('')   // '' = 全部；否则为 source_type 枚举（purchase/outsource/self/assembly）
+const sourceFilter = ref(props.defaultSource || '')   // '' = 全部；否则为 source_type 枚举（purchase/outsource/self/assembly）
+watch(() => props.defaultSource, v => { sourceFilter.value = v || '' })
 const stockOnly = ref(!!props.defaultStockOnly)   // 仅看有库存（出库类默认开；有仓库按仓结存，无仓库按全仓合计）
 const display = ref('')
 const keyword = ref('')
@@ -328,7 +333,7 @@ async function search(kw: string) {
       // 全量加载（与批量选择器一致），避免成品等编码靠后的物料因分页被截断而选不到
       // 首次库存与物料请求并行，避免两个网络往返串行阻塞候选列表。
       const [res, sc] = await Promise.all([
-        scmApi.getItems({ keyword: searchKw || undefined, all: '1' }),
+        scmApi.getItems({ keyword: searchKw || undefined, all: '1', for_pick: '1' }),
         getStockCache(),
       ])
       if (sequence !== searchSequence) return
@@ -352,9 +357,15 @@ async function search(kw: string) {
 }
 
 // 本地过滤候选：来源 + 仅有库存（均剔除目录行）；无过滤时原样返回（含目录树）
+// 来源为空的老物料按「外购」看待（与库表默认值一致）
+const itemSource = (r: any) => r.source_type || 'purchase'
+const sourceFiltered = computed(() => sourceFilter.value
+  ? candidates.value.filter(r => !isCategory(r) && itemSource(r) === sourceFilter.value) : candidates.value)
+// 默认来源下搜不到、但全部里有匹配时自动放开，避免「明明有这个物料却选不到」
+const sourceFallback = computed(() => !!sourceFilter.value && !sourceFiltered.value.length
+  && candidates.value.some(r => !isCategory(r)))
 const displayCandidates = computed(() => {
-  let list = candidates.value
-  if (sourceFilter.value) list = list.filter(r => !isCategory(r) && r.source_type === sourceFilter.value)
+  let list = sourceFallback.value ? candidates.value.filter(r => !isCategory(r)) : sourceFiltered.value
   // 「仅看有库存」按全仓合计判断（_stock_total），而非本仓库存——避免当前仓库无货但其他仓有货的物料被漏掉
   if (stockOnly.value) list = list.filter(r => !isCategory(r) && (Number(r._stock_total) || 0) > 0)
   return list
@@ -449,6 +460,7 @@ defineExpose({ openPanel })
 }
 .ip-filter__lbl { font-size: 12px; color: var(--el-text-color-secondary); }
 .ip-filter__stock { margin-left: auto; }
+.ip-fallback { font-size: 12px; color: var(--el-color-warning); padding: 0 8px 4px; }
 .no-data {
   padding: 20px; text-align: center; color: var(--el-text-color-secondary); font-size: var(--cw-text-base);
 }

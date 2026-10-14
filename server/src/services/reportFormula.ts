@@ -746,7 +746,7 @@ export const ANCHOR_FUNCTION_NAMES = new Set([
   'jy', 'mjy', 'dy', 'mdy',
   'nj', 'mnj', 'nd', 'mnd',
   'jqy', 'jqj', 'jqd',
-  'xj_je', 'ys_cy',
+  'xj_je', 'xj_fb', 'ys_cy',
 ])
 
 export function isAnchorFunction(name: string) {
@@ -801,7 +801,8 @@ export const FORMULA_REFERENCE: Array<{
   { group: '取数', name: '@JQY', signature: '@jqy(科目编码, 起期, 止期)', description: '区间净发生额（排除结转）' },
   { group: '取数', name: '@JQJ', signature: '@jqj(科目编码, 起期, 止期)', description: '区间借方发生额' },
   { group: '取数', name: '@JQD', signature: '@jqd(科目编码, 起期, 止期)', description: '区间贷方发生额' },
-  { group: '取数', name: '@XJ_JE', signature: '@xj_je(项目编码, 起期, 止期)', description: '现金流量项目金额' },
+  { group: '取数', name: '@XJ_JE', signature: '@xj_je(项目编码, 起期, 止期)', description: '现金流量主表项目金额（按科目现金流量项目自动计算）' },
+  { group: '取数', name: '@XJ_FB', signature: '@xj_fb(附表项目编码, 起期, 止期)', description: '现金流量补充资料项目金额（F01 净利润 ~ F16 其他）' },
 ]
 
 // ─────────────────────────── 求值 ───────────────────────────

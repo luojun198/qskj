@@ -91,6 +91,13 @@ export function getViewKey(fullPath: string, accountKey: string, routeName?: str
 
   if (TRANSIENT_ROUTE_NAMES.has(name)) return `${accountKey}:route:${name}`
 
+  // 应收 / 应付对账单列表、新增页按方向各占一个标签（路径相同、query 不同）
+  const [stmtPath, stmtQuery = ''] = fullPath.split('?')
+  if (stmtPath === '/scm/statements' || stmtPath === '/scm/statements/new') {
+    const direction = new URLSearchParams(stmtQuery).get('direction')
+    if (direction === 'ar' || direction === 'ap') return `${accountKey}:${stmtPath}:${direction}`
+  }
+
   const reportFamily = getScmReportTabFamily(fullPath)
   if (reportFamily) return `${accountKey}:scm-report:${reportFamily}`
 

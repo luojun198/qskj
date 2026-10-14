@@ -33,8 +33,40 @@ function cellNumeric(
   return Number(cell?.numeric_value ?? 0)
 }
 
+/** 按行标签定位小计行（各准则模板行次不同：企业 11 号、小企业 3 号、政府 4 号…） */
+const NET_ROW_LABELS = {
+  operating: /(经营|日常|业务)活动产生的现金流量净额/,
+  investing: /投资活动产生的现金流量净额/,
+  financing: /筹资活动产生的现金流量净额/,
+  net: /现金(及现金等价物)?净增加额/,
+} as const
+
+function findRowByLabel(
+  cells: Array<{ row_index: number; col_index: number; text_value: string | null }>,
+  pattern: RegExp
+): number | null {
+  const hit = cells
+    .filter(c => c.col_index <= 1 && pattern.test(String(c.text_value || '').replace(/\s/g, '')))
+    .sort((a, b) => a.row_index - b.row_index)[0]
+  return hit ? hit.row_index : null
+}
+
+/** 按表头文字定位金额列（找不到时沿用固定列） */
+function findAmountCol(
+  cells: Array<{ row_index: number; col_index: number; text_value: string | null }>,
+  scope: CashFlowReportScope,
+  fallback: number
+): number {
+  const pattern = scope === 'ytd' ? /本年累计|累计金额|本年金额/ : /本月|本期金额/
+  const hit = cells
+    .filter(c => c.row_index <= 6 && c.col_index >= 1 && pattern.test(String(c.text_value || '').replace(/\s/g, '')))
+    .sort((a, b) => a.row_index - b.row_index || a.col_index - b.col_index)[0]
+  return hit ? hit.col_index : fallback
+}
+
 /**
- * 执行账套 code=3 现金流量表模板，提取三大活动净额（与 @xj_je 公式结果一致）
+ * 执行账套的现金流量表模板，提取三大活动净额（与 @xj_je 公式结果一致）。
+ * 优先 code=3（小企业模板），否则取名称为「现金流量表」的第一张报表；小计行 / 金额列按文字定位。
  */
 export function getDynamicCashFlowTotals(
   db: Database,
@@ -49,14 +81,14 @@ export function getDynamicCashFlowTotals(
   const definition = db
     .prepare(
       `
-      SELECT id, name
+      SELECT id, name, code
       FROM report_definitions
-      WHERE account_set_id = ? AND code = '3' AND name LIKE '%现金流量%'
-      ORDER BY sort_order
+      WHERE account_set_id = ? AND name LIKE '%现金流量表%' AND name NOT LIKE '%补充%' AND name NOT LIKE '%附表%'
+      ORDER BY CASE WHEN code = '3' THEN 0 ELSE 1 END, sort_order
       LIMIT 1
     `
     )
-    .get(accountSetId) as { id: string; name: string } | undefined
+    .get(accountSetId) as { id: string; name: string; code: string } | undefined
 
   if (!definition) return null
 
@@ -125,11 +157,26 @@ export function getDynamicCashFlowTotals(
     numeric_value: number | null
   }>
 
+  const rowOf = (key: keyof typeof NET_CELL_ROWS) => findRowByLabel(cells, NET_ROW_LABELS[key])
+  const labelRows = {
+    operating: rowOf('operating'),
+    investing: rowOf('investing'),
+    financing: rowOf('financing'),
+    net: rowOf('net'),
+  }
+  const byLabel = labelRows.operating !== null && labelRows.investing !== null && labelRows.financing !== null
+  // 行文字找不到时只有沿用固定行次的 code=3 版式才可信
+  if (!byLabel && String(definition.code) !== '3') return null
+  const rows = byLabel
+    ? { ...NET_CELL_ROWS, ...Object.fromEntries(Object.entries(labelRows).filter(([, v]) => v !== null)) }
+    : NET_CELL_ROWS
+  const col = byLabel ? findAmountCol(cells, scope, amountCol) : amountCol
+
   return {
-    operating: cellNumeric(executedCells, NET_CELL_ROWS.operating, amountCol),
-    investing: cellNumeric(executedCells, NET_CELL_ROWS.investing, amountCol),
-    financing: cellNumeric(executedCells, NET_CELL_ROWS.financing, amountCol),
-    net: cellNumeric(executedCells, NET_CELL_ROWS.net, amountCol),
+    operating: cellNumeric(executedCells, rows.operating, col),
+    investing: cellNumeric(executedCells, rows.investing, col),
+    financing: cellNumeric(executedCells, rows.financing, col),
+    net: cellNumeric(executedCells, rows.net, col),
     templateName: definition.name,
     columnLabel,
   }

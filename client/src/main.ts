@@ -9,9 +9,11 @@ import './assets/styles.css'
 import './styles/common.css'
 import './styles/apple-element-override.css'
 import { permission } from './directives/permission'
+import { colWidth } from './directives/colWidth'
 import { registerDynamicIcons } from './config/iconRegistry'
 import { setupMessageBoxDefaults } from './plugins/messageBoxDefaults'
 import { applyPerformanceMode } from './utils/performanceMode'
+import { waitBackendReady } from './utils/waitBackendReady'
 import { setupChunkReload, isChunkLoadError, reloadOnceForChunkError } from './utils/chunkReload'
 
 function bootstrap() {
@@ -21,6 +23,7 @@ function bootstrap() {
   applyPerformanceMode()
   registerDynamicIcons(app)
   app.directive('permission', permission)
+  app.directive('col-width', colWidth)
   app.use(pinia)
   app.use(router)
   setupChunkReload(router)
@@ -33,4 +36,4 @@ function bootstrap() {
   app.mount('#app')
 }
 
-bootstrap()
+waitBackendReady().finally(bootstrap)

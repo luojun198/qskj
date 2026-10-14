@@ -10,6 +10,7 @@
         <span class="wc-header__meta" v-if="plan">工单 <b>{{ plan.code }}</b></span>
       </div>
       <div class="wc-header__right">
+        <SaveAsButton doc title="在制品盘点" />
         <template v-if="!readonly">
           <el-button type="primary" size="small" :loading="saving" @click="save(false)">保存草稿</el-button>
           <el-button type="success" size="small" :loading="saving" @click="save(true)">保存并审核</el-button>
@@ -27,7 +28,7 @@
         <el-form-item label="盘点日期"><el-date-picker v-model="form.count_date" type="date" value-format="YYYY-MM-DD" style="width:150px" :clearable="false" /></el-form-item>
         <el-form-item label="备注" class="grow"><el-input v-model="form.remark" /></el-form-item>
       </el-form>
-      <el-table :data="rows" size="small" border show-summary :summary-method="sumRow">
+      <el-table v-col-width="'scm_WipCountForm_1'" :data="rows" size="small" border show-summary :summary-method="sumRow">
         <el-table-column type="index" width="44" align="center" />
         <el-table-column label="物料" min-width="200" show-overflow-tooltip><template #default="{ row }">{{ row.item_code }} {{ row.item_name || '' }}</template></el-table-column>
         <el-table-column label="单位" prop="unit" width="60" align="center" />
@@ -46,7 +47,7 @@
 
       <section class="wc-section" v-if="history.length">
         <div class="wc-section__hd"><h3>本工单盘点记录</h3></div>
-        <el-table :data="history" size="small" border>
+        <el-table v-col-width="'scm_WipCountForm_2'" :data="history" size="small" border>
           <el-table-column label="盘点号" width="150"><template #default="{ row }"><el-link type="primary" @click="router.push({ name: 'ScmWipCountForm', params: { id: row.id } })">{{ row.count_no }}</el-link></template></el-table-column>
           <el-table-column label="日期" prop="count_date" width="105" />
           <el-table-column label="差异行" width="80" align="right"><template #default="{ row }">{{ row.diff_lines }}</template></el-table-column>

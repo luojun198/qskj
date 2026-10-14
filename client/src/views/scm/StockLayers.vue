@@ -15,6 +15,7 @@
       <el-input v-model="filters.item_code" clearable placeholder="物料编码" style="width:150px" @keyup.enter="load" />
       <el-checkbox v-model="showExhausted">含已耗尽层</el-checkbox>
       <el-button type="primary" :loading="loading" @click="load">查询</el-button>
+      <SaveAsButton title="库存成本层" />
       <FilterClearButton size="small" @clear="handleClearFilters" />
     </div>
     <div class="summary-grid">

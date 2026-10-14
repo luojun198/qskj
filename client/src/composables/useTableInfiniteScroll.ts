@@ -23,6 +23,11 @@ export interface UseTableInfiniteScrollOptions {
    * 传 0 / Infinity 表示不限制。
    */
   maxAutoRows?: number
+  /**
+   * 虚拟表格（el-table-v2）回顶：滚动位置由组件内部状态驱动，只改 DOM scrollTop 会被下一帧写回，
+   * 需调用表格实例的 scrollToTop(0)。提供时 scrollToTop 优先走它。
+   */
+  scrollTableToTop?: () => boolean | void
 }
 
 /**
@@ -131,8 +136,9 @@ export function useTableInfiniteScroll(options: UseTableInfiniteScrollOptions) {
   /** 换筛选条件 / 排序 / 每页条数后把滚动条归零 */
   async function scrollToTop() {
     await nextTick()
+    const handled = options.scrollTableToTop?.()
     const el = scrollEl || resolveScrollEl()
-    if (el) el.scrollTop = 0
+    if (handled !== true && el) el.scrollTop = 0
     fillGuard = 0
   }
 

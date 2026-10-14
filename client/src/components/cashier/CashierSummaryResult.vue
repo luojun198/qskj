@@ -9,7 +9,7 @@
       <el-button v-if="viewMode === 'tree'" plain :disabled="!hasData" @click="toggleExpand">
         {{ expandAll ? '全部收起' : '全部展开' }}
       </el-button>
-      <el-button plain :disabled="!hasData" @click="handleExport"><el-icon><Download /></el-icon>导出</el-button>
+      <el-button plain :disabled="!hasData" @click="handleExport"><el-icon><Download /></el-icon>另存</el-button>
       <el-button plain :disabled="!hasData" @click="printVisible = true"><el-icon><Printer /></el-icon>打印</el-button>
       <span class="tip">点击「明细」或双击分组行，可查看该分组的单据明细；平铺视图下可在维度列表头筛选</span>
     </div>

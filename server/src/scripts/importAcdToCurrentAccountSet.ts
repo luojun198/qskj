@@ -33,6 +33,8 @@ import { rebuildAccountBalances } from '../services/accountBalanceRebuild.js'
 import { normalizeNonLeafReferences } from '../services/accountReferences.js'
 import { importCashierTables, importFixedAssetTables } from './importAcdCashierAsset.js'
 import { importSupplyChainFromAcd } from '../services/importAcdSupplyChain.js'
+import { splitAcdLine } from '../utils/acdSplitLine.js'
+export { splitAcdLine }
 
 type AcdRow = string[]
 
@@ -242,7 +244,7 @@ function splitTableRows(content: string): AcdRow[] {
     .split(/\r?\n/)
     .map(line => line.trim())
     .filter(Boolean)
-    .map(line => line.split('\t'))
+    .map(splitAcdLine)
 }
 
 /**
@@ -1903,8 +1905,8 @@ function importCashFlowAuxItems(
     const jd = (row[2] || '').trim()
     if (!code || !name) continue
 
-    const direction = mapAcdCashFlowJd(jd)
-    if (direction === 'neutral' && jd) {
+    const direction = mapAcdCashFlowJd(jd, code)
+    if (direction === 'neutral' && jd && jd !== '0' && jd !== '1') {
       neutralJdCount++
     }
 

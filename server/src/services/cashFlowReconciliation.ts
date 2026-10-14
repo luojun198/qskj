@@ -208,17 +208,17 @@ export function buildCashFlowReconciliation(
     validation.warnings.push({
       type: 'direct_method_empty',
       message:
-        '已启用现金流核算，但本期已过账凭证未填写现金流量项目，动态报表 @xj_je 将为 0；静态表为科目发生额估算，两表不可直接对比',
+        '本期已过账凭证没有现金收付，或收付凭证的对方科目均未设置现金流量项目，动态报表 @xj_je 将为 0',
       severity: 'warning',
     })
-    validation.suggestions.push('在凭证录入中为现金类科目分录选择现金流量项目，或重新 ACD 导入含 xjbm 的凭证')
+    validation.suggestions.push('到「基础资料 → 科目现金流量项目」为科目设置现金流量项目')
     validation.isValid = validation.warnings.filter(w => w.severity === 'error').length === 0
     result.comparison = {
       operatingDiff: 0,
       investingDiff: 0,
       financingDiff: 0,
       netDiff: 0,
-      note: '直接法无分录数据，跳过数值对比',
+      note: '直接法无数据，跳过数值对比',
     }
     return result
   }

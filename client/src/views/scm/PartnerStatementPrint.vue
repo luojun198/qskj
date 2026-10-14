@@ -73,6 +73,7 @@
 <script setup lang="ts">
 import { todayStr } from '@/utils/format'
 import { ref, computed, onMounted } from 'vue'
+import { filterStatementDetail } from '@/utils/partnerStatementFilter'
 import { useRoute, useRouter } from 'vue-router'
 import { Back, Printer } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
@@ -81,6 +82,7 @@ import { useUserStore } from '@/stores/user'
 import { rmbUpper } from '@/utils/rmbUpper'
 import { useStatementColumns } from '@/composables/useStatementColumns'
 import { statementRowSign } from '@/utils/statementRowSign'
+import { statementLinesToExpand } from '@/utils/statementLines'
 
 // 打印页只读列设置（不在打印页修改，设置在查询页进行；两页共享 localStorage）
 const { visibleColumns, col } = useStatementColumns()
@@ -142,7 +144,8 @@ const loading = ref(false)
 const detailMode = ref<'flat' | 'summary'>('flat')
 const opening = ref(0)
 const closing = ref(0)
-const detail = ref<any[]>([])
+const rawDetail = ref<any[]>([])
+const detail = computed<any[]>(() => filterStatementDetail(rawDetail.value, docGroups.value, paymentTop.value))
 const partners = ref<ScmPartner[]>([])
 const today = todayStr()
 
@@ -150,6 +153,9 @@ const partnerCode = computed(() => (route.query.partner_code as string) || '')
 const startDate = computed(() => (route.query.start_date as string) || '')
 const endDate = computed(() => (route.query.end_date as string) || '')
 const arapQuery = computed(() => (route.query.arap_type as string) || '')
+// 与屏幕对账单一致的单据类型过滤 / 收付款置顶（由对账单页通过 query 带入）
+const docGroups = computed(() => String(route.query.doc_groups || '').split(',').filter(Boolean))
+const paymentTop = computed(() => route.query.pay_top === '1')
 
 const companyName = computed(() => user.accountSetName || 'CW 财务记账系统')
 const maker = computed(() => user.userInfo?.nickname || user.userInfo?.username || '')
@@ -166,9 +172,10 @@ const direction = computed<'ar' | 'ap'>(() => {
   if (t === 'customer') return 'ar'
   if (t === 'supplier') return 'ap'
   // 按 detail 单据类型推断（看哪种方向的业务多）
-  const types = detail.value.map((r: any) => r.doc_type)
-  const arHit = types.filter(t => ['SO', 'SR', 'RS', 'RCV'].includes(t)).length
-  const apHit = types.filter(t => ['PI', 'PR', 'RP', 'PAY', 'WI'].includes(t)).length
+  // 后端已按 arap_side 标注每行应收/应付（组装单加工费两种方向都可能，不能只看单据类型）
+  const sides = detail.value.map((r: any) => r.arap_side)
+  const arHit = sides.filter(s => s === 'ar').length
+  const apHit = sides.filter(s => s === 'ap').length
   if (arHit >= apHit && arHit > 0) return 'ar'
   if (apHit > 0) return 'ap'
   return 'ar'
@@ -180,10 +187,10 @@ const docNoLabel = computed(() => (isAr.value ? '出库单号' : '入库单号')
 const partnerLabelName = computed(() => (isAr.value ? '客户名称' : '供应商名称'))
 
 const CAT_LABELS_AR: Record<string, string> = {
-  SO: '销售出库', SR: '销售退货', RS: '销售发票', RCV: '客户收款',
+  SO: '销售出库', SR: '销售退货', RS: '销售发票', RCV: '客户收款', AS: '受托加工费',
 }
 const CAT_LABELS_AP: Record<string, string> = {
-  PI: '采购入库', PR: '采购退货', RP: '采购发票', PAY: '供应商付款', WI: '委外入库',
+  PI: '采购入库', PR: '采购退货', RP: '采购发票', PAY: '供应商付款', WI: '委外入库', OP: '委外加工费', AS: '委托加工费',
 }
 
 function catLabel(t: string) {
@@ -261,7 +268,7 @@ const flatRows = computed<Row[]>(() => {
       orderNo,
       extOrderNo,
     }
-    const lines = doc.lines as any[] | undefined
+    const lines = statementLinesToExpand(r)
     if (lines && lines.length) {
       for (const l of lines) {
         const qty = Number(l.qty) || 0
@@ -360,7 +367,7 @@ async function load() {
     if (lr.code === 0) {
       opening.value = lr.data.opening || 0
       closing.value = lr.data.closing || 0
-      detail.value = lr.data.detail || []
+      rawDetail.value = lr.data.detail || []
     } else ElMessage.error(lr.message || '加载失败')
   } finally { loading.value = false }
 }
@@ -398,7 +405,8 @@ table.lines th { background: #f0f0f0; font-weight: 600; text-align: center; }
 .doc-row td { text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .doc-row .c-num { text-align: right; white-space: nowrap; }
 .doc-row .c-date, .doc-row .c-rate, .doc-row .c-unit { text-align: center; white-space: nowrap; }
-.c-cat { width: 56px; }
+.c-cat { width: 78px; }
+.doc-row td.c-cat { white-space: normal; }
 .c-date { width: 60px; }
 .c-inv { width: 64px; }
 .c-rate { width: 42px; }

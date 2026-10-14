@@ -15,6 +15,7 @@
       </el-select>
       <el-checkbox v-model="onlyWip" size="small" @change="load">仅看有在制</el-checkbox>
       <el-button type="primary" size="small" :loading="loading" @click="load">查询</el-button>
+      <SaveAsButton title="工序在制表" />
       <FilterClearButton size="small" @clear="clear" />
     </div>
     <div class="summary-grid">

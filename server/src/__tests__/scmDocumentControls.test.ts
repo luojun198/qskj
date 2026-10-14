@@ -43,6 +43,12 @@ describe('供应链单据数量与工单来源控制', () => {
   let db: Database.Database
   beforeEach(() => { db = createDb() })
 
+  it('客户反馈：来源数量超限提示说明来源单、上限、占用单据（草稿点名）与超出量', () => {
+    addDoc(db, 'SO1', 'SO', 'draft', 'FG1', 90, 'SOAL1')
+    const msg = validateSourceLineQuantities(db, AID, 'SO', [{ item_code: 'FG1', qty: 11, source_line_id: 'SOAL1' }], undefined, 'save')
+    expect(msg).toBe('物料 FG1：销售订单 SO-001 数量 100；已被其他销售出库单占用 90（SO-SO1（草稿） 90）；本次 11，合计 101，超过来源数量上限 100（超出 1）。请先审核或删除上述草稿销售出库单，或减少本次数量。')
+  })
+
   it('合并来源分配已被销售出库草稿占用时能找到原草稿', () => {
     addDoc(db, 'SO-MERGED', 'SO', 'draft', 'FG1', 100)
     db.prepare('UPDATE scm_doc_line SET source_line_id=NULL,field_values=? WHERE id=?').run(JSON.stringify({
@@ -123,6 +129,17 @@ describe('供应链单据数量与工单来源控制', () => {
     expect(validatePlanIssueQuantities(db, AID, 'P1', 'PJ', [{ item_code: 'RM1', qty: 10 }], 'RET1')).toBeNull()  // 修改本单时排除自己
   })
 
+  it('客户反馈：已随完工消耗的物料不能再退回（可退 = 净已领 − 已消耗）', () => {
+    addDoc(db, 'ISS1', 'PL', 'audited', 'RM1', 20, null, 'P1')
+    // 完工 6 件，单件用量 2 → 已消耗 12，车间在制 8
+    db.prepare("UPDATE scm_production_plan_product SET finished_qty=6 WHERE id='PP1'").run()
+    expect(validatePlanIssueQuantities(db, AID, 'P1', 'PJ', [{ item_code: 'RM1', qty: 9 }])).toMatch(/已随完工\/报废消耗 12，车间在制可退 8/)
+    expect(validatePlanIssueQuantities(db, AID, 'P1', 'PJ', [{ item_code: 'RM1', qty: 8 }])).toBeNull()
+    // 全部完工后（消耗 20）一件都不能退
+    db.prepare("UPDATE scm_production_plan_product SET finished_qty=10 WHERE id='PP1'").run()
+    expect(validatePlanIssueQuantities(db, AID, 'P1', 'PJ', [{ item_code: 'RM1', qty: 1 }])).toContain('不能退回原料仓')
+  })
+
   it('C-1 替代料：领用替代料按主料需求上限计，同组合并占用', () => {
     db.prepare("UPDATE scm_production_plan_product SET bom_id='B1' WHERE id='PP1'").run()
     db.prepare("INSERT INTO scm_bom_line (id,account_set_id,bom_id,seq,item_code,qty,sub_group,sub_priority) VALUES ('L1',?,'B1',1,'RM1',2,'G',1)").run(AID)
@@ -152,6 +169,8 @@ describe('供应链单据数量与工单来源控制', () => {
     expect(validatePlanIssueQuantities(db, AID, 'P1', 'PL', [{ item_code: 'RM1', qty: 10 }])).toBeNull()
     addDoc(db, 'FIN1', 'PF', 'draft', 'FG1', 8, null, 'P1')
     expect(validatePlanFinishQuantities(db, AID, 'P1', 'PF', [{ item_code: 'FG1', qty: 3 }])).toContain('禁止超完工')
+    // 客户反馈：超完工提示须点名占用计划数的草稿单，便于审核或删除
+    expect(validatePlanFinishQuantities(db, AID, 'P1', 'PF', [{ item_code: 'FG1', qty: 3 }])).toMatch(/未审核草稿 \S+ 8，请先审核或删除/)
     expect(validatePlanFinishQuantities(db, AID, 'P1', 'PF', [{ item_code: 'FG1', qty: 2 }])).toBeNull()
   })
 

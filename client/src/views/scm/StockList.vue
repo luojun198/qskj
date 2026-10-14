@@ -1,6 +1,7 @@
 <template>
   <div class="page scm-stock-page">
     <Teleport v-if="ptActive" defer to="#tabbar-actions">
+      <MultiSortPanel :options="sortOptions" :model-value="effectiveSortKeys" :default-keys="[]" @change="onSortChanged" />
       <el-button size="small" plain @click="columnDialogVisible = true"><el-icon><Setting /></el-icon>列设置</el-button>
     </Teleport>
     <!-- 筛选行：关键字 / 仓库 + 查询维度（是否分仓 / 是否分批号） -->
@@ -21,6 +22,13 @@
         <span class="filter-dim__label">分批号</span>
         <el-switch v-model="splitBatch" size="small" @change="onSplitBatchChange" />
       </span>
+      <!-- 第六份反馈：库存为零时不显示 -->
+      <span class="filter-dim">
+        <el-checkbox v-model="hideZero" size="small" @change="saveDimensions">隐藏零库存</el-checkbox>
+      </span>
+      <span class="filter-spacer" />
+      <el-button size="small" :disabled="!list.length" :loading="exporting" @click="exportExcel"><el-icon><Download /></el-icon>另存</el-button>
+      <el-button size="small" :disabled="!list.length" @click="printList"><el-icon><Printer /></el-icon>打印</el-button>
     </div>
     <div class="page-table-fill">
       <el-table ref="tableRef" :data="tableData" v-loading="loading" border stripe size="small" class="compact-data-table" height="100%"
@@ -49,7 +57,7 @@
         </el-table-column>
         <el-table-column v-else-if="column.key === 'qty'" label="数量" prop="qty" :width="cw('qty', 110)" align="right">
           <template #default="{ row }">
-            <span :class="{ 'negative-number': isNegative(row.qty) }">{{ fmt(row.qty) }}</span>
+            <span :class="{ 'negative-number': isNegative(row.qty) }">{{ qtyF(row.qty) }}</span>
           </template>
         </el-table-column>
         <el-table-column v-else-if="column.key === 'unshipped_sales_qty'" label="销售未出货" prop="unshipped_sales_qty" :width="cw('unshipped_sales_qty', 120)" align="right">
@@ -61,7 +69,7 @@
           </template>
           <template #default="{ row }">
             <span :style="{ color: row.unshipped_sales_qty > 0 ? '#e6a23c' : 'inherit' }">
-              {{ fmt(row.unshipped_sales_qty) }}
+              {{ qtyF(row.unshipped_sales_qty) }}
             </span>
           </template>
         </el-table-column>
@@ -74,7 +82,7 @@
           </template>
           <template #default="{ row }">
             <span :style="{ color: row.unreceived_purchase_qty > 0 ? '#e6a23c' : 'inherit' }">
-              {{ fmt(row.unreceived_purchase_qty) }}
+              {{ qtyF(row.unreceived_purchase_qty) }}
             </span>
           </template>
         </el-table-column>
@@ -87,7 +95,7 @@
           </template>
           <template #default="{ row }">
             <span :style="{ color: row.unissued_plan_qty > 0 ? '#e6a23c' : 'inherit' }">
-              {{ fmt(row.unissued_plan_qty) }}
+              {{ qtyF(row.unissued_plan_qty) }}
             </span>
           </template>
         </el-table-column>
@@ -100,17 +108,17 @@
           </template>
           <template #default="{ row }">
             <span :style="{ color: row.unfinished_plan_qty > 0 ? '#e6a23c' : 'inherit' }">
-              {{ fmt(row.unfinished_plan_qty) }}
+              {{ qtyF(row.unfinished_plan_qty) }}
             </span>
           </template>
         </el-table-column>
         <el-table-column v-else-if="column.key === 'amount'" label="金额" prop="amount" :width="cw('amount', 120)" align="right">
           <template #default="{ row }">
-            <span :class="{ 'negative-number': isNegative(row.amount) }">{{ fmt(row.amount) }}</span>
+            <span :class="{ 'negative-number': isNegative(row.amount) }">{{ amtF(row.amount) }}</span>
           </template>
         </el-table-column>
         <el-table-column v-else-if="column.key === 'avg_cost'" label="平均成本" prop="avg_cost" :width="cw('avg_cost', 110)" align="right">
-          <template #default="{ row }">{{ row.__summary ? '' : fmt(row.avg_cost, 4) }}</template>
+          <template #default="{ row }">{{ row.__summary ? '' : priceF(row.avg_cost) }}</template>
         </el-table-column>
         </template>
       </el-table>
@@ -121,14 +129,19 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useScmDecimalsStore } from '@/stores/scmDecimals'
 import { useReloadOnActivated } from '@/composables/useReloadOnActivated'
 import { useRouter } from 'vue-router'
-import { Search, InfoFilled, Setting } from '@element-plus/icons-vue'
+import { Search, InfoFilled, Setting, Download, Printer } from '@element-plus/icons-vue'
+import { exportStyledTable, type ExportColumnDef } from '@/utils/exportStyledExcel'
+import { printSimpleTable } from '@/utils/printSimpleTable'
 import { scmApi } from '@/api/scm'
 import { useListColumnWidth } from '@/composables/useColumnWidthMemory'
 import { usePageToolbarTeleport } from '@/composables/usePageToolbarTeleport'
 import ColumnSettingsDialog from '@/components/common/ColumnSettingsDialog.vue'
 import FilterClearButton from '@/components/common/FilterClearButton.vue'
+import MultiSortPanel from '@/components/common/MultiSortPanel.vue'
+import { loadSortKeys, normalizeSortKeys, saveSortKeys, sortRows, type SortKey } from '@/utils/multiSort'
 import { useFilterClear } from '@/composables/useFilterClear'
 import { loadColumnSettings, saveColumnSettings, type ColumnSetting } from '@/utils/columnSettings'
 
@@ -158,13 +171,29 @@ const allColumns: ColumnSetting[] = [
 const STORAGE_KEY_COLS = 'scm_stock_columns_visible'
 const columnDialogVisible = ref(false)
 const columnSettings = ref<ColumnSetting[]>(loadColumnSettings(STORAGE_KEY_COLS, allColumns))
-const orderedVisibleColumns = computed(() => columnSettings.value.filter(column => {
-  if (!column.visible) return false
-  if (column.key === 'warehouse') return splitWarehouse.value
-  if (['batch_no', 'produce_date', 'expire_date'].includes(column.key)) return splitBatch.value
-  if (['unshipped_sales_qty', 'unreceived_purchase_qty', 'unissued_plan_qty', 'unfinished_plan_qty', 'avg_cost'].includes(column.key)) return !splitBatch.value
+// 当前「分仓 / 分批」维度下该列是否存在
+const columnAvailable = (key: string) => {
+  if (key === 'warehouse') return splitWarehouse.value
+  if (['batch_no', 'produce_date', 'expire_date'].includes(key)) return splitBatch.value
+  if (['unshipped_sales_qty', 'unreceived_purchase_qty', 'unissued_plan_qty', 'unfinished_plan_qty', 'avg_cost'].includes(key)) return !splitBatch.value
   return true
-}))
+}
+const orderedVisibleColumns = computed(() => columnSettings.value.filter(column => column.visible && columnAvailable(column.key)))
+
+// ── 多级排序（第一排序 / 第二排序 / …）：库存数据一次取全量并在前端聚合，所以在前端排序；合计行始终在末尾 ──
+const SORT_STORAGE_KEY = 'scm_stock_sort'
+const sortOptions = computed(() => columnSettings.value.filter(c => columnAvailable(c.key)).map(c => ({ key: c.key, label: c.label })))
+const sortKeysState = ref<SortKey[] | null>(null)
+// 分仓 / 分批切换后，当前维度不存在的列自动跳过（不丢设置）
+const effectiveSortKeys = computed<SortKey[]>(() => normalizeSortKeys(sortKeysState.value ?? loadSortKeys(SORT_STORAGE_KEY) ?? [], sortOptions.value.map(o => o.key)))
+function onSortChanged(keys: SortKey[]) {
+  sortKeysState.value = keys
+  saveSortKeys(SORT_STORAGE_KEY, keys)
+}
+function stockSortAccessor(key: string): (row: any) => unknown {
+  if (key === 'warehouse') return row => row.warehouse_code
+  return row => row[key]
+}
 function updateColumns(columns: ColumnSetting[]) {
   columnSettings.value = columns
   saveColumnSettings(STORAGE_KEY_COLS, columns)
@@ -190,15 +219,19 @@ function handleClearFilters() {
 const STORAGE_KEY_DIM = 'scm_stock_dimensions'
 const splitWarehouse = ref(true)
 const splitBatch = ref(false)
+const hideZero = ref(false)
 ;(() => {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY_DIM) || '{}')
     if (typeof saved.splitWarehouse === 'boolean') splitWarehouse.value = saved.splitWarehouse
     if (typeof saved.splitBatch === 'boolean') splitBatch.value = saved.splitBatch
+    if (typeof saved.hideZero === 'boolean') hideZero.value = saved.hideZero
   } catch { /* 用默认 */ }
 })()
 function saveDimensions() {
-  localStorage.setItem(STORAGE_KEY_DIM, JSON.stringify({ splitWarehouse: splitWarehouse.value, splitBatch: splitBatch.value }))
+  try {
+    localStorage.setItem(STORAGE_KEY_DIM, JSON.stringify({ splitWarehouse: splitWarehouse.value, splitBatch: splitBatch.value, hideZero: hideZero.value }))
+  } catch { /* 隐私模式等写不进去时只影响记忆 */ }
 }
 function onSplitWarehouseChange() {
   if (!splitWarehouse.value) warehouse.value = ''  // 不分仓时清掉仓库筛选（跨仓汇总）
@@ -207,12 +240,24 @@ function onSplitWarehouseChange() {
 function onSplitBatchChange() { saveDimensions(); load() }
 
 const fmt = (v: number, p = 2) => (v ?? 0).toLocaleString('zh-CN', { minimumFractionDigits: p, maximumFractionDigits: p })
+// 小数位：系统参数 → 供应链 → 小数位设置 →「当前库存」
+const decStore = useScmDecimalsStore()
+void decStore.load()
+const qtyF = (v: any) => decStore.qty(Number(v) || 0, 'stock')
+const amtF = (v: any) => decStore.amount(Number(v) || 0, 'stock')
+const priceF = (v: any) => decStore.price(Number(v) || 0, 'stock')
+const numF = (key: string, v: any) => (key === 'amount' ? amtF(v) : key === 'avg_cost' ? priceF(v) : qtyF(v))
 const isNegative = (v: number) => Number(v || 0) < 0
 const r6 = (v: number) => Math.round((Number(v) || 0) * 1e6) / 1e6
 
+// 隐藏零库存：数量、金额都为 0 的行不显示（合计、另存、打印同口径）
+const visibleList = computed(() => hideZero.value
+  ? list.value.filter(r => Math.abs(Number(r.qty) || 0) > 1e-9 || Math.abs(Number(r.amount) || 0) >= 0.005)
+  : list.value)
+
 // 合计行：作为表体最后一行（水平滚动条落在合计行下方）。仅有数据时追加。
 const summaryRow = computed<any>(() => {
-  const sum = (k: string) => list.value.reduce((s, r) => s + (Number(r[k]) || 0), 0)
+  const sum = (k: string) => visibleList.value.reduce((s, r) => s + (Number(r[k]) || 0), 0)
   return {
     __summary: true,
     warehouse_code: splitWarehouse.value ? '合计' : '', warehouse_name: '',
@@ -223,8 +268,65 @@ const summaryRow = computed<any>(() => {
     unissued_plan_qty: sum('unissued_plan_qty'), unfinished_plan_qty: sum('unfinished_plan_qty'),
   }
 })
-const tableData = computed(() => list.value.length ? [...list.value, summaryRow.value] : list.value)
+const sortedList = computed(() => sortRows(visibleList.value, effectiveSortKeys.value, stockSortAccessor))
+const tableData = computed(() => visibleList.value.length ? [...sortedList.value, summaryRow.value] : visibleList.value)
 const rowClass = ({ row }: { row: any }) => (row.__summary ? 'doc-line-summary' : 'stock-ledger-row')
+
+// ── 导出 / 打印：按当前显示列、排序和筛选输出（客户反馈：库存查询无另存、无打印）──
+const NUMERIC_COLS: Record<string, number> = {
+  qty: 2, unshipped_sales_qty: 2, unreceived_purchase_qty: 2, unissued_plan_qty: 2, unfinished_plan_qty: 2, amount: 2, avg_cost: 4,
+}
+function stockCellValue(row: any, key: string): string | number {
+  if (key === 'warehouse') return row.__summary ? row.warehouse_code : `${row.warehouse_code || ''} ${row.warehouse_name || ''}`.trim()
+  if (key === 'avg_cost' && row.__summary) return ''
+  const v = row[key]
+  return v === null || v === undefined ? '' : v
+}
+const outputColumns = computed(() => orderedVisibleColumns.value.map(c => ({ key: c.key, label: c.label, numeric: c.key in NUMERIC_COLS })))
+const outputSubtitle = computed(() => {
+  const wh = warehouse.value ? (warehouses.value.find(w => w.code === warehouse.value)?.name || warehouse.value) : '全部仓库'
+  return [splitWarehouse.value ? wh : '不分仓', splitBatch.value ? '分批号' : '', hideZero.value ? '不含零库存' : '', keyword.value ? `关键字：${keyword.value}` : '']
+    .filter(Boolean).join('　')
+})
+const exporting = ref(false)
+async function exportExcel() {
+  exporting.value = true
+  try {
+    const columns: ExportColumnDef[] = outputColumns.value.map(c => ({
+      label: c.label,
+      width: c.key === 'item_name' ? 24 : c.numeric ? 13 : 14,
+      type: c.numeric ? (c.key === 'amount' ? 'amount' : 'number') : 'text',
+      align: c.numeric ? 'right' : 'left',
+      value: (row: any) => stockCellValue(row, c.key),
+    }))
+    const summary = summaryRow.value
+    await exportStyledTable({
+      fileName: '库存查询',
+      title: '库存查询',
+      subtitle: outputSubtitle.value,
+      columns,
+      rows: sortedList.value,
+      summaryValues: outputColumns.value.map((c, i) => (i === 0 ? '合计' : c.numeric && c.key !== 'avg_cost' ? summary[c.key] : '')),
+    })
+  } finally { exporting.value = false }
+}
+function printList() {
+  const summary = summaryRow.value
+  printSimpleTable({
+    title: '库存查询',
+    subtitle: outputSubtitle.value,
+    columns: outputColumns.value.map(c => ({
+      label: c.label,
+      align: c.numeric ? 'right' as const : 'left' as const,
+      value: (row: any) => {
+        const v = stockCellValue(row, c.key)
+        return c.numeric && v !== '' ? numF(c.key, v) : v
+      },
+    })),
+    rows: sortedList.value,
+    summary: outputColumns.value.map((c, i) => (i === 0 ? '合计' : c.numeric && c.key !== 'avg_cost' ? numF(c.key, Number(summary[c.key]) || 0) : '')),
+  })
+}
 
 function openStockLedger(row: any) {
   if (!row?.item_code || row.__summary) return
@@ -302,6 +404,7 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.filter-spacer { flex: 1; }
 .scm-stock-page { padding: var(--page-pad); height: 100%; }
 .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
 .filter-dim { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; }
@@ -311,7 +414,5 @@ onMounted(async () => {
   font-weight: 600;
 }
 /* 合计行（表体最后一行）：加粗 + 浅底，水平滚动条落在其下方 */
-.scm-stock-page :deep(.doc-line-summary) { font-weight: 600; }
-.scm-stock-page :deep(.doc-line-summary td.el-table__cell) { background: var(--el-fill-color-light); }
 .scm-stock-page :deep(.stock-ledger-row) { cursor: pointer; }
 </style>

@@ -8,6 +8,7 @@
  * - cashier_journal.reconciled 为「已与总账对上」冗余标志，随批次维护。
  */
 import { todayStr } from '../utils/localDate.js'
+import { cashierGlCode } from './cashierAccount.js'
 import type Database from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
 import { getCashierAccountCurrency, getCashierBaseCurrency } from './cashierQuery.js'
@@ -58,6 +59,13 @@ interface Scope {
   accountCode: string
 }
 
+/**
+ * 出纳独立账户：总账侧按「出纳账户关联的科目」取分录；未关联科目的账户总账侧为空（用不会命中的占位编码）。
+ */
+function glCodeOf(s: Scope): string {
+  return cashierGlCode(s.db, s.accountSetId, s.accountCode) || '__未关联科目__'
+}
+
 function scopeCurrency(s: Scope) {
   const currency = getCashierAccountCurrency(s.db, s.accountSetId, s.accountCode)
   const foreign = currency !== getCashierBaseCurrency(s.db, s.accountSetId)
@@ -74,9 +82,10 @@ function glAmountSql(foreign: boolean) {
  * 只按它过滤会扫整个账套的分录（26 万分录时每次 ~1.1s，对账工作台一次请求要查 6~7 次）。account_code 条件保留，口径不变。
  */
 function glAccountCond(s: Scope, params: unknown[]) {
-  const acc = s.db.prepare('SELECT id FROM accounts WHERE account_set_id=? AND code=?').get(s.accountSetId, s.accountCode) as { id: string } | undefined
-  if (!acc) { params.push(s.accountSetId, s.accountCode); return 've.account_set_id=? AND ve.account_code=?' }
-  params.push(s.accountSetId, acc.id, s.accountCode)
+  const glCode = glCodeOf(s)
+  const acc = s.db.prepare('SELECT id FROM accounts WHERE account_set_id=? AND code=?').get(s.accountSetId, glCode) as { id: string } | undefined
+  if (!acc) { params.push(s.accountSetId, glCode); return 've.account_set_id=? AND ve.account_code=?' }
+  params.push(s.accountSetId, acc.id, glCode)
   return 've.account_set_id=? AND ve.account_id=? AND ve.account_code=?'
 }
 
@@ -116,7 +125,7 @@ export function pruneStaleMatches(s: Scope): number {
       if (!r || Math.abs(r.a - m.amount) > EPS) stale.add(m.batch_id)
     } else {
       const r = glAmt.get(m.ref_id, accountSetId) as { a: number; status: string; account_code: string; cur: string } | undefined
-      if (!r || r.status !== 'posted' || r.account_code !== accountCode || Math.abs(r.a - m.amount) > EPS
+      if (!r || r.status !== 'posted' || r.account_code !== glCodeOf(s) || Math.abs(r.a - m.amount) > EPS
         || (foreign && r.cur !== currency.toUpperCase())) stale.add(m.batch_id)
     }
   }
@@ -379,7 +388,7 @@ export function manualMatch(s: Scope, journalIds: string[], entryIds: string[], 
       FROM voucher_entries ve JOIN vouchers v ON v.id=ve.voucher_id WHERE ve.id=? AND ve.account_set_id=?`
     ).get(id, accountSetId) as any
     if (!r) return { error: '总账分录不存在' }
-    if (r.account_code !== accountCode || (foreign && r.cur !== currency.toUpperCase())) return { error: '所选总账分录不属于当前科目' }
+    if (r.account_code !== glCodeOf(s) || (foreign && r.cur !== currency.toUpperCase())) return { error: '所选总账分录不属于当前科目' }
     if (r.status !== 'posted') return { error: '只能与已记账凭证的分录对账' }
     if (matchedGl.get(id)) return { error: `总账分录（${r.voucher_date}）已对账` }
     gRows.push({ id, amount: round2(r.direction === 'debit' ? r.amt : -r.amt) })
@@ -494,7 +503,7 @@ export function getCashierGlReport(s: Scope, endDate: string, opts: { skipPrune?
   // 总账余额：截至日所在年度年初 + 当年截至日已记账发生额（末级科目；外币取原币）
   const year = Number(endDate.slice(0, 4)) || new Date().getFullYear()
   const acc = db.prepare('SELECT id, direction FROM accounts WHERE account_set_id=? AND code=?')
-    .get(accountSetId, accountCode) as { id: string; direction: 'debit' | 'credit' } | undefined
+    .get(accountSetId, glCodeOf(s)) as { id: string; direction: 'debit' | 'credit' } | undefined
   let glBalance = 0
   if (acc) {
     const init = (db.prepare(`

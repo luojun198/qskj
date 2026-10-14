@@ -18,6 +18,8 @@ export interface ScmAccountResolveInfo {
   label: string
   resolved_code: string
   resolved_name: string
+  /** 自动匹配命中上级、已下探到末级时的原上级编码 */
+  parent_code?: string
   /** param=已配置 code=命中默认编码 name=按名称匹配 code_mismatch=编码撞车需确认 空=找不到 */
   source: '' | 'param' | 'code' | 'name' | 'code_mismatch'
   candidates: Array<{ code: string; name: string }>
@@ -49,7 +51,8 @@ const text = computed(() => {
   if (info.source === 'code_mismatch') {
     return `⚠ 自动匹配到 ${hit}，但名称与「${info.label}」不符，建议手工指定`
   }
-  return `未配置，当前自动匹配到 ${hit}`
+  const from = info.parent_code ? `（由上级 ${info.parent_code} 下探到末级）` : ''
+  return `未配置，当前自动匹配到 ${hit}${from}`
 })
 </script>
 

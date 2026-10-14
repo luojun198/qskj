@@ -10,7 +10,7 @@
       :disabled="mrpLocked" :title="mrpLocked ? `已进入 MRP 计算单 ${row.mrp_doc_no || ''}，不能反审核` : '反审核'"
       @click="handleUnaudit">反</el-button>
     <el-button v-if="row.doc_type !== 'MRP' && row.status === 'draft' && !isLocked(row)" link type="danger" size="small" title="删除" @click="handleDelete">删</el-button>
-    <el-button v-if="row.doc_type !== 'MRP' && row.status === 'audited' && !row.voucher_id" link type="warning" size="small" title="生成凭证" @click="handleGenVoucher">凭</el-button>
+    <el-button v-if="docGeneratesVoucher(row.doc_type) && !paymentVoucherByCashier(row.doc_type, systemParams.paymentVoucherMode) && row.status === 'audited' && !row.voucher_id && !Number(row.external_voucher)" link type="warning" size="small" title="生成凭证" @click="handleGenVoucher">凭</el-button>
     <ScmPushMenu v-if="row.id && row.doc_type === 'SOa' && row.status === 'audited'"
       source-kind="sales_order" :source-id="row.id" compact :auto-load="false" @changed="emit('changed')" />
     <ScmPushMenu v-if="row.id && row.doc_type === 'AS' && row.status === 'draft'"
@@ -27,12 +27,16 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { scmApi, type ScmDoc } from '@/api/scm'
 import ScmPushMenu from './ScmPushMenu.vue'
-import { isLocked, hasTrace, canGenerateDownstream, canShowStandardPushAction, downstreamActionLabel, PUSH_MAP, typeName } from '@/utils/scmDoc'
+import { isLocked, hasTrace, docGeneratesVoucher, paymentVoucherByCashier, canGenerateDownstream, canShowStandardPushAction, downstreamActionLabel, PUSH_MAP, typeName } from '@/utils/scmDoc'
 import { scmDocumentRoute, scmDocNavContextToDetailQuery, type ScmDocNavContext } from '@/utils/scmDocNavigation'
 import { confirmAuditDefaultWarehouses } from '@/utils/scmAuditDefaultWarehouseConfirm'
+import { genScmVoucher } from '@/utils/scmVoucherAux'
+import { useSystemParamsStore } from '@/stores/systemParams'
 
 const props = defineProps<{ row: ScmDoc; navContext?: ScmDocNavContext }>()
 const emit = defineEmits<{ (e: 'changed'): void }>()
+const systemParams = useSystemParamsStore()
+systemParams.load()
 const router = useRouter()
 const mrpLocked = computed(() => ['draft', 'audited'].includes(String(props.row.mrp_status || '')))
 
@@ -75,8 +79,8 @@ async function handleAudit() {
 async function handleUnaudit() {
   try { await ElMessageBox.confirm('确认反审核（将撤销库存移动）？', '提示', { type: 'warning' }) } catch { return }
   try {
-    await scmApi.unauditDoc(props.row.id!, { skipErrorToast: true })
-    ElMessage.success('已反审核')
+    const r: any = await scmApi.unauditDoc(props.row.id!, { skipErrorToast: true })
+    ElMessage.success(r?.data?.notice ? `已反审核，${r.data.notice}` : '已反审核')
     emit('changed')
   } catch (e) { await showActionError(e, '反审核') }
 }
@@ -125,8 +129,8 @@ async function showActionError(err: any, actionLabel: string) {
 }
 async function handleGenVoucher() {
   await ElMessageBox.confirm('为该单据生成记账凭证？', '提示', { type: 'info' })
-  const r = await scmApi.genVoucher(props.row.id!)
-  if (r.code === 0) ElMessage.success(`已生成凭证 ${r.data.voucher_no}`)
+  // 辅助核算对应不上时给出「自动新建 / 去设置页」处理入口
+  await genScmVoucher(props.row.id!, () => emit('changed'))
   emit('changed')
 }
 </script>

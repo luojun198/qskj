@@ -12,8 +12,6 @@
     :is-balanced="isBalanced"
     :current-entry-aux-categories="currentEntryAuxCategories"
     :is-parent-account="isParentAccount"
-    :enable-cash-flow="enableCashFlow"
-    :cash-flow-items="cashFlowItems"
     :enable-foreign-currency="enableForeignCurrency"
     :resolve-exchange-rate="resolveEntryExchangeRate"
     :get-aux-item-names="getAuxItemNames"
@@ -43,7 +41,6 @@
 <script setup lang="ts">
 import { ref, computed, nextTick } from 'vue'
 import request from '@/api/request'
-import { getCashFlowItems } from '@/api/cashFlow'
 import VoucherEntryForm from '@/components/voucher/VoucherEntryForm.vue'
 import VoucherHiprintDialog from '@/components/print/VoucherHiprintDialog.vue'
 import { useVoucherForm } from '@/composables/useVoucherForm'
@@ -63,8 +60,8 @@ import {
 import { useOperationHistory } from '@/composables/useOperationHistory'
 import { useSystemParamsStore } from '@/stores/systemParams'
 import { useBaseDataStore } from '@/stores/baseData'
-import { useUserStore } from '@/stores/user'
 import { hasPermission } from '@/utils/permission'
+import { getAssetVoucherLockMessage } from '@/utils/voucherSourceGuard'
 
 const emit = defineEmits<{
   saved: []
@@ -72,13 +69,11 @@ const emit = defineEmits<{
 
 const baseDataStore = useBaseDataStore()
 const systemParamsStore = useSystemParamsStore()
-const userStore = useUserStore()
 const { addRecord } = useOperationHistory()
 
 const voucherTypes = computed(() => baseDataStore.voucherTypes)
 const accounts = computed(() => baseDataStore.accounts)
 const auxCategories = computed(() => baseDataStore.auxCategories)
-const enableCashFlow = computed(() => systemParamsStore.enableCashFlow)
 const enableForeignCurrency = computed(() => systemParamsStore.enableForeignCurrency)
 
 /** 外币科目默认汇率：按凭证日期所在年/期解析（与录入页 Entry.vue 一致） */
@@ -99,7 +94,6 @@ const dialogVisible = ref(false)
 const dialogMode = ref<'edit' | 'view'>('view')
 const submitLoading = ref(false)
 const attachments = ref<any[]>([])
-const cashFlowItems = ref<Array<{ code: string; name: string }>>([])
 const printDialogVisible = ref(false)
 const printVoucherIds = ref<Array<string | number>>([])
 
@@ -146,15 +140,6 @@ async function ensureBaseData() {
     systemParamsStore.load(),
   ])
   ensureAuxFields()
-  try {
-    const res = await getCashFlowItems(userStore.accountSetId)
-    cashFlowItems.value = (res.data || []).map(item => ({
-      code: item.code,
-      name: item.name,
-    }))
-  } catch {
-    cashFlowItems.value = []
-  }
 }
 
 async function fetchAttachments(voucherId: string) {
@@ -205,7 +190,10 @@ async function loadVoucherDialog(voucherId: string, row?: any) {
     const res = await request.get(`/voucher/vouchers/${voucherId}`)
     const voucher: any = res.data
     const status = voucher.status || row?.status
-    const canEdit = status === 'draft' && hasPermission('voucher:entry')
+    // 固定资产 / 进销存生成的凭证只读（后端同样拦截），只能回对应模块处理
+    const lockMessage = getAssetVoucherLockMessage(voucher, '编辑')
+    const canEdit = status === 'draft' && hasPermission('voucher:entry') && !lockMessage
+    if (lockMessage && status === 'draft') showWarning(lockMessage)
     dialogMode.value = canEdit ? 'edit' : 'view'
 
     loadVoucher(voucher)
@@ -231,6 +219,10 @@ async function handleSubmit() {
 
   if (!form.value.voucher_date) {
     showWarning('请选择凭证日期')
+    return
+  }
+  if (voucherTypes.value.length > 0 && !form.value.voucher_type_id) {
+    showWarning('请选择凭证类型')
     return
   }
   if (Math.abs(totalDebit.value - totalCredit.value) > 0.01) {
@@ -263,16 +255,15 @@ async function handleSubmit() {
       remark: form.value.remark,
       entries: form.value.entries
         .filter(e => e.account_id && (e.debit_amount || e.credit_amount))
+        // 与录入页 Entry.vue 一致：整行带上（account_code / account_name、辅助核算 _xx_id 等），
+        // 后端按这些字段落库；只挑几个字段会因 account_code 为空被数据库拒绝
         .map(e => ({
-          account_id: e.account_id,
-          summary: e.summary,
+          ...e,
           direction: e.debit_amount ? 'debit' : 'credit',
           amount: e.debit_amount || e.credit_amount,
-          cash_flow_code: e.cash_flow_code,
           currency_code: e.currency_code || null,
           exchange_rate: e.exchange_rate ?? null,
           foreign_amount: e.foreign_amount ?? null,
-          aux_data: buildAuxData(e),
         })),
     }
 
@@ -291,28 +282,6 @@ async function handleSubmit() {
   } finally {
     submitLoading.value = false
   }
-}
-
-function buildAuxData(entry: VoucherEntry) {
-  const auxData: Record<string, any> = {}
-  for (const cat of auxCategories.value) {
-    const itemId = entry[`_${cat.code}_id`]
-    if (!itemId) continue
-    const item = voucherAux.getAuxItemFromCache(String(cat.id), String(itemId))
-    auxData[cat.code] = {
-      id: itemId,
-      name: item?.name || entry[`_${cat.code}_name`] || '',
-      field_values: {},
-    }
-    for (const field of ((cat as any).fields || []) as any[]) {
-      if (field.is_enabled === 0 || !field.show_in_voucher) continue
-      const fvKey = `_${cat.code}_fv_${field.field_key}`
-      if (entry[fvKey] != null && entry[fvKey] !== '') {
-        auxData[cat.code].field_values[field.field_key] = entry[fvKey]
-      }
-    }
-  }
-  return Object.keys(auxData).length > 0 ? auxData : undefined
 }
 
 defineExpose({ open, restore, loadVoucherDialog })

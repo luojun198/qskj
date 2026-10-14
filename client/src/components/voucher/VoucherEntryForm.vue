@@ -458,42 +458,6 @@
         </div>
       </div>
 
-      <div
-        v-if="currentEntry && showCashFlowForCurrentEntry"
-        class="voucher-aux-panel voucher-cash-flow-panel"
-      >
-        <div class="voucher-aux-header">
-          <span>现金流量项目</span>
-          <span v-if="cashFlowRequired" class="cash-flow-required-tag">必填</span>
-        </div>
-        <div class="voucher-aux-rows">
-          <div class="voucher-aux-row">
-            <span class="voucher-aux-row-label">项目</span>
-            <span v-if="isReadonly" class="voucher-aux-readonly-value">
-              {{ getCashFlowDisplay(currentEntry) }}
-            </span>
-            <el-select
-              v-else
-              v-model="currentEntry.cash_flow_code"
-              data-voucher-focus="cash-flow"
-              filterable
-              clearable
-              placeholder="请选择现金流量项目"
-              style="width: 320px"
-              @change="onCashFlowCodeChange"
-              @keydown="(e: KeyboardEvent) => onVoucherFieldKeydown(currentEntry, { kind: 'cash_flow' }, e)"
-            >
-              <el-option
-                v-for="item in cashFlowItems"
-                :key="item.code"
-                :label="`${item.code} ${item.name}`"
-                :value="item.code"
-              />
-            </el-select>
-          </div>
-        </div>
-      </div>
-
       <!-- 外币录入气泡：挂在触发的借/贷金额格上 -->
       <el-popover
         :visible="foreignPopover.visible"
@@ -1000,7 +964,7 @@
                   <span>摘要→科目→金额，金额再回车跳下一行</span>
                 </div>
                 <div class="shortcut-tip__row">
-                  <span class="keys"><kbd>Tab</kbd></span><span>科目→现金流量/辅助项目→金额</span>
+                  <span class="keys"><kbd>Tab</kbd></span><span>科目→辅助项目→金额</span>
                 </div>
                 <div class="shortcut-tip__row">
                   <span class="keys"><kbd>↑</kbd><kbd>↓</kbd></span><span>科目建议列表中移动</span>
@@ -1089,7 +1053,7 @@ import {
   QuestionFilled,
 } from '@element-plus/icons-vue'
 import { formatAmount, formatDate } from '@/utils/format'
-import { accountNeedsCashFlowItem, isAuxCategoryExcludedFromAccount } from '@/utils/accountCashFlow'
+import { isAuxCategoryExcludedFromAccount } from '@/utils/accountCashFlow'
 import { formatAccountFullPath } from '@/utils/accountPathDisplay'
 import { accountDisplayMode } from '@/utils/accountDisplayPreference'
 import DialogNavigation from '@/components/common/DialogNavigation.vue'
@@ -1136,8 +1100,6 @@ interface Props {
   updateAttachments?: (attachments: any[]) => void
   submitLoading?: boolean
   navigationInfo?: NavigationInfo | null
-  enableCashFlow?: boolean
-  cashFlowItems?: Array<{ code: string; name: string }>
   enableForeignCurrency?: boolean
   resolveExchangeRate?: (currencyCode: string) => number | Promise<number>
   accountSetStartDate?: string
@@ -1147,8 +1109,6 @@ interface Props {
 const props = withDefaults(defineProps<Props>(), {
   submitLoading: false,
   navigationInfo: null,
-  enableCashFlow: false,
-  cashFlowItems: () => [],
   enableForeignCurrency: false,
   resolveExchangeRate: undefined,
   accountSetStartDate: '',
@@ -1187,7 +1147,9 @@ const dialogTitle = computed(() => {
 function disabledVoucherDate(date: Date): boolean {
   const now = new Date()
   const maxDate = new Date(now.getFullYear(), now.getMonth() + 1, 0)
-  return date > maxDate
+  if (date > maxDate) return true
+  // 不早于账套启用（总账开账）日期
+  return !!props.accountSetStartDate && formatDate(date) < props.accountSetStartDate
 }
 
 const voucherDateWarning = computed(() => {
@@ -1214,12 +1176,6 @@ const filteredAuxCategories = computed(() =>
 const currentEntryAccount = computed(() => {
   if (!props.currentEntry?.account_id) return null
   return props.accounts.find(a => a.id === props.currentEntry!.account_id) || null
-})
-
-const showCashFlowForCurrentEntry = computed(() => {
-  const acc = currentEntryAccount.value
-  if (!acc) return false
-  return accountNeedsCashFlowItem(acc)
 })
 
 // ========== 外币录入气泡 ==========
@@ -1791,17 +1747,6 @@ function ensureQuantityDefaults(entry: any) {
   entry.unit = acc.quantity_unit || entry.unit || null
 }
 
-// 现金/银行标志决定控件是否显示；账套开关只决定是否必填。
-const cashFlowRequired = computed(
-  () => props.enableCashFlow && showCashFlowForCurrentEntry.value
-)
-
-function onCashFlowCodeChange(code: string) {
-  if (!props.currentEntry) return
-  const item = props.cashFlowItems.find(cf => cf.code === code)
-  props.currentEntry.cash_flow_name = item?.name || ''
-}
-
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]
   'ai-summary': []
@@ -2132,13 +2077,6 @@ function getAuxFieldDisplayValue(cat: any, field: any, entry: VoucherEntry | nul
   const val = entry[`_${cat.code}_fv_${field.field_key}`]
   if (val == null || val === '') return '-'
   return String(val)
-}
-
-function getCashFlowDisplay(entry: VoucherEntry | null): string {
-  if (!entry?.cash_flow_code) return '-'
-  const item = props.cashFlowItems.find(cf => cf.code === entry.cash_flow_code)
-  if (item) return `${item.code} ${item.name}`
-  return entry.cash_flow_name || entry.cash_flow_code
 }
 
 function getAuxItemId(cat: any, entry: VoucherEntry | null): string {
@@ -2494,7 +2432,6 @@ function parseFieldOpts(optionsJson: string | null): string[] {
 // ========== 回车 / Tab 智能导航 ==========
 
 type VoucherFocusStep =
-  | { kind: 'cash_flow' }
   | { kind: 'aux_select'; catCode: string }
   | { kind: 'aux_field'; catCode: string; fieldKey: string }
   | { kind: 'amount'; side: 'debit' | 'credit' }
@@ -2531,10 +2468,6 @@ function buildVoucherFocusSteps(row: VoucherEntry): VoucherFocusStep[] {
     return [{ kind: 'amount', side: 'debit' }]
   }
 
-  if (accountNeedsCashFlowItem(acc)) {
-    steps.push({ kind: 'cash_flow' })
-  }
-
   for (const cat of getEntryAuxCategories(row)) {
     steps.push({ kind: 'aux_select', catCode: cat.code })
     if (row[`_${cat.code}_id`]) {
@@ -2550,7 +2483,6 @@ function buildVoucherFocusSteps(row: VoucherEntry): VoucherFocusStep[] {
 
 function focusStepEquals(a: VoucherFocusStep, b: VoucherFocusStep): boolean {
   if (a.kind !== b.kind) return false
-  if (a.kind === 'cash_flow' && b.kind === 'cash_flow') return true
   if (a.kind === 'aux_select' && b.kind === 'aux_select') return a.catCode === b.catCode
   if (a.kind === 'aux_field' && b.kind === 'aux_field') {
     return a.catCode === b.catCode && a.fieldKey === b.fieldKey
@@ -2559,7 +2491,6 @@ function focusStepEquals(a: VoucherFocusStep, b: VoucherFocusStep): boolean {
 }
 
 function focusStepSelector(step: VoucherFocusStep): string {
-  if (step.kind === 'cash_flow') return '[data-voucher-focus="cash-flow"]'
   if (step.kind === 'aux_select') return `[data-voucher-focus="aux-select-${step.catCode}"]`
   if (step.kind === 'aux_field') {
     return `[data-voucher-focus="aux-field-${step.catCode}-${step.fieldKey}"]`
@@ -2645,7 +2576,7 @@ function moveToAccount(row: VoucherEntry, event?: KeyboardEvent) {
   focusCellInput(row, 1) // 第2列：会计科目
 }
 
-// 科目回车 / Tab → 依次经过现金流量、辅助项目，最后到金额
+// 科目回车 / Tab → 依次经过辅助项目，最后到金额
 function onAccountEnter(row: VoucherEntry, event?: KeyboardEvent) {
   stopEnterBubble(event)
   if (!row.account_id) return
@@ -3881,16 +3812,6 @@ useKeyboardShortcuts([
 :deep(.el-autocomplete-suggestion li) {
   white-space: normal;
   line-height: 1.5;
-}
-
-.cash-flow-required-tag {
-  margin-left: 8px;
-  color: #f56c6c;
-  font-size: 12px;
-}
-
-.voucher-cash-flow-panel {
-  margin-bottom: 8px;
 }
 
 /* 金额 + 原币 同一行：本位币在右，原币小字紧跟其后，超长省略 */

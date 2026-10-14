@@ -531,6 +531,66 @@ import {
   up as cashierJournalAuxUp,
   down as cashierJournalAuxDown,
 } from './migrations/20260930_cashier_journal_aux.js'
+import {
+  up as addLicenseActivationLogUp,
+  down as addLicenseActivationLogDown,
+} from './migrations/20261006_add_license_activation_log.js'
+import {
+  up as addScmGlAuxMapUp,
+  down as addScmGlAuxMapDown,
+} from './migrations/20261007_add_scm_gl_aux_map.js'
+import {
+  up as cashFlowAccountMapUp,
+  down as cashFlowAccountMapDown,
+} from './migrations/20261008_cash_flow_account_map.js'
+import {
+  up as addScmVerifyDeletePermUp,
+  down as addScmVerifyDeletePermDown,
+} from './migrations/20261009_add_scm_verify_delete_perm.js'
+import {
+  up as scmOrderChangeUp,
+  down as scmOrderChangeDown,
+} from './migrations/20261009_scm_order_change.js'
+import {
+  up as cashierAccountUp,
+  down as cashierAccountDown,
+} from './migrations/20261009_cashier_account.js'
+import {
+  up as scmArapJournalIndexUp,
+  down as scmArapJournalIndexDown,
+} from './migrations/20261010_scm_arap_journal_index.js'
+import {
+  up as scmStatementUp,
+  down as scmStatementDown,
+} from './migrations/20261011_scm_statement.js'
+import {
+  up as scmInvoiceArapAdjustUp,
+  down as scmInvoiceArapAdjustDown,
+} from './migrations/20261011_scm_invoice_arap_adjust.js'
+import {
+  up as scmAssemblyProcessUp,
+  down as scmAssemblyProcessDown,
+} from './migrations/20261011_scm_assembly_process.js'
+import {
+  up as addScmOutsourcePricePermUp,
+  down as addScmOutsourcePricePermDown,
+} from './migrations/20261012_add_scm_outsource_price_perm.js'
+import {
+  up as voucherStandardTemplateV2Up,
+  down as voucherStandardTemplateV2Down,
+} from './migrations/20261013_voucher_standard_template_v2.js'
+import {
+  up as autoTransferRunsMultiUp,
+  down as autoTransferRunsMultiDown,
+} from './migrations/20261013_auto_transfer_runs_multi.js'
+import {
+  up as scmAcdImportUp,
+  down as scmAcdImportDown,
+} from './migrations/20261014_scm_acd_import.js'
+import {
+  up as scmMasterAuditUp,
+  down as scmMasterAuditDown,
+} from './migrations/20261014_scm_master_audit.js'
 
 /**
  * 迁移示例：添加新字段
@@ -2372,5 +2432,95 @@ export const migrations: Migration[] = [
     name: 'cashier_journal_aux',
     up: cashierJournalAuxUp,
     down: cashierJournalAuxDown,
+  },
+  {
+    version: 154,
+    name: 'add_license_activation_log',
+    up: addLicenseActivationLogUp,
+    down: addLicenseActivationLogDown,
+  },
+  {
+    version: 155,
+    name: 'add_scm_gl_aux_map',
+    up: addScmGlAuxMapUp,
+    down: addScmGlAuxMapDown,
+  },
+  {
+    version: 156,
+    name: 'cash_flow_account_map',
+    up: cashFlowAccountMapUp,
+    down: cashFlowAccountMapDown,
+  },
+  {
+    version: 157,
+    name: 'add_scm_verify_delete_perm',
+    up: addScmVerifyDeletePermUp,
+    down: addScmVerifyDeletePermDown,
+  },
+  {
+    version: 158,
+    name: 'scm_order_change',
+    up: scmOrderChangeUp,
+    down: scmOrderChangeDown,
+  },
+  {
+    version: 159,
+    name: 'cashier_account',
+    up: cashierAccountUp,
+    down: cashierAccountDown,
+  },
+  {
+    version: 160,
+    name: 'scm_arap_journal_index',
+    up: scmArapJournalIndexUp,
+    down: scmArapJournalIndexDown,
+  },
+  {
+    version: 161,
+    name: 'scm_statement',
+    up: scmStatementUp,
+    down: scmStatementDown,
+  },
+  {
+    version: 162,
+    name: 'scm_invoice_arap_adjust',
+    up: scmInvoiceArapAdjustUp,
+    down: scmInvoiceArapAdjustDown,
+  },
+  {
+    version: 163,
+    name: 'scm_assembly_process',
+    up: scmAssemblyProcessUp,
+    down: scmAssemblyProcessDown,
+  },
+  {
+    version: 164,
+    name: 'add_scm_outsource_price_perm',
+    up: addScmOutsourcePricePermUp,
+    down: addScmOutsourcePricePermDown,
+  },
+  {
+    version: 165,
+    name: 'voucher_standard_template_v2',
+    up: voucherStandardTemplateV2Up,
+    down: voucherStandardTemplateV2Down,
+  },
+  {
+    version: 166,
+    name: 'auto_transfer_runs_multi',
+    up: autoTransferRunsMultiUp,
+    down: autoTransferRunsMultiDown,
+  },
+  {
+    version: 167,
+    name: 'scm_acd_import',
+    up: scmAcdImportUp,
+    down: scmAcdImportDown,
+  },
+  {
+    version: 168,
+    name: 'scm_master_audit',
+    up: scmMasterAuditUp,
+    down: scmMasterAuditDown,
   },
 ]

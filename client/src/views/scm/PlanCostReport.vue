@@ -13,7 +13,7 @@
       <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="开工从" end-placeholder="开工至" size="small" style="width:240px" @change="query" />
       <el-button type="primary" size="small" :loading="loading" @click="query">查询</el-button>
       <FilterClearButton size="small" @clear="clear" />
-      <el-button type="success" plain size="small" :loading="exporting" @click="exportExcel">导出Excel</el-button>
+      <el-button type="success" plain size="small" :loading="exporting" @click="exportExcel">另存</el-button>
     </div>
     <div class="summary-grid">
       <div><span>投入合计</span><b>{{ money(summary.total_cost) }}</b><i>料 {{ money(summary.material_cost) }} · 人工 {{ money(summary.labor_cost) }} · 制费 {{ money(summary.overhead_cost) }}</i></div>

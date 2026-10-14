@@ -1,9 +1,9 @@
 <template>
-  <div class="module-sections" :class="{ 'module-sections--grouped': !!heading }">
+  <div class="module-sections" :class="{ 'module-sections--grouped': !!heading, 'module-sections--compact': compact }">
     <h3 v-if="heading" class="module-sections__heading">{{ heading }}</h3>
 
     <!-- 每个分组一张白卡：标题条 + 图标宫格 -->
-    <div class="module-sections__grid" :class="`cols-${columnCount}`">
+    <div class="module-sections__grid" :class="compact ? 'cols-compact' : `cols-${columnCount}`">
       <section
         v-for="(section, index) in app.sections"
         :key="section.key"
@@ -11,7 +11,7 @@
       >
         <div class="wb-card__head module-section__head">
           <h3 class="wb-card__title">{{ section.label }}</h3>
-          <span class="wb-card__note">{{ section.items.length }} 项</span>
+          <span v-if="!compact" class="wb-card__note">{{ section.items.length }} 项</span>
         </div>
         <div class="app-grid app-grid--roomy module-section__grid">
           <router-link
@@ -23,10 +23,10 @@
             :title="getDescription(item.title)"
           >
             <span class="app-tile__icon">
-              <component :is="iconResolver(item)" :size="20" :stroke-width="1.8" />
+              <component :is="iconResolver(item)" :size="compact ? 14 : 20" :stroke-width="1.8" />
             </span>
             <span class="app-tile__label">{{ item.title }}</span>
-            <span v-if="getSub(item.title)" class="app-tile__sub">{{ getSub(item.title) }}</span>
+            <span v-if="!compact && getSub(item.title)" class="app-tile__sub">{{ getSub(item.title) }}</span>
           </router-link>
         </div>
       </section>
@@ -43,6 +43,8 @@ const props = defineProps<{
   iconResolver: (item: NavItem | string) => Component
   /** 可选的总标题（流程布局下去重后为「其他功能」） */
   heading?: string
+  /** 紧凑模式：分组并排一行、磁贴改为「图标+名称」小胶囊（系统管理主页下方还要放系统参数） */
+  compact?: boolean
 }>()
 
 const variants = ['mint', 'blue', 'lilac', 'amber', 'rose', 'foam']
@@ -124,6 +126,59 @@ function getSub(title: string) {
 /* 覆盖全局 app-grid 密度：模块首页磁贴带副标，需要更宽的格子 */
 .module-section__grid {
   grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+}
+
+/* ---- 紧凑模式 ---- */
+.module-sections__grid.cols-compact {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.module-sections--compact .module-section {
+  flex: 1 1 auto;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+}
+
+.module-sections--compact .module-section__head {
+  margin: 0;
+  padding: 0;
+  border: none;
+  flex-shrink: 0;
+}
+
+.module-sections--compact .module-section__head .wb-card__title {
+  font-size: var(--cw-text-sm);
+  color: var(--wb-text-3);
+  white-space: nowrap;
+}
+
+.module-sections--compact .module-section__grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.module-sections--compact .app-tile {
+  flex-direction: row;
+  gap: 4px;
+  min-height: 0;
+  padding: 3px 8px;
+}
+
+.module-sections--compact .app-tile__icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+}
+
+.module-sections--compact .app-tile__label {
+  width: auto;
+  font-size: var(--cw-text-sm);
+  white-space: nowrap;
 }
 
 @media (max-width: 1200px) {

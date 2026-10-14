@@ -328,7 +328,22 @@ export function buildVoucherEntryPayloads(params: {
   categories: AuxCategoryLike[]
   itemMap: Record<string, AuxItemLike>
 }) {
+  // 提交里没带 account_code / account_name（只传了 account_id）时按科目补齐，避免 NOT NULL 约束报「有必填项未填写」
+  const accountCache = new Map<string, { code: string; name: string } | null>()
+  const lookupAccount = (id: unknown) => {
+    if (!params.db || typeof id !== 'string' || !id) return null
+    if (!accountCache.has(id)) {
+      accountCache.set(
+        id,
+        (params.db
+          .prepare('SELECT code, name FROM accounts WHERE id = ? AND account_set_id = ?')
+          .get(id, params.accountSetId) as { code: string; name: string } | undefined) || null
+      )
+    }
+    return accountCache.get(id) ?? null
+  }
   return params.entries.map((entry, index) => {
+    const acc = !entry.account_code || !entry.account_name ? lookupAccount(entry.account_id) : null
     const auxData: Record<
       string,
       { id: string; name: string; field_values?: Record<string, string> }
@@ -391,8 +406,8 @@ export function buildVoucherEntryPayloads(params: {
       params.voucherId,
       index + 1,
       entry.account_id,
-      entry.account_code,
-      entry.account_name,
+      entry.account_code || acc?.code,
+      entry.account_name || acc?.name,
       entry.direction,
       entry.amount,
       yuanToCents(entry.amount),
@@ -477,65 +492,8 @@ export function resolveForeignCurrencyFields(entry: VoucherEntryInput): {
   }
 }
 
-/**
- * 仅现金/银行科目需指定现金流量项目（FIX-021 评审更正 §P2-24）
- *
- * `accounts.require_cash_flow` 字段在 schema 中保留，但仅用于 ACD 导入兼容；
- * 业务校验**有意只看 is_cash / is_bank**（与客户端 `accountNeedsCashFlowItem` 行为一致）。
- * 单元测试 `voucherEntry.test.ts > 仅 require_cash_flow=1 且非现金/银行科目时不拦截`
- * 锁定此契约，不应放宽。
- */
-export function accountRequiresCashFlowItem(
-  account:
-    | {
-        require_cash_flow?: number | null
-        is_cash?: number | null
-        is_bank?: number | null
-      }
-    | null
-    | undefined
-): boolean {
-  if (!account) return false
-  return Number(account.is_cash) === 1 || Number(account.is_bank) === 1
-}
-
-/** 启用现金流核算时，校验必填现金流量项目 */
-export function validateVoucherEntriesCashFlow(
-  db: Database,
-  accountSetId: string,
-  entries: VoucherEntryInput[]
-): string | null {
-  if (!isCashFlowEnabledForAccountSet(db, accountSetId)) return null
-
-  const accountStmt = db.prepare(
-    `SELECT name, require_cash_flow, is_cash, is_bank FROM accounts WHERE id = ? AND account_set_id = ?`
-  )
-  const cfStmt = db.prepare(
-    `SELECT code FROM cash_flow_items WHERE account_set_id = ? AND code = ? AND is_active = 1 LIMIT 1`
-  )
-
-  for (const entry of entries) {
-    if (!entry.account_id || !entry.amount) continue
-    const account = accountStmt.get(entry.account_id, accountSetId) as
-      | {
-          name: string
-          require_cash_flow: number
-          is_cash: number
-          is_bank: number
-        }
-      | undefined
-    if (!account) continue
-
-    const code = (entry.cash_flow_code || '').trim()
-    if (accountRequiresCashFlowItem(account) && !code) {
-      return `科目【${account.name}】须指定现金流量项目`
-    }
-    if (code && !cfStmt.get(accountSetId, code)) {
-      return `现金流量项目编码「${code}」不存在或已停用`
-    }
-  }
-  return null
-}
+// 现金流量项目不再由凭证录入指定、也不再必填：现金流量表按「基础资料 → 科目现金流量项目」
+// 自动推算（services/cashFlowAutoEngine.ts）。分录上的 cash_flow_code 仅作历史数据保留。
 
 /** 启用外币核算时，校验外币科目分录的原币/汇率 */
 export function validateVoucherEntriesForeignCurrency(
@@ -774,6 +732,22 @@ export function getEffectiveVoucherTypeId(params: {
     )
     .get(params.accountSetId, params.accountSetId) as any
   return firstType?.id || null
+}
+
+/**
+ * 业务凭证「本次指定的凭证类型」：空值返回 null（交给模块默认参数 / 自动规则）；
+ * 非空必须是本账套或公共的凭证类型，否则抛错（调用方转 400）。
+ */
+export function normalizeRequestedVoucherTypeId(
+  db: { prepare: (sql: string) => { get: (...args: any[]) => any } },
+  accountSetId: string,
+  raw: unknown,
+): string | null {
+  const id = raw == null ? '' : String(raw).trim()
+  if (!id) return null
+  const hit = db.prepare('SELECT id FROM voucher_types WHERE id=? AND (account_set_id=? OR account_set_id IS NULL)').get(id, accountSetId)
+  if (!hit) throw new Error('凭证类型不存在，请重新选择')
+  return id
 }
 
 /** SQL 表达式：从 voucher_no 提取序号（兼容「记-001」与纯数字） */

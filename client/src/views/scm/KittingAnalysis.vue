@@ -12,6 +12,7 @@
         <el-radio-button value="independent">独立核算</el-radio-button>
       </el-radio-group>
       <el-button type="primary" plain size="small" @click="load"><el-icon><Search /></el-icon>刷新</el-button>
+      <SaveAsButton title="齐套分析" />
       <span class="hint">{{ mode === 'allocate' ? '按 优先级 → 计划号 顺序把现有库存依次分配给各工单，后序工单只看分配后余量（多张工单同缺一料时能看出谁真正缺）' : '各工单独立按全量现有库存核算齐套率（单工单可投产判断，不做跨工单库存竞争）' }}</span>
     </div>
     <el-empty v-if="!rows.length && !loading" description="暂无已审核工单" />

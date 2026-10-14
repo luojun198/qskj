@@ -82,6 +82,8 @@ describe('工作台（星辰风）', () => {
       machineId: 'm',
       machineMismatch: false,
       modules: ['gl', 'cashier', 'scm'],
+      maxConcurrent: 0,
+      onlineCount: 0,
     })
   })
 

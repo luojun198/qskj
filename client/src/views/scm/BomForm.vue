@@ -8,6 +8,7 @@
         <span class="bom-form-header__title">{{ pageTitle }}</span>
       </div>
       <div class="bom-form-header__right">
+        <SaveAsButton doc :title="pageTitle" />
         <el-button size="small" @click="goBack">取消</el-button>
         <el-button type="primary" size="small" :loading="saving" @click="handleSave">保存</el-button>
       </div>
@@ -29,7 +30,7 @@
           </el-col>
           <el-col :span="6">
             <el-form-item label="成品物料" required>
-              <ItemPicker v-model="form.item_code" placeholder="选择成品物料" @pick="(item:any) => { if(!form.name) form.name = item.name + ' BOM' }" />
+              <ItemPicker v-model="form.item_code" placeholder="选择成品物料" @pick="onPickBomProduct" />
             </el-form-item>
           </el-col>
           <el-col :span="4">
@@ -54,7 +55,7 @@
       </div>
 
       <!-- 组件明细表格 -->
-      <el-table :data="form.lines" border size="small" :height="tableHeight" style="width:100%" @cell-click="handleCellClick" class="compact-data-table">
+      <el-table v-col-width="'scm_BomForm_1'" :data="form.lines" border size="small" :height="tableHeight" style="width:100%" @cell-click="handleCellClick" class="compact-data-table">
         <el-table-column label="序号" width="52" align="center">
           <template #default="{ $index }">{{ $index + 1 }}</template>
         </el-table-column>
@@ -159,6 +160,13 @@ const tableHeight = computed(() => 'calc(100vh - 220px)')
 const form = ref<Record<string, any>>({
   code: '', name: '', item_code: '', version: '1.0', effective_date: null, expire_date: null, is_default: 1, lines: []
 })
+/** 选 BOM 成品：默认名称；外购物料一般不需要 BOM，提示到物料档案改来源（自制 / 委外 / 组装） */
+function onPickBomProduct(item: any) {
+  if (!form.value.name) form.value.name = item.name + ' BOM'
+  if ((item.source_type || 'purchase') === 'purchase') {
+    ElMessage.warning(`物料 ${item.code} 在物料档案中的来源是「采购」，MRP 不会展开它的 BOM；如需自制或委外，请到物料档案改来源`)
+  }
+}
 const saving = ref(false)
 
 // 有效期区间（daterange）↔ effective_date/expire_date
@@ -240,6 +248,10 @@ function onBatchAddLines(items: any[]) {
       unit: it.unit_name || it.unit || '',
       scrap_rate: 0,
       remark: '',
+      // 批量选来的组件默认是主件（用料），与手工新增行一致
+      line_type: 'component',
+      sub_group: '',
+      sub_priority: 0,
     })
   }
 }
@@ -248,6 +260,10 @@ async function handleSave() {
   if (!form.value.code || !form.value.item_code) return ElMessage.warning('编码和成品物料不能为空')
   const cleanLines = form.value.lines.filter((l: any) => l.item_code && Number(l.qty) > 0)
   if (!cleanLines.length) return ElMessage.warning('请添加至少一行有效组件物料')
+  // 主件才计入计划用料 / 领料 / 委外发料；全部是副产品时计划将没有用料（与服务端校验一致）
+  if (!cleanLines.some((l: any) => (l.line_type || 'component') === 'component')) {
+    return ElMessage.warning('至少需要一行「主件」：副产品 / 联产品不计入用料，全部选成副产品时计划没有用料、无法领料或委外发料')
+  }
   
   saving.value = true
   try {

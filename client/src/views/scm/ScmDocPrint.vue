@@ -4,193 +4,169 @@
     <div class="toolbar no-print">
       <el-button @click="goBack"><el-icon><Back /></el-icon>返回</el-button>
       <span class="t-title">单据打印预览</span>
-      <el-button type="primary" :disabled="loading" @click="doPrint"><el-icon><Printer /></el-icon>打印</el-button>
+      <!-- 第五份反馈：打印模板切换；第六份反馈：可选自定义业务单据模板。「设为默认」按单据类型记住（账套内共用） -->
+      <span class="t-label">模板</span>
+      <el-select v-model="choice" size="default" style="width:220px" @change="renderCustom">
+        <el-option-group label="内置版式">
+          <el-option v-for="o in SCM_PRINT_LAYOUTS" :key="o.value" :value="o.value" :label="o.label">
+            <span>{{ o.label }}</span><span class="opt-desc">{{ o.desc }}</span>
+          </el-option>
+        </el-option-group>
+        <el-option-group v-if="customTemplates.length" label="自定义模板">
+          <el-option v-for="t in customTemplates" :key="t.id" :value="`tpl:${t.id}`" :label="t.name">
+            <span>{{ t.name }}</span><span class="opt-desc">{{ t.template_key === scmTemplateKey('*') ? '通用' : '本类单据' }}</span>
+          </el-option>
+        </el-option-group>
+      </el-select>
+      <el-tag v-if="doc && choice === defaultChoice" size="small" type="success" effect="plain">默认</el-tag>
+      <el-button v-else-if="doc" link type="primary" :loading="savingDefault" @click="setDefault">设为默认</el-button>
+      <el-button v-if="canDesign" link type="primary" @click="designTemplate">{{ isCustom ? '修改模板' : '设计模板' }}</el-button>
+      <el-button type="primary" :disabled="loading || rendering" @click="doPrint"><el-icon><Printer /></el-icon>打印</el-button>
     </div>
 
-    <div v-loading="loading" class="paper">
-      <template v-if="doc">
-        <!-- 抬头 -->
-        <div class="doc-header">
-          <div class="company">{{ companyName }}</div>
-          <div class="doc-title">{{ title }}</div>
-        </div>
-
-        <!-- 表头信息 -->
-        <div class="meta">
-          <span><b>单据号：</b>{{ doc.doc_no }}</span>
-          <span><b>日期：</b>{{ doc.doc_date }}</span>
-          <span v-if="partnerLabel"><b>{{ partnerCaption }}：</b>{{ partnerLabel }}</span>
-          <span v-if="doc.warehouse_name"><b>仓库：</b>{{ doc.warehouse_name }}</span>
-          <span v-if="isTransfer && doc.dest_warehouse_name"><b>调入仓：</b>{{ doc.dest_warehouse_name }}</span>
-          <span v-if="doc.biz_person"><b>业务员：</b>{{ doc.biz_person }}</span>
-          <template v-for="f in headerCustomFields" :key="f.field_key">
-            <span v-if="cfVal(f.field_key) !== ''"><b>{{ f.field_name }}：</b>{{ cfVal(f.field_key) }}</span>
-          </template>
-        </div>
-
-        <!-- 明细表（组装单拆成 成品 / 子件 两张表）-->
-        <template v-for="grp in lineGroups" :key="grp.key">
-          <div v-if="grp.title" class="lines-group-title">{{ grp.title }}</div>
-          <table class="lines">
-            <thead>
-              <tr>
-                <th class="c-idx">#</th>
-                <th class="c-code">物料编码</th>
-                <th class="c-name">物料名称</th>
-                <th class="c-spec">规格</th>
-                <th class="c-unit">单位</th>
-                <th class="c-num">数量</th>
-                <th class="c-num">单价</th>
-                <th class="c-num">金额</th>
-                <th v-if="hasTax" class="c-num">税率%</th>
-                <th v-if="hasTax" class="c-num">税额</th>
-                <th class="c-remark">备注</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="(l, i) in grp.rows" :key="i">
-                <td class="c-idx">{{ i + 1 }}</td>
-                <td class="c-code">{{ l.item_code }}</td>
-                <td class="c-name">{{ (l as any).item_name || '' }}</td>
-                <td class="c-spec">{{ (l as any).spec || '' }}</td>
-                <td class="c-unit">{{ (l as any).unit || '' }}</td>
-                <td class="c-num">{{ num(l.qty) }}</td>
-                <td class="c-num">{{ money(l.price) }}</td>
-                <td class="c-num">{{ money(l.amount) }}</td>
-                <td v-if="hasTax" class="c-num">{{ num(l.tax_rate) }}</td>
-                <td v-if="hasTax" class="c-num">{{ money(l.tax_amount) }}</td>
-                <td class="c-remark">{{ l.remark || '' }}</td>
-              </tr>
-              <!-- 补空行至少 6 行，版面整齐（组装单不补）-->
-              <tr v-for="n in blankCount(grp.rows)" :key="'b' + n" class="blank">
-                <td class="c-idx">{{ grp.rows.length + n }}</td>
-                <td class="c-code" /><td class="c-name" /><td class="c-spec" /><td class="c-unit" />
-                <td class="c-num" /><td class="c-num" /><td class="c-num" />
-                <td v-if="hasTax" class="c-num" /><td v-if="hasTax" class="c-num" /><td class="c-remark" />
-              </tr>
-            </tbody>
-            <tfoot>
-              <tr>
-                <td :colspan="5" class="t-sum">合计</td>
-                <td class="c-num">{{ num(sumQty(grp.rows)) }}</td>
-                <td class="c-num" />
-                <td class="c-num">{{ money(sumAmount(grp.rows)) }}</td>
-                <td v-if="hasTax" class="c-num" />
-                <td v-if="hasTax" class="c-num">{{ money(sumTax(grp.rows)) }}</td>
-                <td class="c-remark" />
-              </tr>
-            </tfoot>
-          </table>
-        </template>
-
-        <div class="amount-cn"><b>金额大写：</b>{{ rmbUpper(totalAmount + (hasTax ? totalTax : 0)) }}</div>
-
-        <!-- 表尾自定义字段 -->
-        <div v-if="footerCustomFields.length" class="footer-fields">
-          <template v-for="f in footerCustomFields" :key="f.field_key">
-            <span v-if="cfVal(f.field_key) !== ''"><b>{{ f.field_name }}：</b>{{ cfVal(f.field_key) }}</span>
-          </template>
-        </div>
-
-        <!-- 签字 -->
-        <div class="signs">
-          <span>制单：{{ doc.maker || '' }}</span>
-          <span>审核：{{ doc.auditor || '' }}</span>
-          <span>状态：{{ statusText }}</span>
-          <span>打印时间：{{ printedAt }}</span>
-        </div>
-      </template>
+    <div v-loading="loading || rendering" class="paper" :class="{ 'paper--custom': isCustom }">
+      <ScmDocPaper v-if="doc && !isCustom" :doc="doc" :layout="builtinLayout" :field-defs="docFieldDefs" />
+      <div v-else ref="customRef" class="custom-preview" />
     </div>
+
+    <HiprintDialog
+      v-if="doc"
+      v-model="dialogVisible"
+      template-type="scm_doc"
+      :title="`打印 ${docTitle} ${doc.doc_no || ''}`"
+      :print-data="printData"
+      :default-panel-builder="defaultPanel"
+      :initial-template-id="customId"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Back, Printer } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { scmApi } from '@/api/scm'
-import { useUserStore } from '@/stores/user'
+import ScmDocPaper from '@/components/scm/ScmDocPaper.vue'
+import HiprintDialog from '@/components/print/HiprintDialog.vue'
+import { getApplicableTemplates, getPrintTemplate } from '@/api/printTemplate'
+import { loadHiprint, normalizePanelForRender } from '@/utils/printTemplateHiprint'
+import { buildDefaultScmPanel, scmDocToHiprintData, scmTemplateKey, SCM_TEMPLATE_TYPE } from '@/utils/hiprintScmProvider'
 import { DOC_TITLE } from '@/utils/scmDoc'
-import { rmbUpper } from '@/utils/rmbUpper'
+import { useScmDecimalsStore } from '@/stores/scmDecimals'
+import { useUserStore } from '@/stores/user'
+import { hasPermission } from '@/utils/permission'
+import {
+  SCM_PRINT_LAYOUTS, isScmPrintLayout, isTemplateChoice, loadScmPrintChoices, saveScmPrintLayout,
+  type ScmPrintChoice, type ScmPrintLayout,
+} from '@/utils/scmPrintLayout'
 
 const route = useRoute()
 const router = useRouter()
 const user = useUserStore()
+const decStore = useScmDecimalsStore()
 
 const loading = ref(false)
+const rendering = ref(false)
 const doc = ref<any>(null)
-const printedAt = new Date().toLocaleString('zh-CN')
-
+const partner = ref<any>(null)
+const warehouses = ref<any[]>([])
 // 表头/表尾自定义字段（定义取自配置，值取自 doc.field_values）
 const docFieldDefs = ref<any[]>([])
-const headerCustomFields = computed(() => docFieldDefs.value.filter((f: any) => f.position !== 'footer'))
-const footerCustomFields = computed(() => docFieldDefs.value.filter((f: any) => f.position === 'footer'))
-function cfVal(key: string): string { const v = (doc.value?.field_values || {})[key]; return v == null ? '' : String(v) }
+const initialQuery = route.query.layout
+const choice = ref<ScmPrintChoice>(isScmPrintLayout(initialQuery) ? initialQuery : 'standard')
+const defaultChoice = ref<ScmPrintChoice>('standard')
+const savingDefault = ref(false)
+const customTemplates = ref<Array<{ id: string; name: string; template_key?: string | null }>>([])
+const customRef = ref<HTMLElement | null>(null)
+const dialogVisible = ref(false)
 
-const companyName = computed(() => user.accountSetName || 'CW 财务记账系统')
-const title = computed(() => {
-  const base = DOC_TITLE[doc.value?.doc_type] || '单据'
-  return base.endsWith('单') ? base : base + '单'
-})
-const isTransfer = computed(() => doc.value?.doc_type === 'TR')
-// 采购类显示「供应商」，销售类显示「客户」，其余「往来单位」
-const partnerCaption = computed(() => {
-  const t = doc.value?.doc_type
-  if (['PQ', 'PO', 'PI', 'PR', 'RP', 'WO', 'WI'].includes(t)) return '供应商'
-  if (['SQ', 'SOa', 'SO', 'SR', 'RS'].includes(t)) return '客户'
-  return '往来单位'
-})
-const partnerLabel = computed(() => doc.value?.partner_name || doc.value?.partner_code || '')
-const hasTax = computed(() => (doc.value?.lines || []).some((l: any) => Number(l.tax_rate) > 0 || Number(l.tax_amount) > 0))
-const statusText = computed(() => doc.value?.status === 'audited' ? '已审核' : '草稿')
+const isCustom = computed(() => isTemplateChoice(choice.value))
+const customId = computed(() => (isCustom.value ? String(choice.value).slice(4) : ''))
+const builtinLayout = computed<ScmPrintLayout>(() => (isScmPrintLayout(choice.value) ? choice.value : 'standard'))
+const docTitle = computed(() => DOC_TITLE[doc.value?.doc_type] || '单据')
+const canDesign = computed(() => hasPermission('system:print'))
 
-// 组装单（AS）：成品 / 子件 分成两张表打印；其它单据一张表
-const isAssembly = computed(() => doc.value?.doc_type === 'AS')
-const lineGroups = computed(() => {
-  const all: any[] = doc.value?.lines || []
-  if (!isAssembly.value) return [{ key: 'all', title: '', rows: all }]
-  const products = all.filter(l => l.line_role === 'product')
-  const comps = all.filter(l => l.line_role !== 'product')
-  const groups: any[] = [{ key: 'product', title: '成品（入库）', rows: products }]
-  // 多成品且子件都带分组 → 子件按成品分列打印；否则一张子件表
-  const grouped = comps.length > 0 && comps.every(c => c.product_group != null) && products.every(p => p.product_group != null)
-  if (grouped && products.length > 1) {
-    for (const p of products) {
-      groups.push({
-        key: 'c' + p.product_group,
-        title: '子件 · ' + ((p as any).item_name || p.item_code || '成品'),
-        rows: comps.filter(c => c.product_group === p.product_group),
-      })
-    }
-  } else {
-    groups.push({ key: 'component', title: '子件（出库）', rows: comps })
-  }
-  return groups
-})
-const sumQty = (rows: any[]) => rows.reduce((s, l) => s + (Number(l.qty) || 0), 0)
-const sumAmount = (rows: any[]) => rows.reduce((s, l) => s + (Number(l.amount) || 0), 0)
-const sumTax = (rows: any[]) => rows.reduce((s, l) => s + (Number(l.tax_amount) || 0), 0)
-// 组装单两张表不补空行；单表补至 6 行版面整齐
-const blankCount = (rows: any[]) => isAssembly.value ? 0 : Math.max(0, 6 - rows.length)
-
-const totalAmount = computed(() => sumAmount(doc.value?.lines || []))
-const totalTax = computed(() => sumTax(doc.value?.lines || []))
-
-const num = (v: any) => { const n = Number(v) || 0; return Number.isInteger(n) ? String(n) : n.toFixed(3).replace(/\.?0+$/, '') }
-const money = (v: any) => (Number(v) || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+const printData = computed(() => (doc.value ? scmDocToHiprintData(doc.value, {
+  company: user.accountSetName || '',
+  title: `${docTitle.value}`,
+  partner: partner.value,
+  warehouseName: code => warehouses.value.find(w => w.code === code)?.name || code,
+  fmt: {
+    qty: v => decStore.qty(Number(v) || 0, doc.value?.doc_type),
+    price: v => decStore.price(Number(v) || 0, doc.value?.doc_type),
+    amount: v => decStore.amount(Number(v) || 0, doc.value?.doc_type),
+  },
+}) : {}))
+const defaultPanel = () => buildDefaultScmPanel() as any
 
 async function load() {
   loading.value = true
   try {
     const r = await scmApi.getDoc(route.params.id as string)
-    if (r.code === 0) {
-      doc.value = r.data
-      try { const fr = await scmApi.getDocFieldDefs((r.data as any).doc_type); if (fr.code === 0) docFieldDefs.value = fr.data } catch { /* 无自定义字段 */ }
-    } else ElMessage.error(r.message || '加载失败')
+    if (r.code !== 0) { ElMessage.error(r.message || '加载失败'); return }
+    doc.value = r.data
+    const docType = (r.data as any).doc_type
+    const [, choices, tpls, ps, ws] = await Promise.all([
+      scmApi.getDocFieldDefs(docType).then(fr => { if (fr.code === 0) docFieldDefs.value = fr.data }).catch(() => { /* 无自定义字段 */ }),
+      loadScmPrintChoices(),
+      getApplicableTemplates({ template_type: SCM_TEMPLATE_TYPE as any }).catch(() => ({ code: -1, data: [] as any[] })),
+      (r.data as any).partner_code ? scmApi.getPartners({ keyword: (r.data as any).partner_code }).catch(() => ({ code: -1, data: [] as any[] })) : Promise.resolve({ code: -1, data: [] as any[] }),
+      scmApi.getWarehouses().catch(() => ({ code: -1, data: [] as any[] })),
+      decStore.load(),
+    ])
+    customTemplates.value = ((tpls as any).data || []).filter((t: any) => [scmTemplateKey(docType), scmTemplateKey('*')].includes(t.template_key || ''))
+    partner.value = ((ps as any).data || []).find((p: any) => p.code === (r.data as any).partner_code) || null
+    warehouses.value = (ws as any).data || []
+    let def: ScmPrintChoice = choices[docType] || 'standard'
+    if (isTemplateChoice(def) && !customTemplates.value.some(t => `tpl:${t.id}` === def)) def = 'standard'   // 模板已删除
+    defaultChoice.value = def
+    if (!isScmPrintLayout(initialQuery)) choice.value = def
+    if (isCustom.value) await renderCustom()
   } finally { loading.value = false }
 }
-function doPrint() { window.print() }
+
+/** 自定义模板：用 hiprint 渲染到预览区（打印走打印对话框，纸张与边距更准） */
+async function renderCustom() {
+  if (!isCustom.value || !doc.value) return
+  rendering.value = true
+  try {
+    const res = await getPrintTemplate(customId.value)
+    const mod = await loadHiprint()
+    await nextTick()
+    const tp = new mod.hiprint.PrintTemplate({ template: normalizePanelForRender((res as any).data.panel) })
+    const $html = tp.getHtml(printData.value) as any
+    const node = $html && ($html[0] || (typeof $html.get === 'function' && $html.get(0)))
+    if (customRef.value) {
+      customRef.value.innerHTML = ''
+      if (node) customRef.value.appendChild(node)
+    }
+  } catch (e: any) {
+    ElMessage.error(`模板渲染失败：${e?.message || e}`)
+  } finally { rendering.value = false }
+}
+
+async function setDefault() {
+  if (!doc.value) return
+  savingDefault.value = true
+  try {
+    await saveScmPrintLayout(doc.value.doc_type, choice.value)
+    defaultChoice.value = choice.value
+    ElMessage.success('已设为该类单据的默认打印模板')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.message || e?.message || '设置失败')
+  } finally { savingDefault.value = false }
+}
+
+function designTemplate() {
+  if (isCustom.value) router.push(`/base/print-template/design/${customId.value}`)
+  else router.push({ path: '/base/print-template/design', query: { preset: 'scm', key: scmTemplateKey(doc.value?.doc_type || '*') } })
+}
+
+function doPrint() {
+  if (isCustom.value) dialogVisible.value = true
+  else window.print()
+}
 function goBack() { router.back() }
 onMounted(load)
 </script>
@@ -199,37 +175,16 @@ onMounted(load)
 .print-wrap { background: var(--el-bg-color-page, #f5f5f5); min-height: 100%; }
 .toolbar { display: flex; align-items: center; gap: 12px; padding: 10px 16px; position: sticky; top: 0; z-index: 2; background: var(--el-bg-color); border-bottom: 1px solid var(--el-border-color-light); }
 .t-title { font-weight: 600; }
-.toolbar > .el-button:last-child { margin-left: auto; }
+.t-label { margin-left: 16px; color: var(--el-text-color-secondary); }
+.opt-desc { margin-left: 8px; font-size: 12px; color: var(--el-text-color-secondary); }
+.toolbar > .el-button:last-of-type { margin-left: auto; }
 
 .paper {
   width: 210mm; min-height: 140mm; margin: 16px auto; padding: 14mm 12mm;
   background: #fff; color: #000; box-shadow: 0 2px 12px rgba(0,0,0,.12);
-  font-size: 13px;
 }
-.doc-header { text-align: center; margin-bottom: 8px; }
-.company { font-size: 18px; font-weight: 700; }
-.doc-title { font-size: 16px; font-weight: 600; margin-top: 2px; }
-.meta { display: flex; flex-wrap: wrap; gap: 6px 24px; margin: 10px 0; }
-.meta b { font-weight: 600; }
-
-.lines-group-title { font-weight: 700; font-size: 14px; margin: 10px 0 4px; }
-table.lines { width: 100%; border-collapse: collapse; }
-table.lines + .lines-group-title { margin-top: 14px; }
-table.lines th, table.lines td { border: 1px solid #000; padding: 3px 5px; line-height: 1.5; }
-table.lines th { background: #f0f0f0; font-weight: 600; text-align: center; }
-.c-idx { width: 28px; text-align: center; }
-.c-unit { width: 44px; text-align: center; }
-.c-num { width: 70px; text-align: right; }
-.c-spec { width: 90px; }
-.c-remark { width: 90px; }
-.blank td { height: 22px; }
-.t-sum { text-align: center; font-weight: 600; }
-tfoot td { font-weight: 600; }
-
-.amount-cn { margin: 8px 0; }
-.footer-fields { display: flex; flex-wrap: wrap; gap: 6px 24px; margin: 8px 0; }
-.footer-fields b { font-weight: 600; }
-.signs { display: flex; gap: 32px; margin-top: 18px; flex-wrap: wrap; }
+.paper--custom { width: fit-content; min-width: 210mm; padding: 0; }
+.custom-preview { overflow: auto; }
 
 @media print {
   .no-print { display: none !important; }

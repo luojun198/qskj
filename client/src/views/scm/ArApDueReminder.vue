@@ -6,6 +6,7 @@
       <span class="lbl">临近到期(天)</span>
       <el-input-number v-model="upcomingDays" :min="0" :max="90" :controls="false" size="small" style="width:80px" />
       <el-button type="primary" plain size="small" @click="load"><el-icon><Search /></el-icon>查询</el-button>
+      <SaveAsButton title="到期提醒" />
       <FilterClearButton size="small" @clear="handleClearFilters" />
       <span class="total-hint">逾期合计 <b class="over">{{ fmt(overdueTotal) }}</b>　临近到期 <b class="soon">{{ fmt(upcomingTotal) }}</b></span>
     </div>

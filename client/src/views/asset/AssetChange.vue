@@ -458,9 +458,12 @@ import { confirmRenumberAfterDelete } from '@/composables/useRenumberPrompt'
 /** P1-20：变动 / 处置 / 盘点日期不得晚于当前月份（与后端同口径） */
 function disableFutureMonth(date: Date): boolean {
   const now = new Date()
-  return date.getFullYear() * 100 + date.getMonth() > now.getFullYear() * 100 + now.getMonth()
+  // 同时禁选总账开账日期之前的日子（后端同样拦截）
+  return date.getFullYear() * 100 + date.getMonth() > now.getFullYear() * 100 + now.getMonth() || isBeforeGlStart(date)
 }
 import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { useGlStartDate } from '@/composables/useGlStartDate'
+const { isBeforeGlStart } = useGlStartDate()
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft, Plus } from '@element-plus/icons-vue'

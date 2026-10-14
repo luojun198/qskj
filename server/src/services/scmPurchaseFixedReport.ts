@@ -9,7 +9,7 @@ import {
   type SalesReportResult,
 } from './scmSalesCustomReport.js'
 
-export type PurchaseFixedReportCode = 'summary' | 'detail' | 'order_tracking' | 'ranking' | 'cost' | 'trend'
+export type PurchaseFixedReportCode = 'summary' | 'detail' | 'order_tracking' | 'return' | 'ranking' | 'cost' | 'trend'
 export type PurchaseTrendPeriod = 'day' | 'week' | 'month' | 'quarter' | 'year'
 export type PurchaseOrderExecutionStatus = 'not_received' | 'pending' | 'partial' | 'completed' | 'over_received' | 'overdue'
 
@@ -58,6 +58,7 @@ const REPORTS = [
   { code: 'summary', title: '采购汇总表', path: '/scm/report/purchase/summary' },
   { code: 'detail', title: '采购明细表', path: '/scm/report/purchase/detail' },
   { code: 'order_tracking', title: '采购订单执行表', path: '/scm/report/purchase/order-tracking' },
+  { code: 'return', title: '采购退货统计表', path: '/scm/report/purchase/return' },
   { code: 'ranking', title: '采购排行榜', path: '/scm/report/purchase/ranking' },
   { code: 'cost', title: '采购成本分析', path: '/scm/report/purchase/cost' },
   { code: 'trend', title: '采购趋势分析', path: '/scm/report/purchase/trend' },
@@ -73,6 +74,20 @@ const SUMMARY_GROUPINGS: Record<string, string[]> = {
   department_supplier: ['dept_code', 'partner_code', 'partner_name'],
   buyer_supplier_product: ['biz_person', 'partner_code', 'partner_name', 'item_code', 'item_name'],
 }
+
+/** 退货统计表可用的统计方式（SUMMARY_GROUPINGS 的子集） */
+const RETURN_GROUPINGS: Record<string, string[]> = {
+  supplier: SUMMARY_GROUPINGS.supplier,
+  product: SUMMARY_GROUPINGS.product,
+  supplier_product: SUMMARY_GROUPINGS.supplier_product,
+  product_supplier: SUMMARY_GROUPINGS.product_supplier,
+  warehouse_product: SUMMARY_GROUPINGS.warehouse_product,
+  buyer_supplier_product: SUMMARY_GROUPINGS.buyer_supplier_product,
+}
+const RETURN_METRICS = ['qty', 'purchase_amount', 'tax_amount', 'purchase_cost', 'document_count']
+/** 现有汇总把退货按负数冲减；退货统计表按正数展示退货量/额 */
+const RETURN_FLIP_KEYS = ['qty', 'purchase_amount', 'tax_amount', 'discount_amount', 'purchase_cost']
+const RETURN_LABELS: Record<string, string> = { qty: '退货数量', purchase_amount: '退货金额', tax_amount: '退货税额', purchase_cost: '退货成本', document_count: '退货单数' }
 
 const COST_GROUPINGS: Record<string, string[]> = {
   supplier: ['partner_code', 'partner_name'],
@@ -469,6 +484,7 @@ export function getPurchaseFixedReportMeta(db: Database.Database, accountSetId: 
     reports: REPORTS,
     groupings: {
       summary: Object.keys(SUMMARY_GROUPINGS).map(value => ({ value, label: GROUPING_LABELS[value] })),
+      return: Object.keys(RETURN_GROUPINGS).map(value => ({ value, label: GROUPING_LABELS[value] })),
       cost: Object.keys(COST_GROUPINGS).map(value => ({ value, label: GROUPING_LABELS[value] })),
       ranking: Object.keys(RANKING_DIMENSIONS).map(value => ({ value, label: GROUPING_LABELS[value] })),
     },
@@ -500,13 +516,33 @@ export function getPurchaseFixedReportMeta(db: Database.Database, accountSetId: 
 export function runPurchaseFixedReport(db: Database.Database, accountSetId: string, request: PurchaseFixedReportRequest, options: { exportAll?: boolean } = {}): PurchaseFixedReportResult {
   const code = normalizeCode(request?.report_code)
   if (code === 'order_tracking') return runPurchaseOrderTracking(db, accountSetId, request, options)
-  const built = buildFilters(code, request.filters)
+  // 退货统计表只统计采购退货单，忽略前端传入的业务类型
+  const built = buildFilters(code, code === 'return' ? { ...request.filters, source_types: ['PR'] } : request.filters)
   const page = Math.max(1, Math.floor(Number(request.page) || 1)), pageSize = Math.min(500, Math.max(1, Math.floor(Number(request.page_size) || 100)))
   if (code === 'detail') {
     const query: SalesReportQuery = { mode: 'detail', filters: built.group, fields: DETAIL_FIELDS, to_base: built.filters.currency === 'ALL', sort: normalizeSort(request.sort, DETAIL_SORT_FIELDS, [{ key: 'doc_date', direction: 'desc' }, { key: 'doc_no', direction: 'desc' }]), page, page_size: pageSize }
     const result = runPurchaseReportQuery(db, accountSetId, query, options)
     addDetailVarianceRate(result)
     return baseResult(code, result)
+  }
+  if (code === 'return') {
+    const grouping = String(request.grouping || 'supplier'), dimensions = RETURN_GROUPINGS[grouping]
+    if (!dimensions) throw new Error('统计方式无效')
+    const query: SalesReportQuery = {
+      mode: 'summary', filters: built.group, dimensions, metrics: RETURN_METRICS, to_base: built.filters.currency === 'ALL',
+      // 数据库里退货为负数，退货量大的在前 = 升序
+      sort: normalizeSort(request.sort, new Set([...dimensions, ...RETURN_METRICS]), [{ key: 'purchase_amount', direction: 'asc' }]), page, page_size: pageSize,
+    }
+    const result = runPurchaseReportQuery(db, accountSetId, query, options)
+    const flip = (row: Record<string, any>) => {
+      for (const key of RETURN_FLIP_KEYS) if (typeof row[key] === 'number' && row[key] !== 0) row[key] = -row[key]
+      return row
+    }
+    result.rows = result.rows.map(row => flip({ ...row }))
+    result.summary = flip({ ...result.summary })
+    const out = baseResult(code, result)
+    out.columns = out.columns.map(column => RETURN_LABELS[column.key] ? { ...column, label: RETURN_LABELS[column.key] } : column)
+    return out
   }
   if (code === 'summary' || code === 'cost') {
     const groupingMap = code === 'summary' ? SUMMARY_GROUPINGS : COST_GROUPINGS

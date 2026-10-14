@@ -7,15 +7,22 @@ import {
   previewDepreciation,
   executeDepreciation,
   generateDeprVoucher,
-  buildDeprLinesFromHistory,
   reverseDepreciation,
 } from '../services/fixedAssetDepreciation.js'
+import {
+  listAssetVouchers,
+  deleteAssetVoucherOnly,
+  regenerateAssetVoucher,
+  generateDeprVoucherForPeriod,
+  isAssetVoucherKind,
+  type AssetVoucherKind,
+} from '../services/assetVoucherManage.js'
 import { disposeAsset, cancelDisposal } from '../services/assetDisposal.js'
 import { generatePurchaseVoucher } from '../services/assetAcquisition.js'
-import { deleteVoucherRecords } from '../services/voucherEntry.js'
-import { assertPeriodOpen, normalizeSalvageRate } from '../services/assetVoucherBuilder.js'
+import { deleteVoucherRecords, normalizeRequestedVoucherTypeId } from '../services/voucherEntry.js'
+import { assertPeriodOpen, assetCardAuxWarnings, normalizeSalvageRate } from '../services/assetVoucherBuilder.js'
 import { deleteVoucherWithRefs } from '../services/voucherDelete.js'
-import { getVoucherImmutableReason } from '../services/voucherMutationGuard.js'
+import { getVoucherImmutableReason, assertPeriodNotBeforeGlStart } from '../services/voucherMutationGuard.js'
 import { getDictDeleteBlockReason, buildAssetCardUpdate, getCardValueLockReason } from '../services/assetCard.js'
 import {
   applyAssetChange,
@@ -115,6 +122,8 @@ const ASSET_PERMISSION_RULES: Array<{ re: RegExp; perm: string | string[]; metho
   { re: /^\/asset\/params/,                 perm: 'asset:param' },
   { re: /^\/asset\/dict/,                   perm: 'asset:dict' },     // dicts / dict/:type / dict/init
   { re: /^\/asset\/depr/,                   perm: 'asset:depr' },
+  // 凭证管理：读列表 asset:view；删除 / 重新生成按凭证类型在路由内细分（assetVoucherWriteDenied）
+  { re: /^\/asset\/vouchers/,               perm: 'asset:view', methods: ['GET'] },
   { re: /^\/asset\/workload/,               perm: 'asset:depr' },
   { re: /^\/asset\/inventory/,              perm: 'asset:inventory' },
   { re: /^\/asset\/report/,                 perm: 'asset:report' },
@@ -460,12 +469,22 @@ router.get('/asset/cards', (req: AuthRequest, res) => {
   const deptMap = new Map(db.prepare('SELECT code,name FROM fixed_asset_dept WHERE account_set_id=?').all(asid).map((r: any) => [r.code, r.name]))
   const purpMap = new Map(db.prepare('SELECT code,name FROM fixed_asset_purpose WHERE account_set_id=?').all(asid).map((r: any) => [r.code, r.name]))
 
+  // 新增资产（购置）凭证：卡片列表直接显示凭证号（参照金蝶卡片「新增资产凭证」列）
+  const voucherIds = [...new Set((rows as any[]).map(r => r.purchase_voucher_id).filter(Boolean))]
+  const voucherMap = new Map<string, any>()
+  if (voucherIds.length) {
+    const vs = db.prepare(`SELECT v.id, v.voucher_no, v.year, v.period, v.status, vt.name AS voucher_type_name
+      FROM vouchers v LEFT JOIN voucher_types vt ON vt.id=v.voucher_type_id
+      WHERE v.account_set_id=? AND v.id IN (${voucherIds.map(() => '?').join(',')})`).all(asid, ...voucherIds) as any[]
+    for (const v of vs) voucherMap.set(v.id, v)
+  }
   const enriched = (rows as any[]).map(r => ({
     ...r,
     category_name: catMap.get(r.category_code) || r.category_code,
     status_name: staMap.get(r.status_code) || r.status_code,
     dept_name: deptMap.get(r.dept_code) || r.dept_code,
     purpose_name: purpMap.get(r.purpose_code) || r.purpose_code,
+    purchase_voucher: r.purchase_voucher_id ? (voucherMap.get(r.purchase_voucher_id) || null) : null,
   }))
 
   res.json({ code: 0, data: { list: enriched, total, page: parseInt(page), page_size: parseInt(page_size) } })
@@ -631,7 +650,9 @@ router.post('/asset/cards', operationLog('固定资产新增', '固定资产'), 
     }
   }
 
-  res.json({ code: 0, data: { id, voucher: voucherResult, voucherWarning } })
+  // 折旧等凭证科目挂了部门 / 人员辅助而卡片未填或对不上：只提醒，不拦截保存（生成凭证时拦截）
+  const auxWarnings = assetCardAuxWarnings(db, req.accountSetId || '', db.prepare('SELECT * FROM fixed_asset WHERE id=?').get(id) as any)
+  res.json({ code: 0, data: { id, voucher: voucherResult, voucherWarning, auxWarnings } })
 })
 
 // PUT /asset/cards/:id
@@ -685,7 +706,9 @@ router.put('/asset/cards/:id', operationLog('固定资产修改', '固定资产'
     ...cols.map(c => fields[c]),
     req.params.id
   )
-  res.json({ code: 0, data: { ok: true } })
+  // 折旧等凭证科目挂了部门 / 人员辅助而卡片未填或对不上：只提醒，不拦截保存（生成凭证时拦截）
+  const auxWarnings = assetCardAuxWarnings(db, req.accountSetId || '', db.prepare('SELECT * FROM fixed_asset WHERE id=?').get(req.params.id) as any)
+  res.json({ code: 0, data: { ok: true, auxWarnings } })
 })
 
 // DELETE /asset/cards/:id
@@ -1389,9 +1412,10 @@ router.post(
     const db = getDb()
     const asid = req.accountSetId || ''
 
-    // P0-5：目标期间已结账则拒绝计提
+    // P0-5：目标期间已结账则拒绝计提；开账前的期间同样不能计提
     try {
       assertPeriodOpen(db, asid, Number(year), Number(month))
+      assertPeriodNotBeforeGlStart(db, asid, Number(year), Number(month))
     } catch (e: any) {
       return res.status(400).json({ code: 400, message: e.message })
     }
@@ -1540,43 +1564,124 @@ router.post(
     const db = getDb()
     const asid = req.accountSetId || ''
 
-    // 校验该期已计提
-    const deprRows = db.prepare(
-      'SELECT voucher_id FROM fixed_asset_depr WHERE account_set_id=? AND year=? AND month=?'
-    ).all(asid, year, month) as Array<{ voucher_id: string | null }>
-    if (deprRows.length === 0) {
-      return res.status(400).json({ code: 400, message: '该期间没有折旧记录，请先计提折旧' })
-    }
-    // 校验未生成（voucher_id 非空且对应凭证仍存在 → 已生成）
-    const existingVid = deprRows.find(r => r.voucher_id)?.voucher_id
-    if (existingVid) {
-      const v = db.prepare('SELECT id FROM vouchers WHERE id=?').get(existingVid) as any
-      if (v) return res.status(400).json({ code: 400, message: '该期间已生成凭证，请勿重复生成' })
-    }
-
-    const lines = buildDeprLinesFromHistory({ db, accountSetId: asid, year, month })
-    if (lines.length === 0) {
-      return res.status(400).json({ code: 400, message: '该期间无可生成凭证的折旧明细' })
-    }
-
     let voucherResult: any = null
     try {
-      db.transaction(() => {
-        voucherResult = generateDeprVoucher({
-          db, accountSetId: asid, year, month, lines,
-          deprAccumAccount: accum_account,
-          makerName: (req as any).userName || '系统',
-          voucherTypeId: getAssetParamValue(db, asid, 'asset:depr_voucher_type_id'),
-        })
-        db.prepare('UPDATE fixed_asset_depr SET voucher_id=? WHERE account_set_id=? AND year=? AND month=?')
-          .run(voucherResult.voucherId, asid, year, month)
-      })()
+      voucherResult = generateDeprVoucherForPeriod({
+        db,
+        accountSetId: asid,
+        year: Number(year),
+        month: Number(month),
+        accumAccount: accum_account,
+        makerName: (req as any).userName || '系统',
+        voucherTypeId: getAssetParamValue(db, asid, 'asset:depr_voucher_type_id'),
+      })
     } catch (e: any) {
       return res.status(400).json({ code: 400, message: e.message || '生成凭证失败' })
     }
     res.json({ code: 0, data: { voucher: voucherResult } })
   }
 )
+
+// ── 凭证管理：只删凭证（保留业务记录）+ 重新生成 ─────────────────────────
+
+/** 按凭证类型细分写权限（读列表走 ASSET_PERMISSION_RULES 的 asset:view） */
+function assetVoucherWriteDenied(req: AuthRequest, kind: AssetVoucherKind, changeKind?: string | null): string | null {
+  if (req.permissions?.includes('*')) return null
+  const need: Record<Exclude<AssetVoucherKind, 'change'>, string> = {
+    purchase: 'asset:edit',
+    depr: 'asset:depr',
+    disposal: 'asset:dispose',
+    inventory: 'asset:inventory',
+  }
+  if (kind === 'change') return assetChangePermissionError(req, changeKind ?? null)
+  return req.permissions?.includes(need[kind]) ? null : '无此操作权限'
+}
+
+// GET /asset/vouchers?kind=&year=&month=&status=&keyword=&page=&page_size=
+router.get('/asset/vouchers', (req: AuthRequest, res) => {
+  const q = req.query as Record<string, string | undefined>
+  if (q.kind && !isAssetVoucherKind(q.kind)) return res.status(400).json({ code: 400, message: '凭证类型不正确' })
+  const status = q.status === 'generated' || q.status === 'missing' ? q.status : undefined
+  const data = listAssetVouchers(getDb(), req.accountSetId || '', {
+    kind: q.kind as AssetVoucherKind | undefined,
+    year: q.year ? parseInt(q.year) : undefined,
+    month: q.month ? parseInt(q.month) : undefined,
+    status,
+    keyword: q.keyword || undefined,
+    refId: q.ref_id || undefined,
+    page: q.page ? parseInt(q.page) : 1,
+    pageSize: q.page_size ? parseInt(q.page_size) : 50,
+  })
+  res.json({ code: 0, data })
+})
+
+function parseVoucherTarget(req: AuthRequest): { kind: AssetVoucherKind; refId: string; changeKind: string | null } | string {
+  const { kind, ref_id } = req.body || {}
+  if (!isAssetVoucherKind(kind)) return '凭证类型不正确'
+  if (!ref_id || typeof ref_id !== 'string') return '缺少业务记录标识'
+  let changeKind: string | null = null
+  if (kind === 'change') {
+    const row = getDb()
+      .prepare('SELECT change_kind FROM fixed_asset_change WHERE id=? AND account_set_id=?')
+      .get(ref_id, req.accountSetId) as { change_kind: string | null } | undefined
+    changeKind = row?.change_kind ?? null
+  }
+  return { kind, refId: ref_id, changeKind }
+}
+
+// POST /asset/vouchers/delete — 只删凭证，业务记录保留，回到「未生成」
+router.post('/asset/vouchers/delete', operationLog('固定资产凭证删除', '固定资产'), (req: AuthRequest, res) => {
+  const target = parseVoucherTarget(req)
+  if (typeof target === 'string') return res.status(400).json({ code: 400, message: target })
+  const denied = assetVoucherWriteDenied(req, target.kind, target.changeKind)
+  if (denied) return res.status(403).json({ code: 403, message: denied })
+  try {
+    const result = deleteAssetVoucherOnly({
+      db: getDb(),
+      accountSetId: req.accountSetId || '',
+      kind: target.kind,
+      refId: target.refId,
+    })
+    res.json({ code: 0, data: result })
+  } catch (e: any) {
+    res.status(400).json({ code: 400, message: e.message || '删除凭证失败' })
+  }
+})
+
+// POST /asset/vouchers/regenerate — 对「未生成」的业务重新生成凭证
+router.post('/asset/vouchers/regenerate', operationLog('固定资产凭证重新生成', '固定资产'), (req: AuthRequest, res) => {
+  const target = parseVoucherTarget(req)
+  if (typeof target === 'string') return res.status(400).json({ code: 400, message: target })
+  const denied = assetVoucherWriteDenied(req, target.kind, target.changeKind)
+  if (denied) return res.status(403).json({ code: 403, message: denied })
+  const b = req.body || {}
+  try {
+    // 本次指定的凭证类型（业务凭证中心选择），空则按各业务的凭证类型参数
+    const voucherTypeId = normalizeRequestedVoucherTypeId(getDb(), req.accountSetId || '', b.voucher_type_id)
+    const result = regenerateAssetVoucher({
+      db: getDb(),
+      accountSetId: req.accountSetId || '',
+      kind: target.kind,
+      refId: target.refId,
+      operatorName: (req as any).userName || '系统',
+      accountScope: req.accountScope,
+      input: {
+        creditAccount: b.credit_account,
+        counterAccount: b.counter_account,
+        accumAccount: b.accum_account,
+        clearingAccount: b.clearing_account,
+        disposalIncome: b.disposal_income,
+        disposalExpense: b.disposal_expense,
+        surplusAccount: b.surplus_account,
+        deficitAccount: b.deficit_account,
+        voucherTypeId,
+      },
+    })
+    res.json({ code: 0, data: result })
+  } catch (e: any) {
+    res.status(400).json({ code: 400, message: e.message || '生成凭证失败' })
+  }
+})
 
 // POST /asset/depr/reverse — 整期反折旧（删折旧记录 + 回退资产 + 删该期凭证）
 router.post(
@@ -1617,8 +1722,10 @@ router.get('/asset/report/depr-summary/detail', (req: AuthRequest, res) => {
   const month = parseInt(req.query.month as string)
   const groupBy = (req.query.group_by as string) || 'category'
   const groupCode = req.query.group_code as string
-  if (!year || !month || !groupCode) return res.status(400).json({ code: 400, message: '参数不完整' })
-  const rows = queryDeprDetail({ db: getDb(), accountSetId: req.accountSetId || '', year, month, groupBy: groupBy as 'category' | 'dept', groupCode })
+  // group_by=asset：全部资产逐项明细（第六份反馈：折旧要能看到每项资产，不只按类别汇总）
+  if (!year || !month || (groupBy !== 'asset' && !groupCode)) return res.status(400).json({ code: 400, message: '参数不完整' })
+  if (!['category', 'dept', 'asset'].includes(groupBy)) return res.status(400).json({ code: 400, message: 'group_by 仅支持 category / dept / asset' })
+  const rows = queryDeprDetail({ db: getDb(), accountSetId: req.accountSetId || '', year, month, groupBy: groupBy as 'category' | 'dept' | 'asset', groupCode })
   res.json({ code: 0, data: rows })
 })
 

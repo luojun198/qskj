@@ -95,6 +95,18 @@ CREATE TABLE IF NOT EXISTS license_activation (
   updated_at TEXT NOT NULL
 );
 
+-- 软件授权变动记录（每次提交注册码追加一条）
+CREATE TABLE IF NOT EXISTS license_activation_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  machine_id TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  modules TEXT NOT NULL,
+  max_concurrent INTEGER NOT NULL DEFAULT 0,
+  issued_at TEXT,
+  operator TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- 系统参数表
 CREATE TABLE IF NOT EXISTS system_params (
   id TEXT PRIMARY KEY,
@@ -340,9 +352,24 @@ CREATE TABLE IF NOT EXISTS cash_flow_items (
   is_leaf INTEGER NOT NULL DEFAULT 1,
   sort_order INTEGER NOT NULL DEFAULT 0,
   is_active INTEGER NOT NULL DEFAULT 1,
+  kind TEXT NOT NULL DEFAULT 'main', -- main 主表 / supplement 附表（补充资料）
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(account_set_id, code)
+);
+
+-- 科目现金流量项目：主表贷方(流入) / 主表借方(流出) / 附表贷方 / 附表借方
+CREATE TABLE IF NOT EXISTS account_cash_flow_map (
+  id TEXT PRIMARY KEY,
+  account_set_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  main_credit_code TEXT,
+  main_debit_code TEXT,
+  supp_credit_code TEXT,
+  supp_debit_code TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(account_set_id, account_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_cash_flow_items_account_set ON cash_flow_items(account_set_id);
@@ -423,9 +450,9 @@ CREATE TABLE IF NOT EXISTS auto_transfer_runs (
   transfer_type TEXT NOT NULL,
   transfer_type_code TEXT,
   voucher_id TEXT NOT NULL REFERENCES vouchers(id),
+  seq INTEGER NOT NULL DEFAULT 1,  -- 同期同类型第几次结转（v166 起允许补结差额）
   created_by TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE(account_set_id, year, period, transfer_type_code)
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- 期末调汇生成记录（每期一张）

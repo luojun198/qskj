@@ -13,8 +13,10 @@
  *   1. 系统参数已配 → 用它（用户显式配置永远优先）
  *   2. 默认编码在本账套存在 → 用它（与旧行为完全一致，已能出凭证的账套不受影响）
  *   3. 都不行 → 按科目名称在本账套里探测（先精确名、再模糊名，优先末级科目）
+ * 2、3 命中的若是上级科目，一律下探到最底层末级（上级科目不能直接记账，余额表会丢数）。
  */
 import type Database from 'better-sqlite3'
+import { descendToLeaf, resolveAssetAccount } from './assetAccountResolver.js'
 
 export interface ScmAccountSpec {
   key: string
@@ -26,23 +28,27 @@ export interface ScmAccountSpec {
   names: string[]
   /** 包含匹配时要排除的名称片段，例如「进项税额转出」不是进项税额 */
   excludes?: string[]
+  /** 命中上级科目时，下探末级优先选名称含这些词的（按顺序） */
+  leafHints?: string[]
 }
 
 export const SCM_ACCOUNT_SPECS: ScmAccountSpec[] = [
   { key: 'scm:acc_ap', label: '应付账款', codes: ['2202', '2121'], names: ['应付账款'] },
   { key: 'scm:acc_ar', label: '应收账款', codes: ['1122', '1131'], names: ['应收账款'] },
-  { key: 'scm:acc_revenue', label: '主营业务收入', codes: ['6001', '5001'], names: ['主营业务收入', '销售收入'] },
-  { key: 'scm:acc_cost', label: '主营业务成本', codes: ['6401', '5401'], names: ['主营业务成本', '销售成本'] },
-  { key: 'scm:acc_other', label: '其他出入库对方科目', codes: ['1901'], names: ['待处理财产损溢'] },
-  { key: 'scm:acc_production', label: '生产成本', codes: ['5001', '4101'], names: ['生产成本'] },
-  { key: 'scm:acc_labor', label: '应付职工薪酬', codes: ['2211', '2151'], names: ['应付职工薪酬', '应付工资'] },
+  { key: 'scm:acc_revenue', label: '主营业务收入', codes: ['6001', '5001'], names: ['主营业务收入', '销售收入'], leafHints: ['主营', '销售', '销货', '商品', '产品'] },
+  { key: 'scm:acc_cost', label: '主营业务成本', codes: ['6401', '5401'], names: ['主营业务成本', '销售成本'], leafHints: ['主营', '销售', '销货', '商品', '产品'] },
+  { key: 'scm:acc_other', label: '其他出入库对方科目', codes: ['1901'], names: ['待处理财产损溢'], leafHints: ['流动资产'] },
+  { key: 'scm:acc_production', label: '生产成本', codes: ['5001', '4101'], names: ['生产成本'], leafHints: ['直接材料', '材料', '基本生产'] },
+  { key: 'scm:acc_labor', label: '应付职工薪酬', codes: ['2211', '2151'], names: ['应付职工薪酬', '应付工资'], leafHints: ['工资'] },
   { key: 'scm:acc_overhead', label: '制造费用', codes: ['5101', '4105'], names: ['制造费用'] },
+  { key: 'scm:acc_process_income', label: '受托加工收入', codes: ['6051'], names: ['其他业务收入'], leafHints: ['加工'] },
   {
     key: 'scm:acc_tax_input',
     label: '应交税费—进项税额',
     codes: ['22210101', '2221001001'],
     names: ['进项税额'],
     excludes: ['转出', '待认证', '待抵扣'],
+    leafHints: ['进项'],
   },
   {
     key: 'scm:acc_tax_output',
@@ -50,6 +56,7 @@ export const SCM_ACCOUNT_SPECS: ScmAccountSpec[] = [
     codes: ['22210105', '2221001005'],
     names: ['销项税额'],
     excludes: ['转出', '待转'],
+    leafHints: ['销项'],
   },
 ]
 
@@ -68,6 +75,8 @@ export interface ResolvedScmAccount {
   code: string
   name: string
   source: ScmAccountSource
+  /** 自动匹配命中的是上级科目、已下探到末级时，记下原上级编码（界面提示用） */
+  parent_code?: string
 }
 
 interface AccountRow { code: string; name: string }
@@ -126,6 +135,49 @@ function findByNames(db: Database.Database, accountSetId: string, spec: ScmAccou
   return undefined
 }
 
+/** 自动匹配到的是上级科目时下探到最底层末级（启用优先、按 leafHints 优先） */
+function toLeaf(
+  db: Database.Database,
+  accountSetId: string,
+  spec: ScmAccountSpec,
+  hit: AccountRow,
+  source: ScmAccountSource,
+): ResolvedScmAccount {
+  const leafCode = descendToLeaf(db, accountSetId, hit.code, spec.leafHints || [])
+  if (leafCode === hit.code) return { code: hit.code, name: hit.name, source }
+  const leaf = db.prepare('SELECT code, name FROM accounts WHERE account_set_id=? AND code=? LIMIT 1')
+    .get(accountSetId, leafCode) as AccountRow | undefined
+  return { code: leafCode, name: leaf?.name || '', source, parent_code: hit.code }
+}
+
+/** 某科目编码下探到最底层末级（已是末级 / 不存在则原样返回） */
+export function descendScmAccountToLeaf(db: Database.Database, accountSetId: string, code: string, key?: string): string {
+  return descendToLeaf(db, accountSetId, code, (key && SPEC_BY_KEY.get(key)?.leafHints) || [])
+}
+
+/**
+ * 物料存货科目（物料档案未配时的口径）：按物料类型找根科目再下探到最底层末级。
+ * 0 原辅材料 → 原材料；6 半成品 → 自制半成品，找不到退库存商品；其余（成品等）→ 库存商品 / 产成品。
+ * 找不到返回 null，调用方再决定兜底。
+ */
+export function resolveInventoryAccount(
+  db: Database.Database,
+  accountSetId: string,
+  itemType: string | null | undefined,
+): { code: string; name: string } | null {
+  const type = String(itemType ?? '').trim()
+  const goods = { names: ['库存商品', '产成品'], codes: ['1405', '1406', '1243'], excludes: ['跌价', '差异'] }
+  if (type === '0') {
+    return resolveAssetAccount(db, accountSetId, { names: ['原材料'], codes: ['1403', '1211'], excludes: ['跌价', '差异', '采购'] })
+      ?? resolveAssetAccount(db, accountSetId, goods)
+  }
+  if (type === '6') {
+    return resolveAssetAccount(db, accountSetId, { names: ['自制半成品', '半成品'], excludes: ['跌价'] })
+      ?? resolveAssetAccount(db, accountSetId, goods)
+  }
+  return resolveAssetAccount(db, accountSetId, goods)
+}
+
 function readParam(db: Database.Database, accountSetId: string, key: string): string {
   const row = db.prepare('SELECT param_value FROM system_params WHERE account_set_id=? AND param_key=?')
     .get(accountSetId, key) as { param_value?: string } | undefined
@@ -140,12 +192,14 @@ export function resolveScmAccount(
   db: Database.Database,
   accountSetId: string,
   key: string,
+  options: { ignoreParam?: boolean } = {},
 ): ResolvedScmAccount | null {
   const spec = SPEC_BY_KEY.get(key)
   if (!spec) return null
 
   // 1) 用户显式配置优先——哪怕配的科目不存在也照用，好让报错指向他配的那个
-  const configured = readParam(db, accountSetId, key)
+  //    ignoreParam：按「未配置」口径算（一键预设用）
+  const configured = options.ignoreParam ? '' : readParam(db, accountSetId, key)
   if (configured) {
     const hit = db.prepare('SELECT code, name FROM accounts WHERE account_set_id=? AND code=? LIMIT 1')
       .get(accountSetId, configured) as AccountRow | undefined
@@ -153,14 +207,12 @@ export function resolveScmAccount(
   }
   // 2) 默认编码存在、且科目名称也对得上 → 用它（与旧行为一致）
   const byCode = findByCodes(db, accountSetId, spec.codes)
-  if (byCode && nameLooksRight(spec, byCode.name)) {
-    return { code: byCode.code, name: byCode.name, source: 'code' }
-  }
+  if (byCode && nameLooksRight(spec, byCode.name)) return toLeaf(db, accountSetId, spec, byCode, 'code')
   // 3) 按名称探测
   const byName = findByNames(db, accountSetId, spec)
-  if (byName) return { code: byName.code, name: byName.name, source: 'name' }
+  if (byName) return toLeaf(db, accountSetId, spec, byName, 'name')
   // 4) 名称也找不到时，仍沿用编码命中的那个科目——不改变旧行为，但标记为需要人工确认
-  if (byCode) return { code: byCode.code, name: byCode.name, source: 'code_mismatch' }
+  if (byCode) return toLeaf(db, accountSetId, spec, byCode, 'code_mismatch')
   return null
 }
 
@@ -226,5 +278,5 @@ export function buildMissingAccountMessage(
       : '，本账套未找到同类科目'
     return `${code}（${spec.label}${tail}）`
   })
-  return `科目不存在：${parts.join('；')}。请在「系统参数 → 供应链 → 对方科目」中配置，或在会计科目中补建。`
+  return `科目不存在：${parts.join('；')}。请在「基础资料 → 业务凭证设置 → 进销存凭证设置」中配置，或在会计科目中补建。`
 }

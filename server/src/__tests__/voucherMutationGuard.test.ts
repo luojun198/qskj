@@ -3,6 +3,7 @@ import Database from 'better-sqlite3'
 import { up as cashierPeriodClosingUp } from '../db/migrations/20260916_cashier_period_closing.js'
 import {
   assertGlPeriodOpen,
+  getSourceImmutableReason,
   getVoucherImmutableReason,
   isCashVoucher,
   type VoucherMutation,
@@ -126,5 +127,18 @@ describe('voucherMutationGuard', () => {
     expect(getVoucherUndeletableReason(v)).toBeNull()
     expect(getVoucherUndeletableReason(v, { db, accountSetId: AS })).toMatch(/已结账/)
     expect(getVoucherUndeletableReason({ id: 'x', status: 'posted' }, { db, accountSetId: AS })).toContain('已记账')
+  })
+
+  it('进销存单据凭证：不能改 / 删 / 冲红 / 已审核直改，业务凭证中心回收入口可删；差异结转凭证不受限', () => {
+    const scm = { id: 's1', status: 'draft', source: 'scm_so', year: 2026, period: 9 }
+    for (const operation of ['update', 'edit_audited', 'reverse', 'delete'] as const) {
+      expect(getSourceImmutableReason(scm, operation), operation).toContain('业务凭证中心')
+    }
+    expect(getSourceImmutableReason(scm, 'unaudit')).toBeNull()
+    expect(getSourceImmutableReason({ ...scm, source: 'scm_variance' }, 'update')).toBeNull()
+    // 回收入口跳过来源守卫（其余闸照常，这里用未结账的 10 月）
+    const open = { ...scm, period: 10 }
+    expect(getVoucherUndeletableReason(open, { db, accountSetId: AS })).toContain('业务凭证中心')
+    expect(getVoucherUndeletableReason(open, { db, accountSetId: AS, bypassSourceGuard: true })).toBeNull()
   })
 })

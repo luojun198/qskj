@@ -8,6 +8,10 @@
       <el-button size="small" :disabled="!selection.length" @click="openPrint('label')">
         打印标签{{ selection.length ? `（${selection.length}）` : '' }}
       </el-button>
+      <!-- 另存：导出 Excel（与凭证、库存等页面「另存」一致）；有勾选导勾选行，否则按当前筛选导出全部 -->
+      <el-button size="small" :loading="exporting" :title="selection.length ? '导出勾选的卡片' : '按当前筛选条件导出全部卡片'" @click="exportExcel">
+        另存{{ selection.length ? `（${selection.length}）` : '' }}
+      </el-button>
       <el-button v-permission="'asset:change'" size="small" :disabled="!selection.length" @click="openBatchChange('dept')">
         批量调拨{{ selection.length ? `（${selection.length}）` : '' }}
       </el-button>
@@ -15,6 +19,11 @@
         批量停启用
       </el-button>
       <el-button v-permission="'asset:edit'" size="small" @click="$router.push('/asset/import')">批量导入</el-button>
+      <!-- 新增资产凭证：对勾选的卡片批量生成（客户反馈：卡片界面没有生成凭证按钮；凭证管理只做删除 / 重新生成） -->
+      <el-button v-permission="'asset:edit'" size="small" type="warning" plain :disabled="!pendingVoucherCards.length" @click="openGenVoucher"
+        :title="selection.length && !pendingVoucherCards.length ? '所选卡片都已生成新增资产凭证' : '对勾选且未生成凭证的卡片生成新增资产凭证'">
+        生成凭证{{ pendingVoucherCards.length ? `（${pendingVoucherCards.length}）` : '' }}
+      </el-button>
       <!-- 评审 P2：filters 与后端筛选参数早已接好，但页面没有控件，筛选形同虚设 -->
       <el-divider direction="vertical" />
       <el-input v-model="filters.keyword" size="small" clearable placeholder="编号 / 名称" style="width:160px"
@@ -59,6 +68,16 @@
         </el-table-column>
         <el-table-column label="已提月数" prop="depr_months_done" :width="cw('depr_months_done', 80)" align="center" />
         <el-table-column label="使用人" prop="user_name" :width="cw('user_name', 90)" />
+        <!-- 新增资产凭证：参照金蝶卡片列表，凭证号可点开，可删除（只删凭证，卡片保留，可重新生成） -->
+        <el-table-column label="新增资产凭证" :width="cw('purchase_voucher', 150)" align="center">
+          <template #default="{ row }">
+            <template v-if="(row as any).purchase_voucher">
+              <el-link type="primary" :underline="false" @click.stop="openPurchaseVoucher(row)">{{ purchaseVoucherLabel(row) }}</el-link>
+              <el-link v-permission="'asset:edit'" type="danger" :underline="false" style="margin-left:8px" @click.stop="deletePurchaseVoucher(row)">删除</el-link>
+            </template>
+            <el-link v-else v-permission="'asset:edit'" type="primary" :underline="false" @click.stop="$router.push({ path: '/asset/vouchers/regenerate', query: { kind: 'purchase', ref: row.id } })">生成</el-link>
+          </template>
+        </el-table-column>
         <el-table-column label="操作" :width="cw('actions', 190)" align="center" fixed="right">
           <template #default="{ row }">
             <div class="row-actions">
@@ -206,6 +225,7 @@
                 <el-form-item label="生成购置凭证">
                   <el-switch v-model="(form as any).generate_voucher" />
                   <span v-if="(form as any).generate_voucher" class="sector-tip">借：固定资产 / 贷：资金来源</span>
+                  <div v-if="(form as any).generate_voucher && legacyAssetHint" class="legacy-asset-warn">{{ legacyAssetHint }}</div>
                 </el-form-item>
                 <el-form-item v-if="(form as any).generate_voucher" label="贷方(资金)">
                   <AccountSelect v-model="(form as any).credit_account" placeholder="默认 1001 银行存款" search-keyword="银行存款" />
@@ -339,6 +359,7 @@
             type="date"
             value-format="YYYY-MM-DD"
             style="width: 100%"
+            :disabled-date="disableFutureMonth"
           />
         </el-form-item>
         <el-form-item v-if="batchKind === 'dept'" label="调入部门" required>
@@ -374,6 +395,22 @@
     </el-dialog>
 
     <!-- 资产卡片 / 标签打印 -->
+    <!-- 批量生成新增资产凭证：只需选贷方（资金来源）科目，属单字段轻量输入 -->
+    <el-dialog v-model="genVoucherVisible" title="生成新增资产凭证" width="460px" append-to-body>
+      <div class="gen-voucher-tip">
+        将为 {{ pendingVoucherCards.length }} 张卡片各生成一张新增资产凭证：借 固定资产（按类别科目）/ 贷 资金来源科目。
+        <span v-if="selection.length > pendingVoucherCards.length">已有凭证的 {{ selection.length - pendingVoucherCards.length }} 张将跳过。</span>
+      </div>
+      <el-form label-width="96px" size="small">
+        <el-form-item label="贷方科目">
+          <AccountSelect v-model="genVoucherCredit" placeholder="资金来源，如 1002 银行存款" search-keyword="银行存款" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button size="small" @click="genVoucherVisible = false">取消</el-button>
+        <el-button size="small" type="primary" :loading="genVoucherRunning" :disabled="!genVoucherCredit" @click="runGenVoucher">生成</el-button>
+      </template>
+    </el-dialog>
     <HiprintDialog
       v-model="printVisible"
       template-type="report"
@@ -394,13 +431,18 @@ import { confirmRenumberAfterDelete } from '@/composables/useRenumberPrompt'
 /** P1-20：变动 / 处置 / 盘点日期不得晚于当前月份（与后端同口径） */
 function disableFutureMonth(date: Date): boolean {
   const now = new Date()
-  return date.getFullYear() * 100 + date.getMonth() > now.getFullYear() * 100 + now.getMonth()
+  // 同时禁选总账开账日期之前的日子（后端同样拦截）
+  return date.getFullYear() * 100 + date.getMonth() > now.getFullYear() * 100 + now.getMonth() || isBeforeGlStart(date)
 }
 import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { useGlStartDate } from '@/composables/useGlStartDate'
+const { isBeforeGlStart } = useGlStartDate()
+import { useRouter } from 'vue-router'
 import { useReloadOnActivated } from '@/composables/useReloadOnActivated'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
 import { Search, Plus, Setting } from '@element-plus/icons-vue'
 import { fixedAssetApi, type AssetCard, type AssetDicts, DEPR_METHODS } from '@/api/fixedAsset'
+import { exportStyledTable, type ExportColumnDef } from '@/utils/exportStyledExcel'
 import { useFillHeightTable } from '@/composables/useFillHeightTable'
 import { useListColumnWidth } from '@/composables/useColumnWidthMemory'
 import HiprintDialog from '@/components/print/HiprintDialog.vue'
@@ -414,7 +456,43 @@ const tableRef = colWidthTableRef
 function cw(key: string, fallback: number) { return colWidth(key, fallback) }
 
 const list = ref<AssetCard[]>([])
+const routerInstance = useRouter()
 const selection = ref<AssetCard[]>([])
+// ── 批量生成新增资产凭证 ──
+const pendingVoucherCards = computed(() => selection.value.filter((c: any) => !c.purchase_voucher && !c.purchase_voucher_id))
+const genVoucherVisible = ref(false)
+const genVoucherCredit = ref('')
+const genVoucherRunning = ref(false)
+function openGenVoucher() {
+  if (!pendingVoucherCards.value.length) return
+  // 默认取首张卡片录入时填的资金来源科目
+  genVoucherCredit.value = String((pendingVoucherCards.value[0] as any).credit_account || genVoucherCredit.value || '')
+  genVoucherVisible.value = true
+}
+async function runGenVoucher() {
+  const cards = [...pendingVoucherCards.value]
+  genVoucherRunning.value = true
+  const ok: string[] = []
+  const failed: string[] = []
+  try {
+    for (const c of cards as any[]) {
+      try {
+        const r = await fixedAssetApi.regenerateAssetVoucher({ kind: 'purchase', ref_id: c.id, credit_account: genVoucherCredit.value }, { skipErrorToast: true })
+        if (r.code === 0) ok.push(`${c.asset_no} → ${r.data.voucherNo}`)
+        else failed.push(`${c.asset_no}：${(r as any).message || '生成失败'}`)
+      } catch (e: any) {
+        failed.push(`${c.asset_no}：${e?.response?.data?.message || e?.message || '生成失败'}`)
+      }
+    }
+  } finally { genVoucherRunning.value = false }
+  genVoucherVisible.value = false
+  if (failed.length) {
+    ElNotification({ type: ok.length ? 'warning' : 'error', title: `生成凭证：成功 ${ok.length} 张，失败 ${failed.length} 张`, message: failed.join('\n'), duration: 0 })
+  } else {
+    ElMessage.success(`已生成 ${ok.length} 张新增资产凭证`)
+  }
+  await handleQuery()
+}
 
 // ── 卡片 / 标签打印 ──────────────────────────────────────
 const printVisible = ref(false)
@@ -548,6 +626,31 @@ function onFilterChange() {
   handleQuery()
 }
 
+// ── 新增资产凭证列 ──
+function purchaseVoucherLabel(row: any) {
+  const v = row.purchase_voucher
+  if (!v) return ''
+  const no = String(v.voucher_no || '')
+  const type = String(v.voucher_type_name || '').slice(0, 1)
+  return `${v.year}${String(v.period).padStart(2, '0')} ${type && !no.includes('-') ? `${type}-${no}` : no}`
+}
+function openPurchaseVoucher(row: any) {
+  const v = row.purchase_voucher
+  if (!v) return
+  routerInstance.push({ path: '/voucher/query', query: { voucher_id: v.id, year: v.year, period: v.period, keyword: row.asset_no } })
+}
+async function deletePurchaseVoucher(row: any) {
+  const v = row.purchase_voucher
+  if (!v) return
+  try {
+    await ElMessageBox.confirm(`删除资产「${row.asset_no} ${row.asset_name}」的新增资产凭证 ${purchaseVoucherLabel(row)}？卡片保留，之后可点「生成」重新生成。`, '删除凭证', { type: 'warning' })
+  } catch { return }
+  try {
+    const r = await fixedAssetApi.deleteAssetVoucher({ kind: 'purchase', ref_id: row.id })
+    if (r.code === 0) { ElMessage.success('凭证已删除'); await handleQuery() }
+  } catch { /* 请求拦截器已提示原因（如凭证已审核 / 已过账） */ }
+}
+
 async function handleQuery() {
   const res = await fixedAssetApi.getCards({
     keyword: filters.keyword || undefined,
@@ -567,6 +670,57 @@ async function handleQuery() {
     list.value = res.data.list
     pagination.total = res.data.total
   }
+}
+
+// ── 另存（导出 Excel）──
+const exporting = ref(false)
+const EXPORT_PAGE_SIZE = 1000
+async function exportExcel() {
+  exporting.value = true
+  try {
+    let rows: AssetCard[] = selection.value.length ? [...selection.value] : []
+    if (!rows.length) {
+      // 无勾选：按当前筛选条件循环翻页取全部（列表接口一次只返回一页）
+      for (let page = 1; ; page++) {
+        const res = await fixedAssetApi.getCards({
+          keyword: filters.keyword || undefined,
+          category_code: filters.category_code || undefined,
+          status_code: filters.status_code || undefined,
+          dept_code: filters.dept_code || undefined,
+          page,
+          page_size: EXPORT_PAGE_SIZE,
+        })
+        if (res.code !== 0) return
+        rows.push(...res.data.list)
+        if (rows.length >= res.data.total || !res.data.list.length) break
+      }
+    }
+    if (!rows.length) return ElMessage.warning('没有可导出的资产卡片')
+    const sum = (key: 'original_value' | 'accum_depr' | 'net_value') => Math.round(rows.reduce((t, r) => t + (Number((r as any)[key]) || 0), 0) * 100) / 100
+    const text = (key: string, w = 14): ExportColumnDef => ({ label: '', width: w, type: 'text', align: 'left', value: (r: any) => r[key] ?? '' })
+    const columns: ExportColumnDef[] = [
+      { ...text('asset_no', 14), label: '资产编号' },
+      { ...text('asset_name', 24), label: '资产名称' },
+      { ...text('category_name'), label: '类别' },
+      { label: '状态', width: 10, type: 'text', align: 'left', value: (r: any) => r.status_name || r.status_code || '' },
+      { ...text('dept_name'), label: '使用部门' },
+      { ...text('acquire_date', 13), label: '购置日期' },
+      { label: '原值', width: 14, type: 'amount', align: 'right', value: (r: any) => Number(r.original_value) || 0 },
+      { label: '累计折旧', width: 14, type: 'amount', align: 'right', value: (r: any) => Number(r.accum_depr) || 0 },
+      { label: '净值', width: 14, type: 'amount', align: 'right', value: (r: any) => Number(r.net_value) || 0 },
+      { label: '折旧方法', width: 14, type: 'text', align: 'left', value: (r: any) => (DEPR_METHODS as Record<string, string>)[r.depr_method] || r.depr_method || '' },
+      { label: '已提月数', width: 10, type: 'number', align: 'right', value: (r: any) => Number(r.depr_months_done) || 0 },
+      { ...text('user_name', 12), label: '使用人' },
+    ]
+    await exportStyledTable({
+      fileName: '资产卡片',
+      title: '资产卡片',
+      subtitle: selection.value.length ? `勾选 ${rows.length} 张` : `共 ${rows.length} 张`,
+      columns,
+      rows,
+      summaryValues: ['合计', '', '', '', '', '', sum('original_value'), sum('accum_depr'), sum('net_value'), '', '', ''],
+    })
+  } finally { exporting.value = false }
 }
 
 async function openAdd() {
@@ -678,6 +832,18 @@ function calcSalvage() {
   form.value.salvage_value = Math.round(ov * rate * 100) / 100
 }
 
+/** 新增卡片已有期初累计折旧 / 已提月数：属于以前购入的老资产，购置分录通常早已入账 */
+const legacyAssetHint = computed(() => {
+  if (editId.value) return ''
+  const accum = Number(form.value.accum_depr) || 0
+  const months = Number(form.value.depr_months_done) || 0
+  if (accum <= 0 && months <= 0) return ''
+  const parts: string[] = []
+  if (accum > 0) parts.push(`期初累计折旧 ${accum.toFixed(2)} 元`)
+  if (months > 0) parts.push(`已计提 ${months} 个月`)
+  return `该卡片已有${parts.join('、')}，属于以前购入的资产，购置分录通常已在以前期间入账，一般不应再生成购置凭证，以免重复记账。`
+})
+
 async function handleSave(keepOpen = false) {
   if (!form.value.asset_no || !form.value.asset_name) return ElMessage.warning('请填写资产编号和名称')
   if (!form.value.category_code) return ElMessage.warning('请选择资产类别')
@@ -693,14 +859,27 @@ async function handleSave(keepOpen = false) {
     if (!form.value.use_months) return ElMessage.warning('请填写预计使用月数')
   }
 
+  if (!editId.value && (form.value as any).generate_voucher && legacyAssetHint.value) {
+    try {
+      await ElMessageBox.confirm(legacyAssetHint.value, '可能重复入账', {
+        type: 'warning',
+        confirmButtonText: '仍然生成',
+        cancelButtonText: '取消',
+      })
+    } catch { return }
+  }
+
   saving.value = true
   try {
+    let auxWarnings: string[] = []
     if (editId.value) {
-      await fixedAssetApi.updateCard(editId.value, form.value)
+      const res: any = await fixedAssetApi.updateCard(editId.value, form.value)
+      auxWarnings = res?.data?.auxWarnings || []
       ElMessage.success('保存成功')
     } else {
       const res = await fixedAssetApi.createCard(form.value)
       const data: any = res?.data || {}
+      auxWarnings = data.auxWarnings || []
       if (data.voucher?.voucherNo) {
         ElMessage.success(`保存成功，已生成购置凭证 ${data.voucher.voucherNo}`)
       } else if (data.voucherWarning) {
@@ -708,6 +887,15 @@ async function handleSave(keepOpen = false) {
       } else {
         ElMessage.success('保存成功')
       }
+    }
+    // 折旧等凭证科目挂了部门 / 人员辅助核算而卡片未填或对不上：只提醒（生成凭证时会被拦截）
+    if (auxWarnings.length) {
+      ElNotification({
+        type: 'warning',
+        title: '卡片辅助核算不全',
+        message: `${auxWarnings.join('；')}。不补全的话，该卡片计提折旧等生成凭证时会被拦截。`,
+        duration: 10000,
+      })
     }
     if (keepOpen && !editId.value) {
       // 保存并新增：保留弹窗，沿用类别 / 用途 / 部门 / 折旧设置，清空编号、名称、原值
@@ -821,6 +1009,7 @@ async function handleDispose() {
 </script>
 
 <style scoped>
+.gen-voucher-tip { font-size: 12px; color: var(--el-text-color-secondary); margin-bottom: 12px; line-height: 1.6; }
 .page-asset-list { display: flex; flex-direction: column; height: 100%; }
 .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .table-container { flex: 1; overflow: hidden; padding: 0; }
@@ -844,6 +1033,14 @@ async function handleDispose() {
   color: var(--mint-700);
   font-size: 12px;
   font-weight: 500;
+}
+/* 老资产（有期初累计折旧）勾选生成购置凭证时的重复入账提醒 */
+.legacy-asset-warn {
+  flex-basis: 100%;
+  margin-top: 4px;
+  line-height: 1.5;
+  font-size: 12px;
+  color: var(--el-color-warning-dark-2, #b88230);
 }
 /* 操作列按钮间距由全局 common.css（--cw-op-gap）统一控制 */
 .row-actions { display: inline-flex; align-items: center; gap: 0; }

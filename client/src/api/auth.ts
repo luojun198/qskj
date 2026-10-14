@@ -140,5 +140,7 @@ export function acdImport(
   formData.append('name', name)
   return request.post('/auth/acd-import', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
+    // 大账套导入后端为同步处理，需数十秒到数分钟，不能沿用全局 120s 超时（与 backupImport 一致）
+    timeout: 600_000,
   })
 }

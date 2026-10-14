@@ -14,7 +14,11 @@ import {
   auxRefsForAccount,
   resolveAccounts,
   lastDayOfMonth,
+  assetAuxIssues,
+  formatAssetAuxIssues,
+  type AssetAuxSubject,
 } from './assetVoucherBuilder.js'
+import { createAccountAuxRequirementLookup } from './auxRequirement.js'
 
 export interface DeprAsset {
   id: string
@@ -387,6 +391,21 @@ export function generateDeprVoucher(params: {
     if (hit) hit.amount += ln.month_depr
     else accumGroups.set(key, { accountCode, refs, amount: ln.month_depr })
   }
+
+  // 必填辅助核算预检：逐卡列出缺使用部门 / 使用人的资产，比分录级提示更好定位
+  const auxLookup = createAccountAuxRequirementLookup(db, accountSetId)
+  const assetFull = db.prepare('SELECT asset_no, asset_name, dept_code, user_name FROM fixed_asset WHERE account_set_id=? AND asset_no=? LIMIT 1')
+  const auxProblems: Array<{ asset: AssetAuxSubject; issues: string[] }> = []
+  const checkedAssets = new Set<string>()
+  for (const ln of lines) {
+    if (checkedAssets.has(ln.asset_no) || !(ln.month_depr > 0)) continue
+    checkedAssets.add(ln.asset_no)
+    const row = (assetFull.get(accountSetId, ln.asset_no) as AssetAuxSubject | undefined) || { asset_no: ln.asset_no, asset_name: ln.asset_name, dept_code: ln.dept_code }
+    const issues = assetAuxIssues(db, accountSetId, auxContext, auxLookup, row,
+      [ln.expense_account || '660201', ln.depr_account_code || deprAccumAccount || '1602'])
+    if (issues.length) auxProblems.push({ asset: row, issues })
+  }
+  if (auxProblems.length) throw new Error(formatAssetAuxIssues(auxProblems))
 
   const totalDepr = lines.reduce((s, l) => s + l.month_depr, 0)
   const totalDeprRounded = Math.round(totalDepr * 100) / 100

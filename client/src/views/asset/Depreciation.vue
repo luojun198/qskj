@@ -28,6 +28,7 @@
       <el-button v-permission="'asset:depr'" plain @click="router.push('/asset/depreciation/reverse')">
         <el-icon><RefreshLeft /></el-icon>取消折旧
       </el-button>
+      <SaveAsButton size="default" :title="activeTab === 'preview' ? `折旧预览_${period}` : '折旧历史记录'" />
       <el-checkbox v-model="generateVoucher">同时生成凭证</el-checkbox>
       <span class="header-acc-select">
         <span class="tip-label">累计折旧科目</span>

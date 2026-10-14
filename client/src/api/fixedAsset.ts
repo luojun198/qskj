@@ -1,4 +1,4 @@
-import request from './request'
+import request, { type RequestConfig } from './request'
 import type { RenumberGroup } from '@/composables/useRenumberPrompt'
 
 export interface AssetCard {
@@ -52,6 +52,61 @@ export const DEPR_METHODS: Record<string, string> = {
   '2': '工作量法',
   '3': '双倍余额递减法',
   '4': '年数总和法',
+}
+
+// ── 凭证管理 ────────────────────────────────────────────────
+
+export type AssetVoucherKind = 'purchase' | 'depr' | 'change' | 'disposal' | 'inventory'
+
+export const ASSET_VOUCHER_KIND_LABELS: Record<AssetVoucherKind, string> = {
+  purchase: '购置',
+  depr: '折旧',
+  change: '变动 / 减值',
+  disposal: '处置',
+  inventory: '盘点',
+}
+
+export interface AssetVoucherRow {
+  kind: AssetVoucherKind
+  refId: string
+  title: string
+  assetNo: string | null
+  assetName: string | null
+  year: number | null
+  period: number | null
+  amount: number | null
+  summary: string | null
+  changeKind?: string | null
+  voucherId: string | null
+  voucherNo: string | null
+  voucherStatus: 'draft' | 'audited' | 'posted' | null
+  hasVoucher: boolean
+  deleteBlockReason: string | null
+  regenerateBlockReason: string | null
+}
+
+export interface AssetVoucherQuery {
+  kind?: AssetVoucherKind
+  year?: number
+  month?: number
+  status?: 'generated' | 'missing'
+  keyword?: string
+  ref_id?: string
+  page?: number
+  page_size?: number
+}
+
+export interface AssetVoucherRegenerateInput {
+  credit_account?: string
+  counter_account?: string
+  accum_account?: string
+  clearing_account?: string
+  disposal_income?: number
+  disposal_expense?: number
+  surplus_account?: string
+  deficit_account?: string
+  /** 本次指定的凭证类型，空则按资产参数中各业务的凭证类型 */
+  voucher_type_id?: string
 }
 
 // ── 资产变动（P1）────────────────────────────────────────────
@@ -234,8 +289,10 @@ export const fixedAssetApi = {
       id: string
       voucher?: { voucherId: string; voucherNo: string; amount: number }
       voucherWarning?: string
+      /** 卡片辅助核算不全的提醒（不拦截保存） */
+      auxWarnings?: string[]
     }>('/asset/cards', data),
-  updateCard: (id: string, data: Partial<AssetCard>) => request.put(`/asset/cards/${id}`, data),
+  updateCard: (id: string, data: Partial<AssetCard>) => request.put<{ ok: boolean; auxWarnings?: string[] }>(`/asset/cards/${id}`, data),
   deleteCard: (id: string) => request.delete(`/asset/cards/${id}`),
 
   getDepr: (id: string) => request.get<any[]>(`/asset/cards/${id}/depr`),
@@ -277,6 +334,13 @@ export const fixedAssetApi = {
       deletedVoucherNos: string[]
       affectedGroups: { year: number; period: number; voucher_type_id: string | null }[]
     }>('/asset/depr/reverse', data),
+  // 凭证管理：统一列出各业务凭证；只删凭证（保留业务）/ 重新生成
+  listAssetVouchers: (params: AssetVoucherQuery) =>
+    request.get<{ total: number; list: AssetVoucherRow[] }>('/asset/vouchers', { params }),
+  deleteAssetVoucher: (data: { kind: AssetVoucherKind; ref_id: string }) =>
+    request.post<{ voucherNo: string | null; affectedGroups: RenumberGroup[] }>('/asset/vouchers/delete', data),
+  regenerateAssetVoucher: (data: { kind: AssetVoucherKind; ref_id: string } & AssetVoucherRegenerateInput, config?: RequestConfig) =>
+    request.post<{ voucherId: string; voucherNo: string }>('/asset/vouchers/regenerate', data, config),
 
   // 工作量
   getWorkload: (year: number, month: number) =>
@@ -293,7 +357,8 @@ export const fixedAssetApi = {
     year: number
     month: number
     group_by?: string
-    group_code: string
+    /** group_by=asset 时不传：全部资产逐项 */
+    group_code?: string
   }) => request.get<any[]>('/asset/report/depr-summary/detail', { params }),
 
   getDeprAllocation: (params: { year: number; month: number }) =>

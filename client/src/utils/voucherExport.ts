@@ -1,5 +1,6 @@
 import request from '@/api/request'
 import { exportStyledTable, type ExportColumnDef } from './exportStyledExcel'
+import { getTypeAbbr, getVoucherSeq } from '@/composables/useVoucherAuditData'
 
 const statusText: Record<string, string> = {
   draft: '草稿',
@@ -35,8 +36,8 @@ type VoucherExportRow = {
 function buildVoucherExportColumns(): ExportColumnDef<VoucherExportRow>[] {
   return [
     { label: '凭证号', width: 100, align: 'center', value: row => row.凭证号 },
-    { label: '日期', width: 100, value: row => row.日期 },
-    { label: '摘要', width: 180, value: row => row.摘要 },
+    { label: '日期', width: 100, align: 'center', value: row => row.日期 },
+    { label: '摘要', width: 300, value: row => row.摘要 },
     { label: '科目编码', width: 100, value: row => row.科目编码 },
     { label: '科目名称', width: 160, value: row => row.科目名称 },
     {
@@ -53,18 +54,27 @@ function buildVoucherExportColumns(): ExportColumnDef<VoucherExportRow>[] {
       type: 'amount',
       value: row => row.贷方金额,
     },
-    { label: '制单人', width: 90, value: row => row.制单人 },
-    { label: '审核人', width: 90, value: row => row.审核人 },
-    { label: '记账人', width: 90, value: row => row.记账人 },
+    { label: '制单人', width: 90, align: 'center', value: row => row.制单人 },
+    { label: '审核人', width: 90, align: 'center', value: row => row.审核人 },
+    { label: '记账人', width: 90, align: 'center', value: row => row.记账人 },
     { label: '状态', width: 80, align: 'center', value: row => row.状态 },
   ]
+}
+
+/** 与列表一致显示「类型-序号」；无类型的凭证（号码本身没有前缀）保持原样 */
+function formatVoucherNo(voucher: any): string {
+  const no = String(voucher.voucher_no ?? '')
+  if (no.includes('-') || !voucher.voucher_type_name) return no
+  const seq = parseInt(getVoucherSeq(no), 10)
+  if (Number.isNaN(seq)) return no
+  return `${getTypeAbbr(voucher.voucher_type_name)}-${String(seq).padStart(3, '0')}`
 }
 
 function buildVoucherExportRow(voucher: any, entry: any | null): VoucherExportRow {
   const isDebit = entry?.direction === 'debit'
   const isCredit = entry?.direction === 'credit'
   return {
-    凭证号: voucher.voucher_no,
+    凭证号: formatVoucherNo(voucher),
     日期: voucher.voucher_date,
     摘要: entry ? entry.summary : voucher.summary,
     科目编码: entry?.account_code || '',

@@ -1188,8 +1188,8 @@ const dashboardTodosHandler = (req: AuthRequest, res: any) => {
             db
               .prepare(
                 `SELECT
-                   COALESCE(SUM(CASE WHEN direction='in' AND doc_type IN ('SO','SR','RS') THEN amount - COALESCE(verified_amount,0) ELSE 0 END),0) AS receivable,
-                   COALESCE(SUM(CASE WHEN direction='in' AND doc_type IN ('PI','PR','RP','WI') THEN amount - COALESCE(verified_amount,0) ELSE 0 END),0) AS payable,
+                   COALESCE(SUM(CASE WHEN direction='in' AND (arap_side='ar' OR (arap_side IS NULL AND doc_type IN ('SO','SR','RS'))) THEN amount - COALESCE(verified_amount,0) ELSE 0 END),0) AS receivable,
+                   COALESCE(SUM(CASE WHEN direction='in' AND (arap_side='ap' OR (arap_side IS NULL AND doc_type IN ('PI','PR','RP','WI'))) THEN amount - COALESCE(verified_amount,0) ELSE 0 END),0) AS payable,
                    SUM(CASE WHEN direction='in' AND (amount - COALESCE(verified_amount,0)) > 0.005
                              AND julianday(COALESCE(due_date, doc_date)) <= julianday('now') + 7 THEN 1 ELSE 0 END) AS dueSoon
                  FROM scm_ar_ap_log

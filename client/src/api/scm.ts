@@ -28,6 +28,10 @@ export interface ScmItem {
   id: string
   code: string
   name: string
+  /** draft 未审核 / audited 已审核（迁移 168） */
+  audit_status?: 'draft' | 'audited'
+  auditor?: string | null
+  audited_at?: string | null
   spec?: string
   barcode?: string
   short_code?: string
@@ -92,6 +96,9 @@ export interface ScmPartner {
   id: string
   code: string
   name: string
+  audit_status?: 'draft' | 'audited'
+  auditor?: string | null
+  audited_at?: string | null
   short_name?: string
   partner_type?: string
   ar_account?: string
@@ -137,6 +144,7 @@ export interface ScmWarehouse {
   address?: string
   phone?: string
   partner_code?: string
+  is_customer_supplied?: number   // 客供仓：只记数量与往来，不计成本
 }
 
 export const ITEM_TYPES: Record<string, string> = { '0': '原辅材料', '6': '半成品', '9': '成品' }
@@ -150,12 +158,21 @@ export const COSTING_METHODS: Record<string, string> = {
 }
 
 export interface ScmDocRef { id: string; doc_no: string; doc_type: string; status: string }
-export interface ScmDoc { id?: string; doc_type: string; doc_no?: string; doc_date?: string; partner_code?: string; partner_name?: string; warehouse_code?: string; warehouse_name?: string; operator?: string; status?: string; source_doc_id?: string; total_qty?: number; total_amount?: number; remark?: string; lines?: ScmDocLine[];
+/** 凭证科目挂了辅助核算时单据须填写的字段（往来单位 partner / 部门 dept / 业务员 person） */
+export interface ScmAuxRequiredField { source: 'partner' | 'dept' | 'person'; label: string; categoryNames: string[]; accounts: string[] }
+export interface ScmDoc { id?: string; process_mode?: string | null; product_lines?: { item_code: string; item_name?: string; spec?: string; qty: number; process_fee: number; process_amount: number }[]; doc_type: string; doc_no?: string; doc_date?: string; partner_code?: string; partner_name?: string; warehouse_code?: string; warehouse_name?: string; operator?: string; status?: string; source_doc_id?: string; total_qty?: number; total_amount?: number; remark?: string; lines?: ScmDocLine[];
   // 扩展表头字段（Phase 2）
   biz_person?: string; payment_type?: string; settle_account?: string; invoice_type?: string; invoice_no?: string; invoice_date?: string;
   contract_no?: string; currency?: string; exchange_rate?: number; discount_rate?: number; expect_date?: string; dest_warehouse_code?: string;
   credit_days?: number; due_date?: string; maker?: string; auditor?: string; audited_at?: string; total_tax?: number; field_values?: Record<string, any> | string;
   voucher_id?: string; pushed_qty?: number;
+  /** 1 = 原系统（润衡 ACD）导入的历史单据，原系统已制证 */
+  external_voucher?: number;
+  // 收付款单列表核销信息
+  verified_amount?: number | null; unverified_amount?: number | null; verify_nos?: string[]; pay_linked_docs?: ScmDocRef[];
+  // 列表接口补充的展示字段（列设置：调入仓库 / 源单号 / 凭证号 / 时间 / 打印次数）
+  dest_warehouse_name?: string | null; source_doc_no?: string | null; voucher_no?: string | null;
+  created_at?: string; updated_at?: string; print_count?: number;
   // 上下游链路
   push_progress?: 'none' | 'part' | 'full'; total_lines?: number; pushed_lines?: number; fully_pushed_lines?: number;
   source_doc?: ScmDocRef | null; source_docs?: ScmDocRef[]; target_docs?: ScmDocRef[];
@@ -211,6 +228,44 @@ export interface SalesOrderRelationResult {
   truncated?: boolean
 }
 
+/** 核销单记录（按核销单号汇总） */
+export interface ArapVerifyRecord {
+  verify_no: string
+  verify_date: string
+  partner_code: string
+  partner_name: string
+  side: 'ar' | 'ap'
+  biz_type: string
+  gen_mode: 'auto' | 'manual'
+  line_count: number
+  total_amount: number
+  created_by: string
+  created_at: string
+  in_doc_nos: string
+  out_doc_nos: string
+}
+/** 核销单明细行：一侧的一张源单 */
+export interface ArapVerifyDetailItem {
+  log_id: string
+  doc_id: string
+  doc_type: string
+  doc_no: string
+  doc_date: string
+  doc_status: string
+  currency: string
+  remark: string
+  doc_amount: number
+  verified_amount: number
+  open_amount: number
+  this_amount: number
+}
+export interface ArapVerifyDetail extends Omit<ArapVerifyRecord, 'line_count' | 'in_doc_nos' | 'out_doc_nos'> {
+  source_doc_no: string
+  source_doc_type: string
+  out_items: ArapVerifyDetailItem[]
+  in_items: ArapVerifyDetailItem[]
+}
+
 export interface ScmPaymentSource {
   arap_source_log_id: string
   source_doc_id: string
@@ -219,7 +274,84 @@ export interface ScmPaymentSource {
   source_doc_date: string
   due_date?: string
   source_amount: number
+  /** 已收 / 已付（不含退货冲减） */
   settled_amount: number
+  /** 退货冲减（被 PR / SR 核销的部分） */
+  return_offset_amount?: number
+  open_amount: number
+  remark?: string
+}
+
+/** 对账单（单据化，第四份反馈 Q2） */
+export interface ScmStatement {
+  id: string
+  stmt_no: string
+  stmt_date: string
+  direction: 'ar' | 'ap'
+  partner_code: string
+  partner_name?: string
+  start_date?: string | null
+  end_date: string
+  doc_amount: number
+  payment_amount: number
+  net_amount: number
+  ledger_balance?: number | null
+  status: 'draft' | 'audited'
+  remark?: string | null
+  maker?: string | null
+  auditor?: string | null
+  audited_at?: string | null
+  line_count?: number
+}
+export interface ScmStatementLine {
+  id?: string
+  src_kind: 'line' | 'log'
+  src_doc_id: string
+  src_doc_type: string
+  src_doc_no: string
+  src_doc_date: string
+  src_line_id: string | null
+  src_log_id: string | null
+  item_code: string | null
+  item_name: string | null
+  spec: string | null
+  unit: string | null
+  qty: number | null
+  price: number | null
+  amount: number
+  tax_amount: number
+  amount_with_tax: number
+  sign: 1 | -1
+  remark: string | null
+  statement_id?: string | null
+  stmt_no?: string | null
+  stmt_status?: string | null
+  selected_by_self?: boolean
+  recon_status?: 'reconciled' | 'pending' | 'unreconciled'
+  partner_code?: string
+  partner_name?: string
+  signed_amount?: number
+}
+export interface ScmStatementInput {
+  direction: 'ar' | 'ap'
+  partner_code: string
+  stmt_date?: string
+  start_date?: string | null
+  end_date: string
+  remark?: string | null
+  lines: Array<{ src_kind: 'line' | 'log'; src_line_id?: string | null; src_log_id?: string | null }>
+}
+
+/** 收付款单「未冲减的退货」 */
+export interface ScmPaymentOpenReturn {
+  arap_log_id: string
+  source_doc_id: string
+  source_doc_type: 'PR' | 'SR'
+  source_doc_no: string
+  source_doc_date: string
+  currency?: string
+  source_amount: number
+  offset_amount: number
   open_amount: number
   remark?: string
 }
@@ -249,7 +381,7 @@ export interface SalesReportResult {
   rows: Record<string, any>[]; summary: Record<string, number | null>
   total: number; page: number; page_size: number; ignored_fields: string[]
 }
-export type SalesFixedReportCode = 'summary' | 'detail' | 'ranking' | 'profit' | 'trend'
+export type SalesFixedReportCode = 'summary' | 'detail' | 'return' | 'ranking' | 'profit' | 'trend'
 export type SalesTrendPeriod = 'day' | 'week' | 'month' | 'quarter' | 'year'
 export interface SalesFixedFilters {
   start_date?: string; end_date?: string; partner_codes?: string[]; item_codes?: string[]; category_codes?: string[]
@@ -277,7 +409,7 @@ export interface SalesFixedReportMeta {
 export interface SalesFixedReportResult extends SalesReportResult {
   report_code: SalesFixedReportCode; chart_metric?: string; displayed?: number
 }
-export type PurchaseFixedReportCode = 'summary' | 'detail' | 'order_tracking' | 'ranking' | 'cost' | 'trend'
+export type PurchaseFixedReportCode = 'summary' | 'detail' | 'order_tracking' | 'return' | 'ranking' | 'cost' | 'trend'
 export type PurchaseOrderExecutionStatus = 'not_received' | 'pending' | 'partial' | 'completed' | 'over_received' | 'overdue'
 export interface PurchaseFixedFilters {
   start_date?: string; end_date?: string; expect_start_date?: string; expect_end_date?: string
@@ -392,10 +524,21 @@ export interface MrpResultLine extends ScmDocLine {
 
 export const scmApi = {
   // 物料
-  getItemNextNo: () => request.get<{ next_no: string }>('/scm/items/next-no'),
-  getItems: (params?: { keyword?: string; category_code?: string; item_type?: string; is_leaf?: number; page?: number; page_size?: number; all?: string | number }) =>
+  getItemNextNo: (item_type?: string, ctx: { category_code?: string; subcategory_code?: string } = {}) =>
+    request.get<{ next_no: string }>('/scm/items/next-no', { params: { item_type, ...ctx } }),
+  getItems: (params?: { keyword?: string; category_code?: string; item_type?: string; is_leaf?: number; sort?: string; page?: number; page_size?: number; all?: string | number; enabled?: string; audit_status?: string; for_pick?: string }) =>
     request.get<{ list: ScmItem[]; total: number; page: number; page_size: number }>('/scm/items', { params }),
   createItem: (data: Partial<ScmItem>) => request.post<{ id: string }>('/scm/items', data),
+  // 档案批量审核 / 停用 / Excel 导入（第六份反馈）
+  batchAuditMaster: (kind: 'items' | 'partners', ids: string[], action: 'audit' | 'unaudit') =>
+    request.post<{ changed: number; skipped: number }>(`/scm/${kind}/batch-audit`, { ids, action }),
+  batchEnableMaster: (kind: 'items' | 'partners' | 'warehouses', ids: string[], enabled: boolean) =>
+    request.post<{ changed: number; skipped: number }>(`/scm/${kind}/batch-enable`, { ids, enabled }),
+  getMasterImportColumns: (kind: 'items' | 'partners') =>
+    request.get<Array<{ key: string; label: string; required?: boolean; note?: string }>>(`/scm/${kind}/import/columns`),
+  importMaster: (kind: 'items' | 'partners', body: { rows: Array<Record<string, unknown>>; conflict: 'skip' | 'overwrite'; dry_run: boolean; default_type?: string }) =>
+    request.post<{ total: number; inserted: number; updated: number; skipped: number; issues: Array<{ row: number; code: string; message: string }> }>(
+      `/scm/${kind}/import`, body, { timeout: 600_000 }),
   // 物料自定义字段定义
   getItemFieldDefs: () => request.get<ScmItemFieldDef[]>('/scm/item-fields'),
   saveItemFieldDefs: (fields: ScmItemFieldDef[]) => request.post('/scm/item-fields', { fields }),
@@ -404,7 +547,7 @@ export const scmApi = {
 
   // 往来单位
   getPartnerNextNo: (partner_type?: string) => request.get<{ next_no: string }>('/scm/partners/next-no', { params: { partner_type } }),
-  getPartners: (params?: { keyword?: string; partner_type?: string }) =>
+  getPartners: (params?: { keyword?: string; partner_type?: string; enabled?: string; audit_status?: string; for_pick?: string }) =>
     request.get<ScmPartner[]>('/scm/partners', { params }),
   createPartner: (data: Partial<ScmPartner>) => request.post<{ id: string }>('/scm/partners', data),
   updatePartner: (id: string, data: Partial<ScmPartner>) => request.put(`/scm/partners/${id}`, data),
@@ -483,13 +626,14 @@ export const scmApi = {
   getDocFieldDefs: (doc_type: string) => request.get<ScmDocFieldDef[]>('/scm/doc-fields', { params: { doc_type } }),
   getAllDocFieldDefs: () => request.get<ScmDocFieldDef[]>('/scm/doc-fields/all'),
   saveDocFieldDefs: (doc_type: string, fields: ScmDocFieldDef[]) => request.post('/scm/doc-fields', { doc_type, fields }),
-  getDocNextNo: (doc_type: string, doc_date?: string) => request.get<{ next_no: string }>('/scm/docs/next-no', { params: { doc_type, doc_date } }),
-  getDocs: (params: { doc_type?: string; partner_code?: string; warehouse_code?: string; status?: string; start_date?: string; end_date?: string; payment_mode?: 'advance'; keyword?: string; biz_person?: string; page?: number; page_size?: number }) =>
-    request.get<{ list: ScmDoc[]; total: number; page: number; page_size: number }>('/scm/docs', { params }),
+  getDocNextNo: (doc_type: string, doc_date?: string, ctx: { partner_code?: string; warehouse_code?: string; dept_code?: string; biz_person?: string } = {}) =>
+    request.get<{ next_no: string }>('/scm/docs/next-no', { params: { doc_type, doc_date, ...ctx } }),
+  getDocs: (params: { doc_type?: string; partner_code?: string; warehouse_code?: string; status?: string; start_date?: string; end_date?: string; payment_mode?: 'advance'; keyword?: string; biz_person?: string; sort?: string; page?: number; page_size?: number; invoice_open?: 1; expand?: 'product' }) =>
+    request.get<{ list: ScmDoc[]; total: number; page: number; page_size: number; summary?: { total_qty: number; total_amount: number; total_tax: number; pushed_qty?: number } }>('/scm/docs', { params }),
   getSalesOrderRelations: (params?: { keyword?: string; status?: string; start_date?: string; end_date?: string; page?: number; page_size?: number }) =>
     request.get<SalesOrderRelationResult>('/scm/sales-order-relations', { params }),
   // 单据翻页：按过滤条件取有序 id 数组（与列表同序），用于查看/编辑页首/上/下/尾翻阅
-  getDocIds: (params: { doc_type?: string; partner_code?: string; warehouse_code?: string; status?: string; start_date?: string; end_date?: string; payment_mode?: 'advance'; keyword?: string; biz_person?: string }) =>
+  getDocIds: (params: { doc_type?: string; partner_code?: string; warehouse_code?: string; status?: string; start_date?: string; end_date?: string; payment_mode?: 'advance'; keyword?: string; biz_person?: string; sort?: string }) =>
     request.get<string[]>('/scm/docs/ids', { params }),
   // 列表筛选用：按单据实际发生过的往来单位（DISTINCT partner_code + partner_name）
   getDocPartnerOptions: (params?: { doc_type?: string }) =>
@@ -506,8 +650,16 @@ export const scmApi = {
   auditDoc: (id: string, data: { apply_item_default_warehouses?: boolean } = {}, config?: RequestConfig) => request.post<{ id: string; status: string; total_amount: number; auditor?: string; audited_at?: string; already_audited?: boolean; credit_warning?: string; serial_warning?: string; invoice_notice?: string }>(`/scm/docs/${id}/audit`, data, config),
   unauditDoc: (id: string, config?: RequestConfig) => request.post<{ ok: boolean }>(`/scm/docs/${id}/unaudit`, {}, config),
   genAssets: (id: string) => request.post<{ created: number }>(`/scm/docs/${id}/gen-assets`, {}),
-  genVoucher: (id: string) => request.post<{ voucher_id: string; voucher_no: string; entry_count: number }>(`/scm/docs/${id}/gen-voucher`, {}),
-  batchDocActions: (data: { action: 'audit' | 'unaudit' | 'delete' | 'gen_voucher'; ids: string[]; apply_item_default_warehouses?: boolean }) =>
+  /** 保存前提醒：凭证科目挂了辅助核算时，单据必须填写的往来单位 / 部门 / 业务员及其中为空的（不拦截保存，审核时拦截） */
+  auxRequirements: (data: Record<string, unknown>) =>
+    request.post<{ required: ScmAuxRequiredField[]; missing: ScmAuxRequiredField[] }>('/scm/docs/aux-requirements', data, { skipErrorToast: true }),
+  /** 已审核未制证单据补填部门 / 业务员（不影响库存与往来） */
+  updateDocAuxFields: (id: string, data: { dept_code?: string | null; biz_person?: string | null }) =>
+    request.put<{ ok: boolean }>(`/scm/docs/${id}/aux-fields`, data),
+  /** voucher_type_id：本次指定的凭证类型，空则按进销存凭证设置的默认类型 */
+  genVoucher: (id: string, config?: RequestConfig, voucherTypeId?: string) =>
+    request.post<{ voucher_id: string; voucher_no: string; entry_count: number }>(`/scm/docs/${id}/gen-voucher`, voucherTypeId ? { voucher_type_id: voucherTypeId } : {}, config),
+  batchDocActions: (data: { action: 'audit' | 'unaudit' | 'delete' | 'gen_voucher'; ids: string[]; apply_item_default_warehouses?: boolean; voucher_type_id?: string }) =>
     request.post<{ processed: number; action: string; results: any[] }>('/scm/docs/batch-actions', data, { skipErrorToast: true }),
   importDocColumns: () => request.get<{ doc_types: string[]; columns: Array<{ key: string; label: string; required?: boolean; note?: string }>; max_rows: number }>('/scm/docs/import/columns'),
   importDocValidate: (data: { doc_type: string; rows: any[] }) =>
@@ -596,7 +748,7 @@ export const scmApi = {
   createProductionPlan: (data: any) => request.post<{ id: string }>('/scm/production-plans', data),
   updateProductionPlan: (id: string, data: any) => request.put(`/scm/production-plans/${id}`, data),
   deleteProductionPlan: (id: string) => request.delete(`/scm/production-plans/${id}`),
-  batchProductionPlanActions: (data: { action: 'delete' | 'unrelease' | 'reopen'; ids: string[] }) =>
+  batchProductionPlanActions: (data: { action: 'delete' | 'release' | 'unrelease' | 'reopen'; ids: string[] }) =>
     request.post<{ processed: number; action: string; results: any[] }>('/scm/production-plans/batch-actions', data, { skipErrorToast: true }),
   // 销售订单执行表（联动收口）
   getSalesOrderExecution: (params: Record<string, any>) => request.get<{ rows: any[]; total: number; page: number; page_size: number; summary: Record<string, number> }>('/scm/report/sales/execution', { params }),
@@ -625,6 +777,20 @@ export const scmApi = {
   getPlanChangeBase: (planId: string) => request.get<{ plan: any; snapshot: any; issued: Record<string, number>; draft: any }>(`/scm/production-plans/${planId}/change-base`),
   createPlanChange: (data: any) => request.post<{ id: string; change_no: string; diff: any[] }>('/scm/plan-changes', data),
   updatePlanChange: (id: string, data: any) => request.put<{ ok: boolean; diff: any[] }>(`/scm/plan-changes/${id}`, data),
+  // 采购 / 销售订单变更单
+  getOrderChanges: (params: { doc_type?: string; doc_id?: string; status?: string; keyword?: string; start_date?: string; end_date?: string; page?: number; page_size?: number }) =>
+    request.get<{ list: any[]; total: number }>('/scm/order-changes', { params }),
+  getOrderChange: (id: string) => request.get<any>(`/scm/order-changes/${id}`),
+  getOrderChangeBase: (docId: string) => request.get<any>(`/scm/order-changes/base/${docId}`),
+  previewOrderChange: (data: any) => request.post<{ diff: any[] }>('/scm/order-changes/preview', data, { skipErrorToast: true }),
+  createOrderChange: (data: any) => request.post<{ id: string; change_no: string; diff: any[] }>('/scm/order-changes', data),
+  updateOrderChange: (id: string, data: any) => request.put<{ ok: boolean; diff: any[] }>(`/scm/order-changes/${id}`, data),
+  auditOrderChange: (id: string) => request.post<{ ok: boolean; diff: any[] }>(`/scm/order-changes/${id}/audit`, {}),
+  deleteOrderChange: (id: string) => request.delete<{ ok: boolean }>(`/scm/order-changes/${id}`),
+  getPlanChangeMaterialIncrease: (id: string) =>
+    request.get<{ rows: any[]; shortage_doc: { id: string; doc_no: string; status: string } | null }>(`/scm/plan-changes/${id}/material-increase`),
+  genPlanChangeShortage: (id: string, lines?: Array<{ item_code: string; qty: number }>) =>
+    request.post<{ id: string; doc_no: string; status: string; reused: boolean }>(`/scm/plan-changes/${id}/gen-shortage`, { lines }),
   auditPlanChange: (id: string) => request.post<{ ok: boolean; diff: any[] }>(`/scm/plan-changes/${id}/audit`, {}),
   deletePlanChange: (id: string) => request.delete(`/scm/plan-changes/${id}`),
   // 工单（生产闭环）
@@ -710,16 +876,39 @@ export const scmApi = {
   getArApAging: (params?: { as_of_date?: string }) =>
     request.get<any[]>('/scm/arap-aging', { params }),
   // 往来核销 + 预收预付
-  getArapOpenItems: (params: { partner_code: string; side?: 'ar' | 'ap' }) =>
-    request.get<{ in_items: any[]; out_items: any[]; open_in: number; advance: number }>('/scm/arap/open-items', { params }),
+  getArapOpenItems: (params: { partner_code: string; side?: 'ar' | 'ap'; include_settled?: 1 }) =>
+    request.get<{ in_items: any[]; out_items: any[]; settled_out_items?: any[]; settled_in_items?: any[]; open_in: number; advance: number }>('/scm/arap/open-items', { params }),
   getPaymentSources: (params: { partner_code: string; payment_doc_type: 'RCV' | 'PAY'; currency?: string }) =>
     request.get<ScmPaymentSource[]>('/scm/arap/payment-sources', { params }),
+  getPaymentOpenReturns: (params: { partner_code: string; payment_doc_type: 'RCV' | 'PAY'; currency?: string }) =>
+    request.get<ScmPaymentOpenReturn[]>('/scm/arap/payment-open-returns', { params }),
+  // 单据查询表：采购 / 销售退货、采购 / 销售发票逐单逐行（第四份反馈 Q6 ~ Q8）
+  getDocQueryReport: (params: { doc_type: string; start_date?: string; end_date?: string; partner_code?: string; status?: string; keyword?: string; page?: number; page_size?: number }) =>
+    request.get<{ list: any[]; total: number; summary: { doc_count: number; qty: number; amount: number; tax_amount: number; amount_with_tax: number } }>('/scm/report/doc-query', { params }),
+  // 对账单（单据化）
+  getStatements: (params: { direction?: string; partner_code?: string; status?: string; keyword?: string; date_from?: string; date_to?: string; page?: number; page_size?: number }) =>
+    request.get<{ list: ScmStatement[]; total: number }>('/scm/statements', { params }),
+  getStatement: (id: string) => request.get<ScmStatement & { lines: ScmStatementLine[] }>(`/scm/statements/${id}`),
+  getStatementCandidates: (params: { direction: string; partner_code: string; end_date: string; start_date?: string; statement_id?: string }) =>
+    request.get<{ rows: ScmStatementLine[]; ledger_balance: number }>('/scm/statements/candidates', { params }),
+  getStatementDetailReport: (params: { direction: string; partner_code?: string; date_from?: string; date_to?: string; status?: string }) =>
+    request.get<{ list: ScmStatementLine[]; summary: { total: number; reconciled: number; pending: number; unreconciled: number } }>('/scm/statements/detail-report', { params }),
+  createStatement: (data: ScmStatementInput) => request.post<{ id: string; stmt_no: string }>('/scm/statements', data),
+  updateStatement: (id: string, data: ScmStatementInput) => request.put<{ id: string; stmt_no: string }>(`/scm/statements/${id}`, data),
+  deleteStatement: (id: string) => request.delete(`/scm/statements/${id}`),
+  auditStatement: (id: string) => request.post(`/scm/statements/${id}/audit`),
+  unauditStatement: (id: string) => request.post(`/scm/statements/${id}/unaudit`),
   verifyArap: (data: { partner_code: string; verify_date?: string; matches: Array<{ in_log_id: string; out_log_id: string; amount: number }> }) =>
     request.post<{ verify_no: string; count: number }>('/scm/arap/verify', data),
   listArapVerifies: (params?: { partner_code?: string }) =>
     request.get<any[]>('/scm/arap/verify-list', { params }),
-  cancelArapVerify: (verifyNo: string) =>
-    request.post<{ count: number }>(`/scm/arap/verify/${verifyNo}/cancel`, {}),
+  cancelArapVerify: (verifyNo: string, config?: { skipErrorToast?: boolean }) =>
+    request.post<{ count: number }>(`/scm/arap/verify/${encodeURIComponent(verifyNo)}/cancel`, {}, config as RequestConfig),
+  // 核销单记录（跨往来单位分页）+ 详情
+  getArapVerifyRecords: (params: { date_from?: string; date_to?: string; partner_code?: string; keyword?: string; side?: string; gen_mode?: string; page?: number; page_size?: number }) =>
+    request.get<{ list: ArapVerifyRecord[]; total: number; total_amount: number; page: number; page_size: number }>('/scm/arap/verify-records', { params }),
+  getArapVerifyDetail: (verifyNo: string) =>
+    request.get<ArapVerifyDetail>(`/scm/arap/verify-records/${encodeURIComponent(verifyNo)}`),
   // 到期提醒 + 信用占用
   getArapDueReminder: (params?: { as_of_date?: string; upcoming_days?: number }) =>
     request.get<{ overdue: any[]; upcoming: any[]; overdue_total: number; upcoming_total: number }>('/scm/arap/due-reminder', { params }),

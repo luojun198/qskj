@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { initCashFlowForAccountSetSafe } from '../services/cashFlowAccountMap.js'
 import bcrypt from 'bcryptjs'
 import { v4 as uuidv4 } from 'uuid'
 import { existsSync, mkdirSync, unlinkSync, readFileSync } from 'fs'
@@ -30,6 +31,7 @@ import {
   listActiveLoginSessions,
 } from '../services/loginSession.js'
 import { log } from '../utils/logger.js'
+import { assertConcurrencyAvailable } from '../services/licenseService.js'
 import { listActiveUsersForAccountSet } from '../services/loginUsers.js'
 import {
   resolvePrimaryUserRole,
@@ -202,6 +204,8 @@ router.post('/account-sets/create', (req, res) => {
       fiscal_year: fiscalYear,
       unit_name: name,
     })
+    // 空白账套还没有科目：先按准则补齐现金流量项目，科目建好后首次取数 / 打开设置页时再预设
+    initCashFlowForAccountSetSafe(db, id)
 
     // 自动创建超级管理员 admin/admin123
     ensureAccountSetSecurityBootstrap(id)
@@ -384,6 +388,11 @@ router.post('/login', async (req, res) => {
       currentLoginIp,
       currentLoginIp
     )
+  }
+
+  const concurrencyError = assertConcurrencyAvailable(user.id, currentLoginIp, db)
+  if (concurrencyError) {
+    return res.status(403).json(concurrencyError)
   }
 
   const sessionId = uuidv4()
@@ -616,6 +625,16 @@ router.post('/switch-operator', authMiddleware, (req: AuthRequest, res) => {
       currentLoginIp,
       currentLoginIp
     )
+  }
+
+  const concurrencyError = assertConcurrencyAvailable(
+    user.id,
+    currentLoginIp,
+    db,
+    req.sessionId || undefined
+  )
+  if (concurrencyError) {
+    return res.status(403).json(concurrencyError)
   }
 
   if (req.sessionId) {

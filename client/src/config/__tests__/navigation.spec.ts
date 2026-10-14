@@ -94,8 +94,8 @@ describe('navigation permissions', () => {
       const seen = new Map<string, string>()
       for (const app of apps) {
         for (const item of flattenNavApps([app])) {
-          // 出纳档案/资产档案在「基础资料」与各自应用里刻意双挂，其余路径必须唯一
-          const allowDuplicate = ['/cashier/settle-type', '/cashier/init-balance', '/asset/dict'].includes(item.path)
+          // 出纳档案/资产档案在「基础资料」与各自应用里刻意双挂；组装/拆卸单在「库存管理」与「生产制造」双挂；其余路径必须唯一
+          const allowDuplicate = ['/cashier/settle-type', '/cashier/accounts-manage', '/cashier/init-balance', '/asset/dict', '/scm/docs?doc_type=AS', '/scm/docs?doc_type=DS'].includes(item.path)
           if (seen.has(item.path) && !allowDuplicate) {
             throw new Error(`${item.path} 同时出现在 ${seen.get(item.path)} 与 ${app.title}`)
           }
@@ -118,6 +118,7 @@ describe('navigation permissions', () => {
       expect(reports?.items.map(i => i.title)).toEqual([
         '标准报表',
         '财务分析',
+        '现金流量表',
         '现金流量表(估算)',
         '资产负债表',
       ])
@@ -128,11 +129,11 @@ describe('navigation permissions', () => {
       const apps = buildNavApps(['scm:sale', 'scm:purchase', 'scm:report'], false, [])
       const sales = apps.find(a => a.key === 'sales')
       expect(sales?.sections.find(s => s.label === '销售报表')?.items.map(i => i.title)).toEqual([
-        '销售汇总表', '销售明细表', '销售排行榜', '销售毛利分析', '销售订单执行表', '销售趋势分析', '自定义查询',
+        '销售汇总表', '销售明细表', '销售退货统计表', '销售退货查询表', '销售发票查询表', '销售排行榜', '销售毛利分析', '销售订单执行表', '销售趋势分析', '自定义查询',
       ])
       const purchase = apps.find(a => a.key === 'purchase')
       expect(purchase?.sections.find(s => s.label === '采购报表')?.items.map(i => i.title)).toEqual([
-        '采购汇总表', '采购明细表', '采购订单执行表', '采购排行榜', '采购成本分析', '采购趋势分析', '自定义查询',
+        '采购汇总表', '采购明细表', '采购订单执行表', '采购退货统计表', '采购退货查询表', '采购发票查询表', '采购排行榜', '采购成本分析', '采购趋势分析', '自定义查询',
       ])
       expect(purchase?.sections.find(s => s.label === '缺料与建议')?.items.map(i => i.title)).toEqual(['缺料单', '采购建议'])
     })
@@ -147,7 +148,9 @@ describe('navigation permissions', () => {
         '/scm/docs?doc_type=RCV&payment_mode=advance',
         '/scm/docs?doc_type=PAY&payment_mode=advance',
       ])
-      expect(flattenNavApps([arap!]).filter(i => i.path.startsWith('/scm/arap-verify'))).toHaveLength(1)
+      expect(flattenNavApps([arap!]).filter(i => i.path === '/scm/arap-verify')).toHaveLength(1)
+      // 核销单记录：独立列表入口（客户反馈：已做的核销单无处查看 / 删除）
+      expect(flattenNavApps([arap!]).filter(i => i.path === '/scm/arap-verify-records')).toHaveLength(1)
     })
 
     it('readonly 角色仅见财务会计中的查询项', () => {
@@ -187,11 +190,16 @@ describe('navigation permissions', () => {
       expect(all.some(i => i.path === '/report/cash-flow')).toBe(false)
     })
 
-    it('基础资料：财务档案直挂总账项，出纳/资产/供应链档案按模块分组', () => {
+    it('基础资料：严格 5 个分区（财务/资产/出纳/供应链/公共档案）', () => {
       const apps = buildNavApps(ADMIN_PERMISSIONS, true, [])
       const basedata = apps.find(a => a.key === 'basedata')
-      expect(basedata?.sections.map(s => s.label)).toEqual(['财务档案', '出纳档案', '资产档案', '供应链档案', '报表与打印'])
-      expect(basedata?.sections[0].items.map(i => i.title)).toEqual(['会计科目', '套账信息', '期初余额', '凭证类型', '凭证模版', '结转维护'])
+      expect(basedata?.sections.map(s => s.label)).toEqual(['财务档案', '资产档案', '出纳档案', '供应链档案', '公共档案'])
+      expect(basedata?.sections[0].items.map(i => i.title)).toEqual([
+        '会计科目', '期初余额', '凭证类型', '凭证模版', '结转维护', '现金流量项目', '科目现金流量项目', '报表维护',
+      ])
+      expect(basedata?.sections[3].items.map(i => i.title)).toContain('进销存凭证设置')
+      expect(basedata?.sections[4].items.map(i => i.title)).toEqual(['套账信息', '打印模版'])
+      expect(basedata?.sections[3].items.map(i => i.title)).toEqual(expect.arrayContaining(['单据自定义字段', '列方案设置']))
     })
 
     it('buildMenuGroups 兼容层：每个应用摊平为一个 NavGroup，children 为全部页面、subGroups 对应分组', () => {
@@ -220,11 +228,12 @@ describe('navigation permissions', () => {
   describe('注册模块过滤', () => {
     const GL_ONLY = ['gl']
 
-    it('只授权总账时，仅财务会计/基础资料/系统管理可见，基础资料只剩财务档案与报表打印', () => {
+    it('只授权总账时，仅财务会计/基础资料/系统管理可见，基础资料只剩财务档案与公共档案', () => {
       const apps = buildNavApps(ADMIN_PERMISSIONS, true, [], GL_ONLY)
       expect(apps.map(a => a.key)).toEqual(['finance', 'basedata', 'system'])
       const basedata = apps.find(a => a.key === 'basedata')
-      expect(basedata?.sections.map(s => s.label)).toEqual(['财务档案', '报表与打印'])
+      expect(basedata?.sections.map(s => s.label)).toEqual(['财务档案', '公共档案'])
+      expect(basedata?.sections[1].items.map(i => i.title)).toEqual(['套账信息', '打印模版'])
     })
 
     it('授权进销存+生产但无委外时，委外应用隐藏、生产应用可见', () => {
@@ -283,13 +292,13 @@ describe('navigation permissions', () => {
       const scmDocs = basedata?.sections.find(s => s.label === '供应链档案')
       expect(scmDocs?.items.map(i => i.path)).toEqual([
         '/scm/items', '/scm/categories', '/scm/item-types', '/scm/units',
-        '/scm/warehouses', '/scm/bins',
+        '/scm/warehouses', '/scm/bins', '/scm/doc-field-defs', '/scm/col-schemes', '/base/scm-voucher-setting',
       ])
 
-      // 库存管理只剩期初入库 + 查询 + 报表，其他出入库/调拨/盘点属进销存
+      // 库存管理只剩期初入库 + 组装/拆卸（生产授权）+ 查询 + 报表，其他出入库/调拨/盘点属进销存
       const inventory = apps.find(a => a.key === 'inventory')
       expect(inventory?.sections.flatMap(s => s.items.map(i => i.path))).toEqual([
-        '/scm/docs?doc_type=IS',
+        '/scm/docs?doc_type=IS', '/scm/docs?doc_type=AS', '/scm/docs?doc_type=DS',
         '/scm/stock', '/scm/batch-stock', '/scm/serials',
         '/scm/report', '/scm/report/stock-ledger', '/scm/report/stock-layers', '/scm/report/month-avg-costing',
         '/scm/report/stock-alert', '/scm/report/batch-alert',

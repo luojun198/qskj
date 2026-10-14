@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { initCashFlowForAccountSetSafe } from '../services/cashFlowAccountMap.js'
 import { firstNonLeafError } from '../services/accountReferences.js'
 import { v4 as uuidv4 } from 'uuid'
 import bcrypt from 'bcryptjs'
@@ -61,6 +62,7 @@ import {
   buildPresetDashboardBudgetRules,
 } from '../services/dashboardCategoryConfig.js'
 import { resolveAccountingStandard } from '../services/staticReportConfig.js'
+import { PAYMENT_VOUCHER_MODE_KEY, validatePaymentVoucherMode } from '../services/paymentVoucherMode.js'
 import {
   allocateAccountSetCode,
   bootstrapNewAccountSetDefaults,
@@ -69,7 +71,7 @@ import {
   syncAccountSetStartDate,
   isValidAccountSetStartDate,
 } from '../services/accountSetDefaults.js'
-import { cleanupAccountSetCascade } from '../services/accountSetCleanup.js'
+import { startAccountSetDeleteJob } from '../services/accountSetDeleteJob.js'
 import {
   readGlobalBranding,
   upsertGlobalBrandParam,
@@ -220,6 +222,8 @@ router.post(
       fiscal_year: fiscalYear,
       unit_name: name,
     })
+    // 空白账套还没有科目：先按准则补齐现金流量项目，科目建好后首次取数 / 打开设置页时再预设
+    initCashFlowForAccountSetSafe(db, id)
 
     // 自动创建超级管理员 admin/admin123
     ensureAccountSetSecurityBootstrap(id)
@@ -304,19 +308,15 @@ router.delete(
     if (!password || !bcrypt.compareSync(password, adminUser.password)) {
       return res.status(400).json({ code: 400, message: '管理员密码错误' })
     }
-    try {
-      cleanupAccountSetCascade(db, id)
-    } catch (err: any) {
-      const msg = String(err?.message || err)
-      if (msg.includes('FOREIGN KEY')) {
-        return res.status(500).json({
-          code: 500,
-          message: '删除账套失败：存在未清理的关联数据，请联系管理员或升级至最新版本后重试',
-        })
-      }
-      return res.status(500).json({ code: 500, message: '删除账套失败: ' + msg })
+    const setRow = db.prepare('SELECT name FROM account_sets WHERE id = ?').get(id) as
+      | { name?: string }
+      | undefined
+    // 异步任务：立即返回，前端轮询 /account-sets/delete-progress（由 accountSetBusy 中间件应答）
+    const job = startAccountSetDeleteJob(db, id, setRow?.name || '')
+    if (!job) {
+      return res.status(409).json({ code: 409, message: '已有账套正在删除，请稍候' })
     }
-    res.json({ code: 0, message: '删除成功' })
+    res.json({ code: 0, message: '已开始删除', data: { taskId: job.taskId } })
   }
 )
 
@@ -497,6 +497,7 @@ router.post(
     try {
       const acdBuffer = readFileSync(templateFilePath)
       const stats = importAcdTemplateToAccountSet(id, acdBuffer)
+      initCashFlowForAccountSetSafe(getDb(), id)
 
       // Import Excel files from the same template directory
       const excelFiles = findExcelFilesInTemplateDir(templateFilePath)
@@ -1224,7 +1225,9 @@ router.put(
     const db = getDb()
     const paramList = Array.isArray(params) ? params : []
     for (const p of paramList) {
-      const error = validateSystemParamEntry(p.param_key, String(p.param_value ?? ''), paramList)
+      const error = p.param_key === PAYMENT_VOUCHER_MODE_KEY
+        ? validatePaymentVoucherMode(String(p.param_value ?? ''))
+        : validateSystemParamEntry(p.param_key, String(p.param_value ?? ''), paramList)
       if (error) {
         return res.status(400).json({ code: 400, message: error })
       }

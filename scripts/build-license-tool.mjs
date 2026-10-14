@@ -31,12 +31,16 @@ title CW Finance - 注册码生成器
 :: 本文件为 GBK 编码：脚本里预先 chcp 65001 会让 set /p 读不到输入，
 :: 因此保持系统默认代码页问答，只在调用 exe（UTF-8 输出）时临时切到 65001。
 :: 双击直接进入交互问答；也支持命令行传参：
-::   生成注册码.bat A1B2C3D4E5F6 2027-12-31 gl,cashier
+::   生成注册码.bat A1B2C3D4E5F6 2027-12-31 gl,cashier 5   （最后一项为最大并发人数，0/省略 = 不限）
 set "MACHINE_ID=%~1"
 set "EXPIRES=%~2"
 :: cmd 默认把逗号也当参数分隔符，模块列表按空格重新切一次才能保住 gl,cashier 这种写法
 set "MODULES="
-for /f "tokens=1,2* delims= " %%a in ("%*") do set "MODULES=%%c"
+set "CONCURRENT="
+for /f "tokens=1,2,3,4 delims= " %%a in ("%*") do (
+    set "MODULES=%%c"
+    set "CONCURRENT=%%d"
+)
 
 set "ROOT=%~dp0"
 if "%ROOT:~-1%"=="\\" set "ROOT=%ROOT:~0,-1%"
@@ -85,7 +89,7 @@ if not defined EXPIRES echo [提示] 截止日期不能为空，请重新输入�
 goto ASK_EXPIRES
 
 :ASK_MODULES
-if defined MODULES goto GENERATE
+if defined MODULES goto ASK_CONCURRENT
 echo.
 echo ---------- 可授权模块 ----------
 echo   1. 总账        (gl)
@@ -101,6 +105,14 @@ echo.
 set /p "MODULES=请输入授权模块: "
 if not defined MODULES set "MODULES=all"
 
+:ASK_CONCURRENT
+if defined CONCURRENT goto GENERATE
+echo.
+echo ---------- 并发授权 ----------
+echo 最多允许多少人同时在线（正整数）；直接回车 = 不限制
+set /p "CONCURRENT=请输入最大并发在线人数: "
+if not defined CONCURRENT set "CONCURRENT=0"
+
 :GENERATE
 :: exe 输出为 UTF-8，切到 65001 才不会乱码；打印完再切回原代码页
 set "OLD_CP="
@@ -108,7 +120,7 @@ for /f "tokens=2 delims=:" %%c in ('chcp') do set "OLD_CP=%%c"
 set "OLD_CP=!OLD_CP: =!"
 chcp 65001 >nul
 echo.
-"%GENERATOR%" -m "%MACHINE_ID%" -e "%EXPIRES%" -M "%MODULES%" -k "%PRIVATE_KEY%"
+"%GENERATOR%" -m "%MACHINE_ID%" -e "%EXPIRES%" -M "%MODULES%" -c "%CONCURRENT%" -k "%PRIVATE_KEY%"
 set "TOOL_EXIT=!errorlevel!"
 if defined OLD_CP chcp !OLD_CP! >nul
 
@@ -148,6 +160,7 @@ const USAGE_TXT = `CW Finance 注册机 使用说明
          机器码       例如 A1B2C3D4E5F6
          截止日期     例如 2027-12-31（含当天）
          授权模块     输入编号或 key，逗号分隔；直接回车 = 全部
+         并发人数     最多同时在线人数（正整数）；直接回车 = 不限制
     4. 把生成的注册码整行复制发给客户（程序已尝试写入剪贴板）
     5. 客户在激活页粘贴并点击「激活」即可
 
@@ -165,12 +178,14 @@ const USAGE_TXT = `CW Finance 注册机 使用说明
       - 旧版注册码（无模块信息）视为授权全部模块
 
 五、命令行用法（可选）
-    生成注册码.bat A1B2C3D4E5F6 2027-12-31 gl,cashier
-    generate-license.exe -m A1B2C3D4E5F6 -e 2027-12-31 -M all
+    生成注册码.bat A1B2C3D4E5F6 2027-12-31 gl,cashier 5
+    generate-license.exe -m A1B2C3D4E5F6 -e 2027-12-31 -M all -c 5
 
 六、注意事项
     - 私钥 license-private.pem 是发码的唯一凭据，请单独备份，不要交给客户
-    - 续期或增加模块：重新生成一个新注册码，客户再激活一次即可覆盖
+    - 续期、增加模块或调整并发人数：重新生成一个新注册码，客户在
+      「系统管理 → 系统设置 → 注册信息」页（或激活页）重新提交即可覆盖
+    - 并发授权按「用户 + IP」去重统计在线人数，登录时校验；旧注册码视为不限制
     - 客户更换电脑或更换主要硬件后机器码会变，需要重新发码
 `
 

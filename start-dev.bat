@@ -76,7 +76,7 @@ echo.
 echo [2/3] Waiting for servers to be ready ...
 
 set "READY=0"
-for /L %%i in (1,1,30) do (
+for /L %%i in (1,1,120) do (
     if !READY! equ 0 (
         :: Check both ports are listening
         netstat -aon | findstr ":3105 " | findstr "LISTENING" >nul 2>&1
@@ -105,10 +105,10 @@ if %READY% equ 1 (
     >>"%START_LOG%" echo [%date% %time%] Both services are ready.
 ) else (
     echo.
-    echo [ERROR] Services did not become ready within 30 seconds.
+    echo [ERROR] Services did not become ready within 120 seconds.
     echo Check the CW Backend / CW Frontend windows for the exact error.
     echo Launcher log: %START_LOG%
-    >>"%START_LOG%" echo [%date% %time%] ERROR: services not ready after 30 seconds.
+    >>"%START_LOG%" echo [%date% %time%] ERROR: services not ready after 120 seconds.
     rmdir "%START_LOCK%" >nul 2>&1
     pause
     exit /b 1

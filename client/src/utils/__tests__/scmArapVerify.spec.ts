@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { allocateArapAmount, partnerMatchesArapSide, sumArapOpenAmount } from '../scmArapVerify'
+import { allocateArapAmount, autoMatchArap, partnerMatchesArapSide, sumArapOpenAmount } from '../scmArapVerify'
 
 const rows = [
   { id: 'A', open_amount: 100 },
@@ -28,5 +28,33 @@ describe('往来核销金额自动找平', () => {
     expect(partnerMatchesArapSide({ partner_type: 'supplier' }, 'ap')).toBe(true)
     expect(partnerMatchesArapSide({ partner_type: 'both' }, 'ar')).toBe(true)
     expect(partnerMatchesArapSide({ partner_type: 'both' }, 'ap')).toBe(true)
+  })
+})
+
+describe('autoMatchArap 自动勾稽', () => {
+  it('金额相等优先一对一配对，不被先进先出打乱', () => {
+    const r = autoMatchArap(
+      [{ id: 'I1', open_amount: 100, doc_date: '2026-01-01' }, { id: 'I2', open_amount: 300, doc_date: '2026-01-02' }],
+      [{ id: 'O1', open_amount: 50, doc_date: '2026-01-01' }, { id: 'O2', open_amount: 300, doc_date: '2026-01-03' }],
+    )
+    expect(r.matches).toContainEqual({ in_log_id: 'I2', out_log_id: 'O2', amount: 300 })
+    expect(r.matches).toContainEqual({ in_log_id: 'I1', out_log_id: 'O1', amount: 50 })
+    expect(r.total).toBe(350)
+  })
+
+  it('先进先出部分核销，两侧合计找平', () => {
+    const r = autoMatchArap(
+      [{ id: 'S9', open_amount: 6450, doc_date: '2026-10-10', created_at: '1' }, { id: 'S10', open_amount: 4360, doc_date: '2026-10-10', created_at: '2' }],
+      [{ id: 'R', open_amount: 15000, doc_date: '2026-10-10' }],
+    )
+    expect(r.outAmounts.R).toBe(10810)
+    expect(r.inAmounts).toEqual({ S9: 6450, S10: 4360 })
+    const r2 = autoMatchArap([{ id: 'S', open_amount: 3870 }], [{ id: 'R', open_amount: 3000 }])
+    expect(r2.matches).toEqual([{ in_log_id: 'S', out_log_id: 'R', amount: 3000 }])
+  })
+
+  it('不同币别不配对；单侧为空返回空', () => {
+    expect(autoMatchArap([{ id: 'I', open_amount: 100, currency: 'USD' }], [{ id: 'O', open_amount: 100, currency: 'CNY' }]).matches).toEqual([])
+    expect(autoMatchArap([{ id: 'I', open_amount: 100 }], []).matches).toEqual([])
   })
 })

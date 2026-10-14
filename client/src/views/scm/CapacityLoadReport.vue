@@ -14,6 +14,7 @@
         <el-radio-button value="schedule">按排程周</el-radio-button>
       </el-radio-group>
       <el-button type="primary" size="small" :loading="loading" @click="load">查询</el-button>
+      <SaveAsButton title="产能负荷表" />
       <FilterClearButton size="small" @clear="clear" />
       <el-button size="small" @click="router.push({ name: 'ScmAutoSchedule' })">去自动排程</el-button>
     </div>

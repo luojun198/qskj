@@ -86,6 +86,9 @@ describe('供应链批量单据预校验', () => {
   it('生产计划批量动作要求全部状态和依赖条件一致', () => {
     const draft = [{ id: 'P1', code: 'PP-001', status: 'draft', doc_count: 0, mrp_status: null }]
     expect(() => validateProductionPlanBatchAction('delete', draft)).not.toThrow()
+    // 列表批量审核（客户反馈）：只接受草稿
+    expect(() => validateProductionPlanBatchAction('release', draft)).not.toThrow()
+    expect(() => validateProductionPlanBatchAction('release', [{ ...draft[0], status: 'released' }])).toThrow('草稿')
     expect(() => validateProductionPlanBatchAction('unrelease', draft)).toThrow('已审核')
     expect(() => validateProductionPlanBatchAction('reopen', [{ ...draft[0], status: 'closed' }])).not.toThrow()
     expect(() => validateProductionPlanBatchAction('unrelease', [{ ...draft[0], status: 'released', doc_count: 1 }])).toThrow('下游')

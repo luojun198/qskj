@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "predev": "node ../scripts/generate-build-info.cjs --dev",
-    "dev": "vite --host 0.0.0.0 --port 5275",
+    "dev": "node ../scripts/wait-backend.mjs && vite --host 0.0.0.0 --port 5275",
     "prebuild": "node ../scripts/generate-build-info.cjs",
     "build": "vue-tsc -b && vite build",
     "build:deploy": "node ../scripts/generate-build-info.cjs && vite build",

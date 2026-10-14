@@ -7,6 +7,7 @@
  * 让「增减变动表」与资产台账能看到这次部门转移。
  */
 import type { Database } from 'better-sqlite3'
+import { assertNotBeforeGlStart } from './voucherMutationGuard.js'
 import { v4 as uuidv4 } from 'uuid'
 import { revokeAssetChange } from './assetChange.js'
 import { assertNotAfterCurrentPeriod, assertPeriodOpen } from './assetVoucherBuilder.js'
@@ -66,6 +67,7 @@ function assertRequisitionDateWritable(db: Database, accountSetId: string, date:
   }
   assertNotAfterCurrentPeriod(y, m, '领用 / 归还日期')
   assertPeriodOpen(db, accountSetId, y, m)
+  assertNotBeforeGlStart(db, accountSetId, date, '领用 / 归还日期')
 }
 
 /** 资产当前是否处于已领用未归还状态 */

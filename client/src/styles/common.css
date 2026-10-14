@@ -186,8 +186,8 @@
   /* ========== 紧凑密度变量（参照金蝶星辰：上下菜单栏紧凑，数据区尽量大） ==========
      全站外框与页面留白统一从这里取值，改一处全站生效。
      数据行 30px / 控件 28px 已与金蝶一致，不再压缩（再小金额难以辨认）。 */
-  --layout-header-h: 40px;     /* 顶栏（原 60px） */
-  --layout-tabs-h: 32px;       /* 多页签栏（原 38px） */
+  --layout-header-h: 34px;     /* 顶栏（原 60px） */
+  --layout-tabs-h: 28px;       /* 多页签栏（原 38px） */
   --layout-main-pad: 6px;      /* 主内容区内边距（原 8px） */
   --page-pad: 6px 10px;        /* .page 内边距（原 16px / 12px / 10px 12px 混用） */
   --page-pad-x: 10px;          /* 页面内二级容器需要水平留白时使用 */
@@ -706,8 +706,12 @@
   letter-spacing: 0;
 }
 
-.el-table__row {
-  transition: background-color 0.2s ease;
+/* 表格行/单元格一律不做底色渐变，避免选中/悬停时出现“模糊一下”的拖影 */
+.el-table .el-table__row,
+.el-table .el-table__cell,
+.el-table-v2__row,
+.el-table-v2__row-cell {
+  transition: none !important;
 }
 
 .el-table:not(.el-table--striped) .el-table__row:nth-child(even) {
@@ -727,7 +731,6 @@
 .el-table--striped .el-table__body tr.el-table__row--striped.current-row > td.el-table__cell:not(.el-table-fixed-column--left):not(.el-table-fixed-column--right),
 .el-table--striped .el-table__body tr.el-table__row--striped.is-selected > td.el-table__cell:not(.el-table-fixed-column--left):not(.el-table-fixed-column--right) {
   background-color: #b3d8ff !important;
-  font-weight: 500;
 }
 
 .el-table__body tr.current-row:hover > td.el-table__cell:not(.el-table-fixed-column--left):not(.el-table-fixed-column--right),
@@ -897,9 +900,9 @@
   background: var(--cw-bg-elevated);
 }
 
+/* 悬停不做位移：translateY 会把整张卡片（含表格）提升为合成层，普通 DPI 屏文字发虚 */
 .el-card:hover {
   box-shadow: var(--cw-shadow-lg);
-  transform: translateY(-2px);
 }
 
 .el-card__header {
@@ -1268,7 +1271,9 @@
   .layout-container .header,
   .collapse-btn,
   .header-right,
-  .el-breadcrumb {
+  .el-breadcrumb,
+  .tabs-bar,
+  .app-rail {
     display: none !important;
   }
 
@@ -1443,7 +1448,7 @@
 /* ========== 页头/筛选区按钮扁平化（金蝶式工具栏） ==========
    plain 与默认按钮：无底无框，仅图标+文字；hover 显薄荷浅底；
    disabled 只淡化文字，不再渲染灰底盒子。
-   实心按钮（primary/success/warning/danger 非 plain）保持原样，承担主操作。 */
+   有类型按钮（primary/success/warning/danger）为全局白底描边样式，承担主操作。 */
 .page-header .el-button.is-plain:not(.is-link):not(.is-text),
 .filter-row .el-button.is-plain:not(.is-link):not(.is-text),
 .page-header .el-button:not(.is-plain):not(.is-link):not(.is-text):not(.el-button--primary):not(.el-button--success):not(.el-button--warning):not(.el-button--danger):not(.el-button--info),
@@ -1563,6 +1568,12 @@
   flex: 1 1 0;
   min-height: 0;
   width: 100%;
+}
+
+/* 表体横向可滚时（el-table--scrollable-x 由组件按列宽自动加），底部留出滚动条高度：
+   el-scrollbar 横条绝对定位叠在表体上，不留空滚到底时最后一行会被压住 */
+.el-table--scrollable-x .el-table__body-wrapper .el-scrollbar__view {
+  padding-bottom: 10px;
 }
 
 /* ----- 定高模式（无合计行）：表体内部纵向滚动，宽表横向由外层承担 ----- */
@@ -2127,4 +2138,35 @@
    （配合 composables/useVirtualTableHeaderScrollSync 的兜底回同步） */
 .el-table-v2__header-wrapper {
   user-select: none;
+}
+
+/* ========== 全页面顶部导航条右侧按钮区（单据 / 表单页 xxx-header__right）==========
+   按钮颜色 / 尺寸已由 apple-element-override.css 全局统一（白底描边、26px），这里只统一间隔。 */
+[class*="-header__right"]:not(.page-header__right) {
+  gap: 6px;
+  align-items: center;
+}
+
+[class*="-header__right"]:not(.page-header__right) .el-button + .el-button {
+  margin-left: 0;
+}
+
+/* ========== 表体末行合计（__summary 行，class doc-line-summary）：冻结在表格底部 ==========
+   DocList（各类单据列表）、StockList、DocForm 明细把合计作为表体最后一行，水平滚动条落在其下方；
+   这里用 sticky 贴住表体滚动容器底部，纵向滚动时始终可见。背景必须不透明，遮住滚过的行。 */
+.el-table .doc-line-summary > td.el-table__cell,
+.el-table .doc-line-summary:hover > td.el-table__cell,
+.el-table--striped .el-table__body tr.doc-line-summary.el-table__row--striped > td.el-table__cell {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  background: var(--el-fill-color-light, #f5f7fa);
+  box-shadow: inset 0 1px 0 var(--el-border-color, #dcdfe6);
+  font-weight: 600;
+}
+
+/* 左/右固定列（如勾选列）同时 sticky left/right，层级再高一级，横向滚动时不被普通合计单元格盖住 */
+.el-table .doc-line-summary > td.el-table-fixed-column--left,
+.el-table .doc-line-summary > td.el-table-fixed-column--right {
+  z-index: 4;
 }

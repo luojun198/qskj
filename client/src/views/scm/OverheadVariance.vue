@@ -12,6 +12,7 @@
       </el-radio-group>
       <el-input v-model="accountCode" size="small" style="width:150px" placeholder="科目编码（默认参数）" @change="load" />
       <el-button type="primary" size="small" :loading="loading" @click="load">试算</el-button>
+      <SaveAsButton title="制费人工吸收差异" />
     </div>
     <template v-if="pv">
       <div class="summary-grid">

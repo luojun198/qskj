@@ -2,10 +2,7 @@
   <section v-show="visible" class="param-section param-section--brand">
     <header class="param-section__head">
       <span class="param-section__marker" aria-hidden="true"></span>
-      <h4 class="param-section__title">
-        品牌展示
-        <span class="param-section__sub">侧边栏 LOGO、主标题与副标题（Ctrl+Shift+L 打开/关闭）</span>
-      </h4>
+      <h4 class="param-section__title">品牌展示<ParamTip content="侧边栏 LOGO、主标题与副标题（Ctrl+Shift+L 打开/关闭）" /></h4>
     </header>
     <div class="param-section__body">
       <div class="brand-settings">
@@ -52,6 +49,7 @@
 </template>
 
 <script setup lang="ts">
+import ParamTip from './ParamTip.vue'
 import { computed, ref, watch } from 'vue'
 import type { UploadFile } from 'element-plus'
 import { useBrandingStore } from '@/stores/branding'

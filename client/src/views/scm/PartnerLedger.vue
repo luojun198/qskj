@@ -12,6 +12,7 @@
       <el-date-picker v-model="startDate" type="date" value-format="YYYY-MM-DD" placeholder="开始日期" style="width:140px" size="small" />
       <el-date-picker v-model="endDate" type="date" value-format="YYYY-MM-DD" placeholder="结束日期" style="width:140px" size="small" />
       <el-button type="primary" plain size="small" @click="load"><el-icon><Search /></el-icon>查询</el-button>
+      <SaveAsButton title="往来台账" />
       <FilterClearButton size="small" @clear="handleClearFilters" />
       <span class="total-hint" v-if="isSummaryView">
         共 {{ summary.length }} 个单位
@@ -124,6 +125,15 @@ const router = useRouter()
 const partners = ref<ScmPartner[]>([])
 const partnerCode = ref<string>((route.query.partner_code as string) || '')
 const arapType = ref<'' | 'ar' | 'ap'>('')
+// 应收应付主页的镜像链接带 ?arap_type=ar|ap 预置方向；仅在 URL 值变化时套用，不覆盖用户手动切换
+let appliedQueryArapType = ''
+function applyQueryArapType() {
+  const q = String(route.query.arap_type || '')
+  if (q === appliedQueryArapType) return
+  appliedQueryArapType = q
+  if (q === 'ar' || q === 'ap') arapType.value = q
+}
+applyQueryArapType()
 const startDate = ref('')
 const endDate = ref('')
 const loading = ref(false)
@@ -177,13 +187,15 @@ const DOC_TYPE_NAMES: Record<string, string> = {
   IS: '期初入库', PI: '采购入库', PR: '采购退货', SO: '销售出库', SR: '销售退货', OI: '其他入库', OO: '其他出库',
   TR: '调拨单', CK: '盘点单', AS: '组装单', DS: '拆卸单', PQ: '采购询价单', PO: '采购订单',
   SQ: '销售报价单', SOa: '销售订单', RP: '采购发票', RS: '销售发票', PAY: '付款单', RCV: '收款单', MR: '缺料单',
-  PL: '生产领用', PF: '完工入库', PS: '不良品入库', PB: '补料单', PJ: '退料单', WO: '委外发货', WI: '委外入库',
+  PL: '生产领用', PF: '完工入库', PS: '不良品入库', PB: '补料单', PJ: '退料单', WO: '委外发货', WI: '委外入库', OP: '工序委外',
 }
 function typeName(t: string) { return DOC_TYPE_NAMES[t] || t }
 const fmt = (v: any) => (Number(v) || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const AR_BUSINESS_TYPES = new Set(['SO', 'SR', 'RS', 'RCV'])
-const AP_BUSINESS_TYPES = new Set(['PI', 'PR', 'RP', 'PAY', 'WI'])
+const AP_BUSINESS_TYPES = new Set(['PI', 'PR', 'RP', 'PAY', 'WI', 'OP'])
 function isArBusiness(row: any) {
+  // 组装单加工费既可能应收也可能应付：以后端标注的 arap_side 为准
+  if (row?.arap_side === 'ar' || row?.arap_side === 'ap') return row.arap_side === 'ar'
   if (AR_BUSINESS_TYPES.has(row?.doc_type)) return true
   if (AP_BUSINESS_TYPES.has(row?.doc_type)) return false
   return arapType.value !== 'ap'
@@ -272,6 +284,7 @@ function drillPartner(row: any) {
 let activatedAtLeastOnce = false
 
 function loadOnEntry() {
+  applyQueryArapType()
   // 明细账：默认不查全部（数据量大），需选往来单位后再查；余额表：保持默认查全部。
   if (!isDetailPage.value || partnerCode.value) load()
 }

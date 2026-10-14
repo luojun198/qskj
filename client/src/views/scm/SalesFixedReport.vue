@@ -10,7 +10,7 @@
       </nav>
       <div class="header-actions">
         <el-button @click="resetFilters(); queryReport(true)">清空</el-button>
-        <el-button :loading="exporting" @click="exportReport"><el-icon><Download /></el-icon>导出</el-button>
+        <el-button :loading="exporting" @click="exportReport"><el-icon><Download /></el-icon>另存</el-button>
         <el-button type="primary" :loading="loading" @click="queryReport(true)"><el-icon><Search /></el-icon>查询</el-button>
       </div>
     </div>
@@ -27,7 +27,7 @@
           更多条件<template v-if="moreFilterCount">（{{ moreFilterCount }}）</template>
           <el-icon><component :is="showMoreFilters ? ArrowUp : ArrowDown" /></el-icon>
         </el-button>
-        <template v-if="['summary',analysisCode,'ranking'].includes(reportCode)">
+        <template v-if="['summary','return',analysisCode,'ranking'].includes(reportCode)">
           <span class="control-label">{{ reportCode === 'ranking' ? '排名对象' : '统计方式' }}</span>
           <el-select v-model="grouping" style="width:210px"><el-option v-for="o in groupingOptions" :key="o.value" :label="o.label" :value="o.value" /></el-select>
         </template>
@@ -50,7 +50,7 @@
         <label class="filter-item"><span>部门</span><el-select v-model="filters.dept_codes" multiple filterable collapse-tags clearable><el-option v-for="o in options.departments" :key="o.value" :label="o.label" :value="o.value" /></el-select></label>
         <label class="filter-item"><span>仓库</span><el-select v-model="filters.warehouse_codes" multiple filterable collapse-tags clearable><el-option v-for="o in options.warehouses" :key="o.value" :label="o.label" :value="o.value" /></el-select></label>
         <label v-if="!isOrderTracking" class="filter-item"><span>批次</span><el-select v-model="filters.batch_nos" multiple filterable collapse-tags clearable><el-option v-for="o in options.batches" :key="o.value" :label="o.label" :value="o.value" /></el-select></label>
-        <label v-if="!isOrderTracking" class="filter-item"><span>业务类型</span><el-select v-model="filters.source_types" multiple clearable><el-option v-for="o in options.source_types" :key="o.value" :label="o.label" :value="o.value" /></el-select></label>
+        <label v-if="!isOrderTracking && reportCode !== 'return'" class="filter-item"><span>业务类型</span><el-select v-model="filters.source_types" multiple clearable><el-option v-for="o in options.source_types" :key="o.value" :label="o.label" :value="o.value" /></el-select></label>
         <label v-if="isOrderTracking" class="filter-item wide"><span>执行状态</span><el-select v-model="filters.order_statuses" multiple collapse-tags clearable><el-option v-for="o in options.order_statuses" :key="o.value" :label="o.label" :value="o.value" /></el-select></label>
       </div>
     </section>
@@ -136,23 +136,27 @@ let chart: echarts.ECharts | null = null
 
 const fallbackSalesReports = [
   { code: 'summary' as const, title: '销售汇总表', path: '/scm/report/sales/summary' }, { code: 'detail' as const, title: '销售明细表', path: '/scm/report/sales/detail' },
+  { code: 'return' as const, title: '销售退货统计表', path: '/scm/report/sales/return' },
   { code: 'ranking' as const, title: '销售排行榜', path: '/scm/report/sales/ranking' }, { code: 'profit' as const, title: '销售毛利分析', path: '/scm/report/sales/profit' },
   { code: 'trend' as const, title: '销售趋势分析', path: '/scm/report/sales/trend' },
 ]
 const fallbackPurchaseReports = [
   { code: 'summary' as const, title: '采购汇总表', path: '/scm/report/purchase/summary' }, { code: 'detail' as const, title: '采购明细表', path: '/scm/report/purchase/detail' },
   { code: 'order_tracking' as const, title: '采购订单执行表', path: '/scm/report/purchase/order-tracking' },
+  { code: 'return' as const, title: '采购退货统计表', path: '/scm/report/purchase/return' },
   { code: 'ranking' as const, title: '采购排行榜', path: '/scm/report/purchase/ranking' }, { code: 'cost' as const, title: '采购成本分析', path: '/scm/report/purchase/cost' },
   { code: 'trend' as const, title: '采购趋势分析', path: '/scm/report/purchase/trend' },
 ]
 const salesDescriptions: Record<SalesFixedReportCode, string> = {
   summary: '按客户、产品、仓库、批次等常用组合快速汇总经营结果。', detail: '逐笔查看销售业务、成本与毛利，并可打开原始单据。',
+  return: '只统计已审核的销售退货单，按客户、产品、仓库等查看退货数量与金额。',
   ranking: '按收入、数量、成本或毛利查看客户与产品等经营排名。', profit: '定位高毛利与负毛利业务，支持毛利和毛利率区间筛选。',
   trend: '按日、周、月、季度或年观察销售趋势，无业务期间自动补零。',
 }
 const purchaseDescriptions: Record<PurchaseFixedReportCode, string> = {
   summary: '按供应商、产品、仓库、批次等常用组合快速汇总采购结果。', detail: '逐笔查看采购业务、金额、入库成本与采购差额，并可打开原始单据。',
   order_tracking: '逐行追踪采购订单的待审核入库、实际入库、退货、未入库和逾期情况。',
+  return: '只统计已审核的采购退货单，按供应商、产品、仓库等查看退货数量与金额。',
   ranking: '按采购金额、数量、入库成本或采购差额查看供应商与产品排名。', cost: '对比采购金额与入库成本，定位异常采购差额。',
   trend: '按日、周、月、季度或年观察采购趋势，无业务期间自动补零。',
 }
@@ -160,7 +164,7 @@ const isPurchase = computed(() => props.reportType === 'purchase')
 const isOrderTracking = computed(() => isPurchase.value && props.reportCode === 'order_tracking')
 const reportType = computed(() => props.reportType)
 const tradeName = computed(() => isPurchase.value ? '采购' : '销售')
-const scopeText = computed(() => isOrderTracking.value ? 'PO 采购订单 → PI 采购入库 → PR 采购退货' : isPurchase.value ? 'PI 采购入库 − PR 采购退货' : 'SO 销售出库 − SR 销售退货')
+const scopeText = computed(() => props.reportCode === 'return' ? (isPurchase.value ? 'PR 采购退货（仅退货单，数量金额按正数）' : 'SR 销售退货（仅退货单，数量金额按正数）') : isOrderTracking.value ? 'PO 采购订单 → PI 采购入库 → PR 采购退货' : isPurchase.value ? 'PI 采购入库 − PR 采购退货' : 'SO 销售出库 − SR 销售退货')
 const partnerLabel = computed(() => isPurchase.value ? '供应商' : '客户')
 const personLabel = computed(() => isPurchase.value ? '采购员' : '业务员')
 const analysisCode = computed(() => isPurchase.value ? 'cost' : 'profit')

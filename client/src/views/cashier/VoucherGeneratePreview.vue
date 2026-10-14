@@ -23,7 +23,7 @@
       <div class="vgp-summary">
         <div class="vgp-card">
           <div class="vgp-card__label">将生成凭证</div>
-          <div class="vgp-card__value">{{ rows.length }} <span class="vgp-card__unit">张（每条记录一张）</span></div>
+          <div class="vgp-card__value">{{ voucherGroups.length }} <span class="vgp-card__unit">张{{ hasScmGroups ? '（收付款单同单合并一张）' : '（每条记录一张）' }}</span></div>
         </div>
         <div class="vgp-card">
           <div class="vgp-card__label">收入合计（借现金）</div>
@@ -37,7 +37,22 @@
           <div class="vgp-card__label">未填对方科目</div>
           <div class="vgp-card__value" style="color:var(--el-color-warning)">{{ missingCount }} <span class="vgp-card__unit">条需挂账或返回补全</span></div>
         </div>
+        <div v-if="missingAuxCount > 0" class="vgp-card vgp-card--danger">
+          <div class="vgp-card__label">辅助核算未填</div>
+          <div class="vgp-card__value" style="color:var(--el-color-danger)">{{ missingAuxCount }} <span class="vgp-card__unit">条需返回补填</span></div>
+        </div>
       </div>
+
+      <el-alert v-if="loadError" type="error" :closable="false" show-icon style="margin-bottom:10px" :title="loadError" />
+
+      <el-alert v-if="autoIncludedCount > 0" type="warning" :closable="false" show-icon style="margin-bottom:10px">
+        系统参数为「通过出纳生成凭证」：同一张收付款单的流水合并生成一张凭证，已自动带入未勾选的 {{ autoIncludedCount }} 条同单流水。
+      </el-alert>
+
+      <el-alert v-if="missingAuxCount > 0" type="error" :closable="false" show-icon style="margin-bottom:10px">
+        有 {{ missingAuxCount }} 条记录的对方科目挂了辅助核算（如部门、项目），但录单时未选择，生成的凭证将无法记账，已拦截。
+        请返回出纳录单补填后再生成：{{ missingAuxSample }}
+      </el-alert>
 
       <el-alert type="info" :closable="false" show-icon style="margin-bottom:10px">
         <template v-if="entryPreview">
@@ -62,7 +77,7 @@
         <div v-if="entryFlatList.length > 0" class="voucher-batch-bar voucher-query-summary-bar">
           <span class="summary-item">
             <span class="summary-label">将生成凭证：</span>
-            <span class="summary-value">{{ rows.length }} 张</span>
+            <span class="summary-value">{{ voucherGroups.length }} 张</span>
           </span>
           <span class="summary-item">
             <span class="summary-label">借方合计：</span>
@@ -81,7 +96,13 @@
           <el-table-column type="index" label="序号" width="60" align="center" />
           <el-table-column label="日期" prop="biz_date" width="110" />
           <el-table-column label="单据序号" prop="seq" width="80" align="center" />
-          <el-table-column label="摘要" prop="summary" min-width="200" show-overflow-tooltip />
+          <el-table-column label="摘要" prop="summary" min-width="200" show-overflow-tooltip>
+            <template #default="{ row }">
+              <el-tag v-if="row.scm_doc_no" size="small" type="warning" effect="plain" style="margin-right:4px">
+                {{ row.scm_doc_type === 'PAY' ? '付款单' : '收款单' }} {{ row.scm_doc_no }}{{ row.auto_included ? '（自动带入）' : '' }}
+              </el-tag>{{ row.summary }}
+            </template>
+          </el-table-column>
           <el-table-column label="对方科目" min-width="160" show-overflow-tooltip>
             <template #default="{ row }">{{ formatCounter(row.counter_account) }}</template>
           </el-table-column>
@@ -103,7 +124,10 @@
           </template>
           <el-table-column label="状态" width="110" align="center">
             <template #default="{ row }">
-              <el-tag v-if="row.counter_account" type="success" size="small" effect="plain">可生成</el-tag>
+              <el-tooltip v-if="row.missing_aux?.length" :content="`对方科目要求：${row.missing_aux.join('、')}`" placement="top">
+                <el-tag type="danger" size="small" effect="plain">缺{{ row.missing_aux.join('、') }}</el-tag>
+              </el-tooltip>
+              <el-tag v-else-if="row.counter_account" type="success" size="small" effect="plain">可生成</el-tag>
               <el-tag v-else type="warning" size="small" effect="plain">缺对方科目</el-tag>
             </template>
           </el-table-column>
@@ -164,6 +188,9 @@
 </template>
 
 <script setup lang="ts">
+// 凭证页共用全局样式：用脚本 import 而非 <style src>。
+// 多个组件 <style src> 同一文件时，生产构建只编译一份且可能套用某个导入方的 scoped，导致其它页面样式丢失（FIX-344）
+import '@/views/voucher/voucher.styles.css'
 import { computed, onActivated, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ArrowLeft } from '@element-plus/icons-vue'
@@ -189,6 +216,12 @@ interface PreviewRow {
   debit: number
   credit: number
   counter_account: string | null
+  /** 对方科目要求辅助核算但未填的类别名 */
+  missing_aux?: string[]
+  /** 来源收付款单（通过出纳制证模式下同单合并一张凭证） */
+  scm_doc_type?: string
+  scm_doc_no?: string
+  auto_included?: boolean
   /** FIX-260：外币科目行 */
   currency?: string
   exchange_rate?: number
@@ -203,6 +236,7 @@ const baseData = useBaseDataStore()
 const params = ref<PreviewParams | null>(null)
 const loading = ref(false)
 const rows = ref<PreviewRow[]>([])
+const loadError = ref('')
 const generating = ref(false)
 const userStore = useUserStore()
 
@@ -236,26 +270,48 @@ function baseAmountOf(r: PreviewRow): number {
 }
 const hasForeignRows = computed(() => rows.value.some(r => Number(r.exchange_rate) > 0 && Number(r.exchange_rate) !== 1))
 
+/** 与后端生成口径一致：手工流水一行一张；收付款单来源的流水同一单据合并一张 */
+const voucherGroups = computed(() => {
+  const groups: PreviewRow[][] = []
+  const byDoc = new Map<string, PreviewRow[]>()
+  for (const r of rows.value) {
+    if (!r.scm_doc_no) { groups.push([r]); continue }
+    const key = `${r.scm_doc_type}|${r.scm_doc_no}`
+    let g = byDoc.get(key)
+    if (!g) { g = []; byDoc.set(key, g); groups.push(g) }
+    g.push(r)
+  }
+  return groups
+})
+const hasScmGroups = computed(() => rows.value.some(r => r.scm_doc_no))
+const autoIncludedCount = computed(() => rows.value.filter(r => r.auto_included).length)
+
 const entryFlatList = computed(() => {
   if (!params.value) return []
   const cashCode = params.value.account_code
-  const vouchers = rows.value.map(r => {
-    const amt = baseAmountOf(r)
-    const counterCode = r.counter_account || ''
-    const counterName = counterCode ? (counterAccountMap.value.get(counterCode) || '') : '（未填对方科目）'
-    const summary = r.summary || '出纳生成'
-    const cash = { account_code: cashCode, account_name: cashAccountName.value, amount: amt, summary }
-    const counter = { account_code: counterCode, account_name: counterName, amount: amt, summary }
-    const entries = r.debit > 0
-      ? [{ ...cash, direction: 'debit' }, { ...counter, direction: 'credit' }]
-      : [{ ...counter, direction: 'debit' }, { ...cash, direction: 'credit' }]
+  const vouchers = voucherGroups.value.map(group => {
+    const head = group[0]
+    const entries = group.flatMap(r => {
+      const amt = baseAmountOf(r)
+      const counterCode = r.counter_account || ''
+      const counterName = counterCode ? (counterAccountMap.value.get(counterCode) || '') : '（未填对方科目）'
+      const summary = r.summary || '出纳生成'
+      const cash = { account_code: cashCode, account_name: cashAccountName.value, amount: amt, summary }
+      const counter = { account_code: counterCode, account_name: counterName, amount: amt, summary }
+      return r.debit > 0
+        ? [{ ...cash, direction: 'debit' }, { ...counter, direction: 'credit' }]
+        : [{ ...counter, direction: 'debit' }, { ...cash, direction: 'credit' }]
+    })
+    const remark = head.scm_doc_no
+      ? `${head.scm_doc_type === 'PAY' ? '付款单' : '收款单'}${head.scm_doc_no}`
+      : head.summary || '出纳生成'
     return {
-      id: r.id,
+      id: head.id,
       voucher_no: '待编号',
       voucher_type_name: previewVoucherTypeName.value,
-      voucher_date: r.biz_date,
+      voucher_date: head.biz_date,
       status: 'pending',
-      remark: summary,
+      remark,
       maker_name: userStore.userInfo?.nickname || userStore.userInfo?.username || '-',
       entries,
     }
@@ -272,6 +328,12 @@ const totalDebit = computed(() => rows.value.reduce((s, r) => s + (Number(r.debi
 const totalCredit = computed(() => rows.value.reduce((s, r) => s + (Number(r.credit) || 0), 0))
 const missingRows = computed(() => rows.value.filter(r => !r.counter_account))
 const missingCount = computed(() => missingRows.value.length)
+/** 对方科目要求辅助核算但未填（服务端预览 / 生成拦截返回 missing_aux） */
+const missingAuxRows = computed(() => rows.value.filter(r => (r as any).missing_aux?.length))
+const missingAuxCount = computed(() => missingAuxRows.value.length)
+const missingAuxSample = computed(() => missingAuxRows.value.slice(0, 3)
+  .map((r: any) => `${r.biz_date} ${r.summary || ''}（缺${r.missing_aux.join('、')}）`).join('；')
+  + (missingAuxCount.value > 3 ? ` 等 ${missingAuxCount.value} 条` : ''))
 
 const amt = (v: number) =>
   (Number(v) || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -310,9 +372,13 @@ async function loadData() {
       end_date: params.value.end_date,
       ids: params.value.ids,
     })
+    loadError.value = ''
     if (res.code === 0) rows.value = res.data.rows
   } catch (err: any) {
-    ElMessage.error(err?.response?.data?.message || '获取预览数据失败')
+    // 收付款制证方式拦截（来源于收付款单的流水由单据制证等）：常驻提示，便于用户看清原因
+    loadError.value = err?.response?.data?.message || '获取预览数据失败'
+    rows.value = []
+    ElMessage.error(loadError.value)
   } finally {
     loading.value = false
   }
@@ -321,6 +387,7 @@ async function loadData() {
 /** 确认生成：全部已填对方科目直接生成；有缺失时先弹挂账/补全二次确认 */
 async function handleConfirmGenerate() {
   if (rows.value.length === 0) return ElMessage.warning('没有可生成的记录')
+  if (missingAuxCount.value > 0) return ElMessage.error(`有 ${missingAuxCount.value} 条记录的对方科目辅助核算未填写，请返回出纳录单补填后再生成`)
   if (missingCount.value > 0) {
     hangupRows.value = rows.value.filter(r => !r.counter_account)
     hangupAccount.value = defaultCounterAccount.value || ''
@@ -351,7 +418,13 @@ async function doGenerate(hangupCode?: string) {
     }
   } catch (err: any) {
     const data = err?.response?.data
-    if (data?.missingRows?.length) {
+    if (data?.missingAuxRows?.length) {
+      // 预览后数据变更 / 挂账科目也要求辅助：把缺项标到预览行上
+      const byId = new Map<string, string[]>(data.missingAuxRows.map((r: any) => [r.id, r.missing_aux]))
+      rows.value = rows.value.map((r: any) => (byId.has(r.id) ? { ...r, missing_aux: byId.get(r.id) } : r))
+      hangupVisible.value = false
+      ElMessage.error(data.message || '存在辅助核算未填写的记录')
+    } else if (data?.missingRows?.length) {
       // 兜底：预览后数据变更导致仍缺对方科目，拦截并引导挂账（不覆盖预览列表）
       hangupRows.value = data.missingRows.map((r: any) => ({
         id: r.id, biz_date: r.biz_date, seq: r.seq, summary: r.summary,
@@ -437,7 +510,6 @@ onMounted(() => initFromSession(true))
 onActivated(() => initFromSession(false))
 </script>
 
-<style src="@/views/voucher/voucher.styles.css"></style>
 
 <style scoped>
 .vgp-page { display: flex; flex-direction: column; height: 100%; padding: 0; }
@@ -457,6 +529,7 @@ onActivated(() => initFromSession(false))
   border-radius: 6px; padding: 10px 16px;
 }
 .vgp-card--warn { background: var(--el-color-warning-light-9); }
+.vgp-card--danger { background: var(--el-color-danger-light-9); }
 .vgp-card__label { font-size: var(--cw-text-base); color: var(--el-text-color-secondary); margin-bottom: 4px; }
 .vgp-card__value { font-size: 22px; font-weight: 600; }
 .vgp-card__unit { font-size: var(--cw-text-base); font-weight: 400; color: var(--el-text-color-secondary); }

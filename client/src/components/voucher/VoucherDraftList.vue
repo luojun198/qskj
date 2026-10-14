@@ -39,7 +39,17 @@
           </el-button>
         </div>
 
+        <VoucherDateRangeQuick v-model="filters.dateRange" @change="handleKeywordChange" />
+
         <AccountDisplayModeSwitch class="gl-sub-bar__account-display" />
+
+        <!-- 排列顺序（多级排序） -->
+        <MultiSortPanel
+          :options="VOUCHER_SORT_OPTIONS"
+          :model-value="sorts"
+          :default-keys="DEFAULT_VOUCHER_SORTS"
+          @change="(s: SortKey[]) => emit('sorts-change', s)"
+        />
 
         <!-- 恢复凭证排列 -->
         <el-button
@@ -64,6 +74,7 @@
             :width="width"
             :height="Math.max(height, 200)"
             :row-height="VOUCHER_VIRTUAL_ROW_HEIGHT"
+            :footer-height="virtualTableHBarGap(virtualColumns, width)"
             :header-height="36"
             :row-class="getVirtualRowClass"
             :row-event-handlers="rowEventHandlers"
@@ -105,6 +116,10 @@
 <script setup lang="ts">
 import { computed, ref, shallowRef, watch } from 'vue'
 import { Plus } from '@element-plus/icons-vue'
+import MultiSortPanel from '@/components/common/MultiSortPanel.vue'
+import VoucherDateRangeQuick from '@/components/voucher/VoucherDateRangeQuick.vue'
+import { VOUCHER_SORT_OPTIONS, DEFAULT_VOUCHER_SORTS } from '@/composables/useVoucherQuery'
+import type { SortKey } from '@/utils/multiSort'
 import { useListColumnWidth } from '@/composables/useColumnWidthMemory'
 import { useTableSearch } from '@/composables/useTableSearch'
 import { useVirtualTableHeaderScrollSync } from '@/composables/useVirtualTableHeaderScrollSync'
@@ -116,6 +131,7 @@ import {
 import {
   useVoucherEntryVirtualColumns,
   VOUCHER_VIRTUAL_ROW_HEIGHT,
+  virtualTableHBarGap,
 } from '@/composables/useVoucherEntryVirtualColumns'
 
 interface SortConfig {
@@ -139,6 +155,8 @@ interface Props {
   flatList?: any[]
   loading?: boolean
   sortConfig?: SortConfig
+  /** 多级排序（显示在顶部「排序」面板） */
+  sorts?: SortKey[]
   auxCategories?: any[]
   voucherTypes?: any[]
   accounts?: any[]
@@ -160,6 +178,7 @@ const props = withDefaults(defineProps<Props>(), {
   loading: false,
   flatList: undefined,
   sortConfig: () => ({ field: 'voucher_date', order: 'asc' }),
+  sorts: () => DEFAULT_VOUCHER_SORTS.map(k => ({ ...k })),
   auxCategories: () => [],
   voucherTypes: () => [],
   accounts: () => [],
@@ -174,6 +193,7 @@ const emit = defineEmits<{
   edit: [row: any]
   delete: [row: any]
   'sort-change': [config: SortConfig]
+  'sorts-change': [sorts: SortKey[]]
   'row-click': [row: any]
   'row-dblclick': [row: any]
   'page-change': [page: number, pageSize: number]
@@ -226,10 +246,13 @@ function handleRowDblclick(row: any) {
 
 function getVirtualRowClass({ rowData }: { rowData: any }) {
   const stripeClass = rowData._stripeGroup === 0 ? 'voucher-group-even' : 'voucher-group-odd'
+  // 凭证末行：凭证级列（日期 / 字号 / 制单人…）只在这一行画横线，视觉上等同合并单元格
+  const count = Number(rowData._voucherEntryCount) || 1
+  const lastClass = (Number(rowData._voucherRowIndex) || 0) >= count - 1 ? ' voucher-last-row' : ''
   if (props.selectedVoucherId && rowData._voucherId === props.selectedVoucherId) {
-    return `${stripeClass} voucher-selected`
+    return `${stripeClass}${lastClass} voucher-selected`
   }
-  return stripeClass
+  return `${stripeClass}${lastClass}`
 }
 
 const rowEventHandlers = {
@@ -326,7 +349,15 @@ function handleSizeChange(size: number) {
   emit('page-change', 1, size)
 }
 
-defineExpose({ tableRef, containerRef })
+/** 虚拟表格回顶：el-table-v2 的滚动位置由组件内部状态驱动，须调实例方法（改 DOM scrollTop 会被写回） */
+function scrollToTop(): boolean {
+  const t = tableRef.value
+  if (!t?.scrollToTop) return false
+  t.scrollToTop(0)
+  return true
+}
+
+defineExpose({ tableRef, containerRef, scrollToTop })
 </script>
 
 <style scoped>
@@ -445,27 +476,9 @@ defineExpose({ tableRef, containerRef })
   pointer-events: none;
 }
 
-/* 表格主体及浅绿雅致表头（兼容 el-table / el-table-v2） */
-:deep(.gl-entry-table th.el-table__cell),
-:deep(.gl-entry-table-v2 .el-table-v2__header-cell) {
-  background-color: var(--surface-brand-soft, #f0fdf4) !important;
-  color: var(--mint-800, #065f46) !important;
-  font-weight: 600;
-  font-size: 12px;
-  padding: 4px 0;
-  border-bottom: 1px solid var(--mint-200, #a7f3d0) !important;
-  user-select: none;
-}
+/* 表格样式（白底细线、微软雅黑、凭证级列合并）见 voucher.styles.css，凭证录入 / 管理 / 查询三页共用 */
 
-:deep(.gl-entry-table td.el-table__cell),
-:deep(.gl-entry-table-v2 .el-table-v2__row-cell) {
-  padding: 3px 6px;
-  font-size: 12px;
-  color: var(--wb-text);
-  line-height: 20px;
-}
-
-/* 斑马纹 / 选中高亮 / 网格线：见 voucher.styles.css（三页共用） */
+/* 网格线基础规则见 voucher.styles.css（三页共用），本组件在上方覆盖颜色与分隔方式 */
 
 /* 底部滚动统计与分页 */
 .draft-pagination {

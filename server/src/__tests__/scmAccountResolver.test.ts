@@ -45,7 +45,7 @@ function seedEnterpriseChart() {
   acc(
     ['2202', '应付账款'], ['1122', '应收账款'], ['6001', '主营业务收入'], ['6401', '主营业务成本'],
     ['1901', '待处理财产损溢'], ['5001', '生产成本'], ['2211', '应付职工薪酬'], ['5101', '制造费用'],
-    ['2221', '应交税费'], ['22210101', '进项税额'], ['22210105', '销项税额'],
+    ['2221', '应交税费'], ['22210101', '进项税额'], ['22210105', '销项税额'], ['6051', '其他业务收入'],
   )
 }
 
@@ -73,7 +73,7 @@ function seedGovChart() {
 describe('企业会计准则科目表：全部按默认编码命中', () => {
   beforeEach(() => { db = createDb(); seedEnterpriseChart() })
 
-  it('十个对方科目全部解析为默认编码', () => {
+  it('十一个对方科目全部解析为默认编码', () => {
     const all = resolveScmAccounts(db, AID)
     expect(Object.values(all).every(v => v?.source === 'code')).toBe(true)
     expect(all['scm:acc_tax_input']).toMatchObject({ code: '22210101', name: '进项税额' })
@@ -177,7 +177,7 @@ describe('报错提示带候选科目', () => {
     expect(msg).toContain('22210101')
     expect(msg).toContain('应交税费—进项税额')
     expect(msg).toContain('2221001001 进项税额')
-    expect(msg).toContain('系统参数 → 供应链')
+    expect(msg).toContain('进销存凭证设置')
     // 干扰项不应出现在候选里
     expect(msg).not.toContain('进项税额转出')
   })
@@ -212,7 +212,7 @@ describe('候选科目查询', () => {
   it('规格表覆盖 gen-voucher 用到的全部对方科目', () => {
     expect(SCM_ACCOUNT_SPECS.map(s => s.key).sort()).toEqual([
       'scm:acc_ap', 'scm:acc_ar', 'scm:acc_cost', 'scm:acc_labor', 'scm:acc_other',
-      'scm:acc_overhead', 'scm:acc_production', 'scm:acc_revenue',
+      'scm:acc_overhead', 'scm:acc_process_income', 'scm:acc_production', 'scm:acc_revenue',
       'scm:acc_tax_input', 'scm:acc_tax_output',
     ])
   })

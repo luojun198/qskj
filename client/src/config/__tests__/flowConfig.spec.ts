@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { collectFlowCoveredPaths, groupFlowMap, normalizeNavPath } from '@/config/flowConfig'
 import { GL_FLOW_NODES, GL_LINK_COLUMNS, collectGlCoveredPaths } from '@/config/glWorkspace'
 import { ASSET_FLOW_NODES, ASSET_LINK_COLUMNS } from '@/config/assetWorkspace'
-import { buildNavApps, getRoutePermissions } from '@/config/navigation'
+import { ARAP_REPORT_LINKS, ARAP_SIDES } from '@/config/arapWorkspace'
+import { buildNavApps, flattenNavApps, getRoutePermissions } from '@/config/navigation'
 
 describe('flowConfig 路径去重', () => {
   it('normalizeNavPath 忽略查询参数顺序与尾斜杠', () => {
@@ -41,9 +42,11 @@ describe('flowConfig 路径去重', () => {
 
 
   it('预收款与普通收款路径不相等，不会误伤', () => {
-    const covered = collectFlowCoveredPaths(groupFlowMap['应收应付'])
-    expect(covered.has('/scm/docs?doc_type=RCV')).toBe(true)
-    expect(covered.has('/scm/docs?doc_type=RCV&payment_mode=advance')).toBe(true)
+    const covered = collectFlowCoveredPaths({
+      layout: 'flow',
+      mainNodes: [{ id: 'rcvAdv', path: '/scm/docs?doc_type=RCV&payment_mode=advance' }],
+    })
+    expect(covered.has('/scm/docs?doc_type=RCV')).toBe(false)
     expect(covered.has(normalizeNavPath('/scm/docs?payment_mode=advance&doc_type=RCV'))).toBe(true)
   })
 
@@ -81,5 +84,41 @@ describe('固定资产工作台：折旧 / 取消折旧流程', () => {
     const titles = ASSET_LINK_COLUMNS.flatMap(c => c.items.map(i => i.title))
     expect(titles).toContain('取消折旧')
     expect(getRoutePermissions('/asset/depreciation/reverse')).toEqual(['asset:depr'])
+  })
+})
+
+describe('应收应付工作台：应收 / 应付镜像分区 + 报表查询', () => {
+  it('使用专用布局，两侧流程节点一一镜像', () => {
+    expect(groupFlowMap['应收应付'].layout).toBe('arap-workspace')
+    const [ar, ap] = ARAP_SIDES
+    expect([ar.key, ap.key]).toEqual(['ar', 'ap'])
+    expect(ar.nodes.map(n => n.title)).toEqual(['销售发票', '收款单', '应收核销', '客户对账单'])
+    expect(ap.nodes.map(n => n.title)).toEqual(['采购发票', '付款单', '应付核销', '供应商对账单'])
+    expect(ar.nodes.length).toBe(ap.nodes.length)
+    expect(ar.links.length).toBe(ap.links.length)
+    expect(ar.nodes[1].below?.path).toBe('/scm/docs?doc_type=RCV&payment_mode=advance')
+    expect(ap.nodes[1].below?.path).toBe('/scm/docs?doc_type=PAY&payment_mode=advance')
+    // 镜像链接按方向预置筛选
+    for (const side of ARAP_SIDES) {
+      for (const link of side.links) expect(link.path).toMatch(new RegExp(`(side|arap_type|direction)=${side.key}$`))
+    }
+  })
+
+  it('所有入口都能在菜单中找到（带方向参数的按裸路径匹配），应收应付菜单项全部覆盖', () => {
+    const apps = buildNavApps(['*'], false, [], ['scm'] as any)
+    const menuPaths = new Set(flattenNavApps(apps).map(i => normalizeNavPath(i.path)))
+    // 单据列表按类型、对账单按方向（应收 / 应付对账单分开入口）各是一个菜单项，保留 query
+    const bare = (p: string) => normalizeNavPath(p.startsWith('/scm/docs') || p.startsWith('/scm/statements?') ? p : p.split('?')[0])
+    const all = [
+      ...ARAP_SIDES.flatMap(s => s.nodes.flatMap(n => [n.path!, ...(n.below ? [n.below.path!] : [])])),
+      ...ARAP_SIDES.flatMap(s => s.links.map(l => l.path!)),
+      ...ARAP_REPORT_LINKS.map(l => l.path!),
+    ]
+    for (const path of all) expect(menuPaths.has(bare(path)), path).toBe(true)
+
+    const covered = new Set(all.map(bare))
+    const arap = apps.find(a => a.key === 'arap')!
+    const leftovers = arap.sections.flatMap(s => s.items).filter(i => !covered.has(normalizeNavPath(i.path)))
+    expect(leftovers.map(i => i.title)).toEqual([])
   })
 })

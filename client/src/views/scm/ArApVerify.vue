@@ -10,6 +10,7 @@
       </el-radio-group>
       <el-button type="primary" plain size="small" :disabled="!partnerCode" @click="load"><el-icon><Search /></el-icon>查询</el-button>
       <FilterClearButton size="small" @clear="handleClearFilters" />
+      <el-button size="small" @click="router.push({ name: 'ScmArApVerifyRecords', query: partnerCode ? { partner_code: partnerCode } : {} })">核销单记录</el-button>
       <el-button type="success" plain size="small" @click="createAdvanceDoc">
         <el-icon><Plus /></el-icon>新增{{ side === 'ar' ? '预收款单' : '预付款单' }}
       </el-button>
@@ -24,18 +25,25 @@
       <div class="verify-bar">
         <span>已选可核销：应收应付 <b>{{ fmt(selInTotal) }}</b> ／ 收付款 <b>{{ fmt(selOutTotal) }}</b>
           → 本次核销 <b class="match">{{ fmt(matchTotal) }}</b></span>
-        <el-button type="primary" size="small" :disabled="matchTotal <= 0 || saving" :loading="saving" @click="doVerify">核销所选</el-button>
+        <span class="verify-actions">
+          <el-button size="small" :disabled="!inItems.length || !outItems.length || saving" @click="doAutoMatch">自动勾稽</el-button>
+          <el-button type="primary" size="small" :disabled="matchTotal <= 0 || saving" :loading="saving" @click="doVerify">核销所选</el-button>
+        </span>
       </div>
 
       <div class="two-col">
         <div class="col">
           <div class="col-hd">{{ side === 'ap' ? '未核销应付（采购/委外等）' : '未核销应收（销售/发票等）' }}</div>
-          <el-table :data="inItems" v-loading="loading" border stripe size="small" height="100%"
+          <el-table ref="inTableRef" :data="inTableRows" v-loading="loading" border stripe size="small" height="100%"
+            :row-class-name="({ row }) => row.__settled ? 'settled-row' : ''"
             @selection-change="r => onSelectionChange('in', r)">
-            <el-table-column type="selection" width="40" />
+            <el-table-column type="selection" width="40" :selectable="row => !row.__settled" />
             <el-table-column label="日期" prop="doc_date" width="104" />
             <el-table-column label="单据" min-width="150" show-overflow-tooltip>
-              <template #default="{ row }">{{ typeName(row.doc_type) }} {{ row.doc_no }}</template>
+              <template #default="{ row }">
+                <el-link v-if="row.__settled && row.doc_id" type="primary" :underline="false" @click="openDoc(row)">{{ typeName(row.doc_type) }} {{ row.doc_no }}</el-link>
+                <template v-else>{{ typeName(row.doc_type) }} {{ row.doc_no }}</template>
+              </template>
             </el-table-column>
             <el-table-column label="到期日" width="104">
               <template #default="{ row }">
@@ -48,12 +56,25 @@
             <el-table-column label="币别" width="64" align="center">
               <template #default="{ row }">{{ row.currency || '—' }}</template>
             </el-table-column>
+            <el-table-column label="单据金额" width="104" align="right">
+              <template #default="{ row }">{{ fmt(row.doc_amount) }}</template>
+            </el-table-column>
+            <el-table-column label="已核销" width="104" align="right">
+              <template #default="{ row }">{{ fmt(row.settled_amount) }}</template>
+            </el-table-column>
             <el-table-column label="未核销(原币)" width="118" align="right">
-              <template #default="{ row }">{{ fmt(row.open_amount) }}</template>
+              <template #default="{ row }">
+                <span v-if="row.__settled" class="settled-tag">已核销完 {{ fmt(row.doc_amount) }}</span>
+                <template v-else>{{ fmt(row.open_amount) }}</template>
+              </template>
             </el-table-column>
             <el-table-column label="本次核销" width="130" align="right">
               <template #default="{ row }">
-                <el-input-number v-model="amt[row.id]" :min="0" :max="row.open_amount" :controls="false"
+                <template v-if="row.__settled">
+                  <el-link v-for="no in String(row.verify_nos || '').split(',').filter(Boolean)" :key="no" type="primary" :underline="false"
+                    @click="router.push({ name: 'ScmArApVerifyRecord', params: { verifyNo: no } })">{{ no }}</el-link>
+                </template>
+                <el-input-number v-else v-model="amt[row.id]" :min="0" :max="row.open_amount" :controls="false"
                   :disabled="!isSelected('in', row.id)" size="small" style="width:110px" @change="onAmountChange('in')" />
               </template>
             </el-table-column>
@@ -61,23 +82,45 @@
         </div>
 
         <div class="col">
-          <div class="col-hd">{{ side === 'ap' ? '付款 / 预付余额' : '收款 / 预收余额' }}</div>
-          <el-table :data="outItems" v-loading="loading" border stripe size="small" height="100%"
+          <div class="col-hd">
+            {{ side === 'ap' ? '付款 / 预付余额' : '收款 / 预收余额' }}
+            <el-checkbox v-model="showSettled" size="small" class="settled-toggle" @change="load">显示已核销完毕</el-checkbox>
+          </div>
+          <el-table ref="outTableRef" :data="outTableRows" v-loading="loading" border stripe size="small" height="100%"
+            :row-class-name="({ row }) => row.__settled ? 'settled-row' : ''"
             @selection-change="r => onSelectionChange('out', r)">
-            <el-table-column type="selection" width="40" />
+            <el-table-column type="selection" width="40" :selectable="row => !row.__settled" />
             <el-table-column label="日期" prop="doc_date" width="104" />
             <el-table-column label="单据" min-width="150" show-overflow-tooltip>
-              <template #default="{ row }">{{ typeName(row.doc_type) }} {{ row.doc_no }}</template>
+              <template #default="{ row }">
+                <el-link v-if="row.__settled && row.doc_id" type="primary" :underline="false" @click="openDoc(row)">{{ typeName(row.doc_type) }} {{ row.doc_no }}</el-link>
+                <template v-else>{{ typeName(row.doc_type) }} {{ row.doc_no }}</template>
+              </template>
             </el-table-column>
             <el-table-column label="币别" width="64" align="center">
               <template #default="{ row }">{{ row.currency || '—' }}</template>
             </el-table-column>
+            <el-table-column label="单据金额" width="104" align="right">
+              <template #default="{ row }">{{ fmt(row.doc_amount) }}</template>
+            </el-table-column>
+            <el-table-column label="已核销" width="104" align="right">
+              <template #default="{ row }">{{ fmt(row.settled_amount) }}</template>
+            </el-table-column>
             <el-table-column label="可用余额(原币)" width="118" align="right">
-              <template #default="{ row }">{{ fmt(row.open_amount) }}</template>
+              <template #default="{ row }">
+                <template v-if="row.__settled">
+                  <span class="settled-tag">已核销完 {{ fmt(row.doc_amount) }}</span>
+                </template>
+                <template v-else>{{ fmt(row.open_amount) }}</template>
+              </template>
             </el-table-column>
             <el-table-column label="本次核销" width="130" align="right">
               <template #default="{ row }">
-                <el-input-number v-model="amt[row.id]" :min="0" :max="row.open_amount" :controls="false"
+                <template v-if="row.__settled">
+                  <el-link v-for="no in String(row.verify_nos || '').split(',').filter(Boolean)" :key="no" type="primary" :underline="false"
+                    @click="router.push({ name: 'ScmArApVerifyRecord', params: { verifyNo: no } })">{{ no }}</el-link>
+                </template>
+                <el-input-number v-else v-model="amt[row.id]" :min="0" :max="row.open_amount" :controls="false"
                   :disabled="!isSelected('out', row.id)" size="small" style="width:110px" @change="onAmountChange('out')" />
               </template>
             </el-table-column>
@@ -89,13 +132,17 @@
         <el-collapse-item name="h">
           <template #title><span class="h-title">核销记录（可取消核销）</span></template>
           <el-table :data="verifies" border stripe size="small">
-            <el-table-column label="核销单号" prop="verify_no" width="150" />
+            <el-table-column label="核销单号" width="150">
+              <template #default="{ row }">
+                <el-link type="primary" :underline="false" @click="router.push({ name: 'ScmArApVerifyRecord', params: { verifyNo: row.verify_no } })">{{ row.verify_no }}</el-link>
+              </template>
+            </el-table-column>
             <el-table-column label="日期" prop="verify_date" width="120" />
             <el-table-column label="笔数" prop="line_count" width="70" align="right" />
             <el-table-column label="核销金额" width="130" align="right"><template #default="{ row }">{{ fmt(row.total_amount) }}</template></el-table-column>
             <el-table-column label="操作人" prop="created_by" min-width="100" />
             <el-table-column label="操作" width="90" align="center">
-              <template #default="{ row }"><el-button link type="danger" size="small" @click="cancelV(row.verify_no)">取消核销</el-button></template>
+              <template #default="{ row }"><el-button v-if="canDeleteVerify" link type="danger" size="small" @click="cancelV(row.verify_no)">取消核销</el-button></template>
             </el-table-column>
           </el-table>
         </el-collapse-item>
@@ -105,17 +152,20 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, reactive, onMounted, watch } from 'vue'
+import { ref, computed, reactive, onMounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Plus, Search } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { scmApi, type ScmPartner } from '@/api/scm'
 import FilterClearButton from '@/components/common/FilterClearButton.vue'
 import { useFilterClear } from '@/composables/useFilterClear'
-import { allocateArapAmount, partnerMatchesArapSide, roundArapAmount, sumArapOpenAmount } from '@/utils/scmArapVerify'
+import { hasPermission } from '@/utils/permission'
+import { scmDownstreamDocRoute } from '@/utils/scmDocNavigation'
+import { allocateArapAmount, autoMatchArap, partnerMatchesArapSide, type ArapMatch, roundArapAmount, sumArapOpenAmount } from '@/utils/scmArapVerify'
 
 const route = useRoute()
 const router = useRouter()
+const canDeleteVerify = computed(() => hasPermission('scm:verify-delete'))
 const normalizeSide = (value: unknown): 'ar' | 'ap' => value === 'ar' ? 'ar' : 'ap'
 const partners = ref<ScmPartner[]>([])
 const partnerCode = ref<string>((route.query.partner_code as string) || '')
@@ -143,7 +193,7 @@ const partnerPlaceholder = computed(() => side.value === 'ar' ? '选择客户' :
 
 const DOC_TYPE_NAMES: Record<string, string> = {
   PI: '采购入库', PR: '采购退货', SO: '销售出库', SR: '销售退货', RP: '采购发票', RS: '销售发票',
-  PAY: '付款单', RCV: '收款单', WI: '委外入库',
+  PAY: '付款单', RCV: '收款单', WI: '委外入库', OP: '工序委外', AS: '组装加工费',
 }
 const typeName = (t: string) => DOC_TYPE_NAMES[t] || t
 const fmt = (v: any) => (Number(v) || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -177,7 +227,33 @@ function balanceSelectedAmounts() {
   applyAmount(selOut.value, target)
 }
 
+// 自动勾稽：预览配对结果（勾选 + 填金额），用户确认后点「核销所选」按此配对提交
+const inTableRef = ref<any>()
+const outTableRef = ref<any>()
+const autoMatches = ref<ArapMatch[] | null>(null)
+let applyingAuto = false
+
+async function doAutoMatch() {
+  const res = autoMatchArap(inItems.value, outItems.value)
+  if (!res.matches.length) return ElMessage.warning('没有可自动勾稽的单据（币别不同或一侧为空）')
+  applyingAuto = true
+  try {
+    inTableRef.value?.clearSelection()
+    outTableRef.value?.clearSelection()
+    for (const row of inItems.value) if (res.inAmounts[row.id]) inTableRef.value?.toggleRowSelection(row, true)
+    for (const row of outItems.value) if (res.outAmounts[row.id]) outTableRef.value?.toggleRowSelection(row, true)
+    await nextTick()
+  } finally { applyingAuto = false }
+  selIn.value = inItems.value.filter(r => res.inAmounts[r.id])
+  selOut.value = outItems.value.filter(r => res.outAmounts[r.id])
+  for (const row of [...inItems.value, ...outItems.value]) amt[row.id] = res.inAmounts[row.id] || res.outAmounts[row.id] || 0
+  autoMatches.value = res.matches
+  ElMessage.success(`已自动勾稽 ${res.matches.length} 笔，合计 ${fmt(res.total)}，请确认后点「核销所选」`)
+}
+
 function onSelectionChange(kind: 'in' | 'out', rows: any[]) {
+  if (applyingAuto) return
+  autoMatches.value = null
   if (kind === 'in') {
     selIn.value = rows
     clearUnselected(inItems.value, rows)
@@ -189,6 +265,7 @@ function onSelectionChange(kind: 'in' | 'out', rows: any[]) {
 }
 
 function onAmountChange(kind: 'in' | 'out') {
+  autoMatches.value = null
   const sourceRows = kind === 'in' ? selIn.value : selOut.value
   const targetRows = kind === 'in' ? selOut.value : selIn.value
   if (!sourceRows.length || !targetRows.length) return
@@ -209,22 +286,45 @@ async function loadPartners() {
   if (r.code === 0) partners.value = r.data as ScmPartner[]
 }
 
+// 「显示已核销完毕」：已全部核销的收付款只读追加在右表末尾，可点核销单号查看去向
+// 默认显示已核销完毕的行：核销后右侧预收/收款不再消失，便于对账追溯
+const showSettled = ref(true)
+const settledOutItems = ref<any[]>([])
+const settledInItems = ref<any[]>([])
+const outTableRows = computed(() => showSettled.value
+  ? [...outItems.value, ...settledOutItems.value.map(row => ({ ...row, __settled: true }))]
+  : outItems.value)
+const inTableRows = computed(() => showSettled.value
+  ? [...inItems.value, ...settledInItems.value.map(row => ({ ...row, __settled: true }))]
+  : inItems.value)
+
+/** 已核销完毕的单据只读追溯：点单据号回到原单（单据核销后仍保留） */
+function openDoc(row: any) {
+  if (!row.doc_id) return ElMessage.warning('源单已不存在')
+  router.push(scmDownstreamDocRoute(row.doc_id, row.doc_status, undefined, row.doc_type))
+}
+
 async function load() {
+  autoMatches.value = null
   selIn.value = []
   selOut.value = []
   if (!partnerCode.value) {
     inItems.value = []
     outItems.value = []
+    settledOutItems.value = []
+    settledInItems.value = []
     openIn.value = 0
     advance.value = 0
     return
   }
   loading.value = true
   try {
-    const r = await scmApi.getArapOpenItems({ partner_code: partnerCode.value, side: side.value })
+    const r = await scmApi.getArapOpenItems({ partner_code: partnerCode.value, side: side.value, ...(showSettled.value ? { include_settled: 1 as const } : {}) })
     if (r.code === 0) {
       inItems.value = r.data.in_items || []
       outItems.value = r.data.out_items || []
+      settledOutItems.value = r.data.settled_out_items || []
+      settledInItems.value = r.data.settled_in_items || []
       openIn.value = r.data.open_in || 0
       advance.value = r.data.advance || 0
       // 未勾选时不预填，勾选后再按两侧可用余额自动找平。
@@ -299,7 +399,7 @@ function buildMatches() {
 
 async function doVerify() {
   if (!amountsBalanced.value) return ElMessage.warning('两侧本次核销金额不一致，请重新勾选或调整金额')
-  const matches = buildMatches()
+  const matches = autoMatches.value || buildMatches()
   if (!matches.length) return ElMessage.warning('请在两侧各勾选并填写核销金额')
   saving.value = true
   try {
@@ -309,9 +409,13 @@ async function doVerify() {
 }
 
 async function cancelV(verifyNo: string) {
-  await ElMessageBox.confirm(`确认取消核销单「${verifyNo}」？`, '提示', { type: 'warning' })
-  const r = await scmApi.cancelArapVerify(verifyNo)
-  if (r.code === 0) { ElMessage.success('已取消核销'); await load() }
+  try { await ElMessageBox.confirm(`确认取消核销单「${verifyNo}」？`, '提示', { type: 'warning' }) } catch { return }
+  try {
+    const r = await scmApi.cancelArapVerify(verifyNo, { skipErrorToast: true })
+    if (r.code === 0) { ElMessage.success('已取消核销'); await load() }
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.message || e?.message || '取消核销失败')
+  }
 }
 
 onMounted(async () => {
@@ -335,11 +439,15 @@ onMounted(async () => {
 .hint { margin-left: auto; font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }
 .hint .adv { color: var(--el-color-warning); }
 .verify-bar { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: var(--el-fill-color-light); border-radius: 6px; font-size: var(--cw-text-base); }
+.verify-actions { display: flex; gap: 8px; }
 .verify-bar .match { color: var(--el-color-success); }
 .two-col { flex: 1; min-height: 0; display: flex; gap: 12px; }
 .two-col .col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .col-hd { font-size: var(--cw-text-base); font-weight: 600; margin-bottom: 4px; color: var(--el-text-color-primary); }
 .overdue { color: var(--el-color-danger); font-weight: 600; }
 .history { margin-top: 4px; }
+.settled-toggle { float: right; font-weight: normal; }
+:deep(.settled-row) { color: var(--el-text-color-placeholder); }
+.settled-tag { color: var(--el-text-color-secondary); }
 .h-title { font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }
 </style>

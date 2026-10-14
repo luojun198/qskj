@@ -2,8 +2,8 @@
   <div class="print-template-page">
     <div class="page-header">
       <div>
-        <h2>凭证打印设置</h2>
-        <p class="page-sub">用预设快速开一张凭证纸，再点字段、叠底图即可套打。</p>
+        <h2>打印模版</h2>
+        <p class="page-sub">凭证：用预设快速开一张凭证纸，再点字段、叠底图即可套打。业务单据（销售订单、出入库单……）：从「新建业务单据模板」开始，单据打印页的「模板」下拉即可选用。</p>
       </div>
       <div class="header-actions">
         <el-button v-if="legacyCount > 0" :loading="upgradingAll" @click="handleUpgradeAll">
@@ -19,6 +19,7 @@
               <el-dropdown-item command="standard">标准记账凭证（210×148）</el-dropdown-item>
               <el-dropdown-item command="blank">套打底图模板</el-dropdown-item>
               <el-dropdown-item command="a4">A4 竖版凭证</el-dropdown-item>
+              <el-dropdown-item command="scm" divided>业务单据模板（进销存）</el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>
@@ -83,11 +84,11 @@ const upgradingId = ref('')
 const upgradingAll = ref(false)
 const legacyCount = computed(() => templates.value.filter(isLegacyPrintTemplate).length)
 
-const TYPE_LABELS: Record<string, string> = { voucher: '凭证', ledger: '账册', report: '报表' }
+const TYPE_LABELS: Record<string, string> = { voucher: '凭证', ledger: '账册', report: '报表', scm_doc: '业务单据' }
 const templateTypeLabel = (row: PrintTemplate) => TYPE_LABELS[row.template_type || 'voucher'] || '凭证'
 const templateTypeTag = (row: PrintTemplate) => {
   const t = row.template_type || 'voucher'
-  return t === 'report' ? 'success' : t === 'ledger' ? 'warning' : 'primary'
+  return t === 'report' ? 'success' : t === 'ledger' ? 'warning' : t === 'scm_doc' ? 'danger' : 'primary'
 }
 
 const isLegacy = (row: PrintTemplate) => isLegacyPrintTemplate(row)

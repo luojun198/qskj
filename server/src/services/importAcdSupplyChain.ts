@@ -1,7 +1,9 @@
 import type Database from 'better-sqlite3'
 import zlib from 'zlib'
 import iconv from 'iconv-lite'
+import { splitAcdLine } from '../utils/acdSplitLine.js'
 import { v4 as uuidv4 } from 'uuid'
+import { partnerTypeFromAcd } from './scmAcdImport/types.js'
 
 /**
  * 供应链 ACD 导入：从润衡 .acd 备份读取 cpda(物料)/khda(往来)/ckda(仓库) 等，
@@ -50,7 +52,7 @@ export function parseAcdEntries(buffer: Buffer): Map<string, string[][]> {
       .split(/\r?\n/)
       .map(l => l.replace(/\r$/, ''))
       .filter(l => l.trim().length > 0)
-      .map(l => l.split('\t'))
+      .map(splitAcdLine)
 
     const short = filename.replace(/^.*[\\/]/, '').toLowerCase()
     result.set(short, rows)
@@ -98,7 +100,8 @@ export function importSupplyChainTables(
     for (const r of khda) {
       if (!r[0]) continue
       const sx = str(r[11]) || ''
-      const partnerType = sx === '1' ? 'customer' : sx === '2' ? 'supplier' : 'both'
+      // 润衡 khda.sx：1 供应商、2 客户（以真实备份核对：sx=1 只挂应付科目、sx=2 只挂应收科目），其它为双向
+      const partnerType = partnerTypeFromAcd(sx)
       insP.run(
         uuidv4(), accountSetId, str(r[0]), str(r[1]), partnerType, sx,
         str(r[12]), str(r[13]), num(r[14]), num(r[20]), str(r[9]),
@@ -128,6 +131,10 @@ export function importSupplyChainTables(
     }
   })
   tx()
+  // 从润衡带过来的档案是在用的历史数据，直接置为已审核（迁移 168 起新增档案默认未审核）
+  for (const t of ['scm_item', 'scm_partner']) {
+    try { db.prepare(`UPDATE ${t} SET audit_status='audited' WHERE account_set_id=? AND acd_raw IS NOT NULL AND audit_status<>'audited'`).run(accountSetId) } catch { /* 旧库无此列 */ }
+  }
   return result
 }
 

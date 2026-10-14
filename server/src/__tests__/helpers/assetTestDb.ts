@@ -124,6 +124,8 @@ export function createAssetTestDb(): Database.Database {
       name TEXT NOT NULL,
       direction TEXT,
       is_aux INTEGER DEFAULT 0,
+      is_cash INTEGER DEFAULT 0,
+      is_bank INTEGER DEFAULT 0,
       aux_types TEXT,
       is_foreign INTEGER DEFAULT 0,
       currency_code TEXT,
@@ -150,8 +152,16 @@ export function createAssetTestDb(): Database.Database {
       remark TEXT,
       source TEXT,
       status TEXT DEFAULT 'draft',
+      reversed_by_voucher_id TEXT,
+      reversal_of_voucher_id TEXT,
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
+    );
+    -- deleteVoucherWithRefs 会回写清理供应链单据的 voucher_id
+    CREATE TABLE scm_doc (
+      id TEXT PRIMARY KEY,
+      account_set_id TEXT NOT NULL,
+      voucher_id TEXT
     );
     CREATE TABLE voucher_entries (
       id TEXT PRIMARY KEY,

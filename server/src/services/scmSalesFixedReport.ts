@@ -9,7 +9,7 @@ import {
   type SalesReportResult,
 } from './scmSalesCustomReport.js'
 
-export type SalesFixedReportCode = 'summary' | 'detail' | 'ranking' | 'profit' | 'trend'
+export type SalesFixedReportCode = 'summary' | 'detail' | 'return' | 'ranking' | 'profit' | 'trend'
 export type SalesTrendPeriod = 'day' | 'week' | 'month' | 'quarter' | 'year'
 
 export interface SalesFixedFilters {
@@ -53,6 +53,7 @@ export interface SalesFixedReportResult extends SalesReportResult {
 const REPORTS = [
   { code: 'summary', title: '销售汇总表', path: '/scm/report/sales/summary' },
   { code: 'detail', title: '销售明细表', path: '/scm/report/sales/detail' },
+  { code: 'return', title: '销售退货统计表', path: '/scm/report/sales/return' },
   { code: 'ranking', title: '销售排行榜', path: '/scm/report/sales/ranking' },
   { code: 'profit', title: '销售毛利分析', path: '/scm/report/sales/profit' },
   { code: 'trend', title: '销售趋势分析', path: '/scm/report/sales/trend' },
@@ -68,6 +69,20 @@ const SUMMARY_GROUPINGS: Record<string, string[]> = {
   department_customer: ['dept_code', 'partner_code', 'partner_name'],
   salesperson_customer_product: ['biz_person', 'partner_code', 'partner_name', 'item_code', 'item_name'],
 }
+
+/** 退货统计表可用的统计方式（SUMMARY_GROUPINGS 的子集：退货关心客户、产品、仓库、业务员维度） */
+const RETURN_GROUPINGS: Record<string, string[]> = {
+  customer: SUMMARY_GROUPINGS.customer,
+  product: SUMMARY_GROUPINGS.product,
+  customer_product: SUMMARY_GROUPINGS.customer_product,
+  product_customer: SUMMARY_GROUPINGS.product_customer,
+  warehouse_product: SUMMARY_GROUPINGS.warehouse_product,
+  salesperson_customer_product: SUMMARY_GROUPINGS.salesperson_customer_product,
+}
+const RETURN_METRICS = ['qty', 'sales_amount', 'tax_amount', 'cost_amount', 'document_count']
+/** 现有汇总把退货按负数冲减；退货统计表按正数展示退货量/额 */
+const RETURN_FLIP_KEYS = ['qty', 'sales_amount', 'tax_amount', 'discount_amount', 'cost_amount']
+const RETURN_LABELS: Record<string, string> = { qty: '退货数量', sales_amount: '退货金额', tax_amount: '退货税额', cost_amount: '退货成本', document_count: '退货单数' }
 
 const PROFIT_GROUPINGS: Record<string, string[]> = {
   customer: ['partner_code', 'partner_name'],
@@ -275,6 +290,20 @@ function fillTrendRows(result: SalesReportResult, startText: string, endText: st
   return result
 }
 
+function toReturnResult(result: SalesReportResult) {
+  const flip = (row: Record<string, any>) => {
+    for (const key of RETURN_FLIP_KEYS) if (typeof row[key] === 'number' && row[key] !== 0) row[key] = -row[key]
+    return row
+  }
+  result.rows = result.rows.map(row => flip({ ...row }))
+  result.summary = flip({ ...result.summary })
+  return result
+}
+function relabelReturnColumns<T extends { columns: SalesReportColumn[] }>(result: T): T {
+  result.columns = result.columns.map(column => RETURN_LABELS[column.key] ? { ...column, label: RETURN_LABELS[column.key] } : column)
+  return result
+}
+
 function baseResult(code: SalesFixedReportCode, result: SalesReportResult, extra: Partial<SalesFixedReportResult> = {}): SalesFixedReportResult {
   normalizeEmptyDimensions(result)
   return { ...result, report_code: code, ...extra }
@@ -292,6 +321,7 @@ export function getSalesFixedReportMeta(db: Database.Database, accountSetId: str
     reports: REPORTS,
     groupings: {
       summary: Object.keys(SUMMARY_GROUPINGS).map(value => ({ value, label: GROUPING_LABELS[value] })),
+      return: Object.keys(RETURN_GROUPINGS).map(value => ({ value, label: GROUPING_LABELS[value] })),
       profit: Object.keys(PROFIT_GROUPINGS).map(value => ({ value, label: GROUPING_LABELS[value] })),
       ranking: Object.keys(RANKING_DIMENSIONS).map(value => ({ value, label: GROUPING_LABELS[value] })),
     },
@@ -330,7 +360,8 @@ export function runSalesFixedReport(
   options: { exportAll?: boolean } = {},
 ): SalesFixedReportResult {
   const code = normalizeReportCode(request?.report_code)
-  const built = buildBaseFilters(code, request.filters)
+  // 退货统计表只统计销售退货单，忽略前端传入的业务类型
+  const built = buildBaseFilters(code, code === 'return' ? { ...request.filters, source_types: ['SR'] } : request.filters)
   const page = Math.max(1, Math.floor(Number(request.page) || 1))
   const pageSize = Math.min(500, Math.max(1, Math.floor(Number(request.page_size) || 100)))
 
@@ -343,6 +374,19 @@ export function runSalesFixedReport(
     const result = runSalesReportQuery(db, accountSetId, query, options)
     addDetailProfitRate(result)
     return baseResult(code, result)
+  }
+
+  if (code === 'return') {
+    const grouping = String(request.grouping || 'customer')
+    const dimensions = RETURN_GROUPINGS[grouping]
+    if (!dimensions) throw new Error('统计方式无效')
+    // 数据库里退货为负数，退货量大的在前 = 升序
+    const sort = normalizeSort(request.sort, new Set([...dimensions, ...RETURN_METRICS]), [{ key: 'sales_amount', direction: 'asc' }])
+    const query: SalesReportQuery = {
+      mode: 'summary', filters: built.group, dimensions, metrics: RETURN_METRICS, to_base: built.filters.currency === 'ALL',
+      sort, page, page_size: pageSize,
+    }
+    return relabelReturnColumns(baseResult(code, toReturnResult(runSalesReportQuery(db, accountSetId, query, options))))
   }
 
   if (code === 'summary' || code === 'profit') {

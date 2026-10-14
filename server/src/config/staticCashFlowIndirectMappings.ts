@@ -71,6 +71,11 @@ export const GOVERNMENT_INDIRECT: IndirectMethodMapping = {
   ],
 }
 
+/** 企业会计准则：调节项科目编码与小企业准则一致（以净利润为起点） */
+export const ENTERPRISE_INDIRECT: IndirectMethodMapping = { ...SMALL_BUSINESS_INDIRECT, standard: 'enterprise' }
+
 export function getIndirectMethodMapping(standard: StaticReportStandard): IndirectMethodMapping {
+  // 旧实现企业准则落到政府那套（本期盈余 / 1211 等政府科目），估算附注整体取错
+  if (standard === 'enterprise') return ENTERPRISE_INDIRECT
   return standard === 'small_business' ? SMALL_BUSINESS_INDIRECT : GOVERNMENT_INDIRECT
 }

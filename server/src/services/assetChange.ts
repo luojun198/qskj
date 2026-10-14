@@ -14,6 +14,7 @@
  * 剩余期间摊余逻辑见 fixedAssetDepreciation.getRemainingBaseForAsset。
  */
 import type { Database } from 'better-sqlite3'
+import { assertNotBeforeGlStart } from './voucherMutationGuard.js'
 import { fallbackOriginalAccount } from './assetAccountResolver.js'
 import { v4 as uuidv4 } from 'uuid'
 import {
@@ -170,6 +171,7 @@ export function applyAssetChange(params: ApplyChangeParams): ApplyChangeResult {
     throw new Error(`变动日期不能早于资产的开始折旧日期（${asset.start_depr_date}）`)
   }
   assertPeriodOpen(db, accountSetId, year, period)
+  assertNotBeforeGlStart(db, accountSetId, changeDate, '变动日期')
   assertNotAfterCurrentPeriod(year, period, '变动日期')
   assertNotBeforeLastDepr(db, accountSetId, asset.asset_no, year, period)
 
@@ -479,6 +481,119 @@ function generateValueChangeVoucher(
 
 // ── 计提减值准备 ───────────────────────────────────────────
 
+/** 减值凭证：借 资产减值损失 / 贷 类别配置的减值准备科目 */
+function generateImpairmentVoucher(
+  ctx: ChangeContext,
+  amount: number
+): { voucherId: string; voucherNo: string } {
+  const { db, accountSetId, asset } = ctx
+  const assetCat = (
+    asset.category_code
+      ? db
+          .prepare(
+            'SELECT impairment_account_code FROM fixed_asset_category WHERE account_set_id=? AND code=?'
+          )
+          .get(accountSetId, asset.category_code)
+      : null
+  ) as any
+  const impairAccount = assetCat?.impairment_account_code
+  if (!impairAccount) {
+    throw new Error('该资产类别未配置「减值准备科目」，请先到「资产档案 → 资产类别」中设置')
+  }
+  const lossAccount = getAssetParam(db, accountSetId, 'asset:impairment_loss_account') || '6701'
+
+  const accounts = resolveAccounts(db, accountSetId, [lossAccount, impairAccount], '资产减值')
+  const auxContext = loadAssetAuxContext(db, accountSetId)
+  const refs = resolveAssetAuxRefs(db, accountSetId, asset, auxContext)
+  const summary = `计提减值准备：${asset.asset_name}（编号 ${asset.asset_no}）`
+  const entryOf = (code: string, direction: 'debit' | 'credit'): VoucherEntryInput => {
+    const acc = accounts.get(code)!
+    return {
+      account_id: acc.id,
+      account_code: acc.code,
+      account_name: acc.name,
+      direction,
+      amount,
+      summary,
+      ...auxRefsForAccount(db, accountSetId, acc.code, refs, auxContext),
+    }
+  }
+
+  const result = insertAssetVoucher({
+    db,
+    accountSetId,
+    source: 'asset_impairment',
+    voucherDate: ctx.changeDate,
+    year: ctx.year,
+    period: ctx.period,
+    remark: summary,
+    makerName: ctx.operatorName,
+    voucherTypeId: ctx.voucherTypeId,
+    entries: [entryOf(lossAccount, 'debit'), entryOf(impairAccount, 'credit')],
+    auxContext,
+    skipPeriodCheck: true,
+  })
+  return { voucherId: result.voucherId, voucherNo: result.voucherNo }
+}
+
+/**
+ * 凭证管理「重新生成」：按已存在的变动流水重做凭证（原值变动 / 改良 / 减值）。
+ * 只生成凭证，不改卡片也不改变动流水；回写 voucher_id 由调用方负责。
+ * 期间闸：此处不跳过 —— 业务期间已结账则拒绝（与删除凭证同口径）。
+ */
+export function regenerateChangeVoucher(params: {
+  db: Database
+  accountSetId: string
+  change: {
+    asset_no: string
+    change_kind: string | null
+    change_date: string
+    change_type_code: string | null
+    amount: number | null
+    year: number | null
+    period: number | null
+  }
+  counterAccount: string | null
+  voucherTypeId: string | null
+  operatorName: string
+}): { voucherId: string; voucherNo: string } {
+  const { db, accountSetId, change } = params
+  const kind = change.change_kind
+  if (kind !== 'original_value' && kind !== 'improvement' && kind !== 'impairment') {
+    throw new Error('该类型的变动不产生凭证')
+  }
+  const asset = db
+    .prepare('SELECT * FROM fixed_asset WHERE account_set_id=? AND asset_no=?')
+    .get(accountSetId, change.asset_no) as any
+  if (!asset) throw new Error('资产不存在')
+  const dateText = String(change.change_date || '').slice(0, 10)
+  const year = Number(change.year) || parseInt(dateText.split('-')[0])
+  const period = Number(change.period) || parseInt(dateText.split('-')[1])
+  assertPeriodOpen(db, accountSetId, year, period)
+  const amount = round2(Number(change.amount ?? 0))
+  if (!amount) throw new Error('变动金额为 0，无法生成凭证')
+
+  const ctx: ChangeContext = {
+    db,
+    accountSetId,
+    asset,
+    changeDate: dateText,
+    year,
+    period,
+    changeTypeCode: change.change_type_code ?? null,
+    payload: {},
+    remark: null,
+    operatorName: params.operatorName,
+    operatorId: null,
+    generateVoucher: true,
+    counterAccount: params.counterAccount,
+    voucherTypeId: params.voucherTypeId,
+  }
+  if (kind === 'impairment') return generateImpairmentVoucher(ctx, Math.abs(amount))
+  const v = generateValueChangeVoucher(ctx, kind, amount)
+  return { voucherId: v!.voucherId, voucherNo: v!.voucherNo }
+}
+
 /**
  * 计提减值准备：借 资产减值损失 / 贷 类别配置的减值准备科目。
  * 按会计准则，固定资产减值一经计提不得转回，故只支持计提，撤销走 revokeAssetChange。
@@ -508,52 +623,7 @@ function applyImpairment(ctx: ChangeContext): ApplyChangeResult {
   let voucherId: string | null = null
   let voucherNo: string | null = null
   if (ctx.generateVoucher) {
-    const assetCat = (
-      asset.category_code
-        ? db
-            .prepare(
-              'SELECT impairment_account_code FROM fixed_asset_category WHERE account_set_id=? AND code=?'
-            )
-            .get(accountSetId, asset.category_code)
-        : null
-    ) as any
-    const impairAccount = assetCat?.impairment_account_code
-    if (!impairAccount) {
-      throw new Error('该资产类别未配置「减值准备科目」，请先到「资产档案 → 资产类别」中设置')
-    }
-    const lossAccount = getAssetParam(db, accountSetId, 'asset:impairment_loss_account') || '6701'
-
-    const accounts = resolveAccounts(db, accountSetId, [lossAccount, impairAccount], '资产减值')
-    const auxContext = loadAssetAuxContext(db, accountSetId)
-    const refs = resolveAssetAuxRefs(db, accountSetId, asset, auxContext)
-    const summary = `计提减值准备：${asset.asset_name}（编号 ${asset.asset_no}）`
-    const entryOf = (code: string, direction: 'debit' | 'credit'): VoucherEntryInput => {
-      const acc = accounts.get(code)!
-      return {
-        account_id: acc.id,
-        account_code: acc.code,
-        account_name: acc.name,
-        direction,
-        amount,
-        summary,
-        ...auxRefsForAccount(db, accountSetId, acc.code, refs, auxContext),
-      }
-    }
-
-    const result = insertAssetVoucher({
-      db,
-      accountSetId,
-      source: 'asset_impairment',
-      voucherDate: ctx.changeDate,
-      year: ctx.year,
-      period: ctx.period,
-      remark: summary,
-      makerName: ctx.operatorName,
-      voucherTypeId: ctx.voucherTypeId,
-      entries: [entryOf(lossAccount, 'debit'), entryOf(impairAccount, 'credit')],
-      auxContext,
-      skipPeriodCheck: true,
-    })
+    const result = generateImpairmentVoucher(ctx, amount)
     voucherId = result.voucherId
     voucherNo = result.voucherNo
   }

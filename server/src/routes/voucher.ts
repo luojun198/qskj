@@ -35,7 +35,6 @@ import {
   validateVoucherEntryCount,
   validateVoucherDate,
   findDuplicateEntries,
-  validateVoucherEntriesCashFlow,
   validateVoucherEntriesForeignCurrency,
   validateVoucherEntriesQuantity,
   validateVoucherEntriesLeafAccount,
@@ -436,10 +435,6 @@ router.post(
         return respondNoNegativeBalanceError(res, negativeError)
       }
 
-      const cashFlowError = validateVoucherEntriesCashFlow(db, req.accountSetId || '', entries)
-      if (cashFlowError) {
-        return res.status(400).json({ code: 400, message: cashFlowError })
-      }
 
       const foreignCurrencyError = validateVoucherEntriesForeignCurrency(db, req.accountSetId || '', entries)
       if (foreignCurrencyError) {
@@ -691,10 +686,6 @@ router.post(
       return respondNoNegativeBalanceError(res, noNegativeBalanceError)
     }
 
-    const cashFlowError = validateVoucherEntriesCashFlow(db, req.accountSetId || '', entries)
-    if (cashFlowError) {
-      return res.status(400).json({ code: 400, message: cashFlowError })
-    }
 
     const foreignCurrencyError = validateVoucherEntriesForeignCurrency(db, req.accountSetId || '', entries)
     if (foreignCurrencyError) {
@@ -1102,6 +1093,7 @@ router.get('/vouchers', (req: AuthRequest, res) => {
     poster_name,
     sortField,
     sortOrder,
+    sorts,
     ids,
     ...rest
   } = req.query
@@ -1214,6 +1206,7 @@ router.get('/vouchers', (req: AuthRequest, res) => {
       posterName: poster_name as string | undefined,
       sortField: sortField as string | undefined,
       sortOrder: sortOrder as string | undefined,
+      sorts: typeof sorts === 'string' ? sorts : undefined,
       accountScope: req.accountScope,
     },
     db
@@ -1433,6 +1426,17 @@ router.put(
     if (balanceError) {
       return res.status(400).json({ code: 400, message: balanceError })
     }
+    // 凭证类型必填：账套已建凭证类型时，保存后的凭证不得没有类型（否则凭证号无「记-」前缀、按类型排号 / 筛选 / 打印都会乱）
+    const effectiveTypeIdForSave =
+      voucher_type_id !== undefined ? voucher_type_id || null : voucher.voucher_type_id
+    if (!effectiveTypeIdForSave) {
+      const hasTypes = db
+        .prepare('SELECT 1 FROM voucher_types WHERE account_set_id=? OR account_set_id IS NULL LIMIT 1')
+        .get(accountSetId)
+      if (hasTypes) {
+        return res.status(400).json({ code: 400, message: '请选择凭证类型' })
+      }
+    }
     // FIX-010 / P1-14：分录金额合法性
     const updateAmountError = validateVoucherEntryAmounts(entries)
     if (updateAmountError) {
@@ -1477,10 +1481,6 @@ router.put(
       return respondNoNegativeBalanceError(res, noNegativeBalanceError)
     }
 
-    const cashFlowError = validateVoucherEntriesCashFlow(db, req.accountSetId || '', entries)
-    if (cashFlowError) {
-      return res.status(400).json({ code: 400, message: cashFlowError })
-    }
 
     const foreignCurrencyError = validateVoucherEntriesForeignCurrency(db, req.accountSetId || '', entries)
     if (foreignCurrencyError) {
@@ -1724,11 +1724,6 @@ router.put(
       return respondNoNegativeBalanceError(res, noNegativeBalanceError)
     }
 
-    // FIX-007：现金流量项目必填校验
-    const cashFlowError = validateVoucherEntriesCashFlow(db, req.accountSetId || '', entries)
-    if (cashFlowError) {
-      return res.status(400).json({ code: 400, message: cashFlowError })
-    }
 
     const foreignCurrencyError = validateVoucherEntriesForeignCurrency(db, req.accountSetId || '', entries)
     if (foreignCurrencyError) {
@@ -2068,6 +2063,40 @@ function buildEntryPrintData(entry: any) {
   }
 }
 
+/**
+ * 科目全称查找：上级科目名 / 本级科目名（如「银行存款/招商银行深圳龙华支行」），
+ * 供凭证打印的「会计科目（全称）」列。一次读入整个账套的科目树，避免逐行查库。
+ */
+function buildAccountPathLookup(accountSetId: string) {
+  const rows = getDb()
+    .prepare('SELECT id, parent_id, name FROM accounts WHERE account_set_id = ?')
+    .all(accountSetId) as Array<{ id: string; parent_id: string | null; name: string }>
+  const byId = new Map(rows.map(r => [r.id, r]))
+  const cache = new Map<string, string>()
+  return (accountId: string | null | undefined, fallback: string): string => {
+    if (!accountId) return fallback
+    const hit = cache.get(accountId)
+    if (hit !== undefined) return hit
+    const names: string[] = []
+    let cur = byId.get(accountId)
+    // 层级有限，额外设上限防止脏数据成环
+    for (let i = 0; cur && i < 20; i++) {
+      names.unshift(cur.name)
+      cur = cur.parent_id ? byId.get(cur.parent_id) : undefined
+    }
+    const path = names.join('/') || fallback
+    cache.set(accountId, path)
+    return path
+  }
+}
+
+function withAccountPath(entries: any[], accountPath: ReturnType<typeof buildAccountPathLookup>) {
+  return entries.map(e => ({
+    ...buildEntryPrintData(e),
+    account_full_name: accountPath(e.account_id, e.account_name || ''),
+  }))
+}
+
 // 获取单张凭证打印数据
 // FIX-020 / P2-35：router.use(authMiddleware) 已在文件顶部注册，移除路由级重复挂载
 router.get('/print-data/:id', (req: AuthRequest, res) => {
@@ -2098,7 +2127,7 @@ router.get('/print-data/:id', (req: AuthRequest, res) => {
       .get(req.accountSetId || '') as any
     const unitName = unitNameParam?.param_value || accountSet?.name || ''
 
-    const entries = detail.entries.map(buildEntryPrintData)
+    const entries = withAccountPath(detail.entries, buildAccountPathLookup(req.accountSetId || ''))
 
     // 计算合计（calculateVoucherTotals 返回 debitTotal/creditTotal）
     const totals = calculateVoucherTotals(detail.entries)
@@ -2242,13 +2271,14 @@ router.post('/print-data/batch', (req: AuthRequest, res) => {
       .get(req.accountSetId || '') as any
     const unitName = unitNameParam?.param_value || accountSet?.name || ''
 
+    const accountPath = buildAccountPathLookup(req.accountSetId || '')
     // 批量获取每张凭证的详细数据
     const printDataList = voucherList
       .map((voucher: any) => {
         const detail = getVoucherDetail({ db, voucherId: voucher.id, accountSetId: req.accountSetId || '' })
         if (!detail) return null
 
-        const entries = detail.entries.map(buildEntryPrintData)
+        const entries = withAccountPath(detail.entries, accountPath)
 
         const totals = calculateVoucherTotals(detail.entries)
 

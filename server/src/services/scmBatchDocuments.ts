@@ -67,10 +67,11 @@ export interface ProductionPlanBatchDocument {
 }
 
 export function validateProductionPlanBatchAction(
-  action: 'delete' | 'unrelease' | 'reopen',
+  action: 'delete' | 'release' | 'unrelease' | 'reopen',
   plans: ProductionPlanBatchDocument[],
 ): void {
   if (!plans.length) throw new Error('至少选择一张计划')
+  if (action === 'release' && plans.some(plan => (plan.status || 'draft') !== 'draft')) throw new Error('批量审核要求全部为草稿计划')
   if (action === 'delete' && plans.some(plan => plan.status !== 'draft')) throw new Error('批量删除要求全部为草稿计划')
   if (action === 'reopen' && plans.some(plan => plan.status !== 'closed')) throw new Error('批量重开要求全部为已关闭计划')
   if (action === 'unrelease') {

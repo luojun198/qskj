@@ -16,6 +16,10 @@
       </el-select>
       <el-date-picker v-model="startDate" type="date" value-format="YYYY-MM-DD" placeholder="开始日期" style="width:140px" size="small" />
       <el-date-picker v-model="endDate" type="date" value-format="YYYY-MM-DD" placeholder="结束日期" style="width:140px" size="small" />
+      <el-select v-model="docGroups" multiple collapse-tags collapse-tags-tooltip clearable placeholder="全部单据类型" style="width:240px" size="small">
+        <el-option v-for="g in DOC_GROUPS" :key="g.value" :label="g.label" :value="g.value" />
+      </el-select>
+      <el-checkbox v-model="paymentTop" size="small" border>收付款置顶</el-checkbox>
       <el-button type="primary" plain size="small" @click="load"><el-icon><Search /></el-icon>查询</el-button>
       <FilterClearButton size="small" @clear="handleClearFilters" />
       <el-button size="small" :disabled="isAll" @click="toggleDetailMode">
@@ -24,9 +28,9 @@
       <el-button type="success" plain size="small" :disabled="isAll" @click="printStatement">
         <el-icon><Printer /></el-icon>打印对账单
       </el-button>
-      <el-button type="success" plain size="small" :disabled="!rows.length" @click="exportStatement">导出Excel</el-button>
+      <el-button type="success" plain size="small" :disabled="!rows.length" @click="exportStatement">另存</el-button>
       <span class="total-hint" v-if="isAll">共 {{ detail.length }} 笔</span>
-      <span class="total-hint" v-else>期初 {{ fmt(opening) }}　期末 {{ fmt(closing) }}　<span v-if="detailMode==='flat'">数量合计 {{ num(totalQty) }}　含税金额合计 {{ fmt(totalAmountWithTax) }}</span></span>
+      <span class="total-hint" v-else>期初 {{ fmt(opening) }}　期末 {{ fmt(closing) }}<span v-if="docGroups.length" class="filter-note">（期初/期末含全部单据，不受类型筛选影响）</span>　<span v-if="detailMode==='flat'">数量合计 {{ num(totalQty) }}　含税金额合计 {{ fmt(totalAmountWithTax) }}</span></span>
     </div>
 
     <div class="page-body">
@@ -58,7 +62,8 @@
 
 <script setup lang="ts">
 import { todayStr } from '@/utils/format'
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onActivated } from 'vue'
+import { STATEMENT_DOC_GROUPS, filterStatementDetail, loadStatementPref, saveStatementPref } from '@/utils/partnerStatementFilter'
 import { useRoute, useRouter } from 'vue-router'
 import { Search, Printer, Setting } from '@element-plus/icons-vue'
 import { scmApi, type ScmPartner } from '@/api/scm'
@@ -71,6 +76,7 @@ import { usePageToolbarTeleport } from '@/composables/usePageToolbarTeleport'
 import { useListColumnWidth } from '@/composables/useColumnWidthMemory'
 import { getStatementRowSpan } from '@/utils/statementRowSpan'
 import { statementRowSign } from '@/utils/statementRowSign'
+import { statementLinesToExpand } from '@/utils/statementLines'
 import ColumnSettingsDialog from '@/components/common/ColumnSettingsDialog.vue'
 
 const { ptActive } = usePageToolbarTeleport()
@@ -78,11 +84,11 @@ const { columnSettings, visibleColumns, setColumns, reset } = useStatementColumn
 const columnDialogVisible = ref(false)
 
 // 列宽拖动记忆（与 DocList 一致：tableRef + @header-dragend + :width=cw(key, fallback)）
-const { tableRef, colWidth, onDragEnd } = useListColumnWidth('scm_arap_stmt')
+const { tableRef, colWidth, onDragEnd } = useListColumnWidth('scm_arap_stmt_v2')
 function cw(key: string, fallback: number) { return colWidth(key, fallback) }
 
 function resetColumns() { reset() }
-const STATEMENT_COLUMN_WIDTHS: Record<string, number> = { cat: 80, docNo: 120, docDate: 78, invoiceType: 90, taxRate: 56, orderNo: 110, extOrderNo: 110, itemCode: 120, itemName: 200, spec: 100, unit: 50, refNo: 100, qty: 80, price: 90, amount: 110 }
+const STATEMENT_COLUMN_WIDTHS: Record<string, number> = { cat: 110, docNo: 120, docDate: 78, invoiceType: 90, taxRate: 56, orderNo: 110, extOrderNo: 110, itemCode: 120, itemName: 200, spec: 100, unit: 50, refNo: 100, qty: 80, price: 90, amount: 110 }
 function statementColumnWidth(key: string) { return STATEMENT_COLUMN_WIDTHS[key] || 100 }
 function statementColumnAlign(key: string) { return ['taxRate', 'qty', 'price', 'amount'].includes(key) ? 'right' : key === 'unit' ? 'center' : undefined }
 function statementColumnLabel(key: string, label: string) { return key === 'docNo' ? docNoLabel.value : label }
@@ -100,10 +106,36 @@ const router = useRouter()
 const partners = ref<ScmPartner[]>([])
 const partnerCode = ref<string>((route.query.partner_code as string) || '')
 const arapType = ref<'' | 'ar' | 'ap'>('')
+// 应收应付主页的镜像链接带 ?arap_type=ar|ap 预置方向；仅在 URL 值变化时套用，不覆盖用户手动切换
+let appliedQueryArapType = ''
+function applyQueryArapType() {
+  const q = String(route.query.arap_type || '')
+  if (q === appliedQueryArapType) return false
+  appliedQueryArapType = q
+  if (q !== 'ar' && q !== 'ap') return false
+  arapType.value = q
+  return true
+}
+applyQueryArapType()
 const startDate = ref('')
 const endDate = ref('')
 const loading = ref(false)
-const { clearFilters } = useFilterClear([partnerCode, arapType, startDate, endDate])
+// 单据类型多选（按类别自由组合；空 = 全部）
+const DOC_GROUPS = STATEMENT_DOC_GROUPS
+const docGroups = ref<string[]>([])
+// 收付款单置顶（有的客户习惯把付款信息放在上面）
+const paymentTop = ref(false)
+const { clearFilters } = useFilterClear([partnerCode, arapType, startDate, endDate, docGroups, paymentTop])
+
+// 选定往来单位时恢复该单位上次的过滤偏好；有改动即记住
+watch(partnerCode, code => {
+  const pref = loadStatementPref(code)
+  docGroups.value = pref?.groups ?? []
+  paymentTop.value = pref?.paymentTop ?? false
+})
+watch([docGroups, paymentTop], () => {
+  saveStatementPref(partnerCode.value, { groups: [...docGroups.value], paymentTop: paymentTop.value })
+}, { deep: true })
 
 /** 清空筛选条件并恢复默认查询 */
 function handleClearFilters() {
@@ -114,7 +146,8 @@ const opening = ref(0)
 const closing = ref(0)
 const totalIn = ref(0)
 const totalOut = ref(0)
-const detail = ref<any[]>([])
+const rawDetail = ref<any[]>([])
+const detail = computed<any[]>(() => filterStatementDetail(rawDetail.value, docGroups.value, paymentTop.value))
 // 展示模式：flat=逐笔明细（润衡原样，默认）；summary=一单一行汇总
 const detailMode = ref<'flat' | 'summary'>('flat')
 const isAll = computed(() => !partnerCode.value)
@@ -127,9 +160,10 @@ const direction = computed<'ar' | 'ap'>(() => {
   const t = partner.value?.partner_type
   if (t === 'customer') return 'ar'
   if (t === 'supplier') return 'ap'
-  const types = detail.value.map((r: any) => r.doc_type)
-  const arHit = types.filter(t => ['SO', 'SR', 'RS', 'RCV'].includes(t)).length
-  const apHit = types.filter(t => ['PI', 'PR', 'RP', 'PAY', 'WI'].includes(t)).length
+  // 后端已按 arap_side 标注每行应收/应付（组装单加工费两种方向都可能，不能只看单据类型）
+  const sides = detail.value.map((r: any) => r.arap_side)
+  const arHit = sides.filter(s => s === 'ar').length
+  const apHit = sides.filter(s => s === 'ap').length
   if (arHit >= apHit && arHit > 0) return 'ar'
   if (apHit > 0) return 'ap'
   return 'ar'
@@ -146,10 +180,10 @@ function statementCellClassName({ column, row }: { column: { label?: string }; r
 }
 
 const CAT_LABELS_AR: Record<string, string> = {
-  SO: '销售出库', SR: '销售退货', RS: '销售发票', RCV: '客户收款',
+  SO: '销售出库', SR: '销售退货', RS: '销售发票', RCV: '客户收款', AS: '受托加工费',
 }
 const CAT_LABELS_AP: Record<string, string> = {
-  PI: '采购入库', PR: '采购退货', RP: '采购发票', PAY: '供应商付款', WI: '委外入库',
+  PI: '采购入库', PR: '采购退货', RP: '采购发票', PAY: '供应商付款', WI: '委外入库', OP: '委外加工费', AS: '委托加工费',
 }
 function catLabel(t: string) {
   return (isAr.value ? CAT_LABELS_AR : CAT_LABELS_AP)[t] || t
@@ -228,7 +262,7 @@ const flatRows = computed<Row[]>(() => {
       partner_name: r.partner_name,
       doc,
     }
-    const lines = doc.lines as any[] | undefined
+    const lines = statementLinesToExpand(r)
     if (lines && lines.length) {
       for (const l of lines) {
         const qty = Number(l.qty) || 0
@@ -354,7 +388,7 @@ async function load() {
       if (r.code === 0) {
         opening.value = r.data.opening || 0
         closing.value = r.data.closing || 0
-        detail.value = r.data.detail || []
+        rawDetail.value = r.data.detail || []
       }
     } else {
       // 不选往来单位 → 查全部往来（仅屏幕浏览，不支持打印）
@@ -362,7 +396,7 @@ async function load() {
       if (r.code === 0) {
         totalIn.value = r.data.total_in || 0
         totalOut.value = r.data.total_out || 0
-        detail.value = r.data.detail || []
+        rawDetail.value = r.data.detail || []
       }
     }
   } finally {
@@ -380,6 +414,8 @@ function printStatement() {
       start_date: startDate.value || undefined,
       end_date: endDate.value || undefined,
       arap_type: arapType.value || undefined,
+      doc_groups: docGroups.value.length ? docGroups.value.join(',') : undefined,
+      pay_top: paymentTop.value ? '1' : undefined,
     },
   })
 }
@@ -392,7 +428,7 @@ async function exportStatement() {
   // 按可见列动态生成 columns 与 summaryValues（与屏幕表格一致）
   const labelMap: Record<string, string> = { docNo: docNoLabel.value }
   const widthMap: Record<string, number> = {
-    cat: 80, docNo: 120, docDate: 80, invoiceType: 90, taxRate: 56,
+    cat: 110, docNo: 120, docDate: 80, invoiceType: 90, taxRate: 56,
     orderNo: 110, extOrderNo: 110, itemCode: 120, itemName: 160,
     spec: 100, unit: 50, refNo: 100, qty: 80, price: 90, amount: 110,
   }
@@ -449,11 +485,17 @@ onMounted(async () => {
   // 对账单默认按单个往来单位出具，未选单位不自动查全部（含明细数据量大）
   if (partnerCode.value) load()
 })
+
+// keep-alive 缓存下从主页换方向再进入：同步方向，已选单位时按新方向重查
+onActivated(() => {
+  if (applyQueryArapType() && partnerCode.value) load()
+})
 </script>
 
 <style scoped>
 .scm-statement-page { display: flex; flex-direction: column; height: 100%; padding: var(--page-pad); }
 .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.filter-note { color: var(--el-color-warning); }
 .total-hint { margin-left: auto; font-size: var(--cw-text-base); color: var(--el-text-color-secondary); }
 .page-body { flex: 1; min-height: 0; }
 .amt { font-weight: 600; }

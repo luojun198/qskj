@@ -4,6 +4,7 @@
       <span class="rpt-title">库存预警</span>
       <span class="rpt-sub">现存量低于安全库存的物料</span>
       <el-button size="small" :loading="loading" @click="load"><el-icon><Refresh /></el-icon>刷新</el-button>
+      <SaveAsButton title="库存预警" />
       <span class="rpt-hint">共 {{ rows.length }} 项预警</span>
     </div>
     <div class="rpt-body">

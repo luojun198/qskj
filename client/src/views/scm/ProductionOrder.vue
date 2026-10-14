@@ -22,7 +22,8 @@
         <el-button v-if="plan && plan.status === 'released' && !docs.length" type="warning" plain size="small" :loading="busy"
           :disabled="!!plan.mrp_status" :title="plan.mrp_status ? `已进入 MRP 计算单 ${plan.mrp_doc_no || ''}，不能反审核` : '反审核'"
           @click="onUnrelease">反审核</el-button>
-        <el-button v-if="plan && plan.status === 'released'" type="primary" plain size="small" @click="openChange">{{ draftChange ? `继续变更 ${draftChange.change_no}` : '变更' }}</el-button>
+        <el-button v-if="plan && plan.status === 'released'" type="primary" plain size="small"
+          :title="plan.mrp_status ? `已进入 MRP 计算单 ${plan.mrp_doc_no || ''}，不能重跑 MRP；计划数变化请用变更单，审核后可生成追加缺料单并下推采购` : ''" @click="openChange">{{ draftChange ? `继续变更 ${draftChange.change_no}` : '变更' }}</el-button>
         <el-button v-if="plan && plan.status === 'released'" size="small" :loading="busy" @click="onClose">关闭工单</el-button>
         <el-button v-if="plan && plan.status === 'closed'" type="warning" plain size="small" :loading="busy" @click="onReopen">重开工单</el-button>
       </div>
@@ -84,7 +85,14 @@
       <!-- 用料汇总（全部成品） -->
       <section class="wo-section">
         <div class="wo-section__hd"><h3>用料汇总（全部成品）</h3><span>{{ materialRows.length }} 项</span></div>
-        <el-empty v-if="!materialRows.length" :image-size="60" description="未指定 BOM/用料，请到「生产计划」页编辑该计划" />
+        <div v-if="!materialRows.length" class="wo-material-empty">
+          <el-empty :image-size="60" :description="materialEmptyHint.text" />
+          <div class="wo-material-empty__actions">
+            <el-button v-for="b in materialEmptyHint.boms" :key="b.id" size="small" type="primary" plain
+              @click="router.push({ name: 'ScmBomEdit', params: { id: b.id } })">修改 BOM {{ b.label }}</el-button>
+            <el-button v-if="plan && plan.status === 'draft'" size="small" @click="router.push({ name: 'ScmProductionPlanEdit', params: { id } })">编辑计划</el-button>
+          </div>
+        </div>
         <el-table v-else :data="materialRows" size="small" border stripe>
           <el-table-column type="index" label="序号" width="48" align="center" />
           <el-table-column label="所属成品" width="120" show-overflow-tooltip><template #default="{ row }">{{ row.product_code }}</template></el-table-column>
@@ -140,6 +148,16 @@
           <el-table-column label="原因" prop="reason" min-width="140" show-overflow-tooltip />
           <el-table-column label="变更内容" min-width="260" show-overflow-tooltip><template #default="{ row }">{{ diffText(row.diff) }}</template></el-table-column>
           <el-table-column label="状态" width="80" align="center"><template #default="{ row }"><el-tag size="small" :type="row.status === 'audited' ? 'success' : 'info'" effect="plain">{{ row.status === 'audited' ? '已审核' : '草稿' }}</el-tag></template></el-table-column>
+          <el-table-column label="追加缺料" width="170">
+            <template #default="{ row }">
+              <template v-if="row.status === 'audited'">
+                <el-link v-if="row.shortage" type="primary" :underline="false" @click="router.push({ name: 'ScmPlanChangeForm', params: { id: row.id } })">
+                  {{ row.shortage.doc_no }}（{{ row.shortage.pushed ? '已下推' : row.shortage.status === 'audited' ? '待下推' : '草稿' }}）
+                </el-link>
+                <el-link v-else type="warning" :underline="false" @click="router.push({ name: 'ScmPlanChangeForm', params: { id: row.id } })">未生成 / 查看</el-link>
+              </template>
+            </template>
+          </el-table-column>
           <el-table-column label="经办" width="140" show-overflow-tooltip><template #default="{ row }">{{ row.maker }}{{ row.auditor ? ' / ' + row.auditor : '' }}</template></el-table-column>
         </el-table>
       </section>
@@ -160,10 +178,10 @@
         <el-table-column label="本次完工" width="130" align="right">
           <template #default="{ row }"><el-input-number v-model="row.qty" :min="0" :max="row.base_remaining" :precision="3" :controls="false" size="small" style="width:100%" /></template>
         </el-table-column>
-        <el-table-column v-if="isOut" label="加工费单价" width="130" align="right">
+        <el-table-column v-if="isOut && canEditOutsourcePrice" label="加工费单价" width="130" align="right">
           <template #default="{ row }"><el-input-number v-model="row.process_fee" :min="0" :precision="2" :controls="false" size="small" style="width:100%" /></template>
         </el-table-column>
-        <el-table-column v-if="isOut" label="税率%" width="100" align="right">
+        <el-table-column v-if="isOut && canEditOutsourcePrice" label="税率%" width="100" align="right">
           <template #default="{ row }"><el-input-number v-model="row.process_tax_rate" :min="0" :max="100" :precision="2" :controls="false" size="small" style="width:100%" /></template>
         </el-table-column>
       </el-table>
@@ -185,6 +203,7 @@ import { scmApi, type ProductionPlanActionState, type ScmPushOption } from '@/ap
 import { typeName } from '@/utils/scmDoc'
 import { scmDownstreamDocRoute } from '@/utils/scmDocNavigation'
 import ScmPushMenu from '@/components/scm/ScmPushMenu.vue'
+import { hasPermission } from '@/utils/permission'
 
 const route = useRoute()
 const router = useRouter()
@@ -224,6 +243,7 @@ const finishRows = ref<any[]>([])
 const finishWh = ref('')
 const warehouses = ref<any[]>([])
 const isOut = computed(() => plan.value?.plan_type === 'outsource')
+const canEditOutsourcePrice = computed(() => hasPermission('scm:outsource-price'))
 const issueState = computed(() => actionState.value.issue)
 const finishState = computed(() => actionState.value.finish)
 
@@ -234,6 +254,22 @@ const totalFinished = computed(() => products.value.reduce((s, p) => s + (Number
 const costOf = (pid: string) => (cost.value.products || []).find((c: any) => c.product_id === pid) || { mat_unit_cost: 0, consumed_cost: 0 }
 
 // 全部成品用料汇总（带所属成品 + 计划总需）
+// 用料为空的原因：已选 BOM 但 BOM 里没有「主件」（组件全选成了副产品）vs 根本没指定 BOM
+const materialEmptyHint = computed(() => {
+  const withBom = products.value.filter((p: any) => p.bom_id)
+  if (withBom.length) {
+    return {
+      text: 'BOM 中没有「主件」组件（组件行类型可能被设成了副产品 / 联产品，这类行不计入用料），请修改 BOM 的行类型为「主件」后刷新本页',
+      boms: withBom.map((p: any) => ({ id: p.bom_id, label: p.bom_code || p.item_code })),
+    }
+  }
+  return {
+    text: plan.value?.status === 'draft'
+      ? '未指定 BOM / 用料：请点「编辑计划」为成品选择 BOM 或手工录入用料'
+      : '未指定 BOM / 用料：请先反审核本计划，再编辑计划为成品选择 BOM 或手工录入用料',
+    boms: [] as Array<{ id: string; label: string }>,
+  }
+})
 const materialRows = computed(() => products.value.flatMap((p: any) => (p.bom_lines || []).map((l: any) => ({
   ...l, product_code: p.item_code,
   need: (Number(l.qty) || 0) * (1 + (Number(l.scrap_rate) || 0) / 100) * (Number(p.plan_qty) || 0),
@@ -363,6 +399,7 @@ onActivated(() => { if (plan.value) load() })
 </script>
 
 <style scoped>
+.wo-material-empty__actions { display: flex; justify-content: center; gap: 8px; margin-top: -8px; }
 .wo-page { display: flex; flex-direction: column; height: 100%; padding: 0; }
 .wo-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--el-border-color-lighter); flex-wrap: wrap; }
 .wo-header__left, .wo-header__right { display: flex; align-items: center; gap: 8px; }

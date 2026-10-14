@@ -12,6 +12,45 @@ import {
   parseVoucherAuxData,
 } from '@/utils/voucherFlatList'
 import { VOUCHER_LIST_SOFT_CAP } from '@/utils/voucherListPerf'
+import { serializeSortKeys, normalizeSortKeys, type SortKey, type SortOption } from '@/utils/multiSort'
+
+/** 凭证列表可排序项（凭证级；摘要 / 科目等分录级列无法在凭证级排序）。key 与后端 VOUCHER_SORT_WHITELIST 一致 */
+export const VOUCHER_SORT_OPTIONS: SortOption[] = [
+  { key: 'voucher_type', label: '凭证类型' },
+  { key: 'voucher_date', label: '凭证日期' },
+  { key: 'voucher_period', label: '会计期间' },
+  { key: 'voucher_no', label: '凭证号' },
+  { key: 'debit_amount', label: '借方金额' },
+  { key: 'credit_amount', label: '贷方金额' },
+  { key: 'total_amount', label: '凭证金额' },
+  { key: 'created_at', label: '创建时间' },
+  { key: 'status', label: '状态' },
+  { key: 'maker_name', label: '制单人' },
+  { key: 'auditor_name', label: '审核人' },
+  { key: 'poster_name', label: '记账人' },
+]
+const VOUCHER_SORT_KEYS = VOUCHER_SORT_OPTIONS.map(o => o.key)
+/**
+ * 默认排序：凭证类型 ↑ › 会计期间 ↑ › 凭证号 ↑。
+ * 凭证号按「账套 + 年 + 期间 + 类型」连续编号，业务凭证（如采购入库）日期早于期末折旧凭证但号码更大，
+ * 按日期排会出现「0010 排在 0009 前」，故默认按号排；需要按日期看可在排序面板切换。
+ */
+export const DEFAULT_VOUCHER_SORTS: SortKey[] = [
+  { key: 'voucher_type', order: 'asc' }, { key: 'voucher_period', order: 'asc' }, { key: 'voucher_no', order: 'asc' },
+]
+
+/** 旧版单字段排序（sortField/sortOrder）转多级：旧逻辑恒以凭证类型为第一级 */
+export function legacyVoucherSorts(field?: string, order?: string): SortKey[] {
+  // 旧版默认值（sortField=voucher_date 升序）视为「未自定义」，一并回到新默认排序
+  if (!field || !VOUCHER_SORT_KEYS.includes(field) || field === 'voucher_type' || (field === 'voucher_date' && order !== 'desc')) return DEFAULT_VOUCHER_SORTS.map(k => ({ ...k }))
+  return [{ key: 'voucher_type', order: 'asc' }, { key: field, order: order === 'desc' ? 'desc' : 'asc' }]
+}
+
+/** 当前生效的多级排序：优先 sorts；没有（旧的记忆条件 / 旧查询方案）则由旧字段转换 */
+export function resolveVoucherSorts(f: { sorts?: SortKey[]; sortField?: string; sortOrder?: string } | null | undefined): SortKey[] {
+  const keys = normalizeSortKeys(f?.sorts, VOUCHER_SORT_KEYS)
+  return keys.length ? keys : legacyVoucherSorts(f?.sortField, f?.sortOrder)
+}
 
 export interface VoucherFilters {
   keyword: string
@@ -25,6 +64,8 @@ export interface VoucherFilters {
   auxFields: Record<string, string>
   sortField: string
   sortOrder: 'asc' | 'desc'
+  /** 多级排序（第一排序、第二排序…）；缺省时由 sortField/sortOrder 转换 */
+  sorts?: SortKey[]
   makerName?: string
   auditorName?: string
   posterName?: string
@@ -46,6 +87,7 @@ export function cloneVoucherFilters(filters: VoucherFilters): VoucherFilters {
     auxFields: { ...(filters.auxFields || {}) },
     sortField: filters.sortField ?? 'voucher_date',
     sortOrder: filters.sortOrder ?? 'asc',
+    sorts: filters.sorts ? filters.sorts.map(k => ({ ...k })) : undefined,
     makerName: filters.makerName ?? '',
     auditorName: filters.auditorName ?? '',
     posterName: filters.posterName ?? '',
@@ -69,6 +111,9 @@ export function applyVoucherFilters(target: VoucherFilters, source: Partial<Vouc
   if (source.auxFields !== undefined) target.auxFields = { ...source.auxFields }
   if (source.sortField !== undefined) target.sortField = source.sortField
   if (source.sortOrder !== undefined) target.sortOrder = source.sortOrder
+  // 新方案带 sorts；旧方案只有 sortField/sortOrder，转成多级后覆盖
+  if (source.sorts !== undefined) target.sorts = source.sorts.map(k => ({ ...k }))
+  else if (source.sortField !== undefined) target.sorts = legacyVoucherSorts(source.sortField, source.sortOrder)
   if (source.makerName !== undefined) target.makerName = source.makerName
   if (source.auditorName !== undefined) target.auditorName = source.auditorName
   if (source.posterName !== undefined) target.posterName = source.posterName
@@ -131,6 +176,7 @@ export function useVoucherQuery(options: UseVoucherQueryOptions = {}) {
     auxFields: {},
     sortField: 'voucher_date',
     sortOrder: 'asc',
+    sorts: DEFAULT_VOUCHER_SORTS.map(k => ({ ...k })),
     makerName: '',
     auditorName: '',
     posterName: '',
@@ -225,8 +271,7 @@ export function useVoucherQuery(options: UseVoucherQueryOptions = {}) {
 
     // 排序
     if (enableSort && filters.value) {
-      params.sortField = filters.value.sortField
-      params.sortOrder = filters.value.sortOrder
+      params.sorts = serializeSortKeys(resolveVoucherSorts(filters.value))
     }
 
     // 经办人筛选
@@ -358,9 +403,8 @@ export function useVoucherQuery(options: UseVoucherQueryOptions = {}) {
   }
 
   // 排序方法
-  function onSortChange(field: string, order: 'asc' | 'desc') {
-    filters.value.sortField = field
-    filters.value.sortOrder = order
+  function onSortChange(sorts: SortKey[]) {
+    filters.value.sorts = sorts.map(k => ({ ...k }))
     pagination.page = 1
     fetchData()
   }

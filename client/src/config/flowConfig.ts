@@ -3,8 +3,9 @@
  * gl-workspace：财务总账专用工作页面（流程图 + 账簿链接列，配置见 glWorkspace.ts）
  * asset-workspace：固定资产专用工作页面（左侧导航面板 + 流程图 + 链接列，配置见 assetWorkspace.ts）
  * cashier-workspace：出纳管理专用工作页面（左侧导航面板 + 流程图 + 链接列，配置见 cashierWorkspace.ts）
+ * arap-workspace：应收应付专用工作页面（应收 / 应付镜像分区 + 报表查询分区，配置见 arapWorkspace.ts）
  */
-export type LayoutType = 'flow' | 'bento' | 'grid' | 'gl-workspace' | 'asset-workspace' | 'cashier-workspace'
+export type LayoutType = 'flow' | 'bento' | 'grid' | 'gl-workspace' | 'asset-workspace' | 'cashier-workspace' | 'arap-workspace'
 
 export interface FlowNode {
   id: string
@@ -15,6 +16,8 @@ export interface FlowNode {
   color?: string // 可选的主题色（如 blue, green, orange, purple）
   next?: string[] // 连接的下一节点 ID
   branches?: FlowNode[] // 从该节点向下延伸的分支节点
+  /** 分支节点下方的说明文字（如退货与收付款的关系） */
+  hint?: string
 }
 
 export interface ModuleFlowConfig {
@@ -72,15 +75,19 @@ export const groupFlowMap: Record<string, ModuleFlowConfig> = {
         path: '/scm/docs?doc_type=SO',
         color: 'blue',
         next: ['rs'],
-        branches: [{ id: 'sr', path: '/scm/docs?doc_type=SR', color: 'red' }],
+        branches: [{ id: 'sr', path: '/scm/docs?doc_type=SR', color: 'red', hint: '审核即冲减应收 → 收款单' }],
       },
       { id: 'rs', path: '/scm/docs?doc_type=RS', color: 'purple', next: ['rcv'] },
       { id: 'rcv', path: '/scm/docs?doc_type=RCV', color: 'green' },
     ],
     auxNodes: [
       { id: 'relations', path: '/scm/sales-order-relations', color: 'cyan' },
+      { id: 'orderChange', path: '/scm/order-changes?doc_type=SOa', color: 'orange' },
       { id: 'summary', path: '/scm/report/sales/summary', color: 'blue' },
       { id: 'detail', path: '/scm/report/sales/detail', color: 'blue' },
+      { id: 'return', path: '/scm/report/sales/return', color: 'red' },
+      { id: 'returnQuery', path: '/scm/report/sales/return-query', color: 'red' },
+      { id: 'invoiceQuery', path: '/scm/report/sales/invoice-query', color: 'purple' },
       { id: 'ranking', path: '/scm/report/sales/ranking', color: 'orange' },
       { id: 'profit', path: '/scm/report/sales/profit', color: 'green' },
       { id: 'salesExec', path: '/scm/report/sales/execution', color: 'cyan' },
@@ -99,16 +106,20 @@ export const groupFlowMap: Record<string, ModuleFlowConfig> = {
         path: '/scm/docs?doc_type=PI',
         color: 'orange',
         next: ['rp'],
-        branches: [{ id: 'pr', path: '/scm/docs?doc_type=PR', color: 'red' }],
+        branches: [{ id: 'pr', path: '/scm/docs?doc_type=PR', color: 'red', hint: '审核即冲减应付 → 付款单' }],
       },
       { id: 'rp', path: '/scm/docs?doc_type=RP', color: 'purple', next: ['pay'] },
       { id: 'pay', path: '/scm/docs?doc_type=PAY', color: 'green' },
     ],
     auxNodes: [
       { id: 'advice', path: '/scm/report/purchase-advice', color: 'cyan' },
+      { id: 'orderChange', path: '/scm/order-changes?doc_type=PO', color: 'orange' },
       { id: 'summary', path: '/scm/report/purchase/summary', color: 'blue' },
       { id: 'detail', path: '/scm/report/purchase/detail', color: 'blue' },
       { id: 'tracking', path: '/scm/report/purchase/order-tracking', color: 'orange' },
+      { id: 'return', path: '/scm/report/purchase/return', color: 'red' },
+      { id: 'returnQuery', path: '/scm/report/purchase/return-query', color: 'red' },
+      { id: 'invoiceQuery', path: '/scm/report/purchase/invoice-query', color: 'purple' },
       { id: 'ranking', path: '/scm/report/purchase/ranking', color: 'orange' },
       { id: 'cost', path: '/scm/report/purchase/cost', color: 'green' },
       { id: 'trend', path: '/scm/report/purchase/trend', color: 'purple' },
@@ -177,22 +188,6 @@ export const groupFlowMap: Record<string, ModuleFlowConfig> = {
       { id: 'op', path: '/scm/docs?doc_type=OP', color: 'orange' },
     ],
   },
-  应收应付: {
-    layout: 'flow',
-    mainNodes: [
-      { id: 'rcv', path: '/scm/docs?doc_type=RCV', color: 'green', next: ['verify'] },
-      { id: 'verify', path: '/scm/arap-verify', color: 'blue', next: ['statement'] },
-      { id: 'statement', path: '/scm/arap-statement', color: 'purple', next: ['aging'] },
-      { id: 'aging', path: '/scm/arap-aging', color: 'orange' },
-    ],
-    auxNodes: [
-      { id: 'pay', path: '/scm/docs?doc_type=PAY', color: 'red' },
-      { id: 'rcvAdv', path: '/scm/docs?doc_type=RCV&payment_mode=advance', color: 'green' },
-      { id: 'payAdv', path: '/scm/docs?doc_type=PAY&payment_mode=advance', color: 'red' },
-      { id: 'balance', path: '/scm/arap', color: 'blue' },
-      { id: 'detail', path: '/scm/arap-detail', color: 'blue' },
-      { id: 'due', path: '/scm/arap-due', color: 'orange' },
-      { id: 'fxReval', path: '/scm/arap-fx-reval', color: 'purple' },
-    ],
-  },
+  // 应收应付：应收 / 应付镜像分区 + 报表查询分区，配置见 arapWorkspace.ts
+  应收应付: { layout: 'arap-workspace' },
 }

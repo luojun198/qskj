@@ -29,7 +29,7 @@
       <el-empty v-if="!columns.length" description="暂无可设置列" :image-size="64" />
     </div>
     <template #footer>
-      <el-button @click="emit('reset')">恢复默认</el-button>
+      <el-button @click="emit('reset')">{{ props.resetLabel || '恢复默认' }}</el-button>
       <el-button type="primary" @click="emit('update:modelValue', false)">关闭</el-button>
     </template>
   </el-dialog>
@@ -41,6 +41,7 @@ import { moveColumnSetting, type ColumnMoveDirection, type ColumnSetting } from 
 const props = defineProps<{
   modelValue: boolean
   columns: ColumnSetting[]
+  resetLabel?: string
 }>()
 
 const emit = defineEmits<{

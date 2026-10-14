@@ -29,4 +29,23 @@ describe('采购订单批量下推', () => {
     ])
     expect(groups).toEqual([])
   })
+
+  it('行仓库 / 税率为空时按订单表头兜底，表头取组内公共值', () => {
+    const groups = buildPurchaseReceiptDraftGroups([
+      { id: 'L1', supplier_code: 'SUP-A', currency: 'CNY', qty: 5, pushed_qty: 0, item_code: 'A', warehouse_code: null, tax_rate: null, source_header_wh: 'WH1', source_header_tax: 13 },
+      { id: 'L2', supplier_code: 'SUP-A', currency: 'CNY', qty: 5, pushed_qty: 0, item_code: 'B', warehouse_code: 'WH1', tax_rate: 0, source_header_wh: 'WH1', source_header_tax: 13 },
+    ])
+    expect(groups[0]).toMatchObject({ warehouse_code: 'WH1', tax_rate: 13 })
+    expect(groups[0].lines[0]).toMatchObject({ warehouse_code: 'WH1', tax_rate: 13 })
+    // 行上明确的 0% 不被表头覆盖
+    expect(groups[0].lines[1]).toMatchObject({ warehouse_code: 'WH1', tax_rate: 0 })
+  })
+
+  it('组内仓库或表头税率不一致时表头留空', () => {
+    const groups = buildPurchaseReceiptDraftGroups([
+      { id: 'L1', supplier_code: 'SUP-A', currency: 'CNY', qty: 5, pushed_qty: 0, warehouse_code: 'WH1', source_header_tax: 13 },
+      { id: 'L2', supplier_code: 'SUP-A', currency: 'CNY', qty: 5, pushed_qty: 0, warehouse_code: 'WH2', source_header_tax: 9 },
+    ])
+    expect(groups[0]).toMatchObject({ warehouse_code: null, tax_rate: null })
+  })
 })

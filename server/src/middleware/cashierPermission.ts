@@ -21,6 +21,8 @@ export const CASHIER_PERMISSION_RULES: Array<{ re: RegExp; perm: string; alsoPer
   { re: /^\/cashier\/settle-type(\/|$)/, perm: 'cashier:dict', alsoPerms: ['cashier:param'] },
   // 结算方式字典读取：出纳各页面与供应链单据都会读取
   { re: /^\/cashier\/settle-types(\/|$)/, perm: 'cashier:dict', alsoPerms: ['cashier:param', 'cashier:journal'] },
+  // 出纳账户档案（出纳独立账户）：与结算方式同属出纳基础资料
+  { re: /^\/cashier\/account-manage(\/|$)/, perm: 'cashier:dict', alsoPerms: ['cashier:param'] },
   { re: /^\/cashier\/init-balance/,      perm: 'cashier:initbal' },
   // P1-3：出纳初始化清空全部出纳数据，与菜单一致要求 cashier:initbal（此前落入兜底规则，日记账岗位即可清空）
   { re: /^\/cashier\/reset(\/|$)/,       perm: 'cashier:initbal' }, // FIX-264：含 /cashier/reset/preview

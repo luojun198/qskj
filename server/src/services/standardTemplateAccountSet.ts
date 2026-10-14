@@ -1,4 +1,5 @@
 import { readFileSync, statSync } from 'fs'
+import { initCashFlowForAccountSetSafe } from './cashFlowAccountMap.js'
 import { v4 as uuidv4 } from 'uuid'
 import type { Database } from 'better-sqlite3'
 import { ensureAccountSetSecurityBootstrap } from '../db/index.js'
@@ -248,6 +249,8 @@ export async function createAccountSetFromStandardTemplate(
     warnings.push(...(stats.warnings || []))
 
     applyAccountingStandardPreset(db, id, template.inferredStandard)
+    // 按准则补齐现金流量项目并预设科目现金流量项目
+    initCashFlowForAccountSetSafe(db, id, warnings)
 
     let standardReports = 0
     try {

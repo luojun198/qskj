@@ -86,7 +86,7 @@ function createDb() {
     CREATE TABLE vouchers (id TEXT, account_set_id TEXT, voucher_no TEXT, voucher_type_id TEXT,
       voucher_date TEXT, year INTEGER, period INTEGER, total_amount REAL, maker_name TEXT,
       remark TEXT, source TEXT);
-    CREATE TABLE voucher_entries (currency_code TEXT, exchange_rate REAL, foreign_amount REAL, id TEXT, account_set_id TEXT, voucher_id TEXT, seq INTEGER,
+    CREATE TABLE voucher_entries (currency_code TEXT, exchange_rate REAL, foreign_amount REAL, dept_id TEXT, dept_name TEXT, project_id TEXT, project_name TEXT, supplier_id TEXT, supplier_name TEXT, person_id TEXT, person_name TEXT, func_class_id TEXT, func_class_name TEXT, aux_data TEXT, cash_flow_code TEXT, cash_flow_name TEXT, quantity REAL, unit_price REAL, unit TEXT, id TEXT, account_set_id TEXT, voucher_id TEXT, seq INTEGER,
       account_id TEXT, account_code TEXT, account_name TEXT, direction TEXT, amount REAL,
       amount_cents INTEGER, summary TEXT);
   `)

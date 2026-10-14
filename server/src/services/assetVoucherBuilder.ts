@@ -26,6 +26,8 @@ import {
   type AuxItemLike,
 } from './voucherEntry.js'
 import { parseAccountAuxCategoryIds } from '../utils/auxItemId.js'
+import { createAccountAuxRequirementLookup, describeMissingAux, findEntriesMissingAux, type AccountAuxRequirementLookup } from './auxRequirement.js'
+import { assertNotBeforeGlStart } from './voucherMutationGuard.js'
 
 /** 资产模块产生的凭证来源标记（voucher.ts 依据 asset_ 前缀拦截直接删除） */
 export type AssetVoucherSource =
@@ -224,6 +226,72 @@ export function auxRefsForAccount(
   return out
 }
 
+// ── 必填辅助核算检查 ───────────────────────────────────────────────────
+
+export interface AssetAuxSubject {
+  asset_no?: string | null
+  asset_name?: string | null
+  dept_code?: string | null
+  user_name?: string | null
+}
+
+/**
+ * 某张卡片在给定科目上缺哪些必填辅助核算，返回原因文字（空数组 = 齐全）。
+ * 部门 / 使用人可由卡片自动带出，区分「卡片未填」与「总账辅助里找不到」；其余类别固定资产无法自动填写。
+ */
+export function assetAuxIssues(
+  db: Database,
+  accountSetId: string,
+  ctx: AssetAuxContext,
+  lookup: AccountAuxRequirementLookup,
+  asset: AssetAuxSubject,
+  accountCodes: string[],
+): string[] {
+  const issues: string[] = []
+  const refs = resolveAssetAuxRefs(db, accountSetId, asset, ctx)
+  for (const code of new Set(accountCodes.filter(Boolean))) {
+    const req = lookup(code)
+    if (!req) continue
+    for (const cat of req.categories) {
+      if (refs[`_${cat.code}_id`]) continue
+      let why: string
+      if (ctx.deptCategory?.id === cat.id) {
+        why = asset.dept_code ? `使用部门「${asset.dept_code}」在总账「${cat.name}」辅助核算中找不到` : '未填使用部门'
+      } else if (ctx.personCategory?.id === cat.id) {
+        why = asset.user_name ? `使用人「${asset.user_name}」在总账「${cat.name}」辅助核算中找不到` : '未填使用人'
+      } else {
+        why = `科目要求「${cat.name}」辅助核算，固定资产凭证无法自动填写`
+      }
+      const text = `${why}（科目 ${req.code} ${req.name}）`
+      if (!issues.includes(text)) issues.push(text)
+    }
+  }
+  return issues
+}
+
+/** 多张卡片的问题汇总成一句错误提示 */
+export function formatAssetAuxIssues(list: Array<{ asset: AssetAuxSubject; issues: string[] }>, limit = 5): string {
+  const head = list.slice(0, limit)
+    .map(x => `${[x.asset.asset_no, x.asset.asset_name].filter(Boolean).join(' ')}：${x.issues.join('、')}`)
+    .join('；')
+  return `以下资产卡片的辅助核算不全，未生成凭证：${head}${list.length > limit ? `；等共 ${list.length} 张` : ''}。请补全卡片使用部门 / 使用人，或在总账辅助核算中建立对应项目后重新生成。`
+}
+
+/**
+ * 卡片保存时的提醒（不拦截）：按该卡片折旧要用的科目（用途折旧费用科目、类别累计折旧科目、类别原值科目）检查。
+ */
+export function assetCardAuxWarnings(db: Database, accountSetId: string, card: AssetAuxSubject & { purpose_code?: string | null; category_code?: string | null }): string[] {
+  const purpose = card.purpose_code
+    ? db.prepare('SELECT expense_account FROM fixed_asset_purpose WHERE account_set_id=? AND code=?').get(accountSetId, card.purpose_code) as { expense_account?: string } | undefined
+    : undefined
+  const category = card.category_code
+    ? db.prepare('SELECT account_code, depr_account_code FROM fixed_asset_category WHERE account_set_id=? AND code=?').get(accountSetId, card.category_code) as { account_code?: string; depr_account_code?: string } | undefined
+    : undefined
+  const codes = [purpose?.expense_account || '', category?.depr_account_code || '', category?.account_code || ''].filter(Boolean)
+  if (!codes.length) return []
+  return assetAuxIssues(db, accountSetId, loadAssetAuxContext(db, accountSetId), createAccountAuxRequirementLookup(db, accountSetId), card, codes)
+}
+
 // ── 科目查找 ───────────────────────────────────────────────────────────
 
 export interface ResolvedAccount {
@@ -312,10 +380,17 @@ export function insertAssetVoucher(params: InsertAssetVoucherParams): InsertAsse
   if (!params.skipPeriodCheck) {
     assertPeriodOpen(db, accountSetId, year, period)
   }
+  // 不受 skipPeriodCheck 影响：开账日期前不允许生成任何资产凭证
+  assertNotBeforeGlStart(db, accountSetId, voucherDate)
 
   const balanceError = getVoucherBalanceError(entries)
   if (balanceError) {
     throw new Error(`生成的凭证借贷不平（${balanceError}），已中止。请检查相关科目配置。`)
+  }
+  // 科目挂了辅助核算而分录未带（卡片缺使用部门 / 使用人等）：不生成过不了账的凭证
+  const missingAux = findEntriesMissingAux(createAccountAuxRequirementLookup(db, accountSetId), entries)
+  if (missingAux.length) {
+    throw new Error(`辅助核算不全，未生成凭证：${describeMissingAux(missingAux)}。请补全资产卡片的使用部门 / 使用人，或在总账辅助核算中建立对应项目。`)
   }
 
   const { effectiveTypeId, voucherNo } = getNextVoucherNo({

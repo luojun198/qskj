@@ -125,7 +125,8 @@ router.post('/init', (req: AuthRequest, res) => {
     if (!accountSetId) {
       return res.status(400).json({ code: 400, message: '缺少账套ID' })
     }
-    const existing = getCashFlowItems(accountSetId)
+    // 附表（补充资料）项目由系统维护，不算「已有主表项目」
+    const existing = getCashFlowItems(accountSetId).filter(i => i.kind !== 'supplement')
     if (existing.length > 0) {
       return res.status(400).json({ code: 400, message: '现金流量项目已存在，无需初始化' })
     }

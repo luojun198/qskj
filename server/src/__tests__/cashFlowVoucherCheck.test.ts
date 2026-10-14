@@ -1,128 +1,45 @@
-import { describe, it, expect, beforeEach } from 'vitest'
-import Database from 'better-sqlite3'
+import { describe, it, expect } from 'vitest'
 import { getCashFlowVoucherCheck } from '../services/cashFlowVoucherCheck.js'
+import { presetCashFlowMapping, updateCashFlowMapRow } from '../services/cashFlowAccountMap.js'
+import { createCashFlowTestDb } from './helpers/cashFlowTestDb.js'
 
-function createTestDb() {
-  const db = new Database(':memory:')
-  db.exec(`
-    CREATE TABLE system_params (account_set_id TEXT, param_key TEXT, param_value TEXT);
-    CREATE TABLE accounts (
-      id TEXT PRIMARY KEY, account_set_id TEXT, code TEXT, name TEXT,
-      direction TEXT, is_cash INTEGER, is_bank INTEGER, is_enabled INTEGER
-    );
-    CREATE TABLE cash_flow_items (
-      id TEXT PRIMARY KEY, account_set_id TEXT, code TEXT, name TEXT,
-      direction TEXT, is_active INTEGER
-    );
-    CREATE TABLE vouchers (
-      id TEXT PRIMARY KEY, account_set_id TEXT, voucher_no TEXT, voucher_date TEXT,
-      year INTEGER, period INTEGER, status TEXT
-    );
-    CREATE TABLE voucher_entries (
-      id TEXT PRIMARY KEY, account_set_id TEXT, voucher_id TEXT, seq INTEGER,
-      account_id TEXT, account_code TEXT, direction TEXT, amount REAL,
-      cash_flow_code TEXT, cash_flow_name TEXT
-    );
-    INSERT INTO system_params VALUES ('set1', 'enable_cash_flow', 'true');
-    INSERT INTO accounts VALUES ('acc-cash', 'set1', '1001', '库存现金', 'debit', 1, 0, 1);
-    INSERT INTO accounts VALUES ('acc-exp', 'set1', '5001', '业务活动费用', 'debit', 0, 0, 1);
-    INSERT INTO cash_flow_items VALUES ('cf1', 'set1', '1101', '销售收现', 'inflow', 1);
-  `)
-  return db
+function setup() {
+  const t = createCashFlowTestDb()
+  presetCashFlowMapping(t.db, t.setId)
+  return t
 }
 
-function insertVoucher(
-  db: Database.Database,
-  id: string,
-  no: string,
-  status: string,
-  entries: Array<{
-    id: string
-    accountId: string
-    accountCode: string
-    direction: 'debit' | 'credit'
-    amount: number
-    cashFlowCode?: string
-  }>
-) {
-  db.prepare(
-    `INSERT INTO vouchers (id, account_set_id, voucher_no, voucher_date, year, period, status)
-     VALUES (?, 'set1', ?, '2026-05-01', 2026, 5, ?)`
-  ).run(id, no, status)
-  entries.forEach((e, i) => {
-    db.prepare(
-      `INSERT INTO voucher_entries
-       (id, account_set_id, voucher_id, seq, account_id, account_code, direction, amount, cash_flow_code)
-       VALUES (?, 'set1', ?, ?, ?, ?, ?, ?, ?)`
-    ).run(e.id, id, i + 1, e.accountId, e.accountCode, e.direction, e.amount, e.cashFlowCode || null)
-  })
-}
-
-describe('cashFlowVoucherCheck', () => {
-  let db: Database.Database
-
-  beforeEach(() => {
-    db = createTestDb()
+describe('cashFlowVoucherCheck（检查对方科目的现金流量项目设置）', () => {
+  it('全部设置时 issueCount 为 0', () => {
+    const t = setup()
+    t.voucher([['1002', 'debit', 100], ['1122', 'credit', 100]])
+    const r = getCashFlowVoucherCheck(t.db, t.setId, 2026, 5)
+    expect(r.summary).toMatchObject({ totalCashEntries: 1, issueCount: 0, passed: true })
   })
 
-  it('全部通过时 issueCount 为 0', () => {
-    insertVoucher(db, 'v1', '记-1', 'posted', [
-      { id: 'e1', accountId: 'acc-cash', accountCode: '1001', direction: 'debit', amount: 100, cashFlowCode: '1101' },
-      { id: 'e2', accountId: 'acc-exp', accountCode: '5001', direction: 'credit', amount: 100 },
-    ])
-
-    const result = getCashFlowVoucherCheck(db, 'set1', 2026, 5)
-    expect(result.summary.totalCashEntries).toBe(1)
-    expect(result.summary.passed).toBe(true)
-    expect(result.summary.issueCount).toBe(0)
+  it('检出对方科目未设置主表项目', () => {
+    const t = setup()
+    updateCashFlowMapRow(t.db, t.setId, t.accountId('2202'), { main_debit_code: null })
+    t.voucher([['2202', 'debit', 300], ['1002', 'credit', 300]], { no: '记-7' })
+    const r = getCashFlowVoucherCheck(t.db, t.setId, 2026, 5)
+    expect(r.summary.missingCount).toBe(1)
+    expect(r.missingEntries[0]).toMatchObject({ voucherNo: '记-7', accountCode: '2202', direction: 'debit', amount: 300 })
+    expect(r.missingEntries[0].issueLabel).toContain('借方')
   })
 
-  it('检出未指定现金流量项目', () => {
-    insertVoucher(db, 'v2', '记-2', 'posted', [
-      { id: 'e3', accountId: 'acc-cash', accountCode: '1001', direction: 'debit', amount: 500 },
-      { id: 'e4', accountId: 'acc-exp', accountCode: '5001', direction: 'credit', amount: 500 },
-    ])
-
-    const result = getCashFlowVoucherCheck(db, 'set1', 2026, 5)
-    expect(result.summary.missingCount).toBe(1)
-    expect(result.missingEntries[0].voucherNo).toBe('记-2')
-    expect(result.summary.passed).toBe(false)
+  it('检出设置的项目已停用', () => {
+    const t = setup()
+    t.voucher([['1002', 'debit', 100], ['1122', 'credit', 100]])
+    t.db.prepare(`UPDATE cash_flow_items SET is_active = 0 WHERE code = '1101'`).run()
+    const r = getCashFlowVoucherCheck(t.db, t.setId, 2026, 5)
+    expect(r.summary.invalidCodeCount).toBe(1)
+    expect(r.invalidCodeEntries[0].cashFlowCode).toBe('1101')
   })
 
-  it('检出无效现金流量项目编码', () => {
-    insertVoucher(db, 'v3', '记-3', 'posted', [
-      {
-        id: 'e5',
-        accountId: 'acc-cash',
-        accountCode: '1001',
-        direction: 'debit',
-        amount: 200,
-        cashFlowCode: '9999',
-      },
-      { id: 'e6', accountId: 'acc-exp', accountCode: '5001', direction: 'credit', amount: 200 },
-    ])
-
-    const result = getCashFlowVoucherCheck(db, 'set1', 2026, 5)
-    expect(result.summary.invalidCodeCount).toBe(1)
-    expect(result.invalidCodeEntries[0].cashFlowCode).toBe('9999')
-    expect(result.summary.issueCount).toBe(1)
-  })
-
-  it('检出非现金科目误填现金流量项目', () => {
-    insertVoucher(db, 'v4', '记-4', 'posted', [
-      {
-        id: 'e7',
-        accountId: 'acc-exp',
-        accountCode: '5001',
-        direction: 'debit',
-        amount: 300,
-        cashFlowCode: '1101',
-      },
-      { id: 'e8', accountId: 'acc-cash', accountCode: '1001', direction: 'credit', amount: 300, cashFlowCode: '1101' },
-    ])
-
-    const result = getCashFlowVoucherCheck(db, 'set1', 2026, 5)
-    expect(result.summary.orphanCount).toBe(1)
-    expect(result.orphanEntries[0].accountCode).toBe('5001')
+  it('未启用现金流时不检查', () => {
+    const t = setup()
+    t.db.prepare(`UPDATE system_params SET param_value = 'false' WHERE param_key = 'enable_cash_flow'`).run()
+    t.voucher([['1002', 'debit', 100], ['1221', 'credit', 100]])
+    expect(getCashFlowVoucherCheck(t.db, t.setId, 2026, 5).summary.passed).toBe(true)
   })
 })

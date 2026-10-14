@@ -83,6 +83,17 @@ describe('listJournal 分页（FIX-253）', () => {
     expect(p2.pageSize).toBe(10)
   })
 
+  it('日期降序：行序反转，每行余额与升序同一行一致，分页续算正确', () => {
+    const asc = listJournal(base)
+    const desc = listJournal({ ...base, sortOrder: 'desc' })
+    expect(desc.rows.map(r => r.id)).toEqual([...asc.rows.map(r => r.id)].reverse())
+    expect(desc.rows.map(r => r.balance)).toEqual([...asc.rows.map(r => r.balance)].reverse())
+    expect(desc.rows[0].balance).toBe(desc.closing)
+    const p2 = listJournal({ ...base, sortOrder: 'desc', page: 2, pageSize: 10 })
+    expect(p2.rows.map(r => r.id)).toEqual(desc.rows.slice(10, 20).map(r => r.id))
+    expect(p2.rows.map(r => r.balance)).toEqual(desc.rows.slice(10, 20).map(r => r.balance))
+  })
+
   it('page_size 上限 1000、越界页返回空行但合计仍正确', () => {
     const r = listJournal({ ...base, page: 9, pageSize: 5000 })
     expect(r.pageSize).toBe(1000)

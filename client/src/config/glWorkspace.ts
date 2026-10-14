@@ -92,8 +92,8 @@ export const GL_SIDEBAR_SECTIONS: GlSidebarSection[] = [
       { title: '凭证汇总表', path: '/ledger/voucher-summary' },
       { title: '明细账', path: '/ledger/detail' },
       { title: '数据备份', path: '/security/backup' },
-      // 右列补1个空位保持左右两列逐行对齐
-      { title: '', spacer: true },
+      // 业务类凭证（进销存 / 出纳 / 固定资产）统一生成管理中心
+      { title: '业务凭证', path: '/voucher/biz-center' },
     ],
   },
   {

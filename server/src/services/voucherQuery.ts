@@ -4,6 +4,7 @@ import {
   type AccountScopeContext,
 } from './accountAuthorization.js'
 import { MAX_PAGE_SIZE, parsePageSizeParam } from '../utils/listLimits.js'
+import { buildMultiOrderBy } from '../utils/multiSort.js'
 
 export interface VoucherListFilters {
   accountSetId: string
@@ -25,6 +26,8 @@ export interface VoucherListFilters {
   auxFields?: Record<string, string>
   sortField?: string
   sortOrder?: string
+  /** 多级排序串（key:asc,key2:desc，白名单见 VOUCHER_SORT_WHITELIST）；传了则优先于 sortField/sortOrder */
+  sorts?: string
   minAmount?: number
   maxAmount?: number
   makerName?: string
@@ -98,6 +101,34 @@ export const VOUCHER_TYPE_ORDER_BY_SQL = `
   CASE WHEN vt.code IS NOT NULL AND vt.code != '' AND vt.code NOT GLOB '*[^0-9]*' THEN CAST(vt.code AS INTEGER) END ASC,
   COALESCE(vt.code, '') COLLATE NOCASE ASC,
   COALESCE(vt.sort_order, 0) ASC`.trim()
+
+/** 带 v. 别名的凭证号序号表达式（VOUCHER_NO_SEQ_SQL 无别名，用于单表查询） */
+const VOUCHER_NO_SEQ_V_SQL = "CAST(CASE WHEN INSTR(v.voucher_no, '-') > 0 THEN SUBSTR(v.voucher_no, INSTR(v.voucher_no, '-') + 1) ELSE v.voucher_no END AS INTEGER)"
+
+/** 凭证列表多级排序白名单（凭证级；分录级列如摘要/科目不在此） */
+export const VOUCHER_SORT_WHITELIST: Record<string, string | string[]> = {
+  // 凭证类型：与基础资料凭证类型列表一致的排序（数字编码在前，再按编码文本、再按类型排序号）
+  voucher_type: [
+    "CASE WHEN vt.code IS NOT NULL AND vt.code != '' AND vt.code NOT GLOB '*[^0-9]*' THEN 0 ELSE 1 END",
+    "CASE WHEN vt.code IS NOT NULL AND vt.code != '' AND vt.code NOT GLOB '*[^0-9]*' THEN CAST(vt.code AS INTEGER) END",
+    "COALESCE(vt.code, '') COLLATE NOCASE",
+    'COALESCE(vt.sort_order, 0)',
+  ],
+  voucher_date: 'v.voucher_date',
+  // 会计期间：先年后期，凭证号在期间内连续编排
+  voucher_period: ['v.year', 'v.period'],
+  // 凭证号按序号数值比较（兼容「记-001」与纯数字），避免 1000 排在 999 之前
+  voucher_no: [VOUCHER_NO_SEQ_V_SQL, 'v.voucher_no'],
+  created_at: 'v.created_at',
+  debit_amount: "COALESCE((SELECT SUM(amount) FROM voucher_entries WHERE voucher_id=v.id AND direction='debit'), 0)",
+  credit_amount: "COALESCE((SELECT SUM(amount) FROM voucher_entries WHERE voucher_id=v.id AND direction='credit'), 0)",
+  total_amount: 'v.total_amount',
+  status: 'v.status',
+  maker_name: 'v.maker_name',
+  auditor_name: 'v.auditor_name',
+  poster_name: 'v.poster_name',
+}
+const VOUCHER_NUMERIC_SORT_KEYS: ReadonlySet<string> = new Set(['debit_amount', 'credit_amount', 'total_amount'])
 
 export function buildVoucherListQuery(filters: VoucherListFilters, db: Database.Database) {
   const conditions = ['v.account_set_id = ?']
@@ -311,7 +342,17 @@ export function buildVoucherListQuery(filters: VoucherListFilters, db: Database.
   }
   const sortExpr = allowedSortFields[filters.sortField || 'voucher_date'] || 'v.voucher_date'
   const sortDir = filters.sortOrder === 'asc' ? 'ASC' : 'DESC'
-  const orderBy = `ORDER BY ${VOUCHER_TYPE_ORDER_BY_SQL}, ${sortExpr} ${sortDir}, v.voucher_no ASC`
+  const legacyOrderBy = `ORDER BY ${VOUCHER_TYPE_ORDER_BY_SQL}, ${sortExpr} ${sortDir}, v.voucher_no ASC`
+  // 多级排序：用户给出的级别严格按顺序生效（凭证类型也只是其中一级）；无有效级别时回退旧排序
+  const multi = filters.sorts
+    ? buildMultiOrderBy(filters.sorts, {
+        whitelist: VOUCHER_SORT_WHITELIST,
+        numericKeys: VOUCHER_NUMERIC_SORT_KEYS,
+        defaultOrderBy: legacyOrderBy.replace(/^ORDER BY /, ''),
+        tieBreakers: [`${VOUCHER_NO_SEQ_V_SQL} ASC`, 'v.voucher_no ASC', 'v.id ASC'],
+      })
+    : null
+  const orderBy = multi && multi.applied.length ? multi.sql : legacyOrderBy
 
   // 游标分页支持
   let cursorCondition = ''

@@ -10,6 +10,7 @@
         <el-button plain size="small" :loading="loading" @click="loadList">
           <el-icon><Refresh /></el-icon>刷新
         </el-button>
+        <SaveAsButton title="资产盘点" />
       </div>
       <el-table ref="tableRef" :data="inventories" size="small" border stripe highlight-current-row
         @row-click="openInventory" style="cursor:pointer" @header-dragend="onDragEnd">
@@ -165,10 +166,13 @@
 /** P1-20：变动 / 处置 / 盘点日期不得晚于当前月份（与后端同口径） */
 function disableFutureMonth(date: Date): boolean {
   const now = new Date()
-  return date.getFullYear() * 100 + date.getMonth() > now.getFullYear() * 100 + now.getMonth()
+  // 同时禁选总账开账日期之前的日子（后端同样拦截）
+  return date.getFullYear() * 100 + date.getMonth() > now.getFullYear() * 100 + now.getMonth() || isBeforeGlStart(date)
 }
 import { todayStr } from '@/utils/format'
 import { ref, computed, onMounted } from 'vue'
+import { useGlStartDate } from '@/composables/useGlStartDate'
+const { isBeforeGlStart } = useGlStartDate()
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, ArrowLeft, Select, Check } from '@element-plus/icons-vue'
 import { fixedAssetApi, type InventorySummary, type InventoryItem } from '@/api/fixedAsset'

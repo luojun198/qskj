@@ -30,7 +30,7 @@
         <el-button type="primary" @click="fetchData"><el-icon><Search /></el-icon>查询</el-button>
         <FilterClearButton @clear="handleClearFilters" />
         <el-divider direction="vertical" />
-        <el-button plain @click="exportData"><el-icon><Download /></el-icon>导出 Excel</el-button>
+        <el-button plain @click="exportData"><el-icon><Download /></el-icon>另存</el-button>
         <el-button plain @click="printPage"><el-icon><Printer /></el-icon>打印</el-button>
         <span class="balance-tag" :class="isBalanced ? 'ok' : 'err'">
           {{ isBalanced ? '借贷平衡' : '借贷不平衡' }}

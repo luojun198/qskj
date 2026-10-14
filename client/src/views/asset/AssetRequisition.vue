@@ -3,6 +3,7 @@
     <template #actions>
       <el-button v-permission="'asset:requisition'" type="primary" :icon="Plus" @click="openDialog('out')">登记领用</el-button>
       <el-button v-permission="'asset:requisition'" :icon="Back" @click="openDialog('in')">登记归还</el-button>
+      <SaveAsButton title="资产领用归还表" size="default" />
     </template>
 
     <template #filters>
@@ -159,6 +160,7 @@
           type="date"
           value-format="YYYY-MM-DD"
           style="width: 100%"
+          :disabled-date="disabledBeforeGlStart"
         />
       </el-form-item>
 
@@ -235,6 +237,8 @@
 <script setup lang="ts">
 import { todayStr } from '@/utils/format'
 import { ref, reactive, onMounted } from 'vue'
+import { useGlStartDate } from '@/composables/useGlStartDate'
+const { disabledBeforeGlStart } = useGlStartDate()
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Plus, Back } from '@element-plus/icons-vue'
 import {

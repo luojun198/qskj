@@ -62,8 +62,12 @@ export function normalizeTarget(db: Database.Database, body: any, before: PlanSn
     if (!lines.length && p.bom_id) {
       lines = bomComponents(db, String(p.bom_id)).map(c => ({ item_code: c.item_code, qty: r6(Number(c.qty) || 0), unit: c.unit ?? null, scrap_rate: Number(c.scrap_rate) || 0, remark: c.remark ?? null, warehouse_code: null }))
     }
+    // 加工单价 / 税率：请求未带时沿用变更前成品行（FIX-398：原来一律置 0，审核任何变更都会清空委外加工单价）
+    const prev = p.id ? before.products.find(x => x.id === p.id) : undefined
+    const fee = p.process_fee === undefined || p.process_fee === null || p.process_fee === '' ? (prev?.process_fee ?? 0) : Number(p.process_fee) || 0
+    const taxRate = p.process_tax_rate === undefined || p.process_tax_rate === null || p.process_tax_rate === '' ? (prev?.process_tax_rate ?? 0) : Number(p.process_tax_rate) || 0
     products.push({ id: p.id || null, item_code: String(p.item_code), plan_qty: r6(Number(p.plan_qty)), bom_id: p.bom_id || null, fp_warehouse: p.fp_warehouse || null, remark: p.remark ?? null,
-      process_fee: Number(p.process_fee) || 0, process_tax_rate: Number(p.process_tax_rate) || 0, lines })
+      process_fee: fee, process_tax_rate: taxRate, lines })
   }
   return { head, products }
 }
@@ -82,6 +86,8 @@ export function computeDiff(before: PlanSnapshot, after: PlanSnapshot): DiffItem
     seenIds.add(a.id!)
     if (r6(b.plan_qty) !== r6(a.plan_qty)) out.push({ kind: 'product', field: 'plan_qty', label: '计划数', product: a.item_code, before: b.plan_qty, after: a.plan_qty })
     if ((b.fp_warehouse ?? null) !== (a.fp_warehouse ?? null)) out.push({ kind: 'product', field: 'fp_warehouse', label: '成品仓', product: a.item_code, before: b.fp_warehouse, after: a.fp_warehouse })
+    if ((Number(b.process_fee) || 0) !== (Number(a.process_fee) || 0)) out.push({ kind: 'product', field: 'process_fee', label: '加工单价', product: a.item_code, before: Number(b.process_fee) || 0, after: Number(a.process_fee) || 0 })
+    if ((Number(b.process_tax_rate) || 0) !== (Number(a.process_tax_rate) || 0)) out.push({ kind: 'product', field: 'process_tax_rate', label: '加工税率%', product: a.item_code, before: Number(b.process_tax_rate) || 0, after: Number(a.process_tax_rate) || 0 })
     if ((b.bom_id ?? null) !== (a.bom_id ?? null)) out.push({ kind: 'product', field: 'bom_id', label: 'BOM', product: a.item_code, before: b.bom_id, after: a.bom_id })
     const bl = new Map(b.lines.map(l => [l.item_code, l])), al = new Map(a.lines.map(l => [l.item_code, l]))
     for (const [code, l] of al) {
@@ -173,4 +179,45 @@ export function applyChange(db: Database.Database, aid: string, plan: any, after
   const total = after.products.reduce((s, p) => s + p.plan_qty, 0)
   upHead.run(after.head.start_date ?? null, after.head.end_date ?? null, Number(after.head.priority) || 0, after.head.yl_warehouse ?? null, after.head.fp_warehouse ?? head.fp_warehouse ?? null,
     after.head.dept_code ?? null, after.head.remark ?? null, head.item_code, r6(total), head.bom_id ?? null, plan.id, aid)
+}
+
+export interface MaterialIncrease { item_code: string; before_need: number; after_need: number; increase: number }
+
+/**
+ * 变更前后每料计划总需求差（总需 = Σ 成品计划数 × 单位用量 ×（1+损耗率））。
+ * 客户反馈：工单变更加大用量后，要据此追加采购，不用手工抄明细——只取增加部分（increase > 0）。
+ */
+export function computeMaterialIncrease(before: PlanSnapshot, after: PlanSnapshot): MaterialIncrease[] {
+  const needOf = (snap: PlanSnapshot) => {
+    const m = new Map<string, number>()
+    for (const p of snap.products || []) {
+      for (const l of p.lines || []) {
+        const q = (Number(p.plan_qty) || 0) * (Number(l.qty) || 0) * (1 + (Number(l.scrap_rate) || 0) / 100)
+        m.set(l.item_code, r6((m.get(l.item_code) || 0) + q))
+      }
+    }
+    return m
+  }
+  const b = needOf(before), a = needOf(after)
+  const out: MaterialIncrease[] = []
+  for (const [code, afterNeed] of a) {
+    const beforeNeed = b.get(code) || 0
+    const inc = r6(afterNeed - beforeNeed)
+    if (inc > 0.000001) out.push({ item_code: code, before_need: r6(beforeNeed), after_need: afterNeed, increase: inc })
+  }
+  return out
+}
+
+/**
+ * 追加物料建议量（客户测试 20261011）：库存先扣其他单据占用、再扣本计划变更前尚未发完的用量（已被占着），
+ * 剩余可用库存才抵减本次增量。
+ *   open_need = max(0, 变更前总需 − 已净发料)
+ *   free      = max(0, 库存 − 其他占用 − open_need)
+ *   suggest   = max(0, 增量 − free)
+ */
+export function suggestIncreaseQty(p: { increase: number; before_need: number; issued: number; stock: number; other_reserved: number }) {
+  const openNeed = r6(Math.max(0, (Number(p.before_need) || 0) - (Number(p.issued) || 0)))
+  const free = r6(Math.max(0, (Number(p.stock) || 0) - (Number(p.other_reserved) || 0) - openNeed))
+  const suggest = r6(Math.max(0, (Number(p.increase) || 0) - free))
+  return { open_need: openNeed, free_stock: free, suggest_qty: suggest }
 }

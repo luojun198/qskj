@@ -5,9 +5,15 @@ import { v4 as uuidv4 } from 'uuid'
 import { getDb } from '../db/index.js'
 import { authMiddleware, AuthRequest, operationLog } from '../middleware/index.js'
 import { createPreReinitializeBackup } from '../services/systemReinitialize.js'
+import {
+  ITEM_IMPORT_COLUMNS, PARTNER_IMPORT_COLUMNS, importItems, importPartners, masterAuditRequired, setMasterAudit, setMasterEnabled,
+  type MasterKind,
+} from '../services/scmMasterData.js'
+import { SCM_RESET_BUSINESS_TABLES, SCM_RESET_MASTER_TABLES } from '../services/scmResetTables.js'
 import { listDocFieldDefs, listAllDocFieldDefs, upsertDocFieldDefs } from '../services/scmDocFields.js'
 import { computeIssueSuggestion, r6 } from '../services/scmProduction.js'
 import { SCM_OVERRUN_PARAM_KEYS, validateScmOverrunParam } from '../services/scmOverrunPolicy.js'
+import { validateNoRuleParam, nextMasterCode, nextItemCode } from '../services/scmNoRule.js'
 import { queryOutsourceExecution, type OutsourceExecutionFilters } from '../services/scmOutsourceExecutionReport.js'
 import { queryProductionExecution, type ProductionExecutionFilters } from '../services/scmProductionExecutionReport.js'
 import { resolveScmAccount, SCM_ACCOUNT_SPECS, suggestScmAccounts } from '../services/scmAccountResolver.js'
@@ -19,6 +25,7 @@ import { calcMonthAvg, listCostingPeriods } from '../services/scmMonthAvg.js'
 import { queryWorkHoursStat, queryProductionDaily, type WorkHoursFilters, type DailyFilters } from '../services/scmProductionReports.js'
 import { querySalesOrderExecution, type SalesExecFilters } from '../services/scmSalesOrderExecution.js'
 import { getScmBaseCurrency, isScmBaseCurrency, normalizeScmCurrency, resolveScmExchangeRate } from '../services/scmCurrency.js'
+import { buildItemListOrderBy } from '../services/scmItemListSort.js'
 
 async function buildStyledXlsxBuffer(options: any) {
   const module = await import('../services/styledExcelExport.js')
@@ -33,6 +40,8 @@ const SCM_PERMISSION_RULES: Array<{ re: RegExp; perm: string }> = [
   { re: /^\/scm\/reset/,       perm: 'scm:param' },   // 供应链初始化（清空）
   { re: /^\/scm\/params/,      perm: 'scm:param' },
   { re: /^\/scm\/import/,      perm: 'scm:import' },
+  // 档案批量审核 / 反审核（须先于 /scm/items、/scm/partners 匹配）
+  { re: /^\/scm\/(items|partners)\/batch-audit/, perm: 'scm:master-audit' },
   { re: /^\/scm\/items/,       perm: 'scm:item' },
   { re: /^\/scm\/partners/,    perm: 'scm:partner' },
   { re: /^\/scm\/warehouses/,  perm: 'scm:warehouse' },
@@ -56,17 +65,47 @@ router.use((req: AuthRequest, res, next) => {
 
 const asid = (req: AuthRequest) => req.accountSetId || ''
 
+/** 小数位参数校验：数量 0–6、单价 0–8、金额 0–2（金额进凭证，超过 2 位没有意义） */
+export function validateDecimalsParam(val: string): string | null {
+  let o: any
+  try { o = JSON.parse(val) } catch { return '小数位设置格式错误' }
+  if (!o || typeof o !== 'object') return '小数位设置格式错误'
+  const LIMIT: Record<string, [number, number, string]> = { qty: [0, 6, '数量'], price: [0, 8, '单价'], amount: [0, 2, '金额'] }
+  const check = (s: any, where: string): string | null => {
+    if (!s || typeof s !== 'object') return null
+    for (const [k, [min, max, label]] of Object.entries(LIMIT)) {
+      if (s[k] === undefined || s[k] === null || s[k] === '') continue
+      const n = Number(s[k])
+      if (!Number.isInteger(n) || n < min || n > max) return `${where}${label}小数位须为 ${min}–${max} 的整数`
+    }
+    return null
+  }
+  const e = check(o.default, '统一设置：')
+  if (e) return e
+  for (const [k, v] of Object.entries(o.types || {})) {
+    const err = check(v, `${k}：`)
+    if (err) return err
+  }
+  return null
+}
+
 // ── 供应链参数（计价方式等） ────────────────────────────────────────────
 const SCM_PARAM_KEYS = [
   'scm:costing_method',
   'scm:acc_ap', 'scm:acc_ar', 'scm:acc_revenue', 'scm:acc_cost',
   'scm:acc_production', 'scm:acc_other', 'scm:acc_tax_input', 'scm:acc_tax_output',
-  'scm:acc_labor', 'scm:acc_overhead',
-  'scm:item_levels', 'scm:item_code_lengths', 'scm:item_types',
+  'scm:acc_labor', 'scm:acc_overhead', 'scm:acc_process_income',
+  'scm:item_levels', 'scm:item_code_lengths', 'scm:item_code_mode', 'scm:item_types',
   'scm:negative_stock_warehouses',
-  'scm:currencies', 'scm:io_categories', 'scm:transport_methods', 'scm:doc_no_rule',
+  'scm:currencies', 'scm:io_categories', 'scm:transport_methods', 'scm:doc_no_rule', 'scm:doc_no_rules', 'scm:code_rules',
   'scm:credit_control_enabled', 'scm:credit_control_mode',
   'scm:qc_required_for_finish', 'scm:qc_required_for_receipt', 'scm:process_flow_strict',
+  // 单据打印默认版式（JSON：{ 单据类型: standard | tax | delivery }，第五份反馈：打印模板切换）
+  'scm:print_layouts',
+  // 档案须审核后才能在单据中使用（第六份反馈，默认关闭）
+  'scm:master_audit_required',
+  // 小数位（JSON：{ default: {qty, price, amount}, types: { 单据类型 / 报表: {...} } }，只影响录入与显示）
+  'scm:decimals',
   ...SCM_OVERRUN_PARAM_KEYS,
 ]
 // ── 多币种（P2-14）：供单据表单取币种列表与记账汇率，任何已登录用户可读（不要求 base:currency 权限） ──
@@ -124,11 +163,10 @@ router.put('/scm/params', operationLog('保存供应链参数', '供应链'), (r
   const VALID_COSTING = ['moving_avg', 'month_avg', 'fifo', 'lifo', 'specified']
   for (const p of params) {
     if (!SCM_PARAM_KEYS.includes(p.param_key)) continue
+    // 对方科目已迁到「基础资料 → 业务凭证设置 → 进销存凭证设置」（PUT /scm/voucher-setting），
+    // 这里不再接收，防止系统参数页带着旧值把新页面的设置覆盖掉
+    if (p.param_key.startsWith('scm:acc_')) continue
     const val = String(p.param_value ?? '')
-    if (p.param_key.startsWith('scm:acc_')) {
-      const leafErr = firstNonLeafError(db, asid(req), [[val, '供应链科目参数']])
-      if (leafErr) return res.status(400).json({ code: 400, message: leafErr })
-    }
     if (p.param_key === 'scm:costing_method' && val && !VALID_COSTING.includes(val)) {
       return res.status(400).json({ code: 400, message: '计价方式无效' })
     }
@@ -142,6 +180,12 @@ router.put('/scm/params', operationLog('保存供应链参数', '供应链'), (r
         return res.status(400).json({ code: 400, message: '允许负库存仓库参数无效' })
       }
     }
+    if (p.param_key === 'scm:decimals' && val) {
+      const err = validateDecimalsParam(val)
+      if (err) return res.status(400).json({ code: 400, message: err })
+    }
+    const noRuleError = validateNoRuleParam(p.param_key, val)
+    if (noRuleError) return res.status(400).json({ code: 400, message: noRuleError })
     const overrunError = validateScmOverrunParam(p.param_key, val)
     if (overrunError) return res.status(400).json({ code: 400, message: overrunError })
     const ex = db.prepare('SELECT id FROM system_params WHERE account_set_id=? AND param_key=?').get(asid(req), p.param_key) as any
@@ -163,21 +207,7 @@ router.post('/scm/reset', operationLog('供应链初始化', '供应链'), async
   } catch (e: any) {
     return res.status(500).json({ code: 500, message: e?.message || '初始化前自动备份失败，已中止操作' })
   }
-  // P2-6：业务表补齐序列号/批次流水、核销、MRP 来源、工单成品与用料、质检、报工；主数据补齐工艺路线/工作中心/库位/字段配置。
-  // 顺序：先明细后头表（无外键约束，但便于阅读与将来加约束）。
-  const businessTables = [
-    'scm_qc_line', 'scm_qc_doc', 'scm_work_report', 'scm_mrp_source',
-    'scm_serial_move', 'scm_serial', 'scm_batch_move', 'scm_stock_batch',
-    'scm_ar_ap_verify', 'scm_ar_ap_log',
-    'scm_doc_line', 'scm_doc', 'scm_stock_layer_use', 'scm_stock_layer', 'scm_costing_period', 'scm_stock_move', 'scm_stock',
-    'scm_production_plan_line', 'scm_production_plan_product', 'scm_production_plan',
-  ]
-  const masterTables = [
-    'scm_routing_line', 'scm_routing', 'scm_work_center',
-    'scm_bom_line', 'scm_bom', 'scm_item_unit', 'scm_item_field_defs', 'scm_doc_field_defs',
-    'scm_item_category', 'scm_item', 'scm_partner', 'scm_bin', 'scm_warehouse', 'scm_unit',
-  ]
-  const tables = mode === 'all' ? [...businessTables, ...masterTables] : businessTables
+  const tables = mode === 'all' ? [...SCM_RESET_BUSINESS_TABLES, ...SCM_RESET_MASTER_TABLES] : [...SCM_RESET_BUSINESS_TABLES]
   const existing = new Set(
     (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as any[]).map(r => r.name)
   )
@@ -337,12 +367,22 @@ router.post('/scm/doc-fields', operationLog('保存单据字段配置', '供应�
 
 // ── 物料档案 ────────────────────────────────────────────────────────────
 router.get('/scm/items/next-no', (req: AuthRequest, res) => {
-  res.json({ code: 0, data: { next_no: nextCode(getDb(), 'scm_item', asid(req), 'WL') } })
+  // 按物料属性取规则：属性单独规则 → 成品(9) 用成品规则 → 其余沿用材料规则
+  const q = req.query as Record<string, string>
+  const ctx = { category_code: q.category_code, subcategory_code: q.subcategory_code, item_type: q.item_type }
+  res.json({ code: 0, data: { next_no: nextItemCode(getDb(), asid(req), q.item_type, ctx) } })
 })
 router.get('/scm/items', (req: AuthRequest, res) => {
   const db = getDb()
-  const { keyword, category_code, item_type, parent_id, is_leaf, all, page = '1', page_size = '50' } = req.query as any
+  const { keyword, category_code, item_type, parent_id, is_leaf, all, sort, page = '1', page_size = '50', enabled, audit_status, for_pick } = req.query as any
   const conds = ['i.account_set_id=?']; const params: any[] = [asid(req)]
+  // 状态筛选（档案列表）/ 单据选择器（for_pick=1：不列停用；参数开启时只列已审核的末级物料，目录行照常保留供树形展示）
+  if (enabled === '1' || enabled === '0') { conds.push('COALESCE(i.enabled,1)=?'); params.push(Number(enabled)) }
+  if (audit_status === 'draft' || audit_status === 'audited') { conds.push('i.audit_status=?'); params.push(audit_status) }
+  if (for_pick === '1') {
+    conds.push('COALESCE(i.enabled,1)=1')
+    if (masterAuditRequired(db, asid(req))) conds.push("(i.audit_status='audited' OR COALESCE(i.is_leaf,1)=0)")
+  }
   if (keyword) { conds.push('(i.code LIKE ? OR i.name LIKE ? OR i.spec LIKE ?)'); params.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`) }
   if (category_code) { conds.push('i.category_code=?'); params.push(category_code) }
   if (item_type) { conds.push('i.item_type=?'); params.push(item_type) }
@@ -376,7 +416,7 @@ router.get('/scm/items', (req: AuthRequest, res) => {
 
   const total = (db.prepare(`SELECT COUNT(*) c FROM scm_item i WHERE ${where}`).get(...params) as any).c
   const paging = normalizePaging(page, page_size)
-  const list = db.prepare(`SELECT ${selectCols} FROM scm_item i WHERE ${where} ORDER BY i.code LIMIT ? OFFSET ?`).all(...params, paging.pageSize, paging.offset) as any[]
+  const list = db.prepare(`SELECT ${selectCols} FROM scm_item i WHERE ${where} ${buildItemListOrderBy(sort).sql} LIMIT ? OFFSET ?`).all(...params, paging.pageSize, paging.offset) as any[]
   appendItemUnits(db, asid(req), list)
   parseFieldValues(list)
 
@@ -530,20 +570,20 @@ router.delete('/scm/items/:id', operationLog('物料删除', '供应链'), (req:
 // ── 往来单位档案 ────────────────────────────────────────────────────────
 router.get('/scm/partners/next-no', (req: AuthRequest, res) => {
   const { partner_type } = req.query as any
-  const prefix = partner_type === 'supplier' ? 'GYS' : partner_type === 'customer' ? 'KH' : 'WL'
-  const rows = getDb().prepare("SELECT code FROM scm_partner WHERE account_set_id=? AND code LIKE ?").all(asid(req), `${prefix}%`) as Array<{ code: string }>
-  let maxNum = -1; let width = 4
-  for (const r of rows) {
-    const m = String(r.code || '').match(new RegExp(`^${prefix}(\\d+)$`))
-    if (m) { const n = parseInt(m[1], 10); if (n >= maxNum) { maxNum = n; width = m[1].length } }
-  }
-  const nextNo = maxNum < 0 ? `${prefix}0001` : prefix + String(maxNum + 1).padStart(width, '0')
+  const kind = partner_type === 'supplier' ? 'supplier' : 'customer'
+  const nextNo = nextMasterCode(getDb(), asid(req), kind, 'scm_partner')
   res.json({ code: 0, data: { next_no: nextNo } })
 })
 router.get('/scm/partners', (req: AuthRequest, res) => {
   const db = getDb()
-  const { keyword, partner_type } = req.query as any
+  const { keyword, partner_type, enabled, audit_status, for_pick } = req.query as any
   const conds = ['account_set_id=?']; const params: any[] = [asid(req)]
+  if (enabled === '1' || enabled === '0') { conds.push('COALESCE(enabled,1)=?'); params.push(Number(enabled)) }
+  if (audit_status === 'draft' || audit_status === 'audited') { conds.push('audit_status=?'); params.push(audit_status) }
+  if (for_pick === '1') {
+    conds.push('COALESCE(enabled,1)=1')
+    if (masterAuditRequired(db, asid(req))) conds.push("audit_status='audited'")
+  }
   if (keyword) { conds.push('(code LIKE ? OR name LIKE ?)'); params.push(`%${keyword}%`, `%${keyword}%`) }
   if (partner_type) { conds.push('(partner_type=? OR partner_type=?)'); params.push(partner_type, 'both') }
   const list = db.prepare(`SELECT * FROM scm_partner WHERE ${conds.join(' AND ')} ORDER BY code`).all(...params)
@@ -602,6 +642,50 @@ router.delete('/scm/partners/:id', operationLog('往来单位删除', '供应链
   res.json({ code: 0, data: { ok: true } })
 })
 
+// ── 档案批量审核 / 停用 / Excel 导入（第六份反馈） ─────────────────────────
+const MASTER_PATHS: Record<string, MasterKind> = { items: 'item', partners: 'partner', warehouses: 'warehouse' }
+const userName = (req: AuthRequest) => (req as any).userName || '系统'
+const idsOf = (b: any): string[] => (Array.isArray(b?.ids) ? b.ids.map(String).filter(Boolean) : [])
+
+for (const path of ['items', 'partners'] as const) {
+  router.post(`/scm/${path}/batch-audit`, operationLog(path === 'items' ? '物料批量审核' : '往来单位批量审核', '供应链'), (req: AuthRequest, res) => {
+    try {
+      const audit = req.body?.action !== 'unaudit'
+      res.json({ code: 0, data: setMasterAudit(getDb(), asid(req), MASTER_PATHS[path] as 'item' | 'partner', idsOf(req.body), audit, userName(req)) })
+    } catch (e: any) { res.status(400).json({ code: 400, message: e?.message || '操作失败' }) }
+  })
+}
+for (const path of ['items', 'partners', 'warehouses'] as const) {
+  router.post(`/scm/${path}/batch-enable`, operationLog('档案批量停用 / 启用', '供应链'), (req: AuthRequest, res) => {
+    try {
+      res.json({ code: 0, data: setMasterEnabled(getDb(), asid(req), MASTER_PATHS[path], idsOf(req.body), req.body?.enabled !== false && req.body?.enabled !== 0) })
+    } catch (e: any) { res.status(400).json({ code: 400, message: e?.message || '操作失败' }) }
+  })
+}
+router.get('/scm/items/import/columns', (_req: AuthRequest, res) => res.json({ code: 0, data: ITEM_IMPORT_COLUMNS }))
+router.get('/scm/partners/import/columns', (_req: AuthRequest, res) => res.json({ code: 0, data: PARTNER_IMPORT_COLUMNS }))
+const MAX_MASTER_IMPORT_ROWS = 20000
+router.post('/scm/items/import', operationLog('物料导入', '供应链'), (req: AuthRequest, res) => {
+  const rows = Array.isArray(req.body?.rows) ? req.body.rows : []
+  if (!rows.length) return res.status(400).json({ code: 400, message: '没有可导入的数据' })
+  if (rows.length > MAX_MASTER_IMPORT_ROWS) return res.status(400).json({ code: 400, message: `单次最多导入 ${MAX_MASTER_IMPORT_ROWS} 行` })
+  try {
+    res.json({ code: 0, data: importItems(getDb(), asid(req), rows, { conflict: req.body?.conflict === 'overwrite' ? 'overwrite' : 'skip', dryRun: req.body?.dry_run !== false }) })
+  } catch (e: any) { res.status(400).json({ code: 400, message: e?.message || '导入失败' }) }
+})
+router.post('/scm/partners/import', operationLog('往来单位导入', '供应链'), (req: AuthRequest, res) => {
+  const rows = Array.isArray(req.body?.rows) ? req.body.rows : []
+  if (!rows.length) return res.status(400).json({ code: 400, message: '没有可导入的数据' })
+  if (rows.length > MAX_MASTER_IMPORT_ROWS) return res.status(400).json({ code: 400, message: `单次最多导入 ${MAX_MASTER_IMPORT_ROWS} 行` })
+  const t = req.body?.default_type
+  try {
+    res.json({ code: 0, data: importPartners(getDb(), asid(req), rows, {
+      conflict: req.body?.conflict === 'overwrite' ? 'overwrite' : 'skip', dryRun: req.body?.dry_run !== false,
+      defaultType: t === 'customer' || t === 'supplier' ? t : 'both',
+    }) })
+  } catch (e: any) { res.status(400).json({ code: 400, message: e?.message || '导入失败' }) }
+})
+
 // ── 仓库档案 ────────────────────────────────────────────────────────────
 router.get('/scm/warehouses/next-no', (req: AuthRequest, res) => {
   res.json({ code: 0, data: { next_no: nextCode(getDb(), 'scm_warehouse', asid(req), 'WH') } })
@@ -617,20 +701,27 @@ router.post('/scm/warehouses', operationLog('仓库新增', '供应链'), (req: 
     return res.status(409).json({ code: 409, message: '仓库编号已存在' })
   }
   const id = uuidv4()
-  db.prepare('INSERT INTO scm_warehouse (id,account_set_id,code,name,attr,keeper,remark,enabled,address,phone,partner_code) VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(
+  db.prepare('INSERT INTO scm_warehouse (id,account_set_id,code,name,attr,keeper,remark,enabled,address,phone,partner_code,is_customer_supplied) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').run(
     id, asid(req), b.code, b.name, b.attr ?? null, b.keeper ?? null, b.remark ?? null, b.enabled === 0 ? 0 : 1,
-    b.address ?? null, b.phone ?? null, b.partner_code ?? null
+    b.address ?? null, b.phone ?? null, b.partner_code ?? null, Number(b.is_customer_supplied) === 1 ? 1 : 0
   )
   res.json({ code: 0, data: { id } })
 })
 router.put('/scm/warehouses/:id', operationLog('仓库修改', '供应链'), (req: AuthRequest, res) => {
   const db = getDb(); const b = req.body
-  if (!db.prepare('SELECT id FROM scm_warehouse WHERE id=? AND account_set_id=?').get(req.params.id, asid(req))) {
+  const wh = db.prepare('SELECT id, code, is_customer_supplied FROM scm_warehouse WHERE id=? AND account_set_id=?').get(req.params.id, asid(req)) as any
+  if (!wh) {
     return res.status(404).json({ code: 404, message: '仓库不存在' })
   }
-  db.prepare('UPDATE scm_warehouse SET name=?,attr=?,keeper=?,remark=?,enabled=?,address=?,phone=?,partner_code=? WHERE id=?').run(
+  // 客供仓标志决定出入库是否计成本：仓内还有库存时切换会让同一批货前后口径不一致，必须先清空库存
+  const cs = b.is_customer_supplied === undefined ? Number(wh.is_customer_supplied) || 0 : (Number(b.is_customer_supplied) === 1 ? 1 : 0)
+  if (cs !== (Number(wh.is_customer_supplied) || 0)) {
+    const held = db.prepare('SELECT COUNT(*) n FROM scm_stock WHERE account_set_id=? AND warehouse_code=? AND (ABS(qty)>0.000001 OR ABS(amount)>0.005)').get(asid(req), wh.code) as any
+    if (Number(held?.n) > 0) return res.status(400).json({ code: 400, message: '该仓库还有库存，不能切换「客供仓」标志，请先把库存出清' })
+  }
+  db.prepare('UPDATE scm_warehouse SET name=?,attr=?,keeper=?,remark=?,enabled=?,address=?,phone=?,partner_code=?,is_customer_supplied=? WHERE id=?').run(
     b.name, b.attr ?? null, b.keeper ?? null, b.remark ?? null, b.enabled === 0 ? 0 : 1,
-    b.address ?? null, b.phone ?? null, b.partner_code ?? null, req.params.id
+    b.address ?? null, b.phone ?? null, b.partner_code ?? null, cs, req.params.id
   )
   res.json({ code: 0, data: { ok: true } })
 })

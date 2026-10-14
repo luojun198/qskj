@@ -12,6 +12,7 @@
         <span class="qc-form-header__meta">不良合计 {{ num(defectTotal) }}</span>
       </div>
       <div class="qc-form-header__right">
+        <SaveAsButton doc title="质检单" />
         <el-button size="small" @click="goBack">取消</el-button>
         <el-button type="primary" size="small" :loading="saving" :disabled="readonly" @click="handleSave">保存</el-button>
       </div>
@@ -63,14 +64,14 @@
         <el-button size="small" :disabled="readonly" @click="addLine"><el-icon><Plus /></el-icon>加行</el-button>
       </div>
       <div class="qc-lines">
-        <el-table :data="form.lines" border stripe size="small" height="100%" row-key="_key">
+        <el-table v-col-width="'scm_QcForm_1'" :data="form.lines" border stripe size="small" height="100%" row-key="_key">
           <el-table-column type="expand" width="36">
             <template #default="{ row }">
               <div class="qc-results">
                 <div v-if="!row.results?.length" class="qc-results__empty">
                   该物料在「{{ typeLabel }}」下没有检验标准，本行按人工判定。<el-button link type="primary" size="small" @click="router.push({ path: '/scm/qc-standards/new', query: { item_code: row.item_code } })">去维护检验标准</el-button>
                 </div>
-                <el-table v-else :data="row.results" size="small" border>
+                <el-table v-col-width="'scm_QcForm_2'" v-else :data="row.results" size="small" border>
                   <el-table-column label="检验项" prop="name" min-width="140" />
                   <el-table-column label="标准" min-width="160">
                     <template #default="{ row: r }">{{ standardText(r) }}<el-tag v-if="r.is_key" size="small" type="danger" effect="plain" style="margin-left:4px">关键</el-tag></template>

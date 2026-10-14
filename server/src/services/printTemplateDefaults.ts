@@ -1,6 +1,10 @@
 import { v4 as uuidv4 } from 'uuid'
 import type Database from 'better-sqlite3'
-import { buildDefaultVoucherHiprintPanel } from './printTemplateHiprintDefaults.js'
+import {
+  buildDefaultVoucherHiprintPanel,
+  VOUCHER_PAPER_WIDTH_MM,
+  VOUCHER_PAPER_HEIGHT_MM,
+} from './printTemplateHiprintDefaults.js'
 
 /** 默认批量/凭证打印模版名称 */
 export const DEFAULT_BATCH_PRINT_TEMPLATE_NAME = '标准记账凭证'
@@ -361,8 +365,8 @@ export function ensureDefaultPrintTemplateForAccountSet(
       accountSetId,
       DEFAULT_BATCH_PRINT_TEMPLATE_NAME,
       'custom',
-      210,
-      148,
+      VOUCHER_PAPER_WIDTH_MM,
+      VOUCHER_PAPER_HEIGHT_MM,
       8,
       8,
       12,

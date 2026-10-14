@@ -9,6 +9,7 @@
         <el-option v-for="w in warehouses" :key="w.code" :label="`${w.code} ${w.name}`" :value="w.code" />
       </el-select>
       <el-button type="primary" plain size="small" @click="load"><el-icon><Search /></el-icon>查询</el-button>
+      <SaveAsButton title="存货报表" />
       <span style="margin-left:auto;font-size:var(--cw-text-base);color:var(--el-text-color-secondary)">共 {{ list.length }} 行</span>
     </div>
         <el-table ref="tableRef" :data="list" v-loading="loading" border stripe size="small" height="calc(100vh - 200px)"
@@ -18,17 +19,17 @@
       <el-table-column label="名称" prop="item_name" min-width="130" :width="widths.item_name" show-overflow-tooltip />
       <el-table-column label="规格" prop="spec" :width="cw('spec', 100)" show-overflow-tooltip />
       <el-table-column label="单位" prop="unit" :width="cw('unit', 60)" />
-      <el-table-column label="期初数量" prop="opening_qty" :width="cw('opening_qty', 90)" align="right" />
-      <el-table-column label="期初金额" prop="opening_amt" :width="cw('opening_amt', 110)" align="right" />
-      <el-table-column label="本期入库" prop="in_qty" :width="cw('in_qty', 90)" align="right" />
-      <el-table-column label="入库金额" prop="in_amt" :width="cw('in_amt', 110)" align="right" />
-      <el-table-column label="本期出库" prop="out_qty" :width="cw('out_qty', 90)" align="right" />
-      <el-table-column label="出库金额" prop="out_amt" :width="cw('out_amt', 110)" align="right" />
+      <el-table-column label="期初数量" prop="opening_qty" :width="cw('opening_qty', 90)" align="right" :formatter="(r: any) => q(r.opening_qty)" />
+      <el-table-column label="期初金额" prop="opening_amt" :width="cw('opening_amt', 110)" align="right" :formatter="(r: any) => a(r.opening_amt)" />
+      <el-table-column label="本期入库" prop="in_qty" :width="cw('in_qty', 90)" align="right" :formatter="(r: any) => q(r.in_qty)" />
+      <el-table-column label="入库金额" prop="in_amt" :width="cw('in_amt', 110)" align="right" :formatter="(r: any) => a(r.in_amt)" />
+      <el-table-column label="本期出库" prop="out_qty" :width="cw('out_qty', 90)" align="right" :formatter="(r: any) => q(r.out_qty)" />
+      <el-table-column label="出库金额" prop="out_amt" :width="cw('out_amt', 110)" align="right" :formatter="(r: any) => a(r.out_amt)" />
       <el-table-column label="期末数量" prop="closing_qty" :width="cw('closing_qty', 90)" align="right">
-        <template #default="{ row }"><b>{{ row.closing_qty }}</b></template>
+        <template #default="{ row }"><b>{{ q(row.closing_qty) }}</b></template>
       </el-table-column>
       <el-table-column label="期末金额" prop="closing_amt" :width="cw('closing_amt', 120)" align="right">
-        <template #default="{ row }"><b>{{ fmt(row.closing_amt) }}</b></template>
+        <template #default="{ row }"><b>{{ a(row.closing_amt) }}</b></template>
       </el-table-column>
     </el-table>
   </div>
@@ -38,6 +39,7 @@
 import { ref, onMounted } from 'vue'
 import { Search } from '@element-plus/icons-vue'
 import { scmApi } from '@/api/scm'
+import { useScmDecimalsStore } from '@/stores/scmDecimals'
 import { useListColumnWidth } from '@/composables/useColumnWidthMemory'
 
 const { tableRef, colWidth, onDragEnd, widths } = useListColumnWidth('scm_stock_report')
@@ -46,7 +48,11 @@ function cw(key: string, fallback: number) { return colWidth(key, fallback) }
 const list = ref<any[]>([]); const loading = ref(false)
 const warehouses = ref<any[]>([])
 const startDate = ref(''); const endDate = ref(''); const wh = ref('')
-const fmt = (v: number) => (v ?? 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+// 小数位：系统参数 → 供应链 → 小数位设置 →「汇总统计表」
+const decStore = useScmDecimalsStore()
+void decStore.load()
+const q = (v: any) => decStore.qty(Number(v) || 0, 'stock_report')
+const a = (v: any) => decStore.amount(Number(v) || 0, 'stock_report')
 
 async function load() {
   loading.value = true
@@ -60,7 +66,8 @@ function summaryMethod({ columns, data }: any) {
   const sums: string[] = []
   columns.forEach((col: any, i: number) => {
     if (['opening_qty','opening_amt','in_qty','in_amt','out_qty','out_amt','closing_qty','closing_amt'].includes(col.property)) {
-      sums[i] = fmt(data.reduce((s: number, r: any) => s + (Number(r[col.property]) || 0), 0))
+      const total = data.reduce((s: number, r: any) => s + (Number(r[col.property]) || 0), 0)
+      sums[i] = String(col.property).endsWith('_amt') ? a(total) : q(total)
     } else { sums[i] = i === 0 ? '合计' : '' }
   })
   return sums

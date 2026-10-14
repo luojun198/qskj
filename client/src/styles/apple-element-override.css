@@ -100,6 +100,28 @@
   padding: 0 24px !important;
 }
 
+/* 统一按钮尺寸：除 large 外一律 26px 高、12px 字、相邻间隔 6px（link / text / 圆形 / 输入框附加按钮除外） */
+.el-button:not(.el-button--large):not(.is-link):not(.is-text):not(.is-circle) {
+  height: 26px;
+  padding: 0 12px !important;
+  font-size: 12px;
+}
+
+.el-button.is-circle:not(.el-button--large) {
+  width: 26px;
+  height: 26px;
+  padding: 0 !important;
+}
+
+.el-button + .el-button {
+  margin-left: 6px;
+}
+
+.el-input-group__append .el-button:not(.el-button--large),
+.el-input-group__prepend .el-button:not(.el-button--large) {
+  height: auto;
+}
+
 .el-button:hover {
   filter: none;
 }
@@ -114,78 +136,78 @@
   outline-offset: 2px !important;
 }
 
-/* 主要按钮 - 实体薄荷 */
+/* ========== 有类型按钮：一律白底描边，只用语义色文字区分（取消实心彩色底）==========
+   主操作 primary / success 用薄荷文字；危险红字；警告橙字；信息蓝字。
+   例外：弹窗底部 / 确认框 / 抽屉底部的主按钮保持实心（见下一段）；登录页按钮由 Login.styles.css 自定义。 */
 .el-button--primary:not(.is-link):not(.is-text) {
-  background: var(--mint-500, #12c7ae) !important;
-  border-color: var(--mint-500, #12c7ae) !important;
-  color: #fff !important;
+  background: var(--white, #fff) !important;
+  border: 1px solid var(--mint-300, #8ee3d6) !important;
+  color: var(--mint-700, #0f9f8c) !important;
   box-shadow: none !important;
+  font-weight: 500 !important;
 }
 
 .el-button--primary:not(.is-link):not(.is-text):hover,
 .el-button--primary:not(.is-link):not(.is-text):focus,
 .el-button--primary:not(.is-link):not(.is-text):focus-visible {
-  background: var(--mint-600, #0aa694) !important;
-  border-color: var(--mint-600, #0aa694) !important;
-  color: #fff !important;
+  background: var(--mint-50, #f4f9f9) !important;
+  border-color: var(--mint-400, #40d4c0) !important;
+  color: var(--mint-700, #0f9f8c) !important;
   box-shadow: none !important;
 }
 
-/* 成功按钮 - 翡翠绿 */
 .el-button--success:not(.is-link):not(.is-text) {
-  background: #0fb57e !important;
-  border-color: #0fb57e !important;
-  color: #fff !important;
+  background: var(--white, #fff) !important;
+  border: 1px solid var(--mint-300, #8ee3d6) !important;
+  color: var(--mint-700, #0f9f8c) !important;
   box-shadow: none !important;
+  font-weight: 500 !important;
 }
 
 .el-button--success:not(.is-link):not(.is-text):hover,
 .el-button--success:not(.is-link):not(.is-text):focus,
 .el-button--success:not(.is-link):not(.is-text):focus-visible {
-  background: #0aa06e !important;
-  border-color: #0aa06e !important;
-  color: #fff !important;
+  background: var(--mint-50, #f4f9f9) !important;
+  border-color: var(--mint-400, #40d4c0) !important;
+  color: var(--mint-700, #0f9f8c) !important;
   box-shadow: none !important;
 }
 
-/* 警告按钮 - 活力橙 */
 .el-button--warning:not(.is-link):not(.is-text) {
-  background: #f4a52e !important;
-  border-color: #f4a52e !important;
-  color: #fff !important;
+  background: var(--white, #fff) !important;
+  border: 1px solid #f6d39a !important;
+  color: #b8741a !important;
   box-shadow: none !important;
 }
 
 .el-button--warning:not(.is-link):not(.is-text):hover,
 .el-button--warning:not(.is-link):not(.is-text):focus,
 .el-button--warning:not(.is-link):not(.is-text):focus-visible {
-  background: #e09312 !important;
-  border-color: #e09312 !important;
-  color: #fff !important;
+  background: #fff8ec !important;
+  border-color: #f4a52e !important;
+  color: #b8741a !important;
   box-shadow: none !important;
 }
 
-/* 危险按钮 - 珊瑚红（修复焦点与hover时背景变白看不清文字的缺陷） */
 .el-button--danger:not(.is-link):not(.is-text) {
-  background: #f2545b !important;
-  border-color: #f2545b !important;
-  color: #fff !important;
+  background: var(--white, #fff) !important;
+  border: 1px solid #f8c4c6 !important;
+  color: #e0434a !important;
   box-shadow: none !important;
 }
 
 .el-button--danger:not(.is-link):not(.is-text):hover,
 .el-button--danger:not(.is-link):not(.is-text):focus,
 .el-button--danger:not(.is-link):not(.is-text):focus-visible {
-  background: #e0434a !important;
-  border-color: #e0434a !important;
-  color: #fff !important;
+  background: #fff5f5 !important;
+  border-color: #f2545b !important;
+  color: #e0434a !important;
   box-shadow: none !important;
 }
 
-/* 信息/次要按钮 - 浅蓝底深字 */
 .el-button--info:not(.is-link):not(.is-text) {
-  background: #e5f0ff !important;
-  border-color: #e5f0ff !important;
+  background: var(--white, #fff) !important;
+  border: 1px solid #c9dcf5 !important;
   color: #1a54a8 !important;
   box-shadow: none !important;
 }
@@ -193,6 +215,92 @@
 .el-button--info:not(.is-link):not(.is-text):hover,
 .el-button--info:not(.is-link):not(.is-text):focus,
 .el-button--info:not(.is-link):not(.is-text):focus-visible {
+  background: #f0f6ff !important;
+  border-color: #8fb6ea !important;
+  color: #1a54a8 !important;
+  box-shadow: none !important;
+}
+
+/* ========== 实心例外：弹窗底部 / ElMessageBox / 抽屉底部的主操作保持填色（登录页按钮有自己的渐变样式，见 Login.styles.css）========== */
+/* 主要按钮 - 实体薄荷 */
+:is(.el-dialog__footer, .el-message-box__btns, .el-drawer__footer) .el-button--primary:not(.is-link):not(.is-text) {
+  background: var(--mint-500, #12c7ae) !important;
+  border-color: var(--mint-500, #12c7ae) !important;
+  color: #fff !important;
+  box-shadow: none !important;
+}
+
+:is(.el-dialog__footer, .el-message-box__btns, .el-drawer__footer) .el-button--primary:not(.is-link):not(.is-text):hover,
+:is(.el-dialog__footer, .el-message-box__btns, .el-drawer__footer) .el-button--primary:not(.is-link):not(.is-text):focus,
+:is(.el-dialog__footer, .el-message-box__btns, .el-drawer__footer) .el-button--primary:not(.is-link):not(.is-text):focus-visible {
+  background: var(--mint-600, #0aa694) !important;
+  border-color: var(--mint-600, #0aa694) !important;
+  color: #fff !important;
+  box-shadow: none !important;
+}
+
+/* 成功按钮 - 翡翠绿 */
+:is(.el-dialog__footer, .el-message-box__btns, .el-drawer__footer) .el-button--success:not(.is-link):not(.is-text) {
+  background: #0fb57e !important;
+  border-color: #0fb57e !important;
+  color: #fff !important;
+  box-shadow: none !important;
+}
+
+:is(.el-dialog__footer, .el-message-box__btns, .el-drawer__footer) .el-button--success:not(.is-link):not(.is-text):hover,
+:is(.el-dialog__footer, .el-message-box__btns, .el-drawer__footer) .el-button--success:not(.is-link):not(.is-text):focus,
+:is(.el-dialog__footer, .el-message-box__btns, .el-drawer__footer) .el-button--success:not(.is-link):not(.is-text):focus-visible {
+  background: #0aa06e !important;
+  border-color: #0aa06e !important;
+  color: #fff !important;
+  box-shadow: none !important;
+}
+
+/* 警告按钮 - 活力橙 */
+:is(.el-dialog__footer, .el-message-box__btns, .el-drawer__footer) .el-button--warning:not(.is-link):not(.is-text) {
+  background: #f4a52e !important;
+  border-color: #f4a52e !important;
+  color: #fff !important;
+  box-shadow: none !important;
+}
+
+:is(.el-dialog__footer, .el-message-box__btns, .el-drawer__footer) .el-button--warning:not(.is-link):not(.is-text):hover,
+:is(.el-dialog__footer, .el-message-box__btns, .el-drawer__footer) .el-button--warning:not(.is-link):not(.is-text):focus,
+:is(.el-dialog__footer, .el-message-box__btns, .el-drawer__footer) .el-button--warning:not(.is-link):not(.is-text):focus-visible {
+  background: #e09312 !important;
+  border-color: #e09312 !important;
+  color: #fff !important;
+  box-shadow: none !important;
+}
+
+/* 危险按钮 - 珊瑚红（修复焦点与hover时背景变白看不清文字的缺陷） */
+:is(.el-dialog__footer, .el-message-box__btns, .el-drawer__footer) .el-button--danger:not(.is-link):not(.is-text) {
+  background: #f2545b !important;
+  border-color: #f2545b !important;
+  color: #fff !important;
+  box-shadow: none !important;
+}
+
+:is(.el-dialog__footer, .el-message-box__btns, .el-drawer__footer) .el-button--danger:not(.is-link):not(.is-text):hover,
+:is(.el-dialog__footer, .el-message-box__btns, .el-drawer__footer) .el-button--danger:not(.is-link):not(.is-text):focus,
+:is(.el-dialog__footer, .el-message-box__btns, .el-drawer__footer) .el-button--danger:not(.is-link):not(.is-text):focus-visible {
+  background: #e0434a !important;
+  border-color: #e0434a !important;
+  color: #fff !important;
+  box-shadow: none !important;
+}
+
+/* 信息/次要按钮 - 浅蓝底深字 */
+:is(.el-dialog__footer, .el-message-box__btns, .el-drawer__footer) .el-button--info:not(.is-link):not(.is-text) {
+  background: #e5f0ff !important;
+  border-color: #e5f0ff !important;
+  color: #1a54a8 !important;
+  box-shadow: none !important;
+}
+
+:is(.el-dialog__footer, .el-message-box__btns, .el-drawer__footer) .el-button--info:not(.is-link):not(.is-text):hover,
+:is(.el-dialog__footer, .el-message-box__btns, .el-drawer__footer) .el-button--info:not(.is-link):not(.is-text):focus,
+:is(.el-dialog__footer, .el-message-box__btns, .el-drawer__footer) .el-button--info:not(.is-link):not(.is-text):focus-visible {
   background: #d2e5ff !important;
   border-color: #d2e5ff !important;
   color: #124389 !important;
@@ -383,6 +491,7 @@
 
 .el-card:hover {
   box-shadow: var(--shadow-md, 0 4px 14px rgba(15, 35, 40, 0.08)) !important;
+  transform: none !important;
 }
 
 .el-card__header {

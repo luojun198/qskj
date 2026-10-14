@@ -2,7 +2,7 @@
 import type { ScmDoc } from '@/api/scm'
 
 export const DOC_TITLE: Record<string, string> = {
-  PI: '采购入库', PR: '采购退货', SO: '销售出库', SR: '销售退货',
+  IS: '期初入库', PI: '采购入库', PR: '采购退货', SO: '销售出库', SR: '销售退货',
   OI: '其他入库', OO: '其他出库', TR: '调拨单', CK: '盘点单',
   PL: '生产领用', PF: '完工入库', PS: '不良品入库', PB: '补料单', PJ: '退料单',
   WO: '委外发货', WI: '委外入库', OP: '工序委外单', AS: '组装单', DS: '拆卸单',
@@ -20,6 +20,16 @@ export const PUSH_MAP: Record<string, string> = {
 }
 export const PUSH_LABEL: Record<string, string> = {
   PO: '采购入库', PQ: '采购订单', SOa: '销售出库', SQ: '销售订单',
+}
+/**
+ * 不生成凭证的单据：订单 / 询价 / 报价只是业务承诺，不影响库存与往来，账务由下游入库、出库单承担；
+ * MRP 计算单同理。与服务端 genVoucherHandler 的拦截口径一致（direction=none 且不影响库存 / 往来）。
+ */
+export const NO_VOUCHER_DOC_TYPES: ReadonlySet<string> = new Set(['MRP', 'PQ', 'PO', 'SQ', 'SOa'])
+export function docGeneratesVoucher(docType: string): boolean { return !NO_VOUCHER_DOC_TYPES.has(docType) }
+/** 收付款制证方式为「通过出纳生成凭证」时，收款单 / 付款单不在单据侧制证 */
+export function paymentVoucherByCashier(docType: string, mode: string | undefined): boolean {
+  return mode === 'cashier' && (docType === 'RCV' || docType === 'PAY')
 }
 export function pushTarget(docType: string): string | undefined { return PUSH_MAP[docType] }
 /** 常规单据下推入口；销售订单使用专用发货入口，其余类型必须存在实际下推映射。 */

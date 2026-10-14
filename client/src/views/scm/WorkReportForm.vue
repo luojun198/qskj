@@ -9,6 +9,7 @@
         <span v-if="form.report_no" class="wr-form-header__meta">{{ form.report_no }}</span>
       </div>
       <div class="wr-form-header__right">
+        <SaveAsButton doc title="报工单" />
         <el-button size="small" @click="goBack">取消</el-button>
         <el-button type="primary" size="small" :loading="saving" @click="handleSave">保存</el-button>
       </div>
@@ -51,7 +52,7 @@
             <el-input-number v-model="form.scrap_qty" :min="0" :precision="6" :controls="false" style="width:100%" />
           </el-form-item></el-col>
           <el-col :span="6"><el-form-item label="报工日期">
-            <el-date-picker v-model="form.report_date" type="date" value-format="YYYY-MM-DD" style="width:100%" />
+            <el-date-picker v-model="form.report_date" type="date" value-format="YYYY-MM-DD" style="width:100%" :disabled-date="disabledBeforeGlStart" />
           </el-form-item></el-col>
           <el-col :span="24"><el-form-item label="备注">
             <el-input v-model="form.remark" placeholder="可留空" />
@@ -83,6 +84,8 @@
 <script setup lang="ts">
 import { todayStr } from '@/utils/format'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useGlStartDate } from '@/composables/useGlStartDate'
+const { disabledBeforeGlStart } = useGlStartDate()
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
