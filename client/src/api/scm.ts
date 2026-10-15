@@ -165,7 +165,7 @@ export interface ScmDoc { id?: string; process_mode?: string | null; product_lin
   biz_person?: string; payment_type?: string; settle_account?: string; invoice_type?: string; invoice_no?: string; invoice_date?: string;
   contract_no?: string; currency?: string; exchange_rate?: number; discount_rate?: number; expect_date?: string; dest_warehouse_code?: string;
   credit_days?: number; due_date?: string; maker?: string; auditor?: string; audited_at?: string; total_tax?: number; field_values?: Record<string, any> | string;
-  voucher_id?: string; pushed_qty?: number;
+  voucher_id?: string; pushed_qty?: number; pushed_amount?: number; unpushed_amount?: number;
   /** 1 = 原系统（润衡 ACD）导入的历史单据，原系统已制证 */
   external_voucher?: number;
   // 收付款单列表核销信息
@@ -629,7 +629,7 @@ export const scmApi = {
   getDocNextNo: (doc_type: string, doc_date?: string, ctx: { partner_code?: string; warehouse_code?: string; dept_code?: string; biz_person?: string } = {}) =>
     request.get<{ next_no: string }>('/scm/docs/next-no', { params: { doc_type, doc_date, ...ctx } }),
   getDocs: (params: { doc_type?: string; partner_code?: string; warehouse_code?: string; status?: string; start_date?: string; end_date?: string; payment_mode?: 'advance'; keyword?: string; biz_person?: string; sort?: string; page?: number; page_size?: number; invoice_open?: 1; expand?: 'product' }) =>
-    request.get<{ list: ScmDoc[]; total: number; page: number; page_size: number; summary?: { total_qty: number; total_amount: number; total_tax: number; pushed_qty?: number } }>('/scm/docs', { params }),
+    request.get<{ list: ScmDoc[]; total: number; page: number; page_size: number; summary?: { total_qty: number; total_amount: number; total_tax: number; pushed_qty?: number; pushed_amount?: number; unpushed_amount?: number } }>('/scm/docs', { params }),
   getSalesOrderRelations: (params?: { keyword?: string; status?: string; start_date?: string; end_date?: string; page?: number; page_size?: number }) =>
     request.get<SalesOrderRelationResult>('/scm/sales-order-relations', { params }),
   // 单据翻页：按过滤条件取有序 id 数组（与列表同序），用于查看/编辑页首/上/下/尾翻阅

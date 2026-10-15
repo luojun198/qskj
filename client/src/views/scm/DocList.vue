@@ -218,7 +218,7 @@ const paymentLabel = (v?: string) => (v ? (PAYMENT_LABEL[v] || v) : '')
 // 合计行：作为表体最后一行（水平滚动条落在合计行下方）。仅有数据时追加。
 // 数量 / 金额 / 税额取后端按全部筛选结果汇总的值（不只当前页，翻页时合计不变）；核销金额仍按当前页。
 // 样式与冻结（sticky 贴底）由 common.css 的 .doc-line-summary 全局规则统一处理。
-const listSummary = ref<{ total_qty: number; total_amount: number; total_tax: number; pushed_qty?: number } | null>(null)
+const listSummary = ref<{ total_qty: number; total_amount: number; total_tax: number; pushed_qty?: number; pushed_amount?: number; unpushed_amount?: number } | null>(null)
 const summaryRow = computed<any>(() => {
   const sum = (k: string) => list.value.reduce((s, r) => s + (Number((r as any)[k]) || 0), 0)
   const all = listSummary.value
@@ -228,6 +228,8 @@ const summaryRow = computed<any>(() => {
     total_qty: (all ? all.total_qty : sum('total_qty')) || null,
     // 下推数量合计：后端有全量值（单一可下推类型）时取全量，否则按当前页累加
     pushed_qty: all?.pushed_qty != null ? all.pushed_qty : sum('pushed_qty'),
+    pushed_amount: all?.pushed_amount != null ? all.pushed_amount : sum('pushed_amount'),
+    unpushed_amount: all?.unpushed_amount != null ? all.unpushed_amount : sum('unpushed_amount'),
     total_amount: (all ? all.total_amount : sum('total_amount')) || null,
     total_tax: (all ? all.total_tax : sum('total_tax')) || null,
     verified_amount: sum('verified_amount') || null, unverified_amount: sum('unverified_amount') || null,
@@ -244,7 +246,7 @@ function onViewModeChange() {
   try { localStorage.setItem(VIEW_MODE_KEY, viewMode.value) } catch { /* 忽略 */ }
   reloadFromFirstPage()
 }
-const PRODUCT_HIDDEN_COLS = ['total_qty', 'total_amount', 'total_tax', 'total_with_tax', 'push']
+const PRODUCT_HIDDEN_COLS = ['total_qty', 'total_amount', 'total_tax', 'total_with_tax', 'push', 'pushed_amount', 'unpushed_amount']
 const flatRows = computed<any[]>(() => {
   const out: any[] = []
   for (const d of list.value) {
@@ -346,7 +348,7 @@ const sortStorageKey = (dt: string) => `scm_doc_list_sort:${dt || 'ALL'}`
 const sortByType = reactive<Record<string, SortKey[]>>({})
 // 可排序的列 = 当前类型可用列（含自定义字段列），去掉后端无法排序的「下推数量」
 // 后端无法排序的列：下推数量 + 收付款核销信息（均为批量富化出来的非库字段）
-const NON_SORTABLE_COLS = [...LIST_ALL_COLS.map(c => c.key).filter(k => k.startsWith(LIST_PRODUCT_COL_PREFIX)), 'push', 'verified_amount', 'unverified_amount', 'verify_nos', 'pay_linked_docs']
+const NON_SORTABLE_COLS = [...LIST_ALL_COLS.map(c => c.key).filter(k => k.startsWith(LIST_PRODUCT_COL_PREFIX)), 'push', 'pushed_amount', 'unpushed_amount', 'verified_amount', 'unverified_amount', 'verify_nos', 'pay_linked_docs']
 const sortOptions = computed(() => availableCols.value.filter(c => !NON_SORTABLE_COLS.includes(c.key)).map(c => ({ key: c.key, label: c.label })))
 const sortOptionKeys = computed(() => new Set(sortOptions.value.map(o => o.key)))
 const storedSortKeys = computed<SortKey[]>(() => sortByType[filters.doc_type || 'ALL'] ?? loadSortKeys(sortStorageKey(filters.doc_type)) ?? [])
@@ -392,7 +394,7 @@ const DOC_COLUMN_WIDTHS: Record<string, number> = {
   doc_no: 160, doc_date: 100, doc_type: 90, partner: 170, warehouse: 120, dest_warehouse: 120, biz_person: 90, dept_code: 90, contract_no: 130,
   payment_type: 90, settle_account: 110, io_category: 90, transport_method: 90, expect_date: 100, credit_days: 70, due_date: 100,
   invoice_type: 100, invoice_no: 130, invoice_date: 100, currency: 70, exchange_rate: 80, discount_rate: 80, tax_rate: 70,
-  total_qty: 80, total_amount: 110, total_tax: 100, total_with_tax: 120, push: 110, operator: 90, maker: 90, created_at: 140,
+  total_qty: 80, total_amount: 110, total_tax: 100, total_with_tax: 120, push: 110, pushed_amount: 110, unpushed_amount: 110, operator: 90, maker: 90, created_at: 140,
   auditor: 90, audited_at: 140, updated_at: 140, linked_docs: 150, linked_payments: 150, verified_amount: 110, unverified_amount: 110, verify_nos: 140, pay_linked_docs: 150, source_doc_no: 150, voucher_no: 130, print_count: 80, status: 80, remark: 160,
 }
 const LINKED_COLS = ['linked_docs', 'linked_payments', 'pay_linked_docs', 'verify_nos']
@@ -423,9 +425,9 @@ function linkedDocsCell(row: any, key: string): VNode | string {
     onClick: (e: MouseEvent) => { e.stopPropagation(); router.push(scmDownstreamDocRoute(d.id, d.status, undefined, d.doc_type)) },
   }, () => d.doc_no)))
 }
-const RIGHT_COLS = ['verified_amount', 'unverified_amount', 'total_qty', 'total_amount', 'total_tax', 'total_with_tax', 'discount_rate', 'credit_days', 'tax_rate', 'exchange_rate', 'print_count']
+const RIGHT_COLS = ['pushed_amount', 'unpushed_amount', 'verified_amount', 'unverified_amount', 'total_qty', 'total_amount', 'total_tax', 'total_with_tax', 'discount_rate', 'credit_days', 'tax_rate', 'exchange_rate', 'print_count']
 // 需要 formatter 自行取值的列（不绑定 prop）
-const COMPUTED_COLS = ['doc_type', 'partner', 'warehouse', 'dest_warehouse', 'payment_type', 'total_amount', 'total_tax', 'total_with_tax', 'push', 'status', 'created_at', 'audited_at', 'updated_at']
+const COMPUTED_COLS = ['doc_type', 'partner', 'warehouse', 'dest_warehouse', 'payment_type', 'total_amount', 'total_tax', 'total_with_tax', 'push', 'pushed_amount', 'unpushed_amount', 'status', 'created_at', 'audited_at', 'updated_at']
 const DATETIME_COLS = ['created_at', 'audited_at', 'updated_at']
 function docColumnWidth(key: string) { return widths.value[key] || cw(key, DOC_COLUMN_WIDTHS[key] || 120) }
 function docColumnMinWidth(key: string) { return key === 'partner' ? 150 : key === 'remark' ? 140 : key.startsWith('cf:') ? 120 : undefined }
@@ -453,6 +455,10 @@ function docColumnText(row: any, key: string) {
   if (key === 'verified_amount' || key === 'unverified_amount') return row[key] == null ? '' : decStore.amount(row[key], scope)
   if (key === 'total_tax') return decStore.amount(row.total_tax || 0, scope)
   if (key === 'total_with_tax') return decStore.amount((row.total_amount || 0) + (row.total_tax || 0), scope)
+  if (key === 'pushed_amount' || key === 'unpushed_amount') {
+    if (!row.__summary && !isPushProgressDoc(row.doc_type)) return '—'
+    return decStore.amount(Number(row[key]) || 0, scope)
+  }
   if (DATETIME_COLS.includes(key)) return fmtDateTime(row[key])
   if (key.startsWith('cf:')) return cfVal(row, key.slice(3))
   return row[key] ?? ''
@@ -484,7 +490,7 @@ function formatDocColumn(row: any, key: string): string | VNode {
 
 // 「另存」：按当前筛选 / 排序取全部页（不只当前 30 条），列按当前列设置；组装单成品明细视图逐成品一行
 const EXPORT_PAGE_SIZE = 500
-const EXPORT_NUMERIC_COLS = new Set(['total_qty', 'total_amount', 'total_tax', 'total_with_tax', 'verified_amount', 'unverified_amount', 'discount_rate', 'credit_days', 'tax_rate', 'exchange_rate', 'print_count'])
+const EXPORT_NUMERIC_COLS = new Set(['pushed_amount', 'unpushed_amount', 'total_qty', 'total_amount', 'total_tax', 'total_with_tax', 'verified_amount', 'unverified_amount', 'discount_rate', 'credit_days', 'tax_rate', 'exchange_rate', 'print_count'])
 function docExportText(row: any, key: string): string | number {
   if (key === 'verify_nos') return (row.verify_nos || []).join('、')
   if (LINKED_COLS.includes(key)) return (row[key] || []).map((d: any) => d.doc_no).join('、')
