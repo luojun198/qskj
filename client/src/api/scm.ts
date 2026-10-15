@@ -165,7 +165,7 @@ export interface ScmDoc { id?: string; process_mode?: string | null; product_lin
   biz_person?: string; payment_type?: string; settle_account?: string; invoice_type?: string; invoice_no?: string; invoice_date?: string;
   contract_no?: string; currency?: string; exchange_rate?: number; discount_rate?: number; expect_date?: string; dest_warehouse_code?: string;
   credit_days?: number; due_date?: string; maker?: string; auditor?: string; audited_at?: string; total_tax?: number; field_values?: Record<string, any> | string;
-  voucher_id?: string; pushed_qty?: number; pushed_amount?: number; unpushed_amount?: number;
+  voucher_id?: string; pushed_qty?: number; push_shown_qty?: number; pushed_amount?: number; unpushed_amount?: number;
   /** 1 = 原系统（润衡 ACD）导入的历史单据，原系统已制证 */
   external_voucher?: number;
   // 收付款单列表核销信息

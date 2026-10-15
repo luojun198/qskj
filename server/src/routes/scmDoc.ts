@@ -755,7 +755,7 @@ function queryDocRows(db: ReturnType<typeof getDb>, whereSql: string, params: an
   //    注：原 SQL 中 pushed_qty 是「下游引用本主单所有明细行的数量之和」；pushed_lines 是「下游引用数量>0 的明细行数」；
   //    fully_pushed_lines 是「下游引用数量 >= qty 的明细行数」。这里一次性算清。
   const lineRows = db.prepare(`
-    SELECT id, doc_id, qty, amount, arap_source_log_id FROM scm_doc_line WHERE doc_id IN (${inPH})
+    SELECT id, doc_id, qty, amount, tax_amount, arap_source_log_id FROM scm_doc_line WHERE doc_id IN (${inPH})
   `).all(...ids) as any[]
 
   // 2a) 下游引用数量：scm_doc_line.source_line_id 反查 + 生产计划产品 source_line_id 反查
@@ -765,6 +765,7 @@ function queryDocRows(db: ReturnType<typeof getDb>, whereSql: string, params: an
   const lineIds = lineRows.map(r => r.id)
   const pushedByLine = new Map<string, number>()
   const planOccupiedByLine = new Map<string, number>()
+  const mrPushedByLine = new Map<string, number>()
   if (lineIds.length) {
     const lph = lineIds.map(() => '?').join(',')
     const childTypes = [...new Set(rows.map(r => PHYSICAL_CHILD_DOC_TYPES[r.doc_type]).filter(Boolean))] as string[]
@@ -783,6 +784,19 @@ function queryDocRows(db: ReturnType<typeof getDb>, whereSql: string, params: an
       FROM scm_production_plan_product WHERE source_line_id IN (${lph}) GROUP BY source_line_id
     `).all(...lineIds) as any[]
     for (const r of planPushed) planOccupiedByLine.set(r.lid, (planOccupiedByLine.get(r.lid) || 0) + Number(r.qty || 0))
+    // 缺料单（MR）没有固定的实物下游类型：其明细会下推到采购订单 / 委外 / 生产等多种单据，
+    // 这里按「所有未作废的下游单据明细」统计，仅用于下推数量展示与下推金额，不影响 push_progress。
+    const mrDocIds = new Set(rows.filter(r => r.doc_type === 'MR').map(r => r.id))
+    const mrLineIds = lineRows.filter(l => mrDocIds.has(l.doc_id)).map(l => l.id)
+    if (mrLineIds.length) {
+      const mph = mrLineIds.map(() => '?').join(',')
+      for (const r of db.prepare(`
+        SELECT l.source_line_id AS lid, COALESCE(SUM(l.qty), 0) AS qty
+        FROM scm_doc_line l JOIN scm_doc d ON d.id=l.doc_id
+        WHERE l.source_line_id IN (${mph}) AND d.status<>'voided'
+        GROUP BY l.source_line_id
+      `).all(...mrLineIds) as any[]) mrPushedByLine.set(r.lid, Number(r.qty || 0))
+    }
   }
 
   // 2b) 按 doc_id 聚合
@@ -886,17 +900,23 @@ function queryDocRows(db: ReturnType<typeof getDb>, whereSql: string, params: an
     doc.voucher_no = doc.voucher_id ? (voucherNoById.get(doc.voucher_id) || null) : null
     const lines = linesByDoc.get(doc.id) || []
     const totalLines = lines.length
-    let pushedLines = 0, fullyPushedLines = 0, pushedQty = 0, planOccupiedQty = 0, pushedAmount = 0, unpushedAmount = 0
+    let pushedLines = 0, fullyPushedLines = 0, pushedQty = 0, planOccupiedQty = 0, pushedAmount = 0, unpushedAmount = 0, pushShownQty = 0
     for (const l of lines) {
       const qty = Number(l.qty || 0)
       // 下游实物单据对本明细行的引用数量（不含 MRP/生产计划的计划占用）
       const linePushed = pushedByLine.get(l.id) || 0
       pushedQty += linePushed
-      // 下推金额：按本单明细行单价（不含税金额 / 数量，已含折扣）× 已下推数量折算，与「下推数量」同一口径
+      // 列表「下推数量 / 下推金额」展示口径（不影响下推进度判定）：
+      //   实物下游 与 生产计划 取较大者（同一订单行先排产再出库时不重复计数）；缺料单取全部下游明细
+      const lineShown = doc.doc_type === 'MR'
+        ? (mrPushedByLine.get(l.id) || 0)
+        : Math.max(linePushed, planOccupiedByLine.get(l.id) || 0)
+      pushShownQty += lineShown
+      // 下推金额 = 展示数量 × 本单行单价；单价按订单本身的计税方式：行有税额取价税合计 ÷ 数量（含税），无税额即不含税金额 ÷ 数量
       if (qty !== 0) {
-        const unit = Number(l.amount || 0) / qty
-        pushedAmount += linePushed * unit
-        unpushedAmount += Math.max(0, qty - linePushed) * unit
+        const unit = (Number(l.amount || 0) + Number(l.tax_amount || 0)) / qty
+        pushedAmount += lineShown * unit
+        unpushedAmount += Math.max(0, qty - lineShown) * unit
       }
       planOccupiedQty += planOccupiedByLine.get(l.id) || 0
       if (linePushed > 0) pushedLines++
@@ -906,6 +926,7 @@ function queryDocRows(db: ReturnType<typeof getDb>, whereSql: string, params: an
     doc.pushed_lines = pushedLines
     doc.fully_pushed_lines = fullyPushedLines
     doc.pushed_qty = pushedQty
+    doc.push_shown_qty = Math.round(pushShownQty * 1e6) / 1e6
     doc.pushed_amount = round2(pushedAmount)
     doc.unpushed_amount = round2(unpushedAmount)
     doc.plan_occupied_qty = planOccupiedQty
@@ -986,23 +1007,21 @@ router.get('/scm/docs', (req: AuthRequest, res) => {
     FROM scm_doc d WHERE ${where}`).get(...ps) as any
   const total = agg.c
   const summary: Record<string, number> = { total_qty: Math.round((Number(agg.q) || 0) * 1e6) / 1e6, total_amount: round2(Number(agg.a) || 0), total_tax: round2(Number(agg.t) || 0) }
-  // 有实物下推链路的类型：同时汇总全部筛选结果的已下推数量（口径同 queryDocRows 的 pushed_qty），供「下推数量」列合计
+  // 有下推链路的类型：同时汇总全部筛选结果的已下推数量 / 金额（口径同 queryDocRows 的 push_shown_qty / pushed_amount），供合计行
   const childType = doc_type ? PHYSICAL_CHILD_DOC_TYPES[doc_type] : undefined
-  if (childType) {
-    const pushed = db.prepare(`SELECT COALESCE(SUM(cl.qty),0) q,
-        COALESCE(SUM(CASE WHEN sl.qty<>0 THEN cl.qty * sl.amount / sl.qty ELSE 0 END),0) a FROM scm_doc d
-      JOIN scm_doc_line sl ON sl.doc_id=d.id
-      JOIN scm_doc_line cl ON cl.source_line_id=sl.id
-      JOIN scm_doc cd ON cd.id=cl.doc_id AND cd.doc_type=? AND cd.status<>'voided'
-      WHERE ${where}`).get(childType, ...ps) as any
-    summary.pushed_qty = Math.round((Number(pushed.q) || 0) * 1e6) / 1e6
-    summary.pushed_amount = round2(Number(pushed.a) || 0)
-    const unpushed = db.prepare(`SELECT COALESCE(SUM(CASE WHEN sl.qty<>0 THEN MAX(0, sl.qty - COALESCE((
-        SELECT SUM(cl.qty) FROM scm_doc_line cl JOIN scm_doc cd ON cd.id=cl.doc_id AND cd.doc_type=? AND cd.status<>'voided'
-        WHERE cl.source_line_id=sl.id), 0)) * sl.amount / sl.qty ELSE 0 END),0) a FROM scm_doc d
-      JOIN scm_doc_line sl ON sl.doc_id=d.id
-      WHERE ${where}`).get(childType, ...ps) as any
-    summary.unpushed_amount = round2(Number(unpushed.a) || 0)
+  if (childType || doc_type === 'MR') {
+    const physSql = doc_type === 'MR'
+      ? `(SELECT COALESCE(SUM(cl.qty),0) FROM scm_doc_line cl JOIN scm_doc cd ON cd.id=cl.doc_id AND cd.status<>'voided' WHERE cl.source_line_id=sl.id)`
+      : `MAX((SELECT COALESCE(SUM(cl.qty),0) FROM scm_doc_line cl JOIN scm_doc cd ON cd.id=cl.doc_id AND cd.doc_type=? AND cd.status<>'voided' WHERE cl.source_line_id=sl.id),
+             (SELECT COALESCE(SUM(pp.plan_qty),0) FROM scm_production_plan_product pp WHERE pp.source_line_id=sl.id))`
+    const agg2 = db.prepare(`SELECT COALESCE(SUM(x.pq),0) q,
+        COALESCE(SUM(CASE WHEN x.qty<>0 THEN x.pq * x.val / x.qty ELSE 0 END),0) a,
+        COALESCE(SUM(CASE WHEN x.qty<>0 THEN MAX(0, x.qty - x.pq) * x.val / x.qty ELSE 0 END),0) u
+      FROM (SELECT sl.qty AS qty, COALESCE(sl.amount,0)+COALESCE(sl.tax_amount,0) AS val, ${physSql} AS pq
+        FROM scm_doc d JOIN scm_doc_line sl ON sl.doc_id=d.id WHERE ${where}) x`).get(...(doc_type === 'MR' ? [] : [childType]), ...ps) as any
+    summary.pushed_qty = Math.round((Number(agg2.q) || 0) * 1e6) / 1e6
+    summary.pushed_amount = round2(Number(agg2.a) || 0)
+    summary.unpushed_amount = round2(Number(agg2.u) || 0)
   }
   const paging = normalizePaging(page, page_size)
   // 多级排序：sort=key:asc,key2:desc（白名单见 services/scmDocListSort.ts）；未传时日期降序、单据号降序

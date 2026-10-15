@@ -105,7 +105,7 @@ export const LIST_ALL_COLS: ListColDef[] = [
   { key: 'total_tax',        label: '税额',     visible: false, line: TAX_LINE },
   { key: 'total_with_tax',   label: '价税合计', visible: true,  line: TAX_LINE },
   { key: 'push',             label: '下推数量', visible: true,  pushOnly: true },
-  // 下推金额 = 已下推数量 × 本单明细行单价（不含税）；未下推金额 = 剩余数量 × 单价。客户要求「下推进度后面带出金额」，已下推金额默认显示
+  // 下推金额 = 已下推数量 × 本单明细行单价（跟随订单计税：有税额按价税合计，无税额按金额）；未下推金额 = 剩余数量 × 单价。客户要求「下推进度后面带出金额」，已下推金额默认显示
   { key: 'pushed_amount',    label: '已下推金额', visible: true,  pushOnly: true },
   { key: 'unpushed_amount',  label: '未下推金额', visible: false, pushOnly: true },
   // 订单关联单号（参照金蝶序时簿）：采购订单 = 入库单 / 付款单，销售订单 = 出库单 / 收款单；列表按类型改显示名

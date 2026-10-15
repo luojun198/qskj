@@ -227,7 +227,7 @@ const summaryRow = computed<any>(() => {
     __summary: true, doc_no: all && multiPage ? `合计（全部 ${total.value} 张）` : '合计',
     total_qty: (all ? all.total_qty : sum('total_qty')) || null,
     // 下推数量合计：后端有全量值（单一可下推类型）时取全量，否则按当前页累加
-    pushed_qty: all?.pushed_qty != null ? all.pushed_qty : sum('pushed_qty'),
+    pushed_qty: all?.pushed_qty != null ? all.pushed_qty : list.value.reduce((t, r: any) => t + (Number(r.push_shown_qty ?? r.pushed_qty) || 0), 0),
     pushed_amount: all?.pushed_amount != null ? all.pushed_amount : sum('pushed_amount'),
     unpushed_amount: all?.unpushed_amount != null ? all.unpushed_amount : sum('unpushed_amount'),
     total_amount: (all ? all.total_amount : sum('total_amount')) || null,
@@ -471,7 +471,8 @@ function formatDocColumn(row: any, key: string): string | VNode {
       const r6 = (v: any) => Math.round((Number(v) || 0) * 1e6) / 1e6
       return `${r6(row.pushed_qty)} / ${r6(row.total_qty)}`
     }
-    return isPushProgressDoc(row.doc_type) ? `${row.pushed_qty || 0} / ${row.total_qty || 0}` : '—'
+    // 展示口径：实物下游与生产计划取大者、缺料单含全部下游（后端 push_shown_qty）；旧后端无该字段时回退 pushed_qty
+    return isPushProgressDoc(row.doc_type) ? `${row.push_shown_qty ?? row.pushed_qty ?? 0} / ${row.total_qty || 0}` : '—'
   }
   if (key === 'status') return row.__summary ? '' : (row.status === 'audited' ? '已审核' : '草稿')
   // 润衡等原系统导入的历史单据：原系统已制证，本系统不再生成凭证
@@ -556,7 +557,7 @@ async function exportAllDocs() {
     summaryValues: productMode.value ? undefined : headerCols.map((c, i) => {
       if (i === 0) return '合计'
       const key = shownHeaderColumns.value[i].key
-      if (key === 'push') return formatDocColumn({ __summary: true, pushed_qty: sumOf('pushed_qty'), total_qty: sumOf('total_qty') }, 'push') as string
+      if (key === 'push') return formatDocColumn({ __summary: true, pushed_qty: all.reduce((t, r: any) => t + (Number(r.push_shown_qty ?? r.pushed_qty) || 0), 0), total_qty: sumOf('total_qty') }, 'push') as string
       return EXPORT_NUMERIC_COLS.has(key) && !['discount_rate', 'credit_days', 'tax_rate', 'exchange_rate', 'print_count'].includes(key) ? sumOf(key) : ''
     }),
   })
