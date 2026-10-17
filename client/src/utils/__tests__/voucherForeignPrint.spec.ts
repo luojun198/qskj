@@ -5,6 +5,7 @@ vi.mock('vue-plugin-hiprint/dist/print-lock.css?raw', () => ({ default: '' }))
 
 import {
   buildForeignVoucherPanel,
+  buildVoucherPanel,
   voucherHasForeign,
   voucherPresetMeta,
   voucherToHiprintData,
@@ -64,5 +65,16 @@ describe('复币记账凭证打印', () => {
     expect(html).toContain('&lt;b&gt;USD')
     expect(html).toContain('10,000.00')
     expect(fn('', undefined)).toContain('币种')
+  })
+})
+
+describe('空白打印模板', () => {
+  it('blank 预设是空画布，没有预置字段', () => {
+    const panel = buildVoucherPanel('blank') as any
+    expect(panel.panels[0].printElements).toEqual([])
+    expect(voucherPresetMeta('blank')).toMatchObject({
+      name: '空白模板',
+      template_key: 'voucher:standard',
+    })
   })
 })

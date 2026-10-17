@@ -1,7 +1,15 @@
 import { v4 as uuidv4 } from 'uuid'
 import type Database from 'better-sqlite3'
 import { ensureDefaultPrintTemplateForAccountSet } from './printTemplateDefaults.js'
-import { ASSET_ACCOUNT_SPECS, descendToLeaf, resolveAssetAccount } from './assetAccountResolver.js'
+import { getAccountingStandardParam } from './accountingStandard.js'
+import {
+  ASSET_ACCOUNT_SPECS,
+  depreciationExpenseCodes,
+  detectAssetChartStandard,
+  descendToLeaf,
+  resolveAssetAccount,
+  type AssetChartStandard,
+} from './assetAccountResolver.js'
 
 const START_DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 
@@ -326,6 +334,23 @@ export function resolveDeprExpenseAccount(db: Database.Database, accountSetId: s
 /** 一键预设的结果：未能在本账套找到的科目，由界面提示用户手工设置 */
 export interface DefaultAssetDictsResult { unresolved: string[] }
 
+/** 参数里写了企业 / 小企业 / 政府就用参数；否则按本账套科目表探测 */
+function assetChartStandard(db: Database.Database, accountSetId: string): AssetChartStandard {
+  try {
+    const param = getAccountingStandardParam(db, accountSetId)
+    if (param === 'enterprise' || param === 'small_business' || param === 'government') return param
+  } catch {
+    /* 测试库或旧库没有 system_params */
+  }
+  if (!hasTable(db, 'accounts') || !db.prepare("SELECT 1 FROM pragma_table_info('accounts') WHERE name='parent_id'").get()) {
+    return 'generic'
+  }
+  const rows = db.prepare(
+    'SELECT code, name, parent_id FROM accounts WHERE account_set_id=?'
+  ).all(accountSetId) as Array<{ code: string; name: string; parent_id?: string | null }>
+  return detectAssetChartStandard(rows)
+}
+
 export function ensureDefaultAssetDicts(db: Database.Database, accountSetId: string, specificType?: string): DefaultAssetDictsResult {
   const unresolved = new Set<string>()
   // 1. 预设资产状态
@@ -397,14 +422,19 @@ export function ensureDefaultAssetDicts(db: Database.Database, accountSetId: str
       const insPurp = db.prepare('INSERT INTO fixed_asset_purpose (id, account_set_id, code, name, expense_account) VALUES (?, ?, ?, ?, ?)')
       // 管理用 → 管理费用下的折旧末级；经营用 → 销售费用下的折旧末级；生产用 → 制造费用下的折旧末级
       // 按科目名称定位（事业单位制度为「单位管理费用」等），下探到最底层；找不到留空
-      const expense = (label: string, names: string[], codes: string[]): string | null => {
-        const r = resolveAssetAccount(db, accountSetId, ASSET_ACCOUNT_SPECS.depreciationExpense(names, codes))
+      const standard = assetChartStandard(db, accountSetId)
+      const expense = (label: string, names: string[], role: 'admin' | 'operating' | 'production'): string | null => {
+        const r = resolveAssetAccount(
+          db,
+          accountSetId,
+          ASSET_ACCOUNT_SPECS.depreciationExpense(names, depreciationExpenseCodes(standard, role))
+        )
         if (!r) unresolved.add(label)
         return r ? r.code : null
       }
-      insPurp.run(uuidv4(), accountSetId, '01', '管理用', expense('管理用折旧费用科目', ['管理费用', '单位管理费用'], ['6602']))
-      insPurp.run(uuidv4(), accountSetId, '02', '经营用', expense('经营用折旧费用科目', ['销售费用', '业务活动费用'], ['6601']))
-      insPurp.run(uuidv4(), accountSetId, '03', '生产用', expense('生产用折旧费用科目', ['制造费用'], ['5101']))
+      insPurp.run(uuidv4(), accountSetId, '01', '管理用', expense('管理用折旧费用科目', ['管理费用', '单位管理费用'], 'admin'))
+      insPurp.run(uuidv4(), accountSetId, '02', '经营用', expense('经营用折旧费用科目', ['销售费用', '业务活动费用'], 'operating'))
+      insPurp.run(uuidv4(), accountSetId, '03', '生产用', expense('生产用折旧费用科目', ['制造费用'], 'production'))
     }
   }
   // 5. 预设使用部门

@@ -67,8 +67,126 @@
             <span class="meta-label">分录数</span>
             <span class="meta-text">{{ form.entries.length }}</span>
           </div>
-          <div class="meta-item">
+        </div>
+        <div class="voucher-header-actions">
+          <div class="voucher-header-actions__left">
             <AccountDisplayModeSwitch />
+            <div v-if="!isReadonly" class="action-controls">
+              <el-button plain size="small" @click="emit('import-template')">
+                <el-icon><Document /></el-icon>
+                引模版
+              </el-button>
+              <el-button plain size="small" @click="emit('turn-template')">
+                <el-icon><Collection /></el-icon>
+                转模版
+              </el-button>
+              <el-tooltip
+                placement="bottom"
+                effect="light"
+                :show-after="120"
+                popper-class="voucher-shortcut-tip"
+              >
+                <template #content>
+                  <div class="shortcut-tip">
+                    <div class="shortcut-tip__title">凭证快捷键</div>
+
+                    <div class="shortcut-tip__section">保存与操作</div>
+                    <div class="shortcut-tip__row">
+                      <span class="keys"><kbd>Ctrl</kbd><kbd>S</kbd></span><span>保存凭证</span>
+                    </div>
+                    <div class="shortcut-tip__row">
+                      <span class="keys"><kbd>Ctrl</kbd><kbd>Enter</kbd></span><span>保存并新增</span>
+                    </div>
+                    <div class="shortcut-tip__row">
+                      <span class="keys"><kbd>Ctrl</kbd><kbd>F</kbd></span><span>上传附件</span>
+                    </div>
+                    <div class="shortcut-tip__row">
+                      <span class="keys"><kbd>Alt</kbd><kbd>K</kbd></span><span>科目维护（新标签页打开）</span>
+                    </div>
+                    <div class="shortcut-tip__row">
+                      <span class="keys"><kbd>Alt</kbd><kbd>B</kbd></span><span>平衡当前分录（含外币 / 数量科目）</span>
+                    </div>
+                    <div class="shortcut-tip__row">
+                      <span class="keys"><kbd>Alt</kbd><kbd>X</kbd></span><span>当前分录借贷互换（含外币 / 数量科目）</span>
+                    </div>
+                    <div class="shortcut-tip__row">
+                      <span class="keys"><kbd>Esc</kbd></span><span>关闭弹窗</span>
+                    </div>
+
+                    <div class="shortcut-tip__section">分录导航</div>
+                    <div class="shortcut-tip__row">
+                      <span class="keys"><kbd>Enter</kbd></span>
+                      <span>摘要→科目→金额，金额再回车跳下一行</span>
+                    </div>
+                    <div class="shortcut-tip__row">
+                      <span class="keys"><kbd>Tab</kbd></span><span>科目→辅助项目→金额</span>
+                    </div>
+                    <div class="shortcut-tip__row">
+                      <span class="keys"><kbd>↑</kbd><kbd>↓</kbd></span><span>科目建议列表中移动</span>
+                    </div>
+                    <div class="shortcut-tip__row">
+                      <span class="keys"><kbd>Del</kbd></span><span>清除已选科目</span>
+                    </div>
+
+                    <div class="shortcut-tip__section">金额快捷</div>
+                    <div class="shortcut-tip__row">
+                      <span class="keys"><kbd>=</kbd></span
+                      ><span>在光标所在金额格自动平衡，补足差额</span>
+                    </div>
+                    <div class="shortcut-tip__row">
+                      <span class="keys"><kbd>Space</kbd></span><span>借贷方向互换</span>
+                    </div>
+
+                    <div class="shortcut-tip__section">外币 / 数量</div>
+                    <div class="shortcut-tip__row">
+                      <span class="keys"><kbd>Enter</kbd><kbd>Space</kbd></span
+                      ><span>打开录入气泡</span>
+                    </div>
+                    <div class="shortcut-tip__row">
+                      <span class="keys"><kbd>Enter</kbd></span>
+                      <span>外币：金额→汇率，汇率回车按建议方向入账；点借方/贷方确认</span>
+                    </div>
+                    <div class="shortcut-tip__row">
+                      <span class="keys"><kbd>=</kbd></span><span>外币金额：按汇率折算差额</span>
+                    </div>
+                  </div>
+                </template>
+                <el-button plain size="small">
+                  <el-icon><QuestionFilled /></el-icon>
+                  快捷操作说明
+                </el-button>
+              </el-tooltip>
+            </div>
+          </div>
+          <div class="submit-controls">
+            <el-button size="small" @click="handleClose">{{ isReadonly ? '关闭' : '取消' }}</el-button>
+            <el-tooltip
+              v-if="(props.mode === 'edit' || props.mode === 'view') && props.form.id"
+              content="打印当前凭证"
+              placement="bottom"
+            >
+              <el-button size="small" type="info" plain @click="emit('print')">
+                <el-icon><Printer /></el-icon>
+                打印
+              </el-button>
+            </el-tooltip>
+            <template v-if="!isReadonly">
+              <el-tooltip content="Ctrl+S 保存；Ctrl+Enter 保存并新增" placement="bottom">
+                <el-button size="small" type="primary" :loading="props.submitLoading" @click="emit('submit')">
+                  保存凭证 (Ctrl+S)
+                </el-button>
+              </el-tooltip>
+              <el-tooltip content="Ctrl+Enter" placement="bottom">
+                <el-button
+                  size="small"
+                  type="success"
+                  :loading="props.submitLoading"
+                  @click="emit('submit-and-add')"
+                >
+                  保存并新增 (Ctrl+Enter)
+                </el-button>
+              </el-tooltip>
+            </template>
           </div>
         </div>
       </div>
@@ -144,7 +262,7 @@
           @row-click="handleRowClick"
           @row-dblclick="handleRowDblclick"
         >
-          <el-table-column label="摘要" min-width="200">
+          <el-table-column label="摘要" min-width="200" class-name="vcol-summary">
             <template #default="{ row, $index }">
               <div class="entry-row" @click="isReadonly && setCurrentEntry(row)">
                 <el-input
@@ -171,6 +289,7 @@
           <el-table-column
             label="会计科目"
             :min-width="accountDisplayMode === 'full' ? 320 : 240"
+            class-name="vcol-account"
           >
             <template #default="{ row }">
               <div v-if="isReadonly" class="entry-account-readonly" @click="setCurrentEntry(row)">
@@ -259,7 +378,48 @@
             </template>
           </el-table-column>
 
-          <el-table-column label="借方金额" width="148" align="right">
+          <!-- 币别：外币分录独立显示原币与汇率（参照金蝶录入界面）；编辑时点击 / 回车弹出外币气泡录入 -->
+          <el-table-column
+            v-if="showCurrencyColumn"
+            label="币别"
+            width="150"
+            class-name="vcol-currency"
+          >
+            <template #default="{ row }">
+              <div
+                v-if="isReadonly"
+                class="entry-currency-cell"
+                :class="{ 'is-clickable': !!row.foreign_amount }"
+                @click="row.foreign_amount && onReadonlyAmountClick(row, foreignDefaultSide(row), $event)"
+              >
+                <template v-if="row.foreign_amount">
+                  <div>原币：{{ row.currency_code }} {{ formatMoney(Number(row.foreign_amount) || 0) }}</div>
+                  <div>汇率：{{ formatRate(row.exchange_rate) }}</div>
+                </template>
+              </div>
+              <div
+                v-else-if="isForeignRow(row)"
+                class="foreign-amount-cell entry-currency-cell is-clickable"
+                :class="{
+                  'is-active': foreignPopover.visible && foreignPopover.row === row,
+                  'is-disabled': isLockedCashRow(row),
+                }"
+                :tabindex="isLockedCashRow(row) ? -1 : 0"
+                title="点击或回车录入原币金额与汇率；= 键按汇率自动平衡"
+                @focus="onForeignCellFocus(row, foreignDefaultSide(row), $event)"
+                @click="onForeignCellFocus(row, foreignDefaultSide(row), $event)"
+                @keydown="onForeignCellKeydown(row, foreignDefaultSide(row), $event)"
+              >
+                <template v-if="row.foreign_amount">
+                  <div>原币：{{ row.currency_code }} {{ formatMoney(Number(row.foreign_amount) || 0) }}</div>
+                  <div>汇率：{{ formatRate(row.exchange_rate) }}</div>
+                </template>
+                <span v-else class="entry-currency-placeholder">录入原币 / 汇率</span>
+              </div>
+            </template>
+          </el-table-column>
+
+          <el-table-column label="借方金额" width="148" align="right" class-name="vcol-debit">
             <template #default="{ row }">
               <div
                 v-if="isReadonly"
@@ -272,10 +432,7 @@
                   <span :class="{ 'entry-amount-red': Number(row.debit_amount) < 0 }">{{
                     formatMoney(row.debit_amount)
                   }}</span>
-                  <span v-if="row.foreign_amount" class="foreign-amount-inline">
-                    {{ row.currency_code || '原币' }} {{ formatMoney(Number(row.foreign_amount) || 0) }}
-                  </span>
-                  <span v-else-if="row.quantity" class="foreign-amount-inline">
+                  <span v-if="!row.foreign_amount && row.quantity" class="foreign-amount-inline">
                     {{ quantityInlineText(row) }}
                   </span>
                 </div>
@@ -298,9 +455,6 @@
                   <span :class="{ 'entry-amount-red': Number(row.debit_amount) < 0 }">{{
                     formatMoney(row.debit_amount)
                   }}</span>
-                  <span v-if="row.foreign_amount" class="foreign-amount-inline">
-                    {{ row.currency_code }} {{ formatMoney(Number(row.foreign_amount) || 0) }}
-                  </span>
                 </div>
               </div>
               <!-- 数量核算科目：金额只读，点击 / 聚焦弹出气泡录入数量与单价/金额 -->
@@ -344,7 +498,7 @@
             </template>
           </el-table-column>
 
-          <el-table-column label="贷方金额" width="148" align="right">
+          <el-table-column label="贷方金额" width="148" align="right" class-name="vcol-credit">
             <template #default="{ row }">
               <div
                 v-if="isReadonly"
@@ -357,10 +511,7 @@
                   <span :class="{ 'entry-amount-red': Number(row.credit_amount) < 0 }">{{
                     formatMoney(row.credit_amount)
                   }}</span>
-                  <span v-if="row.foreign_amount" class="foreign-amount-inline">
-                    {{ row.currency_code || '原币' }} {{ formatMoney(Number(row.foreign_amount) || 0) }}
-                  </span>
-                  <span v-else-if="row.quantity" class="foreign-amount-inline">
+                  <span v-if="!row.foreign_amount && row.quantity" class="foreign-amount-inline">
                     {{ quantityInlineText(row) }}
                   </span>
                 </div>
@@ -382,9 +533,6 @@
                   <span :class="{ 'entry-amount-red': Number(row.credit_amount) < 0 }">{{
                     formatMoney(row.credit_amount)
                   }}</span>
-                  <span v-if="row.foreign_amount" class="foreign-amount-inline">
-                    {{ row.currency_code }} {{ formatMoney(Number(row.foreign_amount) || 0) }}
-                  </span>
                 </div>
               </div>
               <!-- 数量核算科目：金额只读，点击 / 聚焦弹出气泡录入数量与单价/金额 -->
@@ -489,6 +637,7 @@
               size="small"
               :disabled="foreignPopover.readonly"
               class="foreign-popover-input"
+              popper-class="voucher-popover-dropdown"
               placeholder="选择外币"
               @change="onForeignPopoverCurrencyChange"
             >
@@ -499,17 +648,6 @@
                 :value="c.code"
               />
             </el-select>
-          </div>
-          <div class="foreign-popover-row">
-            <span class="foreign-popover-label">方向</span>
-            <el-radio-group
-              v-model="foreignPopover.side"
-              size="small"
-              :disabled="foreignPopover.readonly"
-            >
-              <el-radio-button value="debit">借方</el-radio-button>
-              <el-radio-button value="credit">贷方</el-radio-button>
-            </el-radio-group>
           </div>
           <div class="foreign-popover-row">
             <span class="foreign-popover-label">原币金额</span>
@@ -546,17 +684,33 @@
             <span class="foreign-popover-base">{{ formatMoney(foreignPopoverBase) }}</span>
           </div>
           <div class="foreign-popover-actions">
-            <el-button size="small" @click="cancelForeignPopover">
-              {{ foreignPopover.readonly ? '关闭' : '取消' }}
+            <el-button v-if="!foreignPopover.readonly" size="small" @click="cancelForeignPopover">
+              取消
             </el-button>
-            <el-button
-              v-if="!foreignPopover.readonly"
-              size="small"
-              type="primary"
-              @click="confirmForeignPopover"
-            >
-              确定
-            </el-button>
+            <span v-else />
+            <div class="foreign-popover-actions__sides">
+              <el-button v-if="foreignPopover.readonly" size="small" @click="cancelForeignPopover">
+                关闭
+              </el-button>
+              <template v-else>
+                <el-button
+                  size="small"
+                  :type="foreignPopover.side === 'debit' ? 'primary' : 'default'"
+                  title="确认并记入借方"
+                  @click="confirmForeignPopover('debit')"
+                >
+                  借方
+                </el-button>
+                <el-button
+                  size="small"
+                  :type="foreignPopover.side === 'credit' ? 'primary' : 'default'"
+                  title="确认并记入贷方"
+                  @click="confirmForeignPopover('credit')"
+                >
+                  贷方
+                </el-button>
+              </template>
+            </div>
           </div>
         </div>
       </el-popover>
@@ -951,129 +1105,11 @@
       />
     </div>
 
-    <template #footer>
-      <div class="dialog-footer-enhanced">
-        <div v-if="!isReadonly" class="action-controls">
-          <el-button plain size="small" @click="emit('import-template')">
-            <el-icon><Document /></el-icon>
-            引模版
-          </el-button>
-          <el-button plain size="small" @click="emit('turn-template')">
-            <el-icon><Collection /></el-icon>
-            转模版
-          </el-button>
-          <el-tooltip
-            placement="top"
-            effect="light"
-            :show-after="120"
-            popper-class="voucher-shortcut-tip"
-          >
-            <template #content>
-              <div class="shortcut-tip">
-                <div class="shortcut-tip__title">凭证快捷键</div>
-
-                <div class="shortcut-tip__section">保存与操作</div>
-                <div class="shortcut-tip__row">
-                  <span class="keys"><kbd>Ctrl</kbd><kbd>S</kbd></span><span>保存凭证</span>
-                </div>
-                <div class="shortcut-tip__row">
-                  <span class="keys"><kbd>Ctrl</kbd><kbd>Enter</kbd></span><span>保存并新增</span>
-                </div>
-                <div class="shortcut-tip__row">
-                  <span class="keys"><kbd>Ctrl</kbd><kbd>F</kbd></span><span>上传附件</span>
-                </div>
-                <div class="shortcut-tip__row">
-                  <span class="keys"><kbd>Alt</kbd><kbd>K</kbd></span><span>科目维护（新标签页打开）</span>
-                </div>
-                <div class="shortcut-tip__row">
-                  <span class="keys"><kbd>Alt</kbd><kbd>B</kbd></span><span>平衡当前分录（含外币 / 数量科目）</span>
-                </div>
-                <div class="shortcut-tip__row">
-                  <span class="keys"><kbd>Alt</kbd><kbd>X</kbd></span><span>当前分录借贷互换（含外币 / 数量科目）</span>
-                </div>
-                <div class="shortcut-tip__row">
-                  <span class="keys"><kbd>Esc</kbd></span><span>关闭弹窗</span>
-                </div>
-
-                <div class="shortcut-tip__section">分录导航</div>
-                <div class="shortcut-tip__row">
-                  <span class="keys"><kbd>Enter</kbd></span>
-                  <span>摘要→科目→金额，金额再回车跳下一行</span>
-                </div>
-                <div class="shortcut-tip__row">
-                  <span class="keys"><kbd>Tab</kbd></span><span>科目→辅助项目→金额</span>
-                </div>
-                <div class="shortcut-tip__row">
-                  <span class="keys"><kbd>↑</kbd><kbd>↓</kbd></span><span>科目建议列表中移动</span>
-                </div>
-                <div class="shortcut-tip__row">
-                  <span class="keys"><kbd>Del</kbd></span><span>清除已选科目</span>
-                </div>
-
-                <div class="shortcut-tip__section">金额快捷</div>
-                <div class="shortcut-tip__row">
-                  <span class="keys"><kbd>=</kbd></span
-                  ><span>在光标所在金额格自动平衡，补足差额</span>
-                </div>
-                <div class="shortcut-tip__row">
-                  <span class="keys"><kbd>Space</kbd></span><span>借贷方向互换</span>
-                </div>
-
-                <div class="shortcut-tip__section">外币 / 数量</div>
-                <div class="shortcut-tip__row">
-                  <span class="keys"><kbd>Enter</kbd><kbd>Space</kbd></span
-                  ><span>打开录入气泡</span>
-                </div>
-                <div class="shortcut-tip__row">
-                  <span class="keys"><kbd>Enter</kbd></span>
-                  <span>外币：金额→汇率；数量：数量→单价→金额</span>
-                </div>
-                <div class="shortcut-tip__row">
-                  <span class="keys"><kbd>=</kbd></span><span>外币金额：按汇率折算差额</span>
-                </div>
-              </div>
-            </template>
-            <el-button plain size="small">
-              <el-icon><QuestionFilled /></el-icon>
-              快捷操作说明
-            </el-button>
-          </el-tooltip>
-        </div>
-        <div class="submit-controls">
-          <el-button @click="handleClose">{{ isReadonly ? '关闭' : '取消' }}</el-button>
-          <el-tooltip
-            v-if="(props.mode === 'edit' || props.mode === 'view') && props.form.id"
-            content="打印当前凭证"
-            placement="top"
-          >
-            <el-button type="info" plain @click="emit('print')">
-              <el-icon><Printer /></el-icon>
-              打印
-            </el-button>
-          </el-tooltip>
-          <template v-if="!isReadonly">
-            <el-tooltip content="Ctrl+S 保存；Ctrl+Enter 保存并新增" placement="top">
-              <el-button type="primary" :loading="props.submitLoading" @click="emit('submit')">
-                保存凭证 (Ctrl+S)
-              </el-button>
-            </el-tooltip>
-            <el-tooltip content="Ctrl+Enter" placement="top">
-              <el-button
-                type="success"
-                :loading="props.submitLoading"
-                @click="emit('submit-and-add')"
-              >
-                保存并新增 (Ctrl+Enter)
-              </el-button>
-            </el-tooltip>
-          </template>
-        </div>
-      </div>
-    </template>
   </el-dialog>
 </template>
 
 <script setup lang="ts">
+import { withAttachmentToken } from '@/utils/attachmentUrl'
 import { ref, reactive, watch, nextTick, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import type { VoucherForm, VoucherEntry } from '@/composables/useVoucherForm'
@@ -1253,6 +1289,26 @@ async function onForeignPopoverCurrencyChange(code: string) {
 }
 
 /** 分录科目是否为外币科目（账套开启外币核算 且 科目 is_foreign=1） */
+/** 显示「币别」列：账套启用外币，或（查看时）凭证里已有外币分录 */
+const showCurrencyColumn = computed(
+  () => !!props.enableForeignCurrency || props.form.entries.some((e: any) => !!Number(e?.foreign_amount))
+)
+
+/** 币别格打开外币气泡时的方向：已录金额的一侧，否则按科目余额方向 */
+function foreignDefaultSide(row: any): 'debit' | 'credit' {
+  if (Number(row?.debit_amount)) return 'debit'
+  if (Number(row?.credit_amount)) return 'credit'
+  const acc = props.accounts.find(a => a.id === row?.account_id)
+  return acc?.direction === 'credit' ? 'credit' : 'debit'
+}
+
+/** 汇率：去掉多余的 0（7795 / 6.6 / 7.123456） */
+function formatRate(v: unknown): string {
+  const n = Number(v)
+  if (!Number.isFinite(n) || n === 0) return ''
+  return n.toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 6 })
+}
+
 function isForeignRow(row: any): boolean {
   if (!props.enableForeignCurrency || !row?.account_id) return false
   const acc = props.accounts.find(a => a.id === row.account_id) as any
@@ -1366,10 +1422,11 @@ function cancelForeignPopover() {
   }
 }
 
-/** 确定：原币 × 汇率 → 本位币回填到所选方向，并跳到下一行 */
-function confirmForeignPopover() {
+/** 点借方/贷方：原币 × 汇率 → 本位币回填到该方向，并跳到下一行。不传方向时用建议方向（汇率回车）。 */
+function confirmForeignPopover(side?: 'debit' | 'credit') {
   const row = foreignPopover.row
   if (!row) return
+  if (side) foreignPopover.side = side
   const foreign = Number(foreignPopover.foreignAmount)
   const rate = Number(foreignPopover.rate)
   if (!String(foreignPopover.currencyCode || '').trim()) {
@@ -1387,31 +1444,37 @@ function confirmForeignPopover() {
     return
   }
   const base = Math.round(foreign * rate * 100) / 100
-  const side = foreignPopover.side
+  const dest = foreignPopover.side
   row.currency_code = foreignPopover.currencyCode || row.currency_code || null
   row.foreign_amount = foreign
   row.exchange_rate = rate
-  if (side === 'debit') {
+  if (dest === 'debit') {
     row.debit_amount = base
     row.credit_amount = null
   } else {
     row.credit_amount = base
     row.debit_amount = null
   }
-  row.direction = side
+  row.direction = dest
   row.amount = base
-  props.onAmountChange(row, side)
+  props.onAmountChange(row, dest)
   closeForeignPopover()
   moveToNextRow(row)
 }
 
-function findForeignCellEl(row: any, side: 'debit' | 'credit'): HTMLElement | null {
+/** 分录表第 rowIdx 行、指定列（vcol-xxx）的单元格；列顺序变化不受影响 */
+function findEntryCell(row: any, col: 'summary' | 'account' | 'currency' | 'debit' | 'credit'): HTMLElement | null {
   const tableEl = document.querySelector('.voucher-table')
   if (!tableEl) return null
   const rowIdx = props.form.entries.indexOf(row)
   if (rowIdx === -1) return null
   const tr = tableEl.querySelectorAll('.el-table__body-wrapper tbody tr')[rowIdx]
-  const cell = tr?.querySelectorAll('td')[side === 'debit' ? 2 : 3]
+  return (tr?.querySelector(`td.vcol-${col}`) as HTMLElement | null) || null
+}
+
+function findForeignCellEl(row: any, side: 'debit' | 'credit'): HTMLElement | null {
+  // 有「币别」列时外币气泡挂在币别格上
+  const cell = findEntryCell(row, 'currency') || findEntryCell(row, side)
   return (cell?.querySelector('.foreign-amount-cell') as HTMLElement | null) || null
 }
 
@@ -1494,7 +1557,8 @@ function syncForeignInput(event: KeyboardEvent, which: 'amount' | 'rate') {
 function onDocumentMousedownForForeign(event: MouseEvent) {
   const target = event.target as HTMLElement | null
   if (!target) return
-  const insidePopover = !!target.closest('.voucher-foreign-popover')
+  // 气泡里的下拉（如币种）挂在 body 上，点选项不算点到气泡外，否则一选币种气泡就关了（FIX-421）
+  const insidePopover = !!target.closest('.voucher-foreign-popover, .voucher-popover-dropdown')
   if (foreignPopover.visible) {
     if (
       !insidePopover &&
@@ -1808,7 +1872,7 @@ function findQuantityCellEl(row: any, side: 'debit' | 'credit'): HTMLElement | n
   const rowIdx = props.form.entries.indexOf(row)
   if (rowIdx === -1) return null
   const tr = tableEl.querySelectorAll('.el-table__body-wrapper tbody tr')[rowIdx]
-  const cell = tr?.querySelectorAll('td')[side === 'debit' ? 2 : 3]
+  const cell = tr?.querySelector(`td.vcol-${side}`)
   return (cell?.querySelector('.foreign-amount-cell') as HTMLElement | null) || null
 }
 
@@ -2062,7 +2126,7 @@ function buildFileUrl(filePath: string): string {
   if (!filePath) return ''
   if (filePath.startsWith('http')) return filePath
   const base = import.meta.env.BASE_URL.replace(/\/$/, '')
-  return `${window.location.origin}${base}${filePath.startsWith('/') ? filePath : '/' + filePath}`
+  return withAttachmentToken(`${window.location.origin}${base}${filePath.startsWith('/') ? filePath : '/' + filePath}`)
 }
 
 // Handle attachment click: image -> preview, others -> download
@@ -2285,6 +2349,7 @@ function getSummary() {
   return [
     '',
     '',
+    ...(showCurrencyColumn.value ? [''] : []),
     `借: ${formatMoney(props.totalDebit)}`,
     `贷: ${formatMoney(props.totalCredit)}`,
     '',
@@ -2629,7 +2694,9 @@ function focusVoucherField(step: VoucherFocusStep): boolean {
 }
 
 function focusAmountForRow(row: VoucherEntry, side: 'debit' | 'credit') {
-  focusCellInput(row, side === 'debit' ? 2 : 3)
+  // 外币科目：回车先到「币别」格，弹出气泡录原币与汇率
+  if (showCurrencyColumn.value && isForeignRow(row)) focusCellInput(row, 'currency')
+  else focusCellInput(row, side)
 }
 
 function advanceVoucherFocus(row: VoucherEntry, fromStep: VoucherFocusStep | null) {
@@ -2678,7 +2745,7 @@ function onVoucherFieldKeydown(
 // 摘要回车 → 跳到科目
 function moveToAccount(row: VoucherEntry, event?: KeyboardEvent) {
   stopEnterBubble(event)
-  focusCellInput(row, 1) // 第2列：会计科目
+  focusCellInput(row, 'account')
 }
 
 // 科目回车 / Tab → 依次经过辅助项目，最后到金额
@@ -2926,7 +2993,7 @@ function moveToNextRow(currentRow: VoucherEntry) {
       nextRow.summary = currentRow.summary
     }
     const balanced = autoBalanceNextRow(nextRow)
-    focusCellInput(nextRow, balanced ? 1 : 0)
+    focusCellInput(nextRow, balanced ? 'account' : 'summary')
     return
   }
 
@@ -2940,7 +3007,7 @@ function moveToNextRow(currentRow: VoucherEntry) {
   const balanced = autoBalanceNextRow(newRow)
   // 延迟聚焦，等 DOM 更新
   nextTick(() => {
-    focusCellInput(newRow, balanced ? 1 : 0)
+    focusCellInput(newRow, balanced ? 'account' : 'summary')
   })
 }
 
@@ -2981,18 +3048,9 @@ function autoBalanceNextRow(row: VoucherEntry) {
 }
 
 // 聚焦表格指定单元格内的 input
-function focusCellInput(row: VoucherEntry, colIndex: number) {
+function focusCellInput(row: VoucherEntry, col: 'summary' | 'account' | 'currency' | 'debit' | 'credit') {
   nextTick(() => {
-    const tableEl = document.querySelector('.voucher-table')
-    if (!tableEl) return
-    const rowIdx = props.form.entries.indexOf(row)
-    if (rowIdx === -1) return
-    // el-table 的行顺序
-    const rows = tableEl.querySelectorAll('.el-table__body-wrapper tbody tr')
-    const tr = rows[rowIdx]
-    if (!tr) return
-    const cells = tr.querySelectorAll('td')
-    const cell = cells[colIndex]
+    const cell = findEntryCell(row, col)
     if (!cell) return
     const input = cell.querySelector('input') as HTMLInputElement | null
     if (input) {
@@ -3538,6 +3596,29 @@ useKeyboardShortcuts([
   font-size: 12px;
 }
 
+.voucher-header-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.voucher-header-actions__left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.voucher-header-actions :deep(.el-button) {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
 .voucher-top-actions {
   display: flex;
   justify-content: space-between;
@@ -3927,20 +4008,6 @@ useKeyboardShortcuts([
   text-align: center;
 }
 
-.dialog-footer-enhanced {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.dialog-footer-enhanced :deep(.el-button) {
-  height: 28px;
-  padding: 0 10px;
-  font-size: 12px;
-}
-
 .navigation-controls {
   display: flex;
   align-items: center;
@@ -3959,7 +4026,6 @@ useKeyboardShortcuts([
   display: flex;
   align-items: center;
   gap: 6px;
-  flex: 1;
   min-width: 0;
 }
 
@@ -4019,6 +4085,33 @@ useKeyboardShortcuts([
 .amount-line > span:first-child {
   flex-shrink: 0;
 }
+.entry-currency-cell {
+  min-height: 32px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: left;
+  white-space: nowrap;
+}
+.entry-currency-cell.is-clickable {
+  cursor: pointer;
+}
+.entry-currency-placeholder {
+  color: var(--el-text-color-placeholder);
+}
+/* 编辑态币别格同时带 .foreign-amount-cell（虚线框、可聚焦）：改回左对齐两行排版 */
+.foreign-amount-cell.entry-currency-cell {
+  height: auto;
+  min-height: 32px;
+  padding: 2px 8px;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  text-align: left;
+}
+
 .foreign-amount-inline {
   font-size: 11px;
   color: #909399;
@@ -4127,8 +4220,14 @@ useKeyboardShortcuts([
 }
 .voucher-foreign-popover .foreign-popover-actions {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
+  align-items: center;
   gap: 8px;
+}
+.voucher-foreign-popover .foreign-popover-actions__sides {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
 }
 </style>
 

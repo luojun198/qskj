@@ -219,6 +219,7 @@ function buildEntryAggregateCte(opts: {
   endBaseYearStart: string
   yearStartDate: string
   values: EntryAggregateValue[]
+  groupByCurrency?: boolean
 }): { sql: string; params: SqlParam[] } {
   const buckets: { name: string; from: string; to: string; toInclusive: boolean }[] = [
     { name: 'init', from: opts.startBaseYearStart, to: opts.startDate, toInclusive: false },
@@ -241,18 +242,22 @@ function buildEntryAggregateCte(opts: {
   // 总区间取各口径起点的最小值，保证每个桶都落在扫描范围内
   const scanStart = buckets.map(b => b.from).sort()[0]
   params.push(opts.accountSetId, opts.accountSetId, scanStart, opts.endDate)
+  // GL-1：外币余额表按「科目 + 分录实际币种」分组。分录填了币种按分录（FIX-410 后可改选），未填归科目缺省币种
+  const byCurrency = !!opts.groupByCurrency
   return {
     sql: `entry_agg AS (
       SELECT ve.account_id,
+        ${byCurrency ? `UPPER(COALESCE(NULLIF(TRIM(ve.currency_code), ''), ea.currency_code, '')) AS cur,` : ''}
         ${columns.join(',\n        ')}
       FROM vouchers v
       CROSS JOIN voucher_entries ve ON ve.voucher_id = v.id
+      ${byCurrency ? 'LEFT JOIN accounts ea ON ea.id = ve.account_id' : ''}
       WHERE v.account_set_id = ?
         AND ve.account_set_id = ?
         AND ${opts.statusCondition}
         AND v.voucher_date >= ?
         AND v.voucher_date <= ?
-      GROUP BY ve.account_id
+      GROUP BY ve.account_id${byCurrency ? ', cur' : ''}
     )`,
     params,
   }
@@ -2105,8 +2110,9 @@ export function buildForeignBalanceQuery(filters: {
     accountParams.push(`${filters.accountCode}%`)
   }
 
+  // GL-1：按分录实际币种筛选（ac.cur），不再按科目缺省币种整科目丢弃
   if (filters.currencyCode) {
-    accountConditions.push("UPPER(COALESCE(a.currency_code, '')) = ?")
+    accountConditions.push('ac.cur = ?')
     accountParams.push(String(filters.currencyCode).trim().toUpperCase())
   }
 
@@ -2145,23 +2151,27 @@ export function buildForeignBalanceQuery(filters: {
       { prefix: 'fx', expr: 'COALESCE(ve.foreign_amount, 0)' },
       { prefix: 'amt', expr: 've.amount' },
     ],
+    groupByCurrency: true,
   })
+
+  /** GL-1：期初 / 账前发生额只记在科目缺省币种那一行（init_balances 不分币种），改选币种的行只含凭证发生额 */
+  const onlyDefault = (expr: string) => `(CASE WHEN ac.is_default = 1 THEN (${expr}) ELSE 0 END)`
 
   /** 期初余额：起始年度年初余额 + [年初, startDate) 凭证净额（按科目方向签名） */
   const initBalanceExpr = (prefix: string, cols: InitBalanceColumnSet, withPreBook: boolean) => `
-          ${
+          ${onlyDefault(
             withPreBook
               ? buildAccountOpeningBalanceExpr('a.id', initIncludesPreBook, cols)
               : buildAccountInitBalanceExpr('a.id', cols)
-          } + ${aggSignedNet(prefix, 'init')}`
+          )} + ${aggSignedNet(prefix, 'init')}`
 
   /** 期末余额：结束年度年初余额 + [年初, endDate] 凭证净额 */
   const endBalanceExpr = (prefix: string, cols: InitBalanceColumnSet, withPreBook: boolean) => `
-          ${
+          ${onlyDefault(
             withPreBook
               ? buildAccountOpeningBalanceExpr('a.id', endIncludesPreBook, cols)
               : buildAccountInitBalanceExpr('a.id', cols)
-          } + ${aggSignedNet(prefix, 'end')}`
+          )} + ${aggSignedNet(prefix, 'end')}`
 
   /** 区间内某方向的发生额 */
   const sideExpr = (
@@ -2171,7 +2181,7 @@ export function buildForeignBalanceQuery(filters: {
     side: 'debit' | 'credit',
     includePreBook: boolean
   ) => `
-          ${includePreBook ? `${buildAccountPreBookSideExpr('a.id', side, true, cols)} +` : ''} ${aggCol(prefix, bucket, side)}`
+          ${includePreBook ? `${onlyDefault(buildAccountPreBookSideExpr('a.id', side, true, cols))} +` : ''} ${aggCol(prefix, bucket, side)}`
 
   const AC = AMOUNT_INIT_COLUMNS
   const FC = FOREIGN_INIT_COLUMNS
@@ -2180,7 +2190,15 @@ export function buildForeignBalanceQuery(filters: {
 
   return {
     sql: `
-      WITH ${agg.sql}
+      WITH ${agg.sql},
+      acct_cur AS (
+        SELECT a0.id AS account_id, UPPER(COALESCE(a0.currency_code, '')) AS cur, 1 AS is_default
+        FROM accounts a0 WHERE a0.account_set_id = ? AND a0.is_foreign = 1
+        UNION
+        SELECT m0.account_id, m0.cur, 0 AS is_default
+        FROM entry_agg m0 JOIN accounts a1 ON a1.id = m0.account_id
+        WHERE m0.cur <> UPPER(COALESCE(a1.currency_code, ''))
+      )
       SELECT * FROM (
         SELECT
           a.id as account_id,
@@ -2188,7 +2206,7 @@ export function buildForeignBalanceQuery(filters: {
           a.name as account_name,
           a.direction,
           a.level,
-          UPPER(COALESCE(a.currency_code, '')) as currency_code,
+          ac.cur as currency_code,
           ${initBalanceExpr('fx', FC, fxPreBookEnabled)} as foreign_init_balance,
           ${initBalanceExpr('amt', AC, preBookEnabled)} as init_balance,
           ${sideExpr('fx', FC, 'cur', 'debit', fxCurrentPreBook)} as foreign_current_debit,
@@ -2202,7 +2220,8 @@ export function buildForeignBalanceQuery(filters: {
           ${endBalanceExpr('fx', FC, fxPreBookEnabled)} as foreign_end_balance,
           ${endBalanceExpr('amt', AC, preBookEnabled)} as end_balance
         FROM accounts a
-        LEFT JOIN entry_agg m ON m.account_id = a.id
+        JOIN acct_cur ac ON ac.account_id = a.id
+        LEFT JOIN entry_agg m ON m.account_id = a.id AND m.cur = ac.cur
         ${buildWhereClause(accountConditions)}
       ) WHERE 1=1 ${havingClause}
       ORDER BY currency_code, account_code
@@ -2210,7 +2229,8 @@ export function buildForeignBalanceQuery(filters: {
     // 占位符顺序与上面 SQL 严格对应：CTE 在最前，随后每个口径「原币在前、本位币在后」各一份
     // init_balances 子查询。buildAccountPreBookSideExpr 的 include=false 分支不产生占位符，故按条件 push。
     params: (() => {
-      const p: SqlParam[] = [...agg.params]
+      // acct_cur 的 account_set_id 紧跟 CTE
+      const p: SqlParam[] = [...agg.params, filters.accountSetId]
       // 期初：原币、本位币各一份
       for (const _ of [0, 1]) p.push(filters.accountSetId, startBaseYear)
       // 本期借方（原币、本位币）、本期贷方（原币、本位币）

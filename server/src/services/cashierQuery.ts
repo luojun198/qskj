@@ -727,7 +727,9 @@ export function previewCashierGenerate(params: {
 }): { rows: CashierGeneratePreviewRow[]; error?: string } {
   const { db, accountSetId, accountCode, startDate, endDate, ids } = params
 
+  // CASH-1：「凭证同步」行来自总账凭证，凭证没了就是孤儿，不能再当作未制证去生成凭证
   const conds = ['j.account_set_id=?', 'j.account_code=?', 'j.voucher_no IS NULL']
+  if (journalHasCreatedBy(db)) conds.push("COALESCE(j.created_by,'')<>'凭证同步'")
   const vals: any[] = [accountSetId, accountCode]
   const byIds = !!(ids && ids.length > 0)
   if (!byIds && startDate) { conds.push('j.biz_date >= ?'); vals.push(startDate) }
@@ -1293,7 +1295,11 @@ export function syncCashierFromVoucher(params: {
   // 出纳独立账户：凭证分录科目 → 关联的出纳账户（无关联账户的现金 / 银行科目不同步）
   const codeSet = cashierLinkedGlCodes(db, accountSetId)
   const hasCashEntry = entries.some(e => codeSet.has(e.account_code))
-  if (!hasCashEntry) return { synced: 0 }
+  if (!hasCashEntry) {
+    // CASH-1：凭证改得不再含现金分录时，之前同步出来的日记账同样清掉
+    if (voucherId) removeStaleSyncedJournal(db, accountSetId, voucherId)
+    return { synced: 0 }
+  }
 
   // P1-6：目标月份出纳已结账则拒绝写入（总账侧守卫已先拦，这里兜底）
   assertCashierPeriodOpen(db, accountSetId, voucherDate)
@@ -1334,6 +1340,9 @@ export function syncCashierFromVoucher(params: {
   const vtNum = Number(voucherType)
   const vt = (voucherType != null && voucherType !== '' && !isNaN(vtNum)) ? vtNum : null
   const accountCurrencyCache = new Map<string, string>()
+  // CASH-1：同一凭证同一出纳账户的多条现金分录汇总成一行（原来逐条覆盖同一行，只留下最后一条）
+  type Agg = { currency: string; rate: number; debit: number; credit: number; baseDebit: number; baseCredit: number; summary: string }
+  const aggByCode = new Map<string, Agg>()
   for (const entry of entries) {
     if (!codeSet.has(entry.account_code)) continue
     const cashierCode = cashierCodeForGl(db, accountSetId, entry.account_code)
@@ -1359,20 +1368,63 @@ export function syncCashierFromVoucher(params: {
     const baseCredit = entry.direction === 'credit' ? baseAmount : 0
     const summary = entry.summary || '凭证'
 
+    const cur = aggByCode.get(cashierCode)
+    if (!cur) {
+      aggByCode.set(cashierCode, { currency, rate, debit, credit, baseDebit, baseCredit, summary })
+    } else {
+      cur.debit = round2(cur.debit + debit)
+      cur.credit = round2(cur.credit + credit)
+      cur.baseDebit = round2(cur.baseDebit + baseDebit)
+      cur.baseCredit = round2(cur.baseCredit + baseCredit)
+    }
+  }
+
+  const keptIds = new Set<string>()
+  for (const [cashierCode, a] of aggByCode) {
     const existing =
       (voucherId ? (findByVoucherId.get(accountSetId, cashierCode, voucherId) as any) : null) ||
       (find.get(accountSetId, cashierCode, voucherYear, voucherMonth, vt, voucherNo) as any)
     if (existing) {
       // 原行所在月份已结账同样拒绝改写
       if (existing.biz_date !== voucherDate) assertCashierPeriodOpen(db, accountSetId, existing.biz_date)
-      update.run(debit, credit, currency, rate, baseDebit, baseCredit, summary, voucherDate, voucherYear, voucherMonth, voucherId, existing.id)
+      update.run(a.debit, a.credit, a.currency, a.rate, a.baseDebit, a.baseCredit, a.summary, voucherDate, voucherYear, voucherMonth, voucherId, existing.id)
+      keptIds.add(existing.id)
     } else {
-      insert.run(uuidv4(), accountSetId, cashierCode, currency, voucherDate, summary, debit, credit,
-        rate, baseDebit, baseCredit, voucherYear, voucherMonth, vt, voucherNo, voucherId)
+      const id = uuidv4()
+      insert.run(id, accountSetId, cashierCode, a.currency, voucherDate, a.summary, a.debit, a.credit,
+        a.rate, a.baseDebit, a.baseCredit, voucherYear, voucherMonth, vt, voucherNo, voucherId)
+      keptIds.add(id)
     }
     synced++
   }
+
+  // CASH-1：凭证改掉了某条现金分录（改科目 / 删行），此前由凭证同步出来的那行日记账要一并删除，
+  // 否则出纳余额仍含已从总账去掉的金额，且这行 voucher 信息被清空后还能再制一张凭证
+  if (voucherId) removeStaleSyncedJournal(db, accountSetId, voucherId, keptIds)
   return { synced }
+}
+
+function round2(v: number) {
+  return Math.round(v * 100) / 100
+}
+
+/** 老库 / 精简测试库的 cashier_journal 可能没有 created_by 列 */
+function journalHasCreatedBy(db: any): boolean {
+  return (db.prepare('PRAGMA table_info(cashier_journal)').all() as Array<{ name: string }>).some(c => c.name === 'created_by')
+}
+
+/** 删除某凭证「凭证同步」生成、但已不在 keepIds 里的日记账行（所在出纳月份已结账时拒绝） */
+export function removeStaleSyncedJournal(db: any, accountSetId: string, voucherId: string, keepIds: Set<string> = new Set()) {
+  if (!journalHasCreatedBy(db)) return
+  const rows = db.prepare(
+    `SELECT id, biz_date FROM cashier_journal WHERE account_set_id=? AND voucher_id=? AND created_by='凭证同步'`
+  ).all(accountSetId, voucherId) as Array<{ id: string; biz_date: string }>
+  const del = db.prepare('DELETE FROM cashier_journal WHERE id=?')
+  for (const r of rows) {
+    if (keepIds.has(r.id)) continue
+    assertCashierPeriodOpen(db, accountSetId, r.biz_date)
+    del.run(r.id)
+  }
 }
 
 /**

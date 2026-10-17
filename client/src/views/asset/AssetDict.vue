@@ -76,13 +76,13 @@
             <AccountSelect v-model="form.account_code" placeholder="如 1601 固定资产" search-keyword="固定资产" />
           </el-form-item>
           <el-form-item label="累计折旧科目">
-            <AccountSelect v-model="form.depr_account_code" placeholder="如 1602 累计折旧" search-keyword="折旧" />
+            <AccountSelect v-model="form.depr_account_code" placeholder="如 1602 累计折旧" search-keyword="累计折旧" />
           </el-form-item>
           <el-form-item label="减值准备科目">
-            <AccountSelect v-model="form.impairment_account_code" placeholder="如 1603 固定资产减值准备" search-keyword="减值" />
+            <AccountSelect v-model="form.impairment_account_code" placeholder="如 1603 固定资产减值准备" search-keyword="固定资产减值" />
           </el-form-item>
           <el-form-item label="资产清理科目">
-            <AccountSelect v-model="form.clearing_account_code" placeholder="如 1606 固定资产清理" search-keyword="清理" />
+            <AccountSelect v-model="form.clearing_account_code" placeholder="如 1606 固定资产清理" search-keyword="固定资产清理" />
           </el-form-item>
         </template>
         <template v-if="activeTab === 'status'">

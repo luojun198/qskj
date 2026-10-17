@@ -253,8 +253,10 @@ describe('期末调汇 fxRevaluation', () => {
 
     const entries = testDb.prepare('SELECT * FROM voucher_entries WHERE voucher_id = ? ORDER BY seq').all(run.voucherId) as any[]
     expect(entries).toHaveLength(2)
-    // 只调本位币，不带原币
-    expect(entries.every(e => e.foreign_amount == null && e.currency_code == null)).toBe(true)
+    // 只调本位币，不带原币；GL-1 后外币科目那条记上被重估的币种（下期外币余额表按币种归回同一行），损益科目不带币种
+    expect(entries.every(e => e.foreign_amount == null)).toBe(true)
+    expect(entries.find(e => e.account_id === USD_ACC)?.currency_code).toBe('USD')
+    expect(entries.filter(e => e.account_id !== USD_ACC).every(e => e.currency_code == null)).toBe(true)
 
     const after = foreignRow(testDb, USD_ACC)
     expect(after.foreign_end_balance).toBe(100)

@@ -104,6 +104,11 @@ function calcMethodWorkload(a: DeprAsset, currentWorkload: number): number {
 
   const depreciable = a.original_value - a.salvage_value
   if (depreciable <= 0) return 0
+  // ASSET-2：本期录入后累计工作量达到总量 = 最后一期，把各期四舍五入累积的尾差一次补足（与平均年限法末期一致），
+  // 提满后净值恰好等于残值。外层仍按「不超过剩余可折余额」封顶
+  if ((a.workload_done || 0) + currentWorkload >= a.total_workload - 1e-9) {
+    return Math.max(0, Math.round((a.net_value - a.salvage_value) * 100) / 100)
+  }
   return Math.round((depreciable / a.total_workload) * currentWorkload * 100) / 100
 }
 
@@ -160,7 +165,8 @@ export function computeMonthDepr(a: DeprAsset, currentWorkload: number): number 
 
   // AS-P1-6：平均年限法最后一期把各月舍入累积的尾差一次补足，
   // 使提满后净值恰好等于残值（此前尾差留存到处置时虚增清理损益）。
-  // 双倍余额递减（最后 2 月转直线）与年数总和（末期公式已=全额）天然提满，无需处理。
+  // 方法编码：1 平均年限 / 2 工作量 / 3 双倍余额递减 / 4 年数总和。工作量法不按剩余月数判断末期，
+  // 其尾差在 calcMethodWorkload 里按累计工作量补（ASSET-2）；双倍余额递减最后 2 月转直线天然提满。
   const remainingMonths = (a.use_months || 0) - a.depr_months_done
   if (method !== '2' && method !== '3' && remainingMonths === 1 && maxDepr > 0 && monthDepr !== maxDepr) {
     monthDepr = maxDepr

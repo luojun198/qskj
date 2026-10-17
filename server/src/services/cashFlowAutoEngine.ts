@@ -16,6 +16,7 @@
  */
 import type { AccountScopeContext } from './accountAuthorization.js'
 import { isAccountIdInScope } from './accountAuthorization.js'
+import { getLedgerDataEpoch } from './ledgerDataEpoch.js'
 import {
   getCashFlowMapEpoch,
   getEffectiveCashFlowMapping,
@@ -92,7 +93,7 @@ function round2(v: number): number {
 
 // ───────────────────────── 缓存：一次报表计算里 @xj_je 每格都会调用 ─────────────────────────
 const CACHE_TTL_MS = 3000
-const cache = new WeakMap<object, Map<string, { expires: number; epoch: number; data: CashFlowAutoResult }>>()
+const cache = new WeakMap<object, Map<string, { expires: number; epoch: string; data: CashFlowAutoResult }>>()
 
 export function clearCashFlowAutoCache() {
   // WeakMap 无法枚举，借映射版本号整体失效
@@ -117,7 +118,8 @@ export function computeCashFlowByMapping(
   const from = Math.min(12, Math.max(1, Math.trunc(fromPeriod) || 1))
   const to = Math.min(12, Math.max(from, Math.trunc(toPeriod) || from))
   const key = `${accountSetId}|${year}|${from}|${to}|${scopeKey(accountScope)}|${options.includeUnposted ? 1 : 0}|${options.collectDetail ? 1 : 0}`
-  const epoch = getCashFlowMapEpoch() + cacheEpochOffset * 100000
+  // GL-6：记账 / 反记账也要让缓存失效（原来只认映射版本号，3 秒内过账仍返回旧数）
+  const epoch = `${getCashFlowMapEpoch()}|${cacheEpochOffset}|${getLedgerDataEpoch()}`
   const now = Date.now()
   let perDb = cache.get(db as object)
   if (!perDb) {

@@ -78,6 +78,13 @@ export function deleteVoucherWithRefs(db: Database, accountSetId: string, vouche
     }
     // 出纳日记账关联清理（迁移 127 voucher_id 列；老库无该列时跳过）：凭证没了，日记账应回到"未生成凭证"
     if (hasColumn(db, 'cashier_journal', 'voucher_id')) {
+      // CASH-1：「凭证同步」生成的日记账本身就是这张凭证的影子，凭证删了它也要删；
+      // 只置空凭证字段会让它变成「未制证」，出纳再生成一张凭证就重复入账
+      if (hasColumn(db, 'cashier_journal', 'created_by')) {
+        db.prepare(
+          `DELETE FROM cashier_journal WHERE account_set_id=? AND voucher_id=? AND created_by='凭证同步'`
+        ).run(accountSetId, voucher.id)
+      }
       db.prepare(
         `UPDATE cashier_journal SET voucher_year=NULL, voucher_month=NULL, voucher_type=NULL, voucher_no=NULL, voucher_id=NULL
           WHERE account_set_id=? AND voucher_id=?`

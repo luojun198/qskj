@@ -125,7 +125,7 @@
       <div v-else class="preview-content">
         <template v-if="isImage(previewAttachment?.mime_type)">
           <img
-            :src="previewAttachment?.file_path"
+            :src="withAttachmentToken(previewAttachment?.file_path)"
             style="max-width: 100%; max-height: 600px"
             @error="handlePreviewError"
           />
@@ -138,7 +138,7 @@
         </template>
         <template v-else-if="isPdf(previewAttachment?.mime_type)">
           <iframe
-            :src="previewAttachment?.file_path"
+            :src="withAttachmentToken(previewAttachment?.file_path)"
             style="width: 100%; height: 600px"
             @load="handlePreviewLoaded"
             @error="handlePreviewError"
@@ -177,6 +177,7 @@
 </template>
 
 <script setup lang="ts">
+import { withAttachmentToken } from '@/utils/attachmentUrl'
 import { ref, nextTick } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { Document, Upload, View, Delete, Download } from '@element-plus/icons-vue'
@@ -290,7 +291,7 @@ async function previewFile(file: Attachment) {
 
   try {
     if (isText(file.mime_type)) {
-      const response = await fetch(file.file_path)
+      const response = await fetch(withAttachmentToken(file.file_path))
       if (response.ok) {
         previewContent.value = await response.text()
       } else {
@@ -298,7 +299,7 @@ async function previewFile(file: Attachment) {
       }
     } else if (isExcel(file.mime_type, file.original_name)) {
       const XLSX = await import('xlsx')
-      const response = await fetch(file.file_path)
+      const response = await fetch(withAttachmentToken(file.file_path))
       const arrayBuffer = await response.arrayBuffer()
       const data = new Uint8Array(arrayBuffer)
       const workbook = XLSX.read(data, { type: 'array' })
@@ -339,7 +340,7 @@ function downloadFile(file: Attachment) {
 
   // 创建下载链接
   const link = document.createElement('a')
-  link.href = file.file_path
+  link.href = withAttachmentToken(file.file_path)
   link.download = file.original_name
   link.target = '_blank'
   document.body.appendChild(link)

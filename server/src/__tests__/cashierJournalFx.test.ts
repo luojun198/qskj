@@ -221,6 +221,7 @@ describe('FIX-260：出纳日记账外币', () => {
     })
     const usd2 = db.prepare("SELECT debit, exchange_rate, base_debit FROM cashier_journal WHERE account_code='1002001' AND voucher_id='v1'").get() as any
     expect(usd2).toEqual({ debit: 200, exchange_rate: 7.2, base_debit: 1440 })
-    expect((db.prepare("SELECT COUNT(*) c FROM cashier_journal WHERE voucher_id='v1'").get() as any).c).toBe(2)
+    // CASH-1：第二次同步凭证里已没有 1001 分录，之前同步出来的 1001 日记账随之删除
+    expect((db.prepare("SELECT COUNT(*) c FROM cashier_journal WHERE voucher_id='v1'").get() as any).c).toBe(1)
   })
 })

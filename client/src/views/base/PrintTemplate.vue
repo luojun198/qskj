@@ -3,24 +3,26 @@
     <div class="page-header">
       <div>
         <h2>打印模版</h2>
-        <p class="page-sub">凭证：用预设快速开一张凭证纸，再点字段、叠底图即可套打。业务单据（销售订单、出入库单……）：从「新建业务单据模板」开始，单据打印页的「模板」下拉即可选用。</p>
+        <p class="page-sub">可以直接「新增空白」从空画布拖字段；也可以从预设开一张现成凭证纸再改。业务单据（销售订单、出入库单……）同样可从预设或空白开始，单据打印页的「模板」下拉即可选用。</p>
       </div>
       <div class="header-actions">
         <el-button v-if="legacyCount > 0" :loading="upgradingAll" @click="handleUpgradeAll">
           升级全部旧模板（{{ legacyCount }}）
         </el-button>
+        <el-button type="primary" @click="createFromPreset('blank')">新增空白</el-button>
         <el-dropdown @command="createFromPreset">
-          <el-button type="primary">
+          <el-button>
             从预设新建
             <el-icon class="el-icon--right"><ArrowDown /></el-icon>
           </el-button>
           <template #dropdown>
             <el-dropdown-menu>
               <el-dropdown-item command="standard">标准记账凭证（210×148）</el-dropdown-item>
-              <el-dropdown-item command="blank">套打底图模板</el-dropdown-item>
+              <el-dropdown-item command="blank">空白凭证画布</el-dropdown-item>
               <el-dropdown-item command="a4">A4 竖版凭证</el-dropdown-item>
               <el-dropdown-item command="foreign">复币记账凭证（外币，参照润衡）</el-dropdown-item>
               <el-dropdown-item command="scm" divided>业务单据模板（进销存）</el-dropdown-item>
+              <el-dropdown-item command="scm-blank">空白业务单据画布</el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>
@@ -28,8 +30,9 @@
     </div>
 
     <div class="page-content" v-loading="loading">
-      <el-empty v-if="!loading && templates.length === 0" description="还没有打印模板，先从预设新建一张">
-        <el-button type="primary" @click="createFromPreset('standard')">新建标准凭证</el-button>
+      <el-empty v-if="!loading && templates.length === 0" description="还没有打印模板，可新增空白或从预设开始">
+        <el-button type="primary" @click="createFromPreset('blank')">新增空白</el-button>
+        <el-button @click="createFromPreset('standard')">新建标准凭证</el-button>
       </el-empty>
       <div v-else class="template-grid">
         <article v-for="row in templates" :key="row.id" class="template-card" :class="{ 'is-default': row.is_default }">

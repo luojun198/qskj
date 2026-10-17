@@ -109,7 +109,13 @@ export function validateProcessFlow(
   const name = procKey(input.processName)
   if (!name) return null
   const cur = db.prepare('SELECT * FROM scm_production_plan_process WHERE account_set_id=? AND product_id=? AND process_name=?').get(aid, input.productId, name) as PlanProcessRow | undefined
-  if (!cur || cur.seq <= 1) return null
+  if (!cur) {
+    // SCM-13：工单已展开工序时，填一个不在列表里的工序名会绕过前道数量校验；严格流转下直接拒绝
+    if (!flowStrict(db, aid)) return null
+    const hasProcesses = db.prepare('SELECT 1 FROM scm_production_plan_process WHERE account_set_id=? AND product_id=? LIMIT 1').get(aid, input.productId)
+    return hasProcesses ? `工序「${name}」不在该工单的工序列表中，请从工序列表选择` : null
+  }
+  if (cur.seq <= 1) return null
   if (!flowStrict(db, aid)) return null
   const prev = db.prepare('SELECT * FROM scm_production_plan_process WHERE account_set_id=? AND product_id=? AND seq<? ORDER BY seq DESC LIMIT 1').get(aid, input.productId, cur.seq) as PlanProcessRow | undefined
   if (!prev) return null

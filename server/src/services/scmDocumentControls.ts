@@ -461,6 +461,11 @@ export function validateFinishKitting(
     WHERE d.account_set_id=? AND d.plan_id=? AND d.status='audited'
       AND d.doc_type IN ('PL','PB','WO','PJ') GROUP BY m.item_code`).all(accountSetId, planId) as any[]
   const issuedMap = new Map(issued.map(row => [row.item_code, Number(row.qty) || 0]))
+  // SCM-10：领用的替代料并入主料「已领」（与领料建议 computeIssueSuggestion 同口径），否则领了替代料完工反被拦
+  for (const [sub, primary] of planSubstituteMap(db, accountSetId, planId)) {
+    const q = issuedMap.get(sub)
+    if (q && !needMap.has(sub)) { issuedMap.set(primary, (issuedMap.get(primary) || 0) + q); issuedMap.delete(sub) }
+  }
   const shortages: string[] = []
   for (const [itemCode, need] of needMap) {
     const actual = r6(issuedMap.get(itemCode) || 0)

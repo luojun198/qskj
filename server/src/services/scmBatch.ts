@@ -34,6 +34,17 @@ function addDays(dateStr: string, days: number): string | null {
   return `${y}-${m}-${day}`
 }
 
+/** SCM-8：scm_batch_move.amount 是迁移 v170 加的；老库缺列时不写（按库缓存探测结果） */
+const batchMoveAmountCache = new WeakMap<object, boolean>()
+function batchMoveHasAmount(db: Database.Database): boolean {
+  let v = batchMoveAmountCache.get(db)
+  if (v === undefined) {
+    v = (db.prepare('PRAGMA table_info(scm_batch_move)').all() as Array<{ name: string }>).some(c => c.name === 'amount')
+    batchMoveAmountCache.set(db, v)
+  }
+  return v
+}
+
 /** 批次入库：累加 scm_stock_batch，记 scm_batch_move */
 function batchIn(
   db: Database.Database, aid: string,
@@ -51,8 +62,8 @@ function batchIn(
     db.prepare('INSERT INTO scm_stock_batch (id,account_set_id,warehouse_code,item_code,batch_no,qty,amount,produce_date,expire_date) VALUES (?,?,?,?,?,?,?,?,?)')
       .run(uuidv4(), aid, wh, item, batchNo, qty, addAmt, produceDate, expireDate)
   }
-  db.prepare('INSERT INTO scm_batch_move (id,account_set_id,doc_id,doc_type,doc_no,line_seq,warehouse_code,item_code,batch_no,direction,qty,produce_date,expire_date) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
-    .run(uuidv4(), aid, doc.id, doc.type, doc.no, lineSeq, wh, item, batchNo, 'in', qty, produceDate, expireDate)
+  db.prepare(`INSERT INTO scm_batch_move (id,account_set_id,doc_id,doc_type,doc_no,line_seq,warehouse_code,item_code,batch_no,direction,qty,produce_date,expire_date${batchMoveHasAmount(db) ? ',amount' : ''}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?${batchMoveHasAmount(db) ? ',?' : ''})`)
+    .run(uuidv4(), aid, doc.id, doc.type, doc.no, lineSeq, wh, item, batchNo, 'in', qty, produceDate, expireDate, ...(batchMoveHasAmount(db) ? [addAmt] : []))
 }
 
 /** 批次出库：扣减一个批次，记 scm_batch_move */
@@ -64,17 +75,18 @@ function batchOutOne(
   const ex = db.prepare('SELECT id, qty, amount FROM scm_stock_batch WHERE account_set_id=? AND warehouse_code=? AND item_code=? AND batch_no=?')
     .get(aid, wh, item, batchNo) as any
   const newQty = Math.round(((ex?.qty || 0) - qty) * 1e6) / 1e6
+  let outAmt = 0
   if (ex) {
     // 金额按比例冲减（仅追溯参考）
-    const outAmt = ex.qty > 0 ? Math.round((ex.amount * qty / ex.qty) * 100) / 100 : 0
+    outAmt = ex.qty > 0 ? Math.round((ex.amount * qty / ex.qty) * 100) / 100 : 0
     db.prepare('UPDATE scm_stock_batch SET qty=?, amount=? WHERE id=?')
       .run(newQty, Math.round((ex.amount - outAmt) * 100) / 100, ex.id)
   } else {
     db.prepare('INSERT INTO scm_stock_batch (id,account_set_id,warehouse_code,item_code,batch_no,qty,amount) VALUES (?,?,?,?,?,?,?)')
       .run(uuidv4(), aid, wh, item, batchNo, newQty, 0)
   }
-  db.prepare('INSERT INTO scm_batch_move (id,account_set_id,doc_id,doc_type,doc_no,line_seq,warehouse_code,item_code,batch_no,direction,qty) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
-    .run(uuidv4(), aid, doc.id, doc.type, doc.no, lineSeq, wh, item, batchNo, 'out', qty)
+  db.prepare(`INSERT INTO scm_batch_move (id,account_set_id,doc_id,doc_type,doc_no,line_seq,warehouse_code,item_code,batch_no,direction,qty${batchMoveHasAmount(db) ? ',amount' : ''}) VALUES (?,?,?,?,?,?,?,?,?,?,?${batchMoveHasAmount(db) ? ',?' : ''})`)
+    .run(uuidv4(), aid, doc.id, doc.type, doc.no, lineSeq, wh, item, batchNo, 'out', qty, ...(batchMoveHasAmount(db) ? [outAmt] : []))
 }
 
 /** FIFO 取批次顺序：到期日升序(空值最后) → 生产日期升序 → 入库序(rowid) */
@@ -231,15 +243,24 @@ export function maintainDocBatches(db: Database.Database, aid: string, docId: st
 export function reverseDocBatches(db: Database.Database, aid: string, docId: string) {
   const moves = db.prepare('SELECT * FROM scm_batch_move WHERE account_set_id=? AND doc_id=?').all(aid, docId) as any[]
   for (const m of moves) {
-    const ex = db.prepare('SELECT id, qty FROM scm_stock_batch WHERE account_set_id=? AND warehouse_code=? AND item_code=? AND batch_no=?')
+    const ex = db.prepare('SELECT id, qty, amount FROM scm_stock_batch WHERE account_set_id=? AND warehouse_code=? AND item_code=? AND batch_no=?')
       .get(aid, m.warehouse_code, m.item_code, m.batch_no) as any
     // 入库回退=减少；出库回退=增加
     const delta = m.direction === 'in' ? -Number(m.qty) : Number(m.qty)
+    // SCM-8：金额随数量一并回退。新流水按记下的 amount；v170 前的老流水没有金额，按批次当前均价估算
+    const exQty = Number(ex?.qty) || 0, exAmt = Number(ex?.amount) || 0
+    const moveAmt = m.amount != null
+      ? Number(m.amount) || 0
+      : (exQty > 0 ? Math.round((exAmt / exQty) * Number(m.qty) * 100) / 100 : 0)
+    const deltaAmt = m.direction === 'in' ? -moveAmt : moveAmt
     if (ex) {
-      db.prepare('UPDATE scm_stock_batch SET qty=? WHERE id=?').run(Math.round((ex.qty + delta) * 1e6) / 1e6, ex.id)
+      const newQty = Math.round((exQty + delta) * 1e6) / 1e6
+      // 数量回到 0 时金额也清零，避免残留尾差
+      const newAmt = Math.abs(newQty) < 1e-9 ? 0 : Math.round((exAmt + deltaAmt) * 100) / 100
+      db.prepare('UPDATE scm_stock_batch SET qty=?, amount=? WHERE id=?').run(newQty, newAmt, ex.id)
     } else if (delta > 0) {
       db.prepare('INSERT INTO scm_stock_batch (id,account_set_id,warehouse_code,item_code,batch_no,qty,amount) VALUES (?,?,?,?,?,?,?)')
-        .run(uuidv4(), aid, m.warehouse_code, m.item_code, m.batch_no, delta, 0)
+        .run(uuidv4(), aid, m.warehouse_code, m.item_code, m.batch_no, delta, Math.max(0, deltaAmt))
     }
   }
   db.prepare('DELETE FROM scm_batch_move WHERE account_set_id=? AND doc_id=?').run(aid, docId)

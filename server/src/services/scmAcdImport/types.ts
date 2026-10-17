@@ -18,7 +18,8 @@ export interface ScmAcdImportOptions {
 
 export const DEFAULT_IMPORT_OPTIONS: ScmAcdImportOptions = { conflict: 'skip' }
 
-export interface ImportCounter { inserted: number; updated: number; skipped: number }
+/** locked：覆盖导入时因已审核而未覆盖的条数（计入 skipped） */
+export interface ImportCounter { inserted: number; updated: number; skipped: number; locked?: number }
 
 export const newCounter = (): ImportCounter => ({ inserted: 0, updated: 0, skipped: 0 })
 

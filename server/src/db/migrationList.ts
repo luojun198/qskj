@@ -595,6 +595,10 @@ import {
   up as assetCardExtraFieldsUp,
   down as assetCardExtraFieldsDown,
 } from './migrations/20261017_asset_card_extra_fields.js'
+import {
+  up as scmBatchMoveAmountUp,
+  down as scmBatchMoveAmountDown,
+} from './migrations/20261017_scm_batch_move_amount.js'
 
 /**
  * 迁移示例：添加新字段
@@ -2532,5 +2536,11 @@ export const migrations: Migration[] = [
     name: 'asset_card_extra_fields',
     up: assetCardExtraFieldsUp,
     down: assetCardExtraFieldsDown,
+  },
+  {
+    version: 170,
+    name: 'scm_batch_move_amount',
+    up: scmBatchMoveAmountUp,
+    down: scmBatchMoveAmountDown,
   },
 ]

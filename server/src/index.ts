@@ -102,6 +102,7 @@ import cashierImportRoutes from './routes/cashierImport.js'
 import backupRoutes from './routes/backup.js'
 import licenseRoutes from './routes/license.js'
 import { licenseMiddleware } from './middleware/licenseMiddleware.js'
+import { authMiddleware } from './middleware/auth.js'
 
 // 部署根目录（client/dist、BUILD_STAMP.json 所在处），与数据 / 上传目录同一套判定
 // （见 utils/runtimePaths.ts；原先按 argv[1] 往上数三级，系统 Node 跑部署包时会算到部署目录的上一级）
@@ -302,6 +303,13 @@ app.use('/api', cashierImportRoutes)
 
 // 静态文件服务（前端页面）
 const clientDist = resolve(EXE_DIR, 'client', 'dist')
+// SEC-4：凭证 / 出纳 / 固资附件（发票、合同等）必须登录后才能取回；logo、打印模板图片仍公开（登录页要用）。
+// <img>/<a> 带不了 Authorization 头，前端把 token 放在查询参数 t（见 client/src/utils/attachmentUrl.ts）
+app.use('/uploads/attachments', (req: any, res, next) => {
+  const t = typeof req.query?.t === 'string' ? req.query.t : ''
+  if (!req.headers.authorization && t) req.headers.authorization = `Bearer ${t}`
+  return authMiddleware(req, res, next)
+})
 app.use('/uploads', express.static(resolve(getDeployDir(), 'uploads')))
 app.use(
   express.static(clientDist, {

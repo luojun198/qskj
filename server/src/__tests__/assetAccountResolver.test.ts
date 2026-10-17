@@ -1,7 +1,13 @@
 import Database from 'better-sqlite3'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { ensureDefaultAssetDicts } from '../services/accountSetDefaults.js'
-import { ASSET_ACCOUNT_SPECS, fallbackOriginalAccount, resolveAssetAccount } from '../services/assetAccountResolver.js'
+import {
+  ASSET_ACCOUNT_SPECS,
+  depreciationExpenseCodes,
+  detectAssetChartStandard,
+  fallbackOriginalAccount,
+  resolveAssetAccount,
+} from '../services/assetAccountResolver.js'
 
 const S = 'as1'
 
@@ -91,5 +97,46 @@ describe('资产默认科目：按名称定位并下探最底层', () => {
     add(db, '1601', '固定资产')
     db.prepare("UPDATE accounts SET is_enabled=0 WHERE code='1601'").run()
     expect(resolveAssetAccount(db as any, S, ASSET_ACCOUNT_SPECS.original())).toBeNull()
+  })
+
+  it('一键预设：企业科目表里夹着小企业编码时，折旧费用仍取 6602/5101', () => {
+    add(db, '6001', '主营业务收入')
+    add(db, '1601', '固定资产')
+    add(db, '6602', '管理费用')
+    add(db, '6602010', '折旧', '6602')
+    add(db, '5602', '管理费用')
+    add(db, '5602010', '折旧', '5602')
+    add(db, '5101', '制造费用')
+    add(db, '5101003', '折旧费', '5101')
+    add(db, '4101', '制造费用')
+    add(db, '4101003', '折旧费', '4101')
+    const rows = db.prepare('SELECT code, name, parent_id FROM accounts').all() as any[]
+    expect(detectAssetChartStandard(rows)).toBe('enterprise')
+    ensureDefaultAssetDicts(db as any, S, 'purpose')
+    expect((db.prepare("SELECT expense_account FROM fixed_asset_purpose WHERE code='01'").get() as any).expense_account).toBe('6602010')
+    expect((db.prepare("SELECT expense_account FROM fixed_asset_purpose WHERE code='03'").get() as any).expense_account).toBe('5101003')
+  })
+
+  it('一键预设：小企业科目表取 5602/4101，不写成企业准则的 6602/5101', () => {
+    add(db, '5001', '主营业务收入')
+    add(db, '1601', '固定资产')
+    add(db, '5602', '管理费用')
+    add(db, '5602010', '折旧', '5602')
+    add(db, '4101', '制造费用')
+    add(db, '4101003', '折旧费', '4101')
+    const rows = db.prepare('SELECT code, name, parent_id FROM accounts').all() as any[]
+    expect(detectAssetChartStandard(rows)).toBe('small_business')
+    ensureDefaultAssetDicts(db as any, S, 'purpose')
+    expect((db.prepare("SELECT expense_account FROM fixed_asset_purpose WHERE code='01'").get() as any).expense_account).toBe('5602010')
+    expect((db.prepare("SELECT expense_account FROM fixed_asset_purpose WHERE code='03'").get() as any).expense_account).toBe('4101003')
+  })
+
+  it('企业科目编码不是正好 6602 时，仍取 6602 这一支，不退回更小的 5602', () => {
+    add(db, '6001', '主营业务收入')
+    add(db, '660200', '管理费用')
+    add(db, '66020001', '折旧', '660200')
+    add(db, '5602', '管理费用')
+    add(db, '5602010', '折旧', '5602')
+    expect(resolveAssetAccount(db as any, S, ASSET_ACCOUNT_SPECS.depreciationExpense(['管理费用'], depreciationExpenseCodes('enterprise', 'admin')))?.code).toBe('66020001')
   })
 })

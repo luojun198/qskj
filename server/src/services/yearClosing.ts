@@ -34,6 +34,8 @@ export interface YearEndBalanceRow {
   qtyInitBalance: number
   qtyInitDebit: number
   qtyInitCredit: number
+  /** GL-1：分录改选了非科目缺省币种的原币余额（按币种），init_balances 不分币种，年结时须为 0 */
+  otherCurrencyForeign?: Record<string, number>
 }
 
 /** FIX-140：init_balances / voucher_entries 是否具备外币、数量列（老库可能未迁移） */
@@ -281,6 +283,11 @@ function getInitBalanceRows(
   }>
 }
 
+/** 老库 / 精简测试库的 accounts 可能没有 currency_code 列 */
+function accountHasCurrencyCode(db: Database): boolean {
+  return (db.prepare('PRAGMA table_info(accounts)').all() as Array<{ name: string }>).some(c => c.name === 'currency_code')
+}
+
 function getPostedEntryRows(db: Database, accountSetId: string, year: number) {
   return db
     .prepare(
@@ -289,7 +296,7 @@ function getPostedEntryRows(db: Database, accountSetId: string, year: number) {
         ve.*,
         a.direction as account_direction,
         a.code as account_code,
-        a.name as account_name
+        a.name as account_name${accountHasCurrencyCode(db) ? ", UPPER(COALESCE(a.currency_code, '')) as account_currency_code" : ''}
       FROM voucher_entries ve
       JOIN vouchers v ON v.id = ve.voucher_id
       JOIN accounts a ON a.id = ve.account_id
@@ -342,6 +349,20 @@ function splitSignedQuantity(direction: Direction, signedQty: number) {
   return positive
     ? { initBalance: value, initDebit: 0, initCredit: value }
     : { initBalance: value, initDebit: Math.abs(value), initCredit: 0 }
+}
+
+/** GL-1：非缺省币种还有原币余额时拒绝年结（下年外币期初只有一个币种字段，硬并会把美元、欧元加成一笔） */
+export function validateNoOtherCurrencyBalances(rows: YearEndBalanceRow[]) {
+  const issues: string[] = []
+  for (const row of rows) {
+    for (const [cur, amt] of Object.entries(row.otherCurrencyForeign || {})) {
+      if (Math.abs(amt) >= MONEY_EPSILON) issues.push(`${row.accountCode} ${row.accountName}（${cur} ${amt.toFixed(2)}）`)
+    }
+  }
+  if (issues.length === 0) return
+  throw new Error(
+    `以下外币科目在非缺省币种上仍有原币余额，年结只能按科目缺省币种结转外币期初：${issues.slice(0, 8).join('；')}${issues.length > 8 ? '……' : ''}。请先把这些币种的余额冲平，或改用按币种分设的明细科目后再年结`
+  )
 }
 
 export function buildYearEndBalances(
@@ -399,7 +420,15 @@ export function buildYearEndBalances(
     // FIX-140：外币 / 数量随本位币同步累计，年结后下年期初不再丢原币与数量
     if (support.foreign) {
       const foreignAmount = Number((entry as any).foreign_amount || 0)
-      current.foreignInitBalance = roundMoney(current.foreignInitBalance + sign * foreignAmount)
+      // GL-1：分录币种与科目缺省币种不同的原币不能并进同一个外币期初，单独按币种累计
+      const entryCur = String((entry as any).currency_code || '').trim().toUpperCase()
+      const accountCur = String((entry as any).account_currency_code || '').trim().toUpperCase()
+      if (entryCur && accountCur && entryCur !== accountCur && foreignAmount) {
+        const other = (current.otherCurrencyForeign ||= {})
+        other[entryCur] = roundMoney((other[entryCur] || 0) + sign * foreignAmount)
+      } else {
+        current.foreignInitBalance = roundMoney(current.foreignInitBalance + sign * foreignAmount)
+      }
     }
     if (support.qty) {
       const quantity = Number((entry as any).quantity || 0)
@@ -630,6 +659,7 @@ export function closeAccountingPeriod(params: ClosePeriodParams): ClosePeriodRes
   const rows = buildYearEndBalances(params.db, params.accountSetId, params.year)
   const standard = detectStaticReportStandard(params.db, params.accountSetId)
   validateProfitLossClosedFromRows(rows, getProfitLossAccountCodePrefixes(standard))
+  validateNoOtherCurrencyBalances(rows)
 
   let carriedCount = 0
   let preservedManualOpeningCount = 0
@@ -789,6 +819,7 @@ export function closeAllAccountingPeriods(params: ClosePeriodParams): CloseAllPe
       // FIX-004 / P0-8：年结前强制校验损益类科目余额为 0（事务内抛错会回滚整个全年结账）
       const standard = detectStaticReportStandard(params.db, params.accountSetId)
       validateProfitLossClosedFromRows(rows, getProfitLossAccountCodePrefixes(standard))
+      validateNoOtherCurrencyBalances(rows)
       const writeResult = writeNextYearInitBalances({
         db: params.db,
         accountSetId: params.accountSetId,

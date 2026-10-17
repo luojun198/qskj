@@ -498,7 +498,7 @@ export function voucherPresetMeta(preset: VoucherPanelPreset) {
   }
   if (preset === 'blank') {
     return {
-      name: '套打底图模板',
+      name: '空白模板',
       paper_size: 'custom' as const,
       paper_width: VOUCHER_PAPER_WIDTH_MM,
       paper_height: VOUCHER_PAPER_HEIGHT_MM,
@@ -514,10 +514,31 @@ export function voucherPresetMeta(preset: VoucherPanelPreset) {
   }
 }
 
+/** 空白画布：只有纸张尺寸，没有预置字段。点左侧字段往上加。 */
+export function buildBlankPanel(
+  width = VOUCHER_PAPER_WIDTH_MM,
+  height = VOUCHER_PAPER_HEIGHT_MM
+): HiprintTemplate {
+  return {
+    panels: [
+      {
+        index: 0,
+        paperType: width === 210 && height === 297 ? 'A4' : 'other',
+        width,
+        height,
+        paperHeader: mmToPt(8),
+        paperFooter: mmToPt(Math.max(height - 8, 20)),
+        printElements: [],
+      },
+    ],
+  }
+}
+
 export function buildVoucherPanel(
   preset: VoucherPanelPreset = 'standard',
   auxCategories: AuxCategoryLike[] = []
 ): HiprintTemplate {
+  if (preset === 'blank') return buildBlankPanel()
   if (preset === 'a4') return buildVoucherPanelAt(210, 297, { tableTopMm: 36, signTopMm: 250, auxCategories })
   if (preset === 'foreign') return buildVoucherPanelAt(VOUCHER_PAPER_WIDTH_MM, VOUCHER_PAPER_HEIGHT_MM, { auxCategories, foreign: true })
   return buildVoucherPanelAt(VOUCHER_PAPER_WIDTH_MM, VOUCHER_PAPER_HEIGHT_MM, { auxCategories })

@@ -1443,6 +1443,8 @@ function openSingleAccountSetRestore(params: SingleAccountSetRestoreParams): {
     })
 
     remapVoucherSelfReferences(targetDb, targetAccountSetId, voucherMap)
+    // FIX-422：系统参数里存的 id（各模块默认凭证类型等）随新 id 映射，否则导入后仍指向源账套的旧 id
+    remapSystemParamIdValues(targetDb, targetAccountSetId, [voucherTypeMap, accountMap, auxCategoryMap, auxItemMap, transferTypeMap])
 
     const extra = yield* restoreExtraAccountSetTables({
       sourceDb,
@@ -1457,6 +1459,31 @@ function openSingleAccountSetRestore(params: SingleAccountSetRestoreParams): {
   }
 
   return { sourceDb, targetDb, stats, steps: steps() }
+}
+
+/**
+ * 恢复后把 system_params 中「整值等于某个旧 id」的参数改成新 id。
+ * 典型：asset:depr_voucher_type_id、cashier:default_voucher_type_id、scm:default_voucher_type_id。
+ * 只替换整值精确命中的，科目编码等非 id 参数不受影响。
+ */
+export function remapSystemParamIdValues(
+  db: Database.Database,
+  accountSetId: string,
+  maps: Array<Map<string, string>>,
+): number {
+  if (!tableExists(db, 'system_params')) return 0
+  const rows = db.prepare('SELECT id, param_value FROM system_params WHERE account_set_id = ?').all(accountSetId) as Array<{ id: string; param_value: string | null }>
+  const upd = db.prepare('UPDATE system_params SET param_value = ? WHERE id = ?')
+  let changed = 0
+  for (const r of rows) {
+    const v = (r.param_value || '').trim()
+    if (!v) continue
+    for (const m of maps) {
+      const next = m.get(v)
+      if (next && next !== v) { upd.run(next, r.id); changed++; break }
+    }
+  }
+  return changed
 }
 
 function assertRestoredSomething(stats: AccountSetRestoreStats) {

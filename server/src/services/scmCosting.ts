@@ -188,7 +188,8 @@ export function applyMovingAvgIn(
   db.prepare(`INSERT INTO scm_stock_move (id,account_set_id,move_date,doc_type,doc_no,line_seq,warehouse_code,item_code,direction,qty,unit_cost,amount,batch_no,balance_qty,balance_amount,balance_avg_cost)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     moveId, accountSetId, doc.date, doc.type, doc.no, doc.seq,
-    warehouse, itemCode, 'in', inQty, inCost, inAmt, null,
+    // SCM-9：流水带上批次号（原来恒为 null，按流水查批次 / 由批次反查单据都对不上）
+    warehouse, itemCode, 'in', inQty, inCost, inAmt, (doc.batchNo && String(doc.batchNo).trim()) || null,
     newQty, newAmt, avg
   )
   // FIFO/LIFO/指定成本：每笔入库形成一层；先把切换前的存量结存补成期初层，保证层合计 = 结存
@@ -293,7 +294,7 @@ export function applyMovingAvgOut(
   db.prepare(`INSERT INTO scm_stock_move (id,account_set_id,move_date,doc_type,doc_no,line_seq,warehouse_code,item_code,direction,qty,unit_cost,amount,batch_no,balance_qty,balance_amount,balance_avg_cost)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     moveId, accountSetId, doc.date, doc.type, doc.no, doc.seq,
-    warehouse, itemCode, 'out', outQty, unitCost, outAmt, null,
+    warehouse, itemCode, 'out', outQty, unitCost, outAmt, (doc.batchNo && String(doc.batchNo).trim()) || null,
     newQty, newAmt, avg
   )
   if (layerUses.length) {

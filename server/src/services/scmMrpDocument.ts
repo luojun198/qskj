@@ -512,7 +512,8 @@ export function calculateMrpDocument(db: Database.Database, aid: string, mrpId: 
       const transitQty = r6(inTransit.get(code) || 0)
       const mrpQty = r6(otherMrp.get(code) || 0)
       const safetyQty = includeSafetyStock ? r6(item.safety_stock || 0) : 0
-      const netQty = r6(Math.max(0, grossQty + safetyQty - effectiveStock - transitQty - mrpQty))
+      // SCM-7：其他占用超过库存的差额同样要吃掉在途 / 已计划量，不能在 effectiveStock 处截成 0 后丢掉
+      const netQty = r6(Math.max(0, grossQty + safetyQty + reserveQty - stockQty - transitQty - mrpQty))
       const suggestQty = r6(netQty > 0 ? Math.max(netQty, Number(item.min_order_qty) || 0) : 0)
       const sourceType = sourceTypeOf(code)
       const bom = sourceType === 'purchase' ? null : getBom(code)

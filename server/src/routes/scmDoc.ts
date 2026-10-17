@@ -199,7 +199,11 @@ router.use((req: AuthRequest, res, next) => {
     // 已审核未制证单据补填部门 / 业务员（改的是已审核单据）同样要审核权限
     if (/\/(audit|unaudit|aux-fields)$/.test(p)) needAction = 'scm:audit'
     else if (req.method === 'DELETE') needAction = 'scm:delete'
-  } else if (p.startsWith('/scm/boms') || p.startsWith('/scm/production-plans') || p.startsWith('/scm/work-centers') || p.startsWith('/scm/routings') || p.startsWith('/scm/work-reports') || p.startsWith('/scm/qc-docs') || p.startsWith('/scm/qc-standards') || p.startsWith('/scm/mrp') || p.startsWith('/scm/plan-changes')) {
+  } else if (p.startsWith('/scm/boms') || p.startsWith('/scm/production-plans') || p.startsWith('/scm/work-centers') || p.startsWith('/scm/routings') || p.startsWith('/scm/work-reports') || p.startsWith('/scm/qc-docs') || p.startsWith('/scm/qc-standards') || p.startsWith('/scm/mrp') || p.startsWith('/scm/plan-changes')
+    // SCM-5：制费/人工差异结转、自动排程、在制盘点会写凭证 / 成本调整单 / 排程，原来落到 else 直接放行
+    || p.startsWith('/scm/costing/overhead-variance') || p.startsWith('/scm/schedule') || p.startsWith('/scm/wip-counts')
+    // SCM-14：标准成本差异与菜单一致按生产 / 委外授权（scmBase 已对它跳过 scm:report）
+    || p.startsWith('/scm/report/cost-variance')) {
     needAny = ['scm:production', 'scm:outsource']  // BOM/工单/工作中心/工艺路线/报工/质检/MRP 为生产、委外共用
     if (/\/(audit|unaudit)$/.test(p)) needAction = 'scm:audit'
     else if (req.method === 'DELETE') needAction = 'scm:delete'
@@ -491,11 +495,14 @@ export function allocateAsProductCost(
     && products.every(p => p.product_group !== null && p.product_group !== undefined)
   const unitCostByGroup = new Map<any, number>()
   if (byGroup) {
-    for (const p of products) {
-      const q = Number(p.qty) || 0
+    // SCM-2：同一组号下可能有多行成品（直接调接口可绕过界面的自动递增组号）。
+    // 该组子件成本按组内成品总数摊，否则每行成品都按全组成本入库，子件出一次、成本进两次。
+    const groupQty = new Map<any, number>()
+    for (const p of products) groupQty.set(p.product_group, (groupQty.get(p.product_group) || 0) + (Number(p.qty) || 0))
+    for (const [group, q] of groupQty) {
       let cost = 0
-      for (const c of activeComps) if (c.product_group === p.product_group) cost += (Number(c.unitCost) || 0) * (Number(c.qty) || 0)
-      unitCostByGroup.set(p.product_group, q > 0 ? Math.round(cost / q * 10000) / 10000 : 0)
+      for (const c of activeComps) if (c.product_group === group) cost += (Number(c.unitCost) || 0) * (Number(c.qty) || 0)
+      unitCostByGroup.set(group, q > 0 ? Math.round(cost / q * 10000) / 10000 : 0)
     }
   }
   return { byGroup, unitCostByGroup }
@@ -4342,7 +4349,12 @@ export function getPlanCostSummary(db: ReturnType<typeof getDb>, aid: string, pl
     FROM scm_doc_line l JOIN scm_doc d ON d.id=l.doc_id WHERE d.account_set_id=? AND d.plan_id=? AND d.doc_type='CA' AND d.status='audited'`).get(aid, planId) as any
   const closeoutMat = round2(Number(closeout?.amt) || 0)
   const issuedCost = round2(issued.amt - returned.amt)
-  const finishedCost = round2(finished.amt + closeoutMat)
+  // SCM-4：完工入库单价已含人工 / 制费（审核时 inCostUnit 加了 lineLabor+lineOverhead），流水金额也含这两项。
+  // 「已结转料成本」须扣掉，否则成本明细里 finishedCost + 已吸收人工 / 制费 会把人工制费算两次。
+  const absorbedInFinished = db.prepare(`SELECT COALESCE(SUM(COALESCE(l.labor_cost,0) + COALESCE(l.overhead_cost,0)),0) amt
+    FROM scm_doc_line l JOIN scm_doc d ON d.id=l.doc_id
+    WHERE d.account_set_id=? AND d.plan_id=? AND d.doc_type IN ('PF','WI','PS') AND d.status='audited'`).get(aid, planId) as any
+  const finishedCost = round2(finished.amt - (Number(absorbedInFinished?.amt) || 0) + closeoutMat)
   const issueUnitCost = getMaterialIssueUnitCost(db, aid, planId)
   // 各成品：已完工料消耗 = 已完工数 × 每件料成本（BOM 上卷）
   const products = db.prepare('SELECT id, item_code, plan_qty, finished_qty, COALESCE(scrap_qty,0) AS scrap_qty, labor_absorbed, overhead_absorbed FROM scm_production_plan_product WHERE plan_id=? AND account_set_id=? ORDER BY seq').all(planId, aid) as any[]
@@ -4643,6 +4655,9 @@ router.post('/scm/production-plans/:id/unrelease', operationLog('工单反审核
   }
   const docCnt = Number((db.prepare('SELECT COUNT(*) c FROM scm_doc WHERE account_set_id=? AND plan_id=?').get(aid, req.params.id) as any)?.c) || 0
   if (docCnt > 0) return res.status(400).json({ code: 400, message: '该工单已有下游单据（领料/完工等），请先删除下游单据再反审核' })
+  // SCM-11：已审核报工挂着人工 / 制费，回到草稿后还能改计划数、删成品，须先反审核报工
+  const reportCnt = Number((db.prepare("SELECT COUNT(*) c FROM scm_work_report WHERE account_set_id=? AND plan_id=? AND status='audited'").get(aid, req.params.id) as any)?.c) || 0
+  if (reportCnt > 0) return res.status(400).json({ code: 400, message: `该工单已有 ${reportCnt} 张已审核报工，请先反审核报工再反审核工单` })
   db.prepare("UPDATE scm_production_plan SET status='draft' WHERE id=? AND account_set_id=?").run(req.params.id, aid)
   res.json({ code: 0, data: { ok: true } })
 })
@@ -5677,13 +5692,16 @@ export function buildScmVoucherEntries(
       if (dir === 'out') {
         addEntry(PROD, 'debit', v, sumr); addEntry(invCode, 'credit', v, sumr)
       } else {
-        const fee = Math.round((Number(l.process_fee) || 0) * l.qty * 100) / 100
-        const feeTax = Math.round((Number(l.tax_amount) || 0) * 100) / 100
+        // SCM-1：加工费单价 / 税额是原币，库存成本审核时已按汇率折本位币；凭证同样折本位币，并带原币金额
+        const feeFc = Math.round((Number(l.process_fee) || 0) * l.qty * 100) / 100
+        const feeTaxFc = Math.round((Number(l.tax_amount) || 0) * 100) / 100
+        const fee = Math.min(v, toBase(feeFc, fxRate))
+        const feeTax = toBase(feeTaxFc, fxRate)
         const material = Math.round((v - fee) * 100) / 100
         addEntry(invCode, 'debit', v, sumr)
         addEntry(PROD, 'credit', material, sumr)
-        if (feeTax > 0) addEntry(TAX_IN, 'debit', feeTax, sumr)
-        if (fee > 0) addEntry(AP, 'credit', fee + feeTax, sumr)
+        if (feeTax > 0) addEntry(TAX_IN, 'debit', feeTax, sumr, feeTaxFc)
+        if (fee + feeTax > 0) addEntry(AP, 'credit', Math.round((fee + feeTax) * 100) / 100, sumr, Math.round((feeFc + feeTaxFc) * 100) / 100)
       }
     } else {
       // 其他出入库(inventory)：借/贷 存货 与 待处理科目对开；调拨/盘点 none 不生成

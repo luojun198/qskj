@@ -51,13 +51,17 @@ const SCM_PERMISSION_RULES: Array<{ re: RegExp; perm: string }> = [
   { re: /^\/scm\/stock/,       perm: 'scm:stock' },
   { re: /^\/scm\/batch-stock/, perm: 'scm:stock' },   // 批次库存查询
   { re: /^\/scm\/serials/,     perm: 'scm:stock' },   // 序列号查询
+  // SCM-14：标准成本差异挂在 /scm/report 下，但菜单按生产 / 委外授权；这里放行，由 scmDoc 守卫按生产 / 委外校验
+  { re: /^\/scm\/report\/cost-variance/, perm: '' },
   { re: /^\/scm\/report/,      perm: 'scm:report' },  // 供应链报表
+  // SCM-5：全月平均成本计算 / 成本期间（菜单在报表下）；制费差异结转由 scmDoc 守卫按生产 / 委外校验
+  { re: /^\/scm\/costing\/(month-avg|periods)/, perm: 'scm:report' },
 ]
 router.use((req: AuthRequest, res, next) => {
   if (!req.path.startsWith('/scm/')) return next()
   if (req.permissions?.includes('*')) return next()
   const rule = SCM_PERMISSION_RULES.find(r => r.re.test(req.path))
-  if (rule && !req.permissions?.includes(rule.perm)) {
+  if (rule && rule.perm && !req.permissions?.includes(rule.perm)) {
     return res.status(403).json({ code: 403, message: '无此操作权限' })
   }
   next()

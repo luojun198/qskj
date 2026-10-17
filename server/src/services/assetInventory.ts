@@ -237,6 +237,20 @@ export function statusQtyMismatch(status: string, bookQty: number, actualQty: nu
  * 盘亏 / 损毁的核销比例：按缺失数量占账面数量的比例（与盘盈按数量差比例对称）。
  * 损毁且实盘数量未减少视为整卡损毁；账面数量非正数按整卡处理。
  */
+/**
+ * ASSET-1：盘亏部分对应的减值准备。盘点明细没有单独存减值，账面减值 = 原值 − 累计折旧 − 净值
+ * （卡片净值不含减值，见 assetCard），再按盘亏比例取份额。
+ */
+export function deficitImpairmentPart(item: {
+  book_original_value?: any; book_accum_depr?: any; book_net_value?: any; book_qty?: any; actual_qty?: any; actual_status?: string
+}): number {
+  const impairment = Math.round(
+    (Number(item.book_original_value || 0) - Number(item.book_accum_depr || 0) - Number(item.book_net_value || 0)) * 100
+  ) / 100
+  if (!(impairment > 0.005)) return 0
+  return Math.round(impairment * deficitRatio(item) * 100) / 100
+}
+
 export function deficitRatio(item: { book_qty?: any; actual_qty?: any; actual_status?: string }): number {
   const bookQty = Number(item.book_qty || 0)
   const actualQty = Number(item.actual_qty ?? 0)
@@ -606,7 +620,8 @@ function generateInventoryVoucher(params: {
   // 注意本函数在 markDeficitAssetsDisposed 之后调用，本次盘亏刚被置位的 scrap_date 恰好等于盘点日期，
   // 因此用 scrap_date IS NULL OR scrap_date = 盘点日期 区分"本次核销"与"此前已处置"。
   const deficitItems = db.prepare(`
-    SELECT i.*, fa.category_code, fa.dept_code, fa.user_name, fc.account_code as asset_account, fc.depr_account_code
+    SELECT i.*, fa.category_code, fa.dept_code, fa.user_name, fc.account_code as asset_account, fc.depr_account_code,
+           fc.impairment_account_code
     FROM fixed_asset_inventory_item i
     LEFT JOIN fixed_asset fa ON fa.account_set_id = i.account_set_id AND fa.asset_no = i.asset_no
     LEFT JOIN fixed_asset_category fc ON fc.account_set_id = fa.account_set_id AND fc.code = fa.category_code
@@ -633,6 +648,13 @@ function generateInventoryVoucher(params: {
   for (const item of deficitItems) {
     requiredCodes.push(item.asset_account || '1601')
     requiredCodes.push(item.depr_account_code || accumAccount || '1602')
+    // ASSET-1：已计提减值的卡片盘亏要结转减值准备（与处置对称），类别须配了减值准备科目
+    if (deficitImpairmentPart(item) > 0) {
+      if (!item.impairment_account_code) {
+        throw new Error(`资产「${item.asset_name}（${item.asset_no}）」已计提减值，但所属类别未配置「减值准备科目」，请先到「资产档案 → 资产类别」中设置`)
+      }
+      requiredCodes.push(item.impairment_account_code)
+    }
   }
   const accounts = resolveAccounts(db, accountSetId, requiredCodes, '盘点调整')
 
@@ -699,9 +721,12 @@ function generateInventoryVoucher(params: {
     const ratio = deficitRatio(item)
     const originalPart = Math.round(Number(item.book_original_value || 0) * ratio * 100) / 100
     const accumPart = Math.round(Number(item.book_accum_depr || 0) * ratio * 100) / 100
-    const netPart = Math.round((originalPart - accumPart) * 100) / 100
+    // ASSET-1：减值准备按同一比例结转；盘亏损失只记「原值 − 累折 − 减值」，已进减值损失的部分不再计一次
+    const impairPart = deficitImpairmentPart(item)
+    const netPart = Math.round((originalPart - accumPart - impairPart) * 100) / 100
     push(item, deficitAccCode, 'debit', netPart, label)
     push(item, deprAccCode, 'debit', accumPart, `${reason}冲销折旧：${item.asset_name}（${item.asset_no}）`)
+    if (impairPart > 0) push(item, item.impairment_account_code, 'debit', impairPart, `${reason}结转减值准备：${item.asset_name}（${item.asset_no}）`)
     push(item, item.asset_account || '1601', 'credit', originalPart, label)
   }
 

@@ -85,6 +85,8 @@ const emit = defineEmits<{
 const autocompleteRef = ref<any>(null)
 /** 一键搜索时强制使用的查询词，优先于 el-autocomplete 传入的 queryString */
 const forcedQuery = ref<string | null>(null)
+/** 搜索按钮只打开候选列表，不能把关键字当成用户已经选定的科目 */
+const suppressAutoPick = ref(false)
 
 const baseDataStore = useBaseDataStore()
 const accounts = computed(() => baseDataStore.accounts)
@@ -255,6 +257,7 @@ function queryAccountSuggestions(
 
 function onInputChange(val: string | number) {
   inputText.value = String(val ?? '')
+  if (suppressAutoPick.value) return
   const trimmed = inputText.value.trim()
 
   if (!trimmed) {
@@ -326,18 +329,21 @@ function applySelected(acc: any) {
  */
 function triggerKeywordSearch() {
   if (!props.searchKeyword) return
+  suppressAutoPick.value = true
   forcedQuery.value = props.searchKeyword
   inputText.value = props.searchKeyword
-  
-  // 手动触发搜索
+
+  // 手动触发搜索。关键字可能恰好等于某个末级名称（如「折旧」），
+  // 这里不能走「名称唯一就自动选中」，否则累计折旧会被改成管理费用下的折旧。
   if (autocompleteRef.value) {
-    // 强制触发 el-autocomplete 的建议查询
     nextTick(() => {
       autocompleteRef.value.handleInput(props.searchKeyword)
-      // 聚焦以显示下拉列表
       const inputEl = autocompleteRef.value?.$el?.querySelector('input') as HTMLInputElement | null
       inputEl?.focus()
+      suppressAutoPick.value = false
     })
+  } else {
+    suppressAutoPick.value = false
   }
 }
 </script>

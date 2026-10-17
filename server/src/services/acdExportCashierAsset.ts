@@ -90,6 +90,26 @@ function buildRowFromRaw(
 
 /** null/undefined → 空字符串，数字保留原始精度 */
 const s = (v: any) => (v == null ? '' : String(v))
+
+/**
+ * CASH-2：出纳日记账 / 期初 / 对账单里的 account_code 是出纳账户编码（可独立于科目，如 ZD001），
+ * 润衡 ACD 的 kmbm 是科目编码。有关联科目的按 gl_account_code 导出，未关联的保持原编码。
+ */
+function cashierKmbmResolver(db: Database, accountSetId: string): (code: any) => string {
+  const map = new Map<string, string>()
+  try {
+    const cols = new Set((db.prepare('PRAGMA table_info(cashier_account)').all() as Array<{ name: string }>).map(c => c.name))
+    if (cols.has('gl_account_code')) {
+      for (const r of db.prepare('SELECT code, gl_account_code FROM cashier_account WHERE account_set_id=?').all(accountSetId) as any[]) {
+        const gl = String(r.gl_account_code || '').trim()
+        if (gl) map.set(String(r.code), gl)
+      }
+    }
+  } catch {
+    /* 老库没有出纳账户表：按原编码导出 */
+  }
+  return code => map.get(s(code)) || s(code)
+}
 /** 日期 YYYY-MM-DD → YYYY.MM.DD（润衡格式） */
 const d = (v: any) => (v ? String(v).replace(/-/g, '.') : '')
 
@@ -157,9 +177,10 @@ export async function exportCnMx(db: Database, accountSetId: string): Promise<Bu
     return /^\d+$/.test(s) ? s : ''
   }
   const out = new GbkChunkWriter()
+  const kmbmOf = cashierKmbmResolver(db, accountSetId)
   // FIX-332：列覆盖函数只依赖行参数，提到循环外只建一次（原先每行新建 20 多个闭包，30 万行约 2s）
   const overrides: Record<string, (r: Record<string, any>) => string> = {
-    kmbm: r => s(r.account_code),
+    kmbm: r => kmbmOf(r.account_code),
     bz:   r => s(r.currency) || 'RMB',
     rq:   r => d(r.biz_date),
     xh:   r => s(r.seq),
@@ -187,7 +208,8 @@ export async function exportCnMx(db: Database, accountSetId: string): Promise<Bu
 
 export function exportCnNc(db: Database, accountSetId: string): Buffer {
   const rows = db.prepare('SELECT * FROM cashier_init_balance WHERE account_set_id=? ORDER BY account_code,currency').all(accountSetId) as any[]
-  const bufs = rows.map(r => rowToGbkLine([s(r.account_code), s(r.currency) || 'RMB', s(r.balance)]))
+  const kmbmOf = cashierKmbmResolver(db, accountSetId)
+  const bufs = rows.map(r => rowToGbkLine([kmbmOf(r.account_code), s(r.currency) || 'RMB', s(r.balance)]))
   return Buffer.concat(bufs)
 }
 
@@ -201,10 +223,11 @@ export async function exportYhdzd(db: Database, accountSetId: string): Promise<B
   const rows = iterateOrderedRows(db, 'bank_statement', accountSetId, 'biz_date,id')
   let xh = 1
   const out = new GbkChunkWriter()
+  const kmbmOf = cashierKmbmResolver(db, accountSetId)
   const overrides: Record<string, (r: Record<string, any>) => string> = {
     dzd_xh: () => String(xh++),
     rq:     r => d(r.biz_date),
-    kmbm:   r => s(r.account_code),
+    kmbm:   r => kmbmOf(r.account_code),
     jf:     r => s(r.debit),
     df:     r => s(r.credit),
     jslb:   r => s(r.settle_type),

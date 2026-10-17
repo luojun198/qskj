@@ -2,24 +2,55 @@
   <div class="page page-asset-report">
     <!-- 第五份反馈：资产报表 / 折旧查询表要能另存；按当前页签导出 -->
     <div class="report-saveas">
-      <SaveAsButton :title="ASSET_REPORT_TAB_TITLES[activeTab] || '资产报表'" />
+      <SaveAsButton :title="saveAsTitle" />
     </div>
     <el-tabs v-model="activeTab" class="report-tabs">
       <!-- 折旧汇总表 -->
       <el-tab-pane label="折旧汇总表" name="depr-summary">
         <div class="filter-bar">
-          <el-date-picker v-model="deprSummaryPeriod" type="month" value-format="YYYY-MM" placeholder="选择期间" style="width:140px" @change="loadDeprSummary" />
-          <el-radio-group v-model="deprSummaryGroupBy" @change="loadDeprSummary">
+          <el-radio-group v-model="deprSummaryGroupBy" @change="onDeprSummaryModeChange">
+            <el-radio-button value="query">明细查询</el-radio-button>
             <el-radio-button value="category">按类别</el-radio-button>
             <el-radio-button value="dept">按部门</el-radio-button>
             <el-radio-button value="asset">按资产</el-radio-button>
           </el-radio-group>
-          <span class="filter-hint" v-if="deprSummaryRows.length || deprAssetRows.length">
-            合计本月折旧：<b class="total-amt">¥{{ fmtAmt(deprSummaryTotal) }}</b>
+          <el-date-picker v-if="deprSummaryGroupBy !== 'query'" v-model="deprSummaryPeriod" type="month" value-format="YYYY-MM" placeholder="选择期间" style="width:140px" @change="loadDeprSummary" />
+          <el-select
+            v-if="deprSummaryGroupBy === 'asset' || deprSummaryGroupBy === 'category'"
+            v-model="deprSummaryCategory"
+            size="small"
+            style="width:140px"
+            :empty-values="[null, undefined]"
+          >
+            <el-option label="全部资产类别" value="" />
+            <el-option v-for="c in dictCategory" :key="c.code" :label="c.name" :value="c.code" />
+          </el-select>
+          <el-select
+            v-if="deprSummaryGroupBy === 'asset' || deprSummaryGroupBy === 'dept'"
+            v-model="deprSummaryDept"
+            size="small"
+            style="width:140px"
+            :empty-values="[null, undefined]"
+          >
+            <el-option label="全部使用部门" value="" />
+            <el-option v-for="d in dictDept" :key="d.code" :label="d.name" :value="d.code" />
+          </el-select>
+          <el-input
+            v-if="deprSummaryGroupBy !== 'query'"
+            v-model="deprSummaryKeyword"
+            size="small"
+            clearable
+            :placeholder="deprSummaryKwPlaceholder"
+            style="width:200px"
+          />
+          <FilterClearButton v-if="deprSummaryGroupBy !== 'query'" size="small" @clear="clearDeprSummaryFilters" />
+          <span class="filter-hint" v-if="deprSummaryGroupBy !== 'query' && (filteredDeprSummaryRows.length || filteredDeprAssetRows.length)">
+            合计本月折旧：<b class="total-amt">¥{{ fmtAmt(deprSummaryDisplayTotal) }}</b>
           </span>
         </div>
+        <DeprQueryPanel v-if="deprSummaryGroupBy === 'query'" compact />
         <!-- 按资产：每项资产一行（第六份反馈：按类别汇总看不到资产明细） -->
-        <el-table v-if="deprSummaryGroupBy === 'asset'" :data="deprAssetRows" size="small" border stripe max-height="520"
+        <el-table v-else-if="deprSummaryGroupBy === 'asset'" :data="filteredDeprAssetRows" size="small" border stripe max-height="520"
           show-summary :summary-method="deprAssetSummary">
           <el-table-column label="资产编号" prop="asset_no" width="110" />
           <el-table-column label="资产名称" prop="asset_name" min-width="160" show-overflow-tooltip />
@@ -42,7 +73,7 @@
           </el-table-column>
           <el-table-column label="费用科目" prop="expense_account" width="110" />
         </el-table>
-        <el-table v-else ref="t1Ref" :data="deprSummaryRows" size="small" border stripe max-height="420"
+        <el-table v-else ref="t1Ref" :data="filteredDeprSummaryRows" size="small" border stripe max-height="420"
           @row-click="showDeprSummaryDetail" highlight-current-row style="cursor:pointer" @header-dragend="t1Drag">
           <el-table-column :label="deprSummaryGroupBy === 'category' ? '类别编码' : '部门编码'" prop="group_code" :width="t1Cw('group_code', 100)" />
           <el-table-column :label="deprSummaryGroupBy === 'category' ? '类别名称' : '部门名称'" prop="group_name" min-width="140" :width="t1Widths.group_name" />
@@ -60,7 +91,7 @@
             <template #default="{ row }">{{ fmtAmt(row.total_net_value) }}</template>
           </el-table-column>
         </el-table>
-        <el-empty v-if="!(deprSummaryGroupBy === 'asset' ? deprAssetRows.length : deprSummaryRows.length) && deprSummaryLoaded" description="所选期间无折旧数据" />
+        <el-empty v-if="deprSummaryGroupBy !== 'query' && !(deprSummaryGroupBy === 'asset' ? filteredDeprAssetRows.length : filteredDeprSummaryRows.length) && deprSummaryLoaded" :description="deprSummaryEmptyHint" />
 
         <!-- 下钻明细弹窗 -->
         <el-dialog v-model="deprDetailVisible" :title="deprDetailTitle" width="900px" draggable>
@@ -349,8 +380,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
+import DeprQueryPanel from './DeprQueryPanel.vue'
 import {
   fixedAssetApi,
   type DeprSummaryRow,
@@ -362,6 +394,7 @@ import {
   type ChangeDetailRow,
   type ChangeRecordRow,
   type ForecastRow,
+  type AssetDicts,
   DEPR_METHODS,
 } from '@/api/fixedAsset'
 import { useListColumnWidth } from '@/composables/useColumnWidthMemory'
@@ -396,16 +429,82 @@ const ASSET_REPORT_TAB_TITLES: Record<string, string> = {
   'depr-forecast': '折旧预测',
 }
 const dictStatus = ref<{ code: string; name: string }[]>([])
+const dictCategory = ref<AssetDicts['category']>([])
+const dictDept = ref<AssetDicts['dept']>([])
+const saveAsTitle = computed(() => {
+  if (activeTab.value === 'depr-summary' && deprSummaryGroupBy.value === 'query') return '折旧明细查询'
+  return ASSET_REPORT_TAB_TITLES[activeTab.value] || '资产报表'
+})
 
 const fmtAmt = (v: number) =>
   v == null || v === 0 ? '0.00' : v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
 // ── 折旧汇总表 ──────────────────────────────────────────
 const deprSummaryPeriod = ref(thisMonth)
-const deprSummaryGroupBy = ref('category')
+const deprSummaryGroupBy = ref('query')
 const deprSummaryRows = ref<DeprSummaryRow[]>([])
-const deprSummaryTotal = ref(0)
 const deprSummaryLoaded = ref(false)
+const deprSummaryKeyword = ref('')
+const deprSummaryCategory = ref('')
+const deprSummaryDept = ref('')
+const { clearFilters: clearDeprSummaryFilters } = useFilterClear([
+  deprSummaryKeyword,
+  deprSummaryCategory,
+  deprSummaryDept,
+])
+
+const deprSummaryKwPlaceholder = computed(() => {
+  if (deprSummaryGroupBy.value === 'category') return '类别编码 / 名称'
+  if (deprSummaryGroupBy.value === 'dept') return '部门编码 / 名称'
+  return '编号 / 名称'
+})
+
+function matchKw(text: unknown, kw: string) {
+  if (!kw) return true
+  return String(text ?? '').toLowerCase().includes(kw)
+}
+
+function dictName(list: { code: string; name: string }[], code: string) {
+  return list.find(x => x.code === code)?.name || ''
+}
+
+const filteredDeprSummaryRows = computed(() => {
+  const kw = deprSummaryKeyword.value.trim().toLowerCase()
+  const cat = deprSummaryCategory.value
+  const dept = deprSummaryDept.value
+  return deprSummaryRows.value.filter(r => {
+    if (deprSummaryGroupBy.value === 'category' && cat && r.group_code !== cat) return false
+    if (deprSummaryGroupBy.value === 'dept' && dept && r.group_code !== dept) return false
+    return matchKw(r.group_code, kw) || matchKw(r.group_name, kw)
+  })
+})
+
+const filteredDeprAssetRows = computed(() => {
+  const kw = deprSummaryKeyword.value.trim().toLowerCase()
+  const catName = dictName(dictCategory.value, deprSummaryCategory.value)
+  const deptName = dictName(dictDept.value, deprSummaryDept.value)
+  return deprAssetRows.value.filter(r => {
+    if (catName && r.category_name !== catName) return false
+    if (deptName && r.dept_name !== deptName) return false
+    return (
+      matchKw(r.asset_no, kw) ||
+      matchKw(r.asset_name, kw) ||
+      matchKw(r.category_name, kw) ||
+      matchKw(r.dept_name, kw)
+    )
+  })
+})
+
+const deprSummaryDisplayTotal = computed(() => {
+  const rows = deprSummaryGroupBy.value === 'asset' ? filteredDeprAssetRows.value : filteredDeprSummaryRows.value
+  const sum = rows.reduce((s: number, r: any) => s + (Number(r.month_depr) || 0), 0)
+  return Math.round(sum * 100) / 100
+})
+
+const deprSummaryEmptyHint = computed(() => {
+  const rawLen = deprSummaryGroupBy.value === 'asset' ? deprAssetRows.value.length : deprSummaryRows.value.length
+  return rawLen ? '无符合筛选条件的数据' : '所选期间无折旧数据'
+})
 
 const deprDetailVisible = ref(false)
 const deprDetailTitle = ref('')
@@ -413,22 +512,27 @@ const deprDetailRows = ref<any[]>([])
 
 const deprAssetRows = ref<any[]>([])
 function deprAssetSummary({ columns }: { columns: any[] }) {
-  const sum = (k: string) => deprAssetRows.value.reduce((s, r) => s + (Number(r[k]) || 0), 0)
+  const rows = filteredDeprAssetRows.value
+  const sum = (k: string) => rows.reduce((s, r) => s + (Number(r[k]) || 0), 0)
   return columns.map((c, i) => {
     if (i === 0) return '合计'
-    if (i === 1) return `${deprAssetRows.value.length} 项`
+    if (i === 1) return `${rows.length} 项`
     return ['original_value', 'month_depr', 'accum_depr', 'net_value'].includes(c.property) ? fmtAmt(sum(c.property)) : ''
   })
 }
 
+function onDeprSummaryModeChange() {
+  if (deprSummaryGroupBy.value !== 'query') loadDeprSummary()
+}
+
 async function loadDeprSummary() {
+  if (deprSummaryGroupBy.value === 'query') return
   if (!deprSummaryPeriod.value) return
   const [y, m] = deprSummaryPeriod.value.split('-').map(Number)
   if (deprSummaryGroupBy.value === 'asset') {
     const r = await fixedAssetApi.getDeprSummaryDetail({ year: y, month: m, group_by: 'asset' })
     if (r.code === 0) {
       deprAssetRows.value = r.data
-      deprSummaryTotal.value = Math.round(r.data.reduce((s: number, x: any) => s + (Number(x.month_depr) || 0), 0) * 100) / 100
       deprSummaryLoaded.value = true
     }
     return
@@ -436,7 +540,6 @@ async function loadDeprSummary() {
   const res = await fixedAssetApi.getDeprSummary({ year: y, month: m, group_by: deprSummaryGroupBy.value })
   if (res.code === 0) {
     deprSummaryRows.value = res.data.rows
-    deprSummaryTotal.value = res.data.totalMonthDepr
     deprSummaryLoaded.value = true
   }
 }
@@ -647,9 +750,13 @@ function forecastSummaryMethod({ columns, data }: any) {
 onMounted(async () => {
   // 获取资产状态字典（供筛选用）
   const dictRes = await fixedAssetApi.getDicts()
-  if (dictRes.code === 0) dictStatus.value = dictRes.data.status
+  if (dictRes.code === 0) {
+    dictStatus.value = dictRes.data.status
+    dictCategory.value = dictRes.data.category || []
+    dictDept.value = dictRes.data.dept || []
+  }
 
-  loadDeprSummary()
+  if (deprSummaryGroupBy.value !== 'query') loadDeprSummary()
   loadDeprAllocation()
   loadCategorySummary()
   loadDeptSummary()

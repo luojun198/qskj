@@ -61,6 +61,8 @@ function seedVoucher(
     amount: number
     foreignAmount?: number
     status?: 'draft' | 'audited' | 'posted'
+    /** 分录改选的币种（缺省取科目币种） */
+    currencyCode?: string
   }
 ) {
   const vid = `v-${++seq}`
@@ -87,7 +89,7 @@ function seedVoucher(
     acc.name,
     params.direction,
     params.amount,
-    acc.currency_code,
+    params.currencyCode ?? acc.currency_code,
     params.foreignAmount ?? 0
   )
   return vid
@@ -110,6 +112,23 @@ describe('外币余额表 buildForeignBalanceQuery', () => {
     seq = 0
   })
   afterEach(() => db.close())
+
+  it('GL-1：同一科目改选其他币种的分录单独成行，期初只在缺省币种行；按币种筛选不再整科目丢弃', () => {
+    seedInit(db, USD_ACC, 100, 700)
+    seedVoucher(db, { accountId: USD_ACC, date: '2026-03-05', direction: 'debit', amount: 70, foreignAmount: 10 })
+    seedVoucher(db, { accountId: USD_ACC, date: '2026-03-06', direction: 'debit', amount: 80, foreignAmount: 10, currencyCode: 'EUR' })
+
+    const rows = run(db).filter(r => r.account_id === USD_ACC)
+    const usd = rows.find(r => r.currency_code === 'USD')
+    const eur = rows.find(r => r.currency_code === 'EUR')
+    expect(rows).toHaveLength(2)
+    expect(usd).toMatchObject({ foreign_init_balance: 100, init_balance: 700, foreign_current_debit: 10, foreign_end_balance: 110, end_balance: 770 })
+    expect(eur).toMatchObject({ foreign_init_balance: 0, init_balance: 0, foreign_current_debit: 10, foreign_end_balance: 10, end_balance: 80 })
+
+    const onlyEur = run(db, { currencyCode: 'EUR' })
+    expect(onlyEur).toHaveLength(1)
+    expect(onlyEur[0]).toMatchObject({ account_id: USD_ACC, currency_code: 'EUR', foreign_end_balance: 10 })
+  })
 
   it('只返回勾了外币核算的科目，本位币科目不进表', () => {
     seedInit(db, USD_ACC, 100, 700)

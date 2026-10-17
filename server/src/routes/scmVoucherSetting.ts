@@ -260,18 +260,31 @@ router.put('/scm/voucher-setting', operationLog('保存进销存凭证设置', '
   }
   const find = db.prepare('SELECT id FROM system_params WHERE account_set_id=? AND param_key=?')
   const upsert = db.prepare('INSERT OR REPLACE INTO system_params (id, account_set_id, param_key, param_value) VALUES (?, ?, ?, ?)')
+  let itemsDone = 0, partnersDone = 0, lockedItems = 0, lockedPartners = 0
   db.transaction(() => {
     for (const [key, val] of toSave) {
       const ex = find.get(aid, key) as { id?: string } | undefined
       upsert.run(ex?.id || uuidv4(), aid, key, val)
     }
-    const updItem = db.prepare("UPDATE scm_item SET inv_account=?, updated_at=datetime('now') WHERE account_set_id=? AND code=?")
-    for (const [code, acc] of itemUpdates) updItem.run(acc, aid, code)
+    // SCM-6：已审核档案锁定（与编辑页、Excel 导入一致），一键预设回写科目时跳过，须先反审核
+    const updItem = db.prepare("UPDATE scm_item SET inv_account=?, updated_at=datetime('now') WHERE account_set_id=? AND code=? AND COALESCE(audit_status,'')<>'audited'")
+    for (const [code, acc] of itemUpdates) {
+      if (updItem.run(acc, aid, code).changes > 0) itemsDone++
+      else lockedItems++
+    }
     for (const [code, field, acc] of partnerUpdates) {
-      db.prepare(`UPDATE scm_partner SET ${field}=?, updated_at=datetime('now') WHERE account_set_id=? AND code=?`).run(acc, aid, code)
+      const r = db.prepare(`UPDATE scm_partner SET ${field}=?, updated_at=datetime('now') WHERE account_set_id=? AND code=? AND COALESCE(audit_status,'')<>'audited'`).run(acc, aid, code)
+      if (r.changes > 0) partnersDone++
+      else lockedPartners++
     }
   })()
-  res.json({ code: 0, message: '保存成功', data: { items: itemUpdates.length, partners: partnerUpdates.length } })
+  const lockedHint = lockedItems + lockedPartners > 0
+    ? `；已审核档案未改：物料 ${lockedItems} 条、往来单位 ${lockedPartners} 条（须先反审核）` : ''
+  res.json({
+    code: 0,
+    message: `保存成功${lockedHint}`,
+    data: { items: itemsDone, partners: partnersDone, locked_items: lockedItems, locked_partners: lockedPartners },
+  })
 })
 
 /**

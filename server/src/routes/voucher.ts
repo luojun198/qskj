@@ -49,6 +49,7 @@ import {
 import { getVoucherUndeletableReason, deleteVoucherWithRefs } from '../services/voucherDelete.js'
 import { getVoucherImmutableReason } from '../services/voucherMutationGuard.js'
 import { syncCashierVoucherNos } from '../services/cashierQuery.js'
+import { cashierLinkedGlCodes } from '../services/cashierAccount.js'
 import fs from 'fs/promises'
 import path from 'path'
 import multer from 'multer'
@@ -99,6 +100,25 @@ const attachmentUpload = multer({
 })
 
 router.use(authMiddleware)
+
+// SEC-2：凭证读取接口按权限放行。整账套列表 / 批量打印只给凭证模块岗位；
+// 单张查看与打印还要服务账簿联查、出纳 / 固资 / 进销存「查看凭证」，有这些业务模块权限也可读。
+const VOUCHER_READ_PERMS = [
+  'voucher:query', 'voucher:entry', 'voucher:audit', 'voucher:post', 'voucher:unpost',
+  'voucher:print', 'voucher:export',
+  'cashier:voucher', // 出纳「生成凭证结果」页按凭证号回查列表
+]
+const SINGLE_VOUCHER_READ_PREFIXES = ['voucher:', 'ledger:', 'cashier:', 'asset:', 'scm:', 'report:']
+function requireVoucherListRead(req: AuthRequest, res: Response, next: () => void) {
+  const perms = req.permissions || []
+  if (perms.includes('*') || VOUCHER_READ_PERMS.some(p => perms.includes(p))) return next()
+  return res.status(403).json({ code: 403, message: '无凭证查询权限' })
+}
+function requireSingleVoucherRead(req: AuthRequest, res: Response, next: () => void) {
+  const perms = req.permissions || []
+  if (perms.includes('*') || perms.some(p => SINGLE_VOUCHER_READ_PREFIXES.some(pre => p.startsWith(pre)))) return next()
+  return res.status(403).json({ code: 403, message: '无凭证查询权限' })
+}
 
 /**
  * 修复被错误解码为 Latin-1 的文件名（busboy/multer 对 RFC 5987 中文文件名处理 bug）
@@ -1071,7 +1091,7 @@ router.post(
 
 // ===================== 凭证查询 =====================
 
-router.get('/vouchers', (req: AuthRequest, res) => {
+router.get('/vouchers', requireVoucherListRead, (req: AuthRequest, res) => {
   const db = getDb()
   const {
     page = 1,
@@ -1231,7 +1251,7 @@ router.get('/vouchers', (req: AuthRequest, res) => {
   res.json({ code: 0, data: list, total })
 })
 
-router.get('/vouchers/:id', (req: AuthRequest, res) => {
+router.get('/vouchers/:id', requireSingleVoucherRead, (req: AuthRequest, res) => {
   const { id } = req.params
   const db = getDb()
   // FIX-136：按 account_set_id 过滤，普通/管理员用户也不能凭 id 读他账套凭证
@@ -1295,6 +1315,14 @@ router.put(
         .prepare('SELECT id FROM accounts WHERE account_set_id=? AND (is_cash=1 OR is_bank=1)')
         .all(accountSetId) as Array<{ id: string }>
       const cashIds = new Set(cashRows.map(r => String(r.id)))
+      // CASH-3：出纳账户关联的科目（如「其他货币资金」下未打现金/银行标记的科目）同样是这张凭证的现金行，一并锁定
+      const linkedCodes = [...cashierLinkedGlCodes(db, accountSetId)]
+      if (linkedCodes.length) {
+        const linkedRows = db
+          .prepare(`SELECT id FROM accounts WHERE account_set_id=? AND code IN (${linkedCodes.map(() => '?').join(',')})`)
+          .all(accountSetId, ...linkedCodes) as Array<{ id: string }>
+        for (const r of linkedRows) cashIds.add(String(r.id))
+      }
       const origEntries = db
         .prepare('SELECT account_id, direction, amount FROM voucher_entries WHERE voucher_id=?')
         .all(id) as Array<{ account_id: string; direction: string; amount: number }>
@@ -2099,7 +2127,7 @@ function withAccountPath(entries: any[], accountPath: ReturnType<typeof buildAcc
 
 // 获取单张凭证打印数据
 // FIX-020 / P2-35：router.use(authMiddleware) 已在文件顶部注册，移除路由级重复挂载
-router.get('/print-data/:id', (req: AuthRequest, res) => {
+router.get('/print-data/:id', requireSingleVoucherRead, (req: AuthRequest, res) => {
   const { id } = req.params
   const db = getDb()
 
@@ -2164,7 +2192,7 @@ router.get('/print-data/:id', (req: AuthRequest, res) => {
 })
 
 // 批量获取凭证打印数据
-router.post('/print-data/batch', (req: AuthRequest, res) => {
+router.post('/print-data/batch', requireVoucherListRead, (req: AuthRequest, res) => {
   const {
     voucher_ids,
     voucher_type,

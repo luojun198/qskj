@@ -173,9 +173,16 @@ function validateInput(db: Database.Database, accountSetId: string, b: CashierAc
   if (dup) return `账户编码 ${code} 已存在`
   const gl = String(b.gl_account_code || '').trim()
   if (gl) {
-    const acc = db.prepare('SELECT id, name FROM accounts WHERE account_set_id=? AND code=?').get(accountSetId, gl) as any
+    const acc = db.prepare('SELECT * FROM accounts WHERE account_set_id=? AND code=?').get(accountSetId, gl) as any
     if (!acc) return `关联科目 ${gl} 不存在`
     if (db.prepare('SELECT 1 FROM accounts WHERE parent_id=? LIMIT 1').get(acc.id)) return `关联科目 ${gl} ${acc.name} 不是末级科目，请选择末级科目`
+    // CASH-3：现金 / 银行账户只能关联打了现金或银行标记的科目（如误关联到应收，出纳凭证的现金行锁定会失效）；
+    // 「其他」类账户（其他货币资金等）不限
+    const kind = String(b.kind || '')
+    if ((kind === 'cash' || kind === 'bank') && 'is_cash' in acc && 'is_bank' in acc
+      && Number(acc.is_cash) !== 1 && Number(acc.is_bank) !== 1) {
+      return `关联科目 ${gl} ${acc.name} 不是现金或银行科目，请先在科目里勾选「现金科目 / 银行科目」，或把账户类型改为「其他」`
+    }
   }
   return null
 }

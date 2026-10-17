@@ -731,7 +731,13 @@ export function getEffectiveVoucherTypeId(params: {
   voucherTypeId?: string | null
 }) {
   if (params.voucherTypeId) {
-    return params.voucherTypeId
+    // FIX-422：模块参数里存的凭证类型（如 asset:depr_voucher_type_id）可能已不属于本账套
+    // ——账套备份导入后凭证类型换了新 id、参数仍是旧 id，直接用会触发外键失败。
+    // 不在本账套 / 公共凭证类型里时忽略，按下方自动规则取。
+    const hit = params.db
+      .prepare('SELECT id FROM voucher_types WHERE id=? AND (account_set_id=? OR account_set_id IS NULL)')
+      .get(params.voucherTypeId, params.accountSetId) as any
+    if (hit?.id) return params.voucherTypeId
   }
 
   const lastVoucher = params.db

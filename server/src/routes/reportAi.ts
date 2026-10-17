@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { v4 as uuidv4 } from 'uuid'
-import { authMiddleware, AuthRequest, operationLog } from '../middleware/index.js'
+import { authMiddleware, AuthRequest, operationLog, requireAnyPermission } from '../middleware/index.js'
 import { getDb } from '../db/index.js'
 import { isVoucherVisibleInAccountScope } from '../services/accountAuthorization.js'
 
@@ -97,7 +97,8 @@ router.get('/ai/config', (req: AuthRequest, res) => {
   })
 })
 
-router.put('/ai/config', operationLog('配置AI', '系统管理'), (req: AuthRequest, res) => {
+// SEC-2：写入 API 地址与密钥属于系统配置，只给系统管理岗位
+router.put('/ai/config', requireAnyPermission('system:init', 'system:account'), operationLog('配置AI', '系统管理'), (req: AuthRequest, res) => {
   const { provider, api_url, api_key, model, enabled, settings } = req.body
   const db = getDb()
   // 未提供新密钥（空或掩码回显 ****xxxx）时保留已存密钥，避免掩码把真实密钥覆盖掉

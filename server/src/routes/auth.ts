@@ -14,6 +14,7 @@ import {
   asyncHandler,
 } from '../middleware/index.js'
 import { operationLog } from '../middleware/index.js'
+import { accountSetCreateGuard } from '../middleware/accountSetCreateGuard.js'
 import { acdImportService } from '../services/acdImport.js'
 import {
   createAccountSetFromStandardTemplate,
@@ -113,6 +114,7 @@ router.get('/standard-account-set-templates', (req, res) => {
 // 从标准模版创建账套（公开，无需认证）
 router.post(
   '/account-sets/create-from-standard-template',
+  accountSetCreateGuard,
   asyncHandler(async (req, res) => {
     const db = getDb()
     try {
@@ -152,7 +154,7 @@ router.post(
 )
 
 // 新增账套（公开，无需认证，用于登录页面）
-router.post('/account-sets/create', (req, res) => {
+router.post('/account-sets/create', accountSetCreateGuard, (req, res) => {
   try {
     const {
       name,
@@ -729,7 +731,7 @@ router.post('/switch-account-set', authMiddleware, (req: AuthRequest, res) => {
 // ===================== 备份导入 =====================
 // 上传备份文件并导入为新账套（登录前使用，无需认证）
 // FIX-333：分块异步导入，导入大账套期间服务不被整段阻塞
-router.post('/backup-import', upload.single('file'), async (req: any, res) => {
+router.post('/backup-import', accountSetCreateGuard, upload.single('file'), async (req: any, res) => {
   const { name, fiscal_year, start_date } = req.body as any
 
   if (!req.file) {
@@ -789,7 +791,7 @@ router.post('/backup-import', upload.single('file'), async (req: any, res) => {
 // ===================== ACD 账套导入 =====================
 // 上传润衡ACD备份文件并导入为新账套（需要认证 + 账套管理权限）
 // ===================== ACD 导入（无需认证，用于登录页面导入）=====================
-router.post('/acd-import', upload.single('file'), async (req: AuthRequest, res) => {
+router.post('/acd-import', accountSetCreateGuard, upload.single('file'), async (req: AuthRequest, res) => {
   const { name } = req.body as any
 
   if (!req.file) {

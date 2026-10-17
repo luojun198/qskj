@@ -14,6 +14,9 @@ export const SCM_RESET_BUSINESS_TABLES = [
   'scm_order_change', 'scm_production_plan_change',
   // 对账单（2026-10-11 新增）
   'scm_statement_line', 'scm_statement', 'scm_invoice_arap_adjust',
+  // OPT-4：在制盘点、工单工序、排程记录、制费/人工差异结转、往来汇率重估（此前漏列，初始化后残留并与新数据混在一起）
+  'scm_plan_wip_count_line', 'scm_plan_wip_count', 'scm_production_plan_process', 'scm_schedule_run',
+  'scm_overhead_variance_run', 'scm_fx_revaluation',
 ] as const
 export const SCM_RESET_MASTER_TABLES = [
   'scm_routing_line', 'scm_routing', 'scm_work_center',

@@ -8,12 +8,14 @@ import { todayStr } from '../utils/localDate.js'
 import { Router } from 'express'
 import { deflate } from 'zlib'
 import { promisify } from 'util'
-import { authMiddleware, AuthRequest } from '../middleware/index.js'
+import { authMiddleware, AuthRequest, requireAnyPermission } from '../middleware/index.js'
 import { getDb } from '../db/index.js'
 import { exportCashierAssetTables } from '../services/acdExportCashierAsset.js'
 
 const router = Router()
 router.use(authMiddleware)
+// SEC-3：整账套出纳流水 + 固资卡片导出，按数据备份 / 导出岗位授权（不再是任意登录用户）
+router.use('/acd-export', requireAnyPermission('system:backup', 'system:export'))
 
 /** 预览：返回各表导出行数 */
 router.get('/acd-export/cashier-asset/preview', (req: AuthRequest, res) => {

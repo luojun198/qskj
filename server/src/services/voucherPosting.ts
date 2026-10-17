@@ -4,6 +4,7 @@ import { buildAuxItemId as buildAuxItemIdUtil } from '../utils/auxItemId.js'
 import { calcSignedBalance } from '../utils/accountBalance.js'
 import { checkPostingIntegrity } from './postingIntegrityCheck.js'
 import { validateInitBalanceBalancedForPosting } from './initBalanceTrial.js'
+import { bumpLedgerDataEpoch } from './ledgerDataEpoch.js'
 
 export interface VoucherEntryLike {
   account_id: string
@@ -87,8 +88,12 @@ export function validateVoucherCanPost(
   return null
 }
 
-export function getVoucherStatusAfterUnpost(requireAudit: boolean) {
-  return requireAudit ? 'audited' : 'draft'
+/**
+ * GL-5：反记账后的状态。开启「必须审核」时回到已审核——但「允许直接记账」从草稿直接记的凭证
+ * 从未审核过（审核人为空），回到已审核等于凭空多了一次审核，之后可跳过审核再次记账，故回草稿。
+ */
+export function getVoucherStatusAfterUnpost(requireAudit: boolean, wasAudited = true) {
+  return requireAudit && wasAudited ? 'audited' : 'draft'
 }
 
 /** @see utils/auxItemId.ts */
@@ -279,6 +284,7 @@ export function applyVoucherPosting(
   })
 
   transaction()
+  bumpLedgerDataEpoch()
 }
 
 export function applyVoucherUnpost(
@@ -362,8 +368,18 @@ export function applyVoucherUnpost(
     }
 
     cleanupZeroBalance.run(ctx.accountSetId, voucher.year, voucher.period)
-    unpostVoucher.run(getVoucherStatusAfterUnpost(ctx.requireAudit), voucher.id)
+    // 老库 / 精简测试库无审核人列时沿用原口径（视为审核过）
+    const voucherCols = new Set((db.prepare('PRAGMA table_info(vouchers)').all() as Array<{ name: string }>).map(c => c.name))
+    let wasAudited = true
+    if (voucherCols.has('auditor_id') && voucherCols.has('auditor_name')) {
+      const auditRow = db
+        .prepare('SELECT auditor_id, auditor_name FROM vouchers WHERE id = ?')
+        .get(voucher.id) as { auditor_id?: string | null; auditor_name?: string | null } | undefined
+      wasAudited = !!(auditRow?.auditor_id || String(auditRow?.auditor_name || '').trim())
+    }
+    unpostVoucher.run(getVoucherStatusAfterUnpost(ctx.requireAudit, wasAudited), voucher.id)
   })
 
   transaction()
+  bumpLedgerDataEpoch()
 }

@@ -24,6 +24,15 @@
         <el-table-column label="会计科目" min-width="200">
           <template #default="{ row }">{{ getAccountDisplay(row) }}</template>
         </el-table-column>
+        <!-- 外币分录：币别独立一列（原币 / 汇率），与凭证录入界面一致 -->
+        <el-table-column v-if="hasForeign" label="币别" width="150">
+          <template #default="{ row }">
+            <template v-if="Number(row.foreign_amount)">
+              <div>原币：{{ row.currency_code }} {{ formatMoney(Number(row.foreign_amount)) }}</div>
+              <div>汇率：{{ formatRate(row.exchange_rate) }}</div>
+            </template>
+          </template>
+        </el-table-column>
         <el-table-column label="借方金额" width="140" align="right">
           <template #default="{ row }">
             <span v-if="row.direction === 'debit'">{{ formatMoney(row.amount) }}</span>
@@ -111,6 +120,13 @@ async function fetchAuxCategories() {
 fetchAuxCategories()
 
 // 动态辅助列：从所有分录的 aux_data 中提取出现过的辅助类别
+const hasForeign = computed(() => (props.detail?.entries || []).some((e: any) => !!Number(e?.foreign_amount)))
+function formatRate(v: unknown): string {
+  const n = Number(v)
+  if (!Number.isFinite(n) || n === 0) return ''
+  return n.toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 6 })
+}
+
 const auxColumns = computed(() => {
   if (!props.detail?.entries) return []
   const colMap = new Map<string, string>()

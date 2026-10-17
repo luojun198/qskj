@@ -142,7 +142,7 @@ export function importMasterData(db: Database.Database, t: AcdTableSet, ctx: Imp
 
   // ── 物料 cpda ──
   const typeMap = buildItemTypeMap(db, aid, t.get('cpsx') as any)
-  const itemExists = db.prepare('SELECT id FROM scm_item WHERE account_set_id=? AND code=?')
+  const itemExists = db.prepare('SELECT id, audit_status FROM scm_item WHERE account_set_id=? AND code=?')
   const itemIns = db.prepare(`INSERT INTO scm_item
     (id, account_set_id, code, name, spec, barcode, short_code, unit, category_code, subcategory_code, item_type,
      purchase_price, sale_price, ref_cost, inv_account, sale_account, batch_flag, supplier_code, remark, enabled,
@@ -174,15 +174,19 @@ export function importMasterData(db: Database.Database, t: AcdTableSet, ctx: Imp
     if (!ex) {
       itemIns.run(uuidv4(), aid, code, ...vals, ctx.batchId)
       stats.items.inserted++
-    } else if (overwrite) {
+    } else if (overwrite && ex.audit_status !== 'audited') {
       itemUpd.run(...vals, ex.id)
       stats.items.updated++
-    } else { stats.items.skipped++; continue }
+    } else {
+      // SCM-6：已审核物料锁定，覆盖导入同样不改（与 Excel 导入一致，须先反审核）
+      if (overwrite) stats.items.locked = (stats.items.locked || 0) + 1
+      stats.items.skipped++; continue
+    }
     if (unitCode) { itemUnitDel.run(aid, code); itemUnitIns.run(uuidv4(), aid, code, unitCode) }
   }
 
   // ── 往来单位 khda ──
-  const pExists = db.prepare('SELECT id FROM scm_partner WHERE account_set_id=? AND code=?')
+  const pExists = db.prepare('SELECT id, audit_status FROM scm_partner WHERE account_set_id=? AND code=?')
   const pIns = db.prepare(`INSERT INTO scm_partner
     (id, account_set_id, code, name, short_name, partner_type, partner_attr, ar_account, ap_account, credit_limit, tax_rate,
      region_code, contact, phone, address, bank_name, bank_account, tax_no, salesman, remark, ship_address, ship_phone, ship_contact,
@@ -207,8 +211,11 @@ export function importMasterData(db: Database.Database, t: AcdTableSet, ctx: Imp
     ]
     const ex = pExists.get(aid, code) as any
     if (!ex) { pIns.run(uuidv4(), aid, code, ...vals, ctx.batchId); stats.partners.inserted++ }
-    else if (overwrite) { pUpd.run(...vals, ex.id); stats.partners.updated++ }
-    else stats.partners.skipped++
+    else if (overwrite && ex.audit_status !== 'audited') { pUpd.run(...vals, ex.id); stats.partners.updated++ }
+    else {
+      if (overwrite) stats.partners.locked = (stats.partners.locked || 0) + 1   // SCM-6：已审核往来单位锁定
+      stats.partners.skipped++
+    }
   }
   accountChecker.flush()
   return stats

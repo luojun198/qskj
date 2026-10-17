@@ -1166,10 +1166,21 @@ export function getVerifyDetail(db: Database.Database, accountSetId: string, ver
  *  - 到期日不可解析时退回单据日期，不再因 NaN 丢行。
  */
 export function getArApAging(db: Database.Database, accountSetId: string, asOf: string) {
-  const rows = db.prepare(`SELECT l.partner_code, p.name AS partner_name, p.partner_type, l.direction,
-      COALESCE(l.due_date, l.doc_date) AS due_date, l.doc_date, (l.amount - l.verified_amount) AS open_amt
+  // SCM-3：截止日之后才做的核销要加回来（按核销日期回放），否则历史账龄余额偏小。
+  // scm_ar_ap_verify.amount 记原币，按台账行汇率折回本位币，且不超过该行本位币金额。
+  const raw = db.prepare(`SELECT l.partner_code, p.name AS partner_name, p.partner_type, l.direction,
+      COALESCE(l.due_date, l.doc_date) AS due_date, l.doc_date, l.amount, l.verified_amount,
+      COALESCE(NULLIF(l.exchange_rate, 0), 1) AS rate,
+      (SELECT COALESCE(SUM(v.amount),0) FROM scm_ar_ap_verify v WHERE v.account_set_id=l.account_set_id AND v.in_log_id=l.id AND v.verify_date > ?)
+      + (SELECT COALESCE(SUM(v.amount),0) FROM scm_ar_ap_verify v WHERE v.account_set_id=l.account_set_id AND v.out_log_id=l.id AND v.verify_date > ?) AS later_fc
     FROM scm_ar_ap_log l LEFT JOIN scm_partner p ON p.account_set_id=l.account_set_id AND p.code=l.partner_code
-    WHERE l.account_set_id=? AND l.doc_date <= ? AND (l.amount - l.verified_amount) > 0.005`).all(accountSetId, asOf) as any[]
+    WHERE l.account_set_id=? AND l.doc_date <= ?`).all(asOf, asOf, accountSetId, asOf) as any[]
+  const rows = raw.map(r => {
+    const amount = Number(r.amount) || 0
+    const openNow = amount - (Number(r.verified_amount) || 0)
+    const open = Math.min(amount, openNow + (Number(r.later_fc) || 0) * (Number(r.rate) || 1))
+    return { ...r, open_amt: Math.round(open * 100) / 100 }
+  }).filter(r => r.open_amt > 0.005)
   const map = new Map<string, any>()
   const asOfMs = new Date(asOf + 'T00:00:00Z').getTime()
   for (const r of rows) {

@@ -48,7 +48,7 @@
       </div>
     </div>
     <p class="designer-hint">
-      点击左侧字段即可加入画布；套打底图只作对齐参考，打印时可按打印机是否已印表格决定是否保留底图。
+      点击左侧字段即可加入画布。空白模板没有预置字段，点左侧「凭证字号」「分录表」等即可往上加。套打底图只作对齐参考，打印时可按打印机是否已印表格决定是否保留底图。
     </p>
 
     <div class="designer-body" v-loading="initializing">
@@ -184,6 +184,7 @@ import {
 } from '@/utils/hiprintTextEdit'
 import { useBaseDataStore } from '@/stores/baseData'
 import {
+  buildBlankPanel,
   buildEntriesTable,
   buildSampleVoucherPrintData,
   buildVoucherPanel,
@@ -986,8 +987,8 @@ onMounted(async () => {
     }
     const existing = await loadExisting()
     let seed = existing
-    if (!seed && !props.templateId && (props.preset === 'scm' || form.template_type === 'scm_doc')) {
-      // 业务单据：从内置起始版面开始（241×140 三联单宽度）
+    if (!seed && !props.templateId && (props.preset === 'scm' || props.preset === 'scm-blank' || form.template_type === 'scm_doc')) {
+      // 业务单据：预设带起始版面；scm-blank 是空画布（241×140 三联单宽度）
       form.template_type = 'scm_doc'
       form.template_key = props.defaultKey || scmTemplateKey('*')
       form.paper_size = 'custom'
@@ -995,8 +996,14 @@ onMounted(async () => {
       form.paper_height = 140
       paperPreset.value = 'custom'
       const keyLabel = keyOptions.value.find(o => o.value === form.template_key)?.label || '业务单据'
-      if (!form.name) form.name = `${keyLabel.replace('所有业务单据通用', '业务单据')}模板`
-      seed = buildDefaultScmPanel(241, 140) as unknown as { panels: HiprintPanel[] }
+      if (!form.name) {
+        form.name = props.preset === 'scm-blank'
+          ? '空白业务单据模板'
+          : `${keyLabel.replace('所有业务单据通用', '业务单据')}模板`
+      }
+      seed = props.preset === 'scm-blank'
+        ? (buildBlankPanel(241, 140) as { panels: HiprintPanel[] })
+        : (buildDefaultScmPanel(241, 140) as unknown as { panels: HiprintPanel[] })
     }
     if (!seed && !props.templateId) {
       const preset = (['standard', 'blank', 'a4', 'foreign'].includes(String(props.preset))

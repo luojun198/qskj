@@ -6,6 +6,7 @@
  * 而一级科目有下级时也不能直接记账（FIX-336）。找不到就返回 null，由调用方留空并提示，绝不猜编码。
  */
 import type Database from 'better-sqlite3'
+import { detectCashFlowStandardKey } from './cashFlowAccountMap.js'
 
 type Db = Database.Database
 
@@ -168,6 +169,48 @@ export function createPostingAccountResolver(db: Db, accountSetId: string) {
   }
 }
 
+export type AssetChartStandard = 'enterprise' | 'small_business' | 'government' | 'generic'
+
+/** 账套科目更像哪套准则。参数未指定时按一级科目探测，避免把小企业编码当成企业准则科目。 */
+export function detectAssetChartStandard(
+  accounts: Array<{ code: string; name: string; parent_id?: string | null }>
+): AssetChartStandard {
+  const key = detectCashFlowStandardKey(accounts)
+  if (key === 'enterprise' || key === 'small_business' || key === 'government') return key
+  return 'generic'
+}
+
+/**
+ * 折旧费用根科目的候选编码，按当前准则排好序。
+ * 前面的优先：企业准则用 6602/6601/5101，小企业用 5602/5601/4101。
+ * 另一套编码只作「本套没有这个科目」时的退路，不能反过来盖住总账里正在用的科目。
+ */
+export function depreciationExpenseCodes(
+  standard: AssetChartStandard,
+  role: 'admin' | 'operating' | 'production'
+): string[] {
+  if (standard === 'small_business') {
+    if (role === 'admin') return ['5602', '6602']
+    if (role === 'operating') return ['5601', '6601']
+    return ['4101', '5101']
+  }
+  if (standard === 'government') {
+    if (role === 'admin') return ['5101', '6602']
+    if (role === 'operating') return ['5001', '6601']
+    return ['5101']
+  }
+  if (role === 'admin') return ['6602', '5602']
+  if (role === 'operating') return ['6601', '5601']
+  return ['5101', '4101']
+}
+
+/** 编码越靠前越优先；同组里「正好是这个编码」和「它的下级」同等，交给后面的层级再分 */
+function codeRank(code: string, codes?: string[]): number {
+  if (!codes?.length) return 0
+  const idx = codes.findIndex(c => code === c || (c.length >= 4 && code.startsWith(c)))
+  return idx === -1 ? codes.length + 1 : idx
+}
+
 /** 按名称定位根科目并下探到最底层末级；找不到返回 null */
 export function resolveAssetAccount(db: Db, accountSetId: string, spec: AssetAccountSpec): ResolvedAssetAccount | null {
   const tree = loadTree(db, accountSetId)
@@ -177,15 +220,15 @@ export function resolveAssetAccount(db: Db, accountSetId: string, spec: AssetAcc
     return n && spec.names.some(k => n.includes(k)) && !excludes.some(x => n.includes(x)) && tree.enabled(r)
   })
   if (!matches.length) return null
-  const rank = (r: Row) => [
-    spec.codes?.includes(r.code) ? 0 : 1,
-    spec.names.some(k => (r.name || '').trim() === k) ? 0 : 1,
-    tree.depth(r),
-  ]
+  const exact = (r: Row) => (spec.names.some(k => (r.name || '').trim() === k) ? 0 : 1)
   matches.sort((a, b) => {
-    const ra = rank(a); const rb = rank(b)
-    for (let i = 0; i < ra.length; i++) if (ra[i] !== rb[i]) return ra[i] - rb[i]
-    return a.code.localeCompare(b.code)
+    const byCode = codeRank(a.code, spec.codes) - codeRank(b.code, spec.codes)
+    if (byCode) return byCode
+    const byExact = exact(a) - exact(b)
+    if (byExact) return byExact
+    const byDepth = tree.depth(a) - tree.depth(b)
+    if (byDepth) return byDepth
+    return a.code.length - b.code.length || a.code.localeCompare(b.code)
   })
   const leaf = pickLeaf(tree, matches[0], spec.leafHints, spec.requireHint)
   return leaf ? { code: leaf.code, name: leaf.name } : null

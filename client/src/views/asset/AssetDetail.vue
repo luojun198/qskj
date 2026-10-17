@@ -123,7 +123,7 @@
           <el-table v-if="attachments.length" :data="attachments" size="small" border stripe>
             <el-table-column label="文件名" min-width="240" show-overflow-tooltip>
               <template #default="{ row }">
-                <el-link type="primary" :href="row.file_path" target="_blank">
+                <el-link type="primary" :href="withAttachmentToken(row.file_path)" target="_blank">
                   {{ row.original_name }}
                 </el-link>
               </template>
@@ -147,6 +147,7 @@
 </template>
 
 <script setup lang="ts">
+import { withAttachmentToken } from '@/utils/attachmentUrl'
 import { ref, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ArrowLeft, Upload } from '@element-plus/icons-vue'

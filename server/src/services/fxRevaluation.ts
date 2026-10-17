@@ -468,6 +468,10 @@ export function previewFxRevaluation(params: {
     ).map(r => r.id)
   )
 
+  // GL-1：外币余额表已按「科目 + 分录币种」拆行；同一科目出现多个币种时记下来，辅助核算拆分不分币种，需跳过
+  const currencyCountByAccount = new Map<string, number>()
+  for (const r of balanceRows) currencyCountByAccount.set(r.account_id, (currencyCountByAccount.get(r.account_id) || 0) + 1)
+
   const rows: FxRevaluationRow[] = []
   const entries: VoucherEntryInput[] = []
   let totalGain = 0
@@ -517,7 +521,11 @@ export function previewFxRevaluation(params: {
       .prepare(`SELECT is_aux, aux_types FROM accounts WHERE id = ? AND account_set_id = ?`)
       .get(r.account_id, accountSetId) as { is_aux?: number; aux_types?: string | null } | undefined
     const auxCats = accMeta?.is_aux ? loadAccountAuxCategories(db, accountSetId, accMeta.aux_types ?? null) : []
-    if (auxCats.length > 0 && !accountSkipReason) {
+    if (auxCats.length > 0 && !accountSkipReason && (currencyCountByAccount.get(r.account_id) || 0) > 1) {
+      parts = [
+        { ...parts[0], skipReason: '该科目启用了辅助核算且凭证使用了多个币种，暂不能按辅助项目分币种调汇，请手工调汇' },
+      ]
+    } else if (auxCats.length > 0 && !accountSkipReason) {
       const auxParts = loadAuxSplitParts({
         db,
         accountSetId,
@@ -612,6 +620,8 @@ export function previewFxRevaluation(params: {
         direction: entryDirection,
         amount,
         summary,
+        // GL-1：调汇分录记在被重估的那个币种上，下期外币余额表才能归回同一行
+        currency_code: currency,
         ...auxFields,
       } as VoucherEntryInput)
       // 对方科目方向相反；外币科目借方增加 = 汇兑收益（贷损益），借方减少 = 汇兑损失
@@ -732,6 +742,14 @@ export function runFxRevaluation(params: {
       itemMap,
     })
     payloads.forEach(p => insertEntry.run(...p))
+    // 调汇分录原币为 0，payload 会把币种一并清空；这里把币种补回，保证按币种拆行的余额表能对上
+    const setCurrency = db.prepare(
+      `UPDATE voucher_entries SET currency_code = ? WHERE id = ? AND (currency_code IS NULL OR currency_code = '')`
+    )
+    payloads.forEach((p, i) => {
+      const code = String(preview.entries[i]?.currency_code || '').trim().toUpperCase()
+      if (code) setCurrency.run(code, p[0])
+    })
     insertRun.run(runId, accountSetId, year, period, voucherId, params.userId ?? null)
 
     const voucher: VoucherLike = { id: voucherId, year, period, status: 'audited' }

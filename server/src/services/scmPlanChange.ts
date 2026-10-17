@@ -12,6 +12,7 @@
 import type Database from 'better-sqlite3'
 import { v4 as uuidv4 } from 'uuid'
 import { bomComponents } from './scmBom.js'
+import { getReportedQtyByProduct } from './scmWorkReport.js'
 
 const r6 = (n: number) => Math.round((Number(n) || 0) * 1e6) / 1e6
 const EPS = 1e-6
@@ -123,12 +124,28 @@ export function validateChange(db: Database.Database, aid: string, plan: any, be
   }
   const byId = new Map(before.products.filter(p => p.id).map(p => [p.id!, p]))
   const afterIds = new Set(after.products.map(p => p.id).filter(Boolean) as string[])
+  // SCM-12：已审核报工按工序累计，取各工序「合格 + 不良」的最大值作为该成品已报工数量
+  let reportedByProduct: ReturnType<typeof getReportedQtyByProduct> = new Map()
+  try {
+    reportedByProduct = getReportedQtyByProduct(db, aid, plan.id, { onlyAudited: true })
+  } catch {
+    /* 老库报工表缺 status / scrap_qty 列：不做此项校验 */
+  }
+  const reportedQtyOf = (productId: string) => {
+    const r = reportedByProduct.get(productId)
+    if (!r) return 0
+    let max = 0
+    for (const p of r.byProcess.values()) max = Math.max(max, (Number(p.qty) || 0) + (Number(p.scrap) || 0))
+    return r6(max)
+  }
   for (const a of after.products) {
     const b = a.id ? byId.get(a.id) : undefined
     if (!b) continue
     if (b.item_code !== a.item_code) errs.push(`成品行「${b.item_code}」不能改成其他物料（请删除后新增）`)
     const done = r6((b.finished_qty || 0) + (b.scrap_qty || 0))
     if (a.plan_qty + EPS < done) errs.push(`成品 ${a.item_code} 新计划数 ${a.plan_qty} 低于已完工+已报废 ${done}`)
+    const reportedQty = reportedQtyOf(String(b.id || ''))
+    if (a.plan_qty + EPS < reportedQty) errs.push(`成品 ${a.item_code} 新计划数 ${a.plan_qty} 低于已审核报工数量 ${reportedQty}`)
   }
   const reported = new Map<string, number>((db.prepare('SELECT product_id, COUNT(*) c FROM scm_work_report WHERE account_set_id=? AND plan_id=? GROUP BY product_id').all(aid, plan.id) as any[]).map(r => [String(r.product_id || ''), Number(r.c) || 0]))
   for (const b of before.products) {
