@@ -21,9 +21,9 @@ export interface Account {
   aux_types?: string | null
   is_cash?: number
   is_bank?: number
-  /** 外币核算：1 = 该科目按外币记账 */
+  /** 外币核算：1 = 该科目可按外币记账 */
   is_foreign?: number
-  /** 外币核算币种编码（is_foreign = 1 时必填） */
+  /** 缺省外币编码（可空；做凭证时默认带出，仍可改选账套内其他外币） */
   currency_code?: string | null
   /** 数量核算：1 = 该科目按数量金额式记账 */
   is_quantity?: number

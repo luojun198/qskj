@@ -28,7 +28,10 @@ export function readStateError(error: unknown): StateError | null {
   if (status === 404 && LEGACY_STATUS_PATTERN.test(message)) {
     return { kind: 'resource_missing', legacy: true }
   }
-  if ((status === 400 || status === 409) && LEGACY_STATUS_PATTERN.test(message)) {
+  // 「科目不存在 / 无法生成凭证」是校验失败，要原样告诉用户。
+  // 套进「数据状态已变化」后，一级科目后来加了明细、科目编码对不上这类原因会被盖掉。
+  const isAccountValidation = /科目|无法生成|辅助核算|借贷|明细科目|末级|凭证类型/.test(message)
+  if ((status === 400 || status === 409) && LEGACY_STATUS_PATTERN.test(message) && !isAccountValidation) {
     return { kind: 'state_changed', refresh: true, legacy: true }
   }
   return null

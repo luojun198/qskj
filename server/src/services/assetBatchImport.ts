@@ -13,6 +13,9 @@ import { v4 as uuidv4 } from 'uuid'
 export const ASSET_IMPORT_COLUMNS = [
   { key: 'asset_no', label: '资产编号', required: true },
   { key: 'asset_name', label: '资产名称', required: true },
+  // v169 第七份反馈：参照润衡卡片补充
+  { key: 'spec', label: '规格型号', required: false },
+  { key: 'ref_no', label: '参考编号', required: false },
   { key: 'category_code', label: '类别编码', required: false },
   { key: 'status_code', label: '状态编码', required: false },
   { key: 'dept_code', label: '部门编码', required: false },
@@ -31,6 +34,8 @@ export const ASSET_IMPORT_COLUMNS = [
   { key: 'user_name', label: '使用人', required: false },
   { key: 'keeper', label: '保管人', required: false },
   { key: 'install_place', label: '存放地点', required: false },
+  { key: 'manufacturer', label: '制造厂家', required: false },
+  { key: 'manufacture_date', label: '制造日期', required: false },
   { key: 'remark', label: '备注', required: false },
 ] as const
 
@@ -152,6 +157,7 @@ export function validateImportRow(params: {
   for (const [field, label] of [
     ['acquire_date', '取得日期'],
     ['start_depr_date', '开始折旧日期'],
+    ['manufacture_date', '制造日期'],
   ] as const) {
     if (normalizeDate(row[field]) === null) {
       err(field, `${label}格式无法识别，请使用 YYYY-MM-DD`)
@@ -261,8 +267,8 @@ export function batchImportAssets(params: {
        (id, account_set_id, asset_no, asset_name, category_code, status_code, dept_code, purpose_code,
         acquire_date, start_depr_date, original_value, salvage_rate, salvage_value, depr_method,
         use_months, total_workload, accum_depr, impairment_amount, depr_months_done, net_value,
-        qty, unit, user_name, keeper, install_place, remark)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?)`
+        qty, unit, user_name, keeper, install_place, remark, spec, ref_no, manufacturer, manufacture_date)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?,?)`
   )
 
   db.transaction(() => {
@@ -297,7 +303,11 @@ export function batchImportAssets(params: {
         str(row.user_name) || null,
         str(row.keeper) || null,
         str(row.install_place) || null,
-        str(row.remark) || null
+        str(row.remark) || null,
+        str(row.spec) || null,
+        str(row.ref_no) || null,
+        str(row.manufacturer) || null,
+        normalizeDate(row.manufacture_date) ?? null
       )
     }
   })()

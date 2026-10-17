@@ -7,13 +7,16 @@
         <span class="item-form-header__sep">/</span>
         <span class="item-form-header__title">{{ pageTitle }}</span>
         <span v-if="editId" class="item-form-header__meta">{{ form.code }} {{ form.name }}</span>
+        <el-tag v-if="editId" :type="isAudited ? 'success' : 'info'" size="small" effect="plain">{{ isAudited ? '已审核' : '未审核' }}</el-tag>
       </div>
       <div class="item-form-header__right">
-        <el-button size="small" @click="goBack">取消</el-button>
-        <el-button v-if="!editId" :loading="saving" :disabled="!ready" size="small" @click="handleSave(true)">
+        <el-button size="small" @click="goBack">{{ isAudited ? '返回' : '取消' }}</el-button>
+        <el-button v-if="isAudited" v-permission="'scm:master-audit'" :loading="saving" size="small" type="warning" @click="handleUnaudit">反审核</el-button>
+        <el-button v-if="!isAudited && !editId" :loading="saving" :disabled="!ready" size="small" @click="handleSave(true)">
           保存并新增 (Ctrl+Enter)
         </el-button>
-        <el-button type="primary" :loading="saving" :disabled="!ready" size="small" @click="handleSave(false)">
+        <el-button v-if="!isAudited" v-permission="'scm:master-audit'" :loading="saving" :disabled="!ready" size="small" type="success" @click="handleSaveAndAudit">审核</el-button>
+        <el-button v-if="!isAudited" type="primary" :loading="saving" :disabled="!ready" size="small" @click="handleSave(false)">
           确认保存 (Enter)
         </el-button>
       </div>
@@ -21,7 +24,7 @@
 
     <!-- 表单主体 -->
     <div class="item-form-body" v-loading="!ready" @keydown="onKeydown">
-      <el-form v-if="ready" :model="form" label-width="90px" size="small">
+      <el-form v-if="ready" :model="form" label-width="90px" size="small" :disabled="isAudited">
         <div class="form-sector">
           <div class="form-sector-title">基本信息</div>
           <el-row :gutter="12">
@@ -75,7 +78,7 @@
                   <el-select v-model="form.item_type" clearable style="flex:1">
                     <el-option v-for="(n, k) in dynamicItemTypes" :key="k" :label="n" :value="k" />
                   </el-select>
-                  <el-button size="small" @click="showQuickAttr = true"><el-icon><Plus /></el-icon></el-button>
+                  <el-button v-if="!isAudited" size="small" @click="showQuickAttr = true"><el-icon><Plus /></el-icon></el-button>
                 </div>
               </el-form-item>
             </el-col>
@@ -113,7 +116,7 @@
                   <el-select v-model="form.primary_unit_code" filterable placeholder="选择单位" style="flex:1" clearable>
                     <el-option v-for="u in unitOptions" :key="u.code" :label="u.name" :value="u.code" />
                   </el-select>
-                  <el-button size="small" @click="showQuickUnit = true"><el-icon><Plus /></el-icon></el-button>
+                  <el-button v-if="!isAudited" size="small" @click="showQuickUnit = true"><el-icon><Plus /></el-icon></el-button>
                 </div>
               </el-form-item>
             </el-col>
@@ -130,7 +133,7 @@
                     <span style="color:var(--el-text-color-secondary);font-size: var(--cw-text-base)">{{ form.primary_unit_code || '主单位' }}</span>
                     <el-button link type="danger" size="small" @click="removeSecondaryUnit(i)">删除</el-button>
                   </div>
-                  <el-button size="small" @click="addSecondaryUnit"><el-icon><Plus /></el-icon>添加辅单位</el-button>
+                  <el-button v-if="!isAudited" size="small" @click="addSecondaryUnit"><el-icon><Plus /></el-icon>添加辅单位</el-button>
                   <span style="margin-left:8px;font-size:12px;color:var(--el-text-color-secondary)">换算率＝1 个辅单位 = 多少主单位</span>
                 </div>
               </el-form-item>
@@ -292,15 +295,17 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onActivated, onDeactivated, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft, Plus } from '@element-plus/icons-vue'
 import { scmApi, ITEM_TYPES, SOURCE_TYPES, type ScmItem, type ScmUnit, type ScmItemFieldDef, type ScmWarehouse } from '@/api/scm'
 import AccountSelect from '@/components/base/AccountSelect.vue'
+import { hasPermission } from '@/utils/permission'
 
 const route = useRoute()
 const router = useRouter()
 const editId = computed(() => (route.params.id as string) || null)
-const pageTitle = computed(() => (editId.value ? '编辑物料' : '新增物料'))
+const isAudited = computed(() => form.value.audit_status === 'audited')
+const pageTitle = computed(() => (!editId.value ? '新增物料' : isAudited.value ? '查看物料' : '编辑物料'))
 
 // ── 数据 ──────────────────────────────────────────────────────────────────
 const allList = ref<ScmItem[]>([])
@@ -463,7 +468,7 @@ function newForm(parent?: ScmItem | null) {
     purchase_price: 0, sale_price: 0, fixed_cost: 0, outsource_fee: 0, outsource_tax_rate: 0,
     batch_flag: 0, batch_out_mode: 'fifo', serial_flag: 0, is_asset: 0, is_leaf: 1,
     source_type: 'purchase', primary_unit_code: '', secondary_units: [],
-    parent_id: parent?.id || '', field_values: {},
+    parent_id: parent?.id || '', field_values: {}, audit_status: 'draft',
   }
   if (itemCodeMode.value === 'rule') applyRuleCode()
   else form.value.code = buildNextCode(parent?.id || null)
@@ -479,17 +484,26 @@ function editForm(row: ScmItem) {
   }
 }
 
-// ── 保存 ──────────────────────────────────────────────────────────────────
-async function handleSave(continueAdd = false) {
-  if (!form.value.code || !form.value.name) return ElMessage.warning('编号和名称不能为空')
+// ── 保存 / 审核 ────────────────────────────────────────────────────────────
+async function persist(): Promise<string | null> {
+  if (isAudited.value) { ElMessage.warning('已审核物料不能修改，请先反审核'); return null }
+  if (!form.value.code || !form.value.name) { ElMessage.warning('编号和名称不能为空'); return null }
   if (!editId.value) {
     const err = validateCodeLength()
-    if (err) return ElMessage.warning(err)
+    if (err) { ElMessage.warning(err); return null }
   }
+  if (editId.value) {
+    await scmApi.updateItem(editId.value, form.value)
+    return editId.value
+  }
+  const r = await scmApi.createItem(form.value)
+  return r.data?.id || null
+}
+async function handleSave(continueAdd = false) {
   saving.value = true
   try {
-    if (editId.value) await scmApi.updateItem(editId.value, form.value)
-    else await scmApi.createItem(form.value)
+    const id = await persist()
+    if (!id) return
     ElMessage.success(continueAdd ? '保存成功，可继续新增' : '保存成功')
     if (continueAdd) {
       const parentId = form.value.parent_id || null
@@ -501,9 +515,39 @@ async function handleSave(continueAdd = false) {
     }
   } finally { saving.value = false }
 }
+async function handleSaveAndAudit() {
+  if (!hasPermission('scm:master-audit')) return ElMessage.warning('没有物料审核权限')
+  saving.value = true
+  try {
+    const id = await persist()
+    if (!id) return
+    await scmApi.batchAuditMaster('items', [id], 'audit')
+    ElMessage.success('已保存并审核')
+    goBack()
+  } finally { saving.value = false }
+}
+async function handleUnaudit() {
+  if (!editId.value) return
+  if (!hasPermission('scm:master-audit')) return ElMessage.warning('没有物料反审核权限')
+  try {
+    await ElMessageBox.confirm(
+      '反审核后可以修改本物料。若已开启「档案须审核后才能使用」，新单据将不能再选该物料。',
+      '反审核',
+      { type: 'warning' },
+    )
+  } catch { return }
+  saving.value = true
+  try {
+    await scmApi.batchAuditMaster('items', [editId.value], 'unaudit')
+    form.value.audit_status = 'draft'
+    form.value.auditor = null
+    form.value.audited_at = null
+    ElMessage.success('已反审核，可以修改')
+  } finally { saving.value = false }
+}
 
 function onKeydown(e: KeyboardEvent) {
-  if (saving.value) return
+  if (saving.value || isAudited.value) return
   if (e.key !== 'Enter') return
   const target = e.target as HTMLElement
   if (target.tagName === 'TEXTAREA' && !e.ctrlKey && !e.metaKey) return

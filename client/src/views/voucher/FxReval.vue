@@ -104,7 +104,7 @@
           empty-text="本期没有外币科目余额"
         >
           <el-table-column label="科目" min-width="200" show-overflow-tooltip>
-            <template #default="{ row }">{{ row.account_code }} {{ row.account_name }}</template>
+            <template #default="{ row }">{{ row.account_code }} {{ row.account_name }}<span v-if="row.aux_label">（{{ row.aux_label }}）</span></template>
           </el-table-column>
           <el-table-column prop="currency_code" label="币种" width="70" align="center" />
           <el-table-column label="原币期末" width="130" align="right">

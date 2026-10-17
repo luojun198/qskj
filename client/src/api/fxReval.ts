@@ -23,6 +23,8 @@ export interface FxRevaluationRow {
   adjustment: number
   entry_direction: 'debit' | 'credit' | null
   skip_reason: string | null
+  /** 带辅助核算的科目按辅助项目拆分后的项目说明 */
+  aux_label?: string
 }
 
 export interface FxRevaluationRunInfo {

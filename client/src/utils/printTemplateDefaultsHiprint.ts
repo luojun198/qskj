@@ -30,16 +30,16 @@ const FIELD_TEST_DATA: Record<string, string> = Object.fromEntries(
   VOUCHER_TEXT_FIELDS.map(f => [f.field, f.testData])
 )
 
-export type VoucherPanelPreset = 'standard' | 'blank' | 'a4'
+export type VoucherPanelPreset = 'standard' | 'blank' | 'a4' | 'foreign'
 
 function fmtAmount(v: number | null | undefined): string {
   if (v === null || v === undefined || v === 0) return ''
   return Number(v).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
-function fmtNumber(v: number | null | undefined, digits: number): string {
+function fmtNumber(v: number | null | undefined, digits: number, minDigits = 0): string {
   if (v === null || v === undefined || v === 0) return ''
-  return Number(v).toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: digits })
+  return Number(v).toLocaleString('zh-CN', { minimumFractionDigits: minDigits, maximumFractionDigits: digits })
 }
 
 /** 辅助项目名称扁平成 aux_<类别code>；优先用服务端已扁平化的字段，老接口只有 aux_data 时兜底 */
@@ -92,6 +92,13 @@ function accountFullText(e: VoucherPrintData['entries'][number]): string {
 export interface VoucherPrintOptions {
   /** 左侧竖排品牌字样（品牌设置主标题） */
   brand?: string
+  /** 本位币代码（如 RMB）：复币凭证里本位币分录的「币种」格显示它 */
+  baseCurrency?: string
+}
+
+/** 凭证是否含外币分录（打印时据此默认选用复币凭证模板） */
+export function voucherHasForeign(v: Pick<VoucherPrintData, 'entries'>): boolean {
+  return (v.entries || []).some(e => !!e.currency_code && !!Number(e.foreign_amount))
 }
 
 /** 切页后续页首行「承前页」、非末页合计行「过次页」、末页「合计」 */
@@ -183,14 +190,19 @@ export function voucherToHiprintData(
     unit_price: fmtNumber(e.unit_price, 4),
     unit: e.unit || '',
     currency_code: e.currency_code || '',
-    exchange_rate: fmtNumber(e.exchange_rate, 6),
+    // 汇率至少 4 位小数（7,896.0000），最多 6 位
+    exchange_rate: fmtNumber(e.exchange_rate, 6, 4),
     foreign_amount: fmtAmount(e.foreign_amount),
+    // 复币格：外币分录显示币种 + 外币金额；本位币分录只显示本位币代码；承前页 / 空行留空
+    fx_currency: e.currency_code || (e.account_code || e.account_name ? opts.baseCurrency || '' : ''),
+    fx_amount: e.currency_code ? fmtAmount(e.foreign_amount) : '',
     cash_flow_code: e.cash_flow_code || '',
     cash_flow_name: e.cash_flow_name || '',
     ...flattenEntryAux(e),
   }))
   return {
     doc_title: '记 账 凭 证',
+    doc_title_fx: '记账凭证(复币)',
     account_set_name: v.account_set_name || '',
     unit_text: `单位名称：${v.account_set_name || ''}`,
     voucher_no_text: formatVoucherNoText(v.voucher_no, v.voucher_type),
@@ -293,7 +305,20 @@ const STANDARD_COLUMN_LAYOUT: Record<string, { title: string; weight: number }> 
   credit: { title: '贷方金额', weight: 60 },
 }
 
-export type VoucherTableColumnStyle = 'standard' | 'split'
+/**
+ * 复币凭证分录表的列（参照润衡复币凭证）：摘要 | 会计科目（全称） | 外币金额（币种 + 金额） | 汇率 | 借方金额 | 贷方金额。
+ * 列序即对象顺序；权重按润衡样张的列宽比例。
+ */
+const FOREIGN_COLUMN_LAYOUT: Record<string, { title: string; weight: number }> = {
+  summary: { title: '摘　　要', weight: 210 },
+  account_full_text: { title: '会 计 科 目', weight: 175 },
+  fx_cell: { title: '外币金额', weight: 88 },
+  exchange_rate: { title: '汇率', weight: 56 },
+  debit: { title: '借方金额', weight: 98 },
+  credit: { title: '贷方金额', weight: 98 },
+}
+
+export type VoucherTableColumnStyle = 'standard' | 'split' | 'foreign'
 
 /**
  * 分录表元素。列目录包含全部可选列（未勾选列不打印），供属性面板勾选。
@@ -312,11 +337,19 @@ export function buildEntriesTable(
   columnStyle: VoucherTableColumnStyle = 'split'
 ) {
   const widthPt = mmToPt(widthMm)
-  const catalog = buildVoucherTableColumns(auxCategories).map(col => {
-    if (columnStyle !== 'standard') return col
-    const conf = STANDARD_COLUMN_LAYOUT[col.field]
+  const layout = columnStyle === 'foreign' ? FOREIGN_COLUMN_LAYOUT : columnStyle === 'standard' ? STANDARD_COLUMN_LAYOUT : null
+  let catalog = buildVoucherTableColumns(auxCategories).map(col => {
+    if (!layout) return col
+    const conf = layout[col.field]
     return conf ? { ...col, title: conf.title, width: conf.weight, checked: true } : { ...col, checked: false }
   })
+  if (columnStyle === 'foreign') {
+    // 已勾选列按复币版式排序，其余（未勾选）列保持目录顺序跟在后面
+    const order = Object.keys(FOREIGN_COLUMN_LAYOUT)
+    const picked = order.map(f => catalog.find(c => c.field === f)!).filter(Boolean)
+    catalog = [...picked, ...catalog.filter(c => !order.includes(c.field))]
+    catalog = catalog.map(c => (c.field === 'exchange_rate' ? { ...c, align: 'right' as const } : c))
+  }
   // 默认预置借/贷合计行；autoCompletion 补空行填满表格高度，让合计行始终贴在表格框底部
   const columns = applyVoucherTableSummary(fitVoucherTableColumnWidths(catalog, widthPt), {
     enabled: true,
@@ -332,8 +365,8 @@ export function buildEntriesTable(
     tableHeaderRepeat: 'first',
     tableFooterRepeat: 'last',
     autoCompletion: true,
-    fontSize: columnStyle === 'standard' ? 9.5 : 11,
-    ...(columnStyle === 'standard' ? { tableHeaderFontSize: 10.5, tableHeaderFontWeight: 'normal' } : {}),
+    fontSize: columnStyle === 'standard' ? 9.5 : columnStyle === 'foreign' ? 9 : 11,
+    ...(columnStyle !== 'split' ? { tableHeaderFontSize: 10.5, tableHeaderFontWeight: 'normal' } : {}),
     columns: [columns],
   }
   return {
@@ -374,7 +407,7 @@ export const VOUCHER_STANDARD_LAYOUT_VERSION = 2
 function buildVoucherPanelAt(
   width: number,
   height: number,
-  opts: { tableTopMm?: number; signTopMm?: number; auxCategories?: AuxCategoryLike[] }
+  opts: { tableTopMm?: number; signTopMm?: number; auxCategories?: AuxCategoryLike[]; foreign?: boolean }
 ) {
   // 左边留装订位 + 竖排品牌，右边留竖排「附单据」
   const left = Math.round(width * 0.114 * 2) / 2
@@ -385,7 +418,8 @@ function buildVoucherPanelAt(
   const signTop = opts.signTopMm ?? height - 26.5
   const tableBottom = signTop - 2.5
   const tableH = Math.max(tableBottom - tableTop, 28)
-  const titleW = 64
+  // 复币标题字多，标题框加宽
+  const titleW = opts.foreign ? 80 : 64
   // 签章五栏按内宽均分
   const signW = innerW / 5
   const sideTop = tableTop + 8
@@ -405,7 +439,7 @@ function buildVoucherPanelAt(
         paperFooter: mmToPt(Math.max(tableBottom, 20)),
         cwLayoutVersion: VOUCHER_STANDARD_LAYOUT_VERSION,
         printElements: [
-          text('doc_title', center - titleW / 2, 12, titleW, {
+          text(opts.foreign ? 'doc_title_fx' : 'doc_title', center - titleW / 2, 12, titleW, {
             height: mmToPt(9),
             fontSize: 18,
             fontWeight: 'bold',
@@ -416,7 +450,7 @@ function buildVoucherPanelAt(
           text('unit_text', left, 22.5, innerW / 2, { fontSize: 10, height: mmToPt(5) }),
           text('date_cn_text', center - 25, 25.5, 50, { fontSize: 10, textAlign: 'center', height: mmToPt(5) }),
           text('voucher_word_text', right - 50, 25.5, 50, { fontSize: 10, textAlign: 'right', height: mmToPt(5) }),
-          buildEntriesTable(left, tableTop, innerW, tableH, opts.auxCategories, DEFAULT_VOUCHER_FIXED_ROWS, 'standard'),
+          buildEntriesTable(left, tableTop, innerW, tableH, opts.auxCategories, DEFAULT_VOUCHER_FIXED_ROWS, opts.foreign ? 'foreign' : 'standard'),
           // 竖排：元素只有一个字宽，文字逐字折行
           text('brand_text', left - 5.5, sideTop, 4, {
             height: mmToPt(sideH),
@@ -440,6 +474,9 @@ function buildVoucherPanelAt(
   } as HiprintTemplate
 }
 
+/** 复币凭证模板的业务子类型（打印含外币分录的凭证时优先选用） */
+export const VOUCHER_FOREIGN_TEMPLATE_KEY = 'voucher:foreign'
+
 export function voucherPresetMeta(preset: VoucherPanelPreset) {
   if (preset === 'a4') {
     return {
@@ -448,6 +485,15 @@ export function voucherPresetMeta(preset: VoucherPanelPreset) {
       paper_width: 210,
       paper_height: 297,
       template_key: 'voucher:standard',
+    }
+  }
+  if (preset === 'foreign') {
+    return {
+      name: '复币记账凭证',
+      paper_size: 'custom' as const,
+      paper_width: VOUCHER_PAPER_WIDTH_MM,
+      paper_height: VOUCHER_PAPER_HEIGHT_MM,
+      template_key: VOUCHER_FOREIGN_TEMPLATE_KEY,
     }
   }
   if (preset === 'blank') {
@@ -473,9 +519,15 @@ export function buildVoucherPanel(
   auxCategories: AuxCategoryLike[] = []
 ): HiprintTemplate {
   if (preset === 'a4') return buildVoucherPanelAt(210, 297, { tableTopMm: 36, signTopMm: 250, auxCategories })
+  if (preset === 'foreign') return buildVoucherPanelAt(VOUCHER_PAPER_WIDTH_MM, VOUCHER_PAPER_HEIGHT_MM, { auxCategories, foreign: true })
   return buildVoucherPanelAt(VOUCHER_PAPER_WIDTH_MM, VOUCHER_PAPER_HEIGHT_MM, { auxCategories })
 }
 
 export function buildDefaultVoucherPanel(): HiprintTemplate {
   return buildVoucherPanel('standard')
+}
+
+/** 内置复币记账凭证面板（没有保存复币模板时，打印外币凭证用它） */
+export function buildForeignVoucherPanel(): HiprintTemplate {
+  return buildVoucherPanel('foreign')
 }

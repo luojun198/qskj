@@ -4,6 +4,7 @@ import multer from 'multer'
 import { existsSync, mkdirSync, unlinkSync } from 'fs'
 import { extname, resolve } from 'path'
 import { getDb, getDeployDir } from '../db/index.js'
+import { nextAuxItemCode } from '../services/auxItemCode.js'
 import { authMiddleware, AuthRequest, operationLog } from '../middleware/index.js'
 import { buildWhereClause, normalizeImportCode, normalizeImportText, SqlParam } from '../services/baseValidation.js'
 import {
@@ -303,6 +304,12 @@ router.get('/aux-items/stats', (req: AuthRequest, res) => {
   res.json({ code: 0, data: { total, active, closed } })
 })
 
+router.get('/aux-items/next-code', (req: AuthRequest, res) => {
+  const type = String(req.query.type || req.query.category_id || '')
+  if (!type) return res.status(400).json({ code: 400, message: '缺少类别' })
+  res.json({ code: 0, data: { next_code: nextAuxItemCode(getDb(), req.accountSetId || '', type) } })
+})
+
 router.get('/aux-items', (req: AuthRequest, res) => {
   const db = getDb()
   const { type, category_id, keyword, status, limit, offset, ids, order, all, page, pageSize } = req.query
@@ -386,13 +393,14 @@ router.get('/aux-items', (req: AuthRequest, res) => {
 })
 
 router.post('/aux-items', operationLog('新增核算项目', '基础设置'), (req: AuthRequest, res) => {
-  const { type, code, name, remark, field_values } = req.body
-  const normalizedCode = normalizeImportCode(String(code || ''))
+  const { type, code, name, remark, field_values, auto_code } = req.body
+  let normalizedCode = normalizeImportCode(String(code || ''))
   const normalizedName = normalizeImportText(String(name || ''))
+  const db = getDb()
+  if (auto_code && !normalizedCode && type) normalizedCode = nextAuxItemCode(db, req.accountSetId || '', String(type))
   if (!type || !normalizedCode || !normalizedName) {
     return res.status(400).json({ code: 400, message: '类别、编码、名称不能为空' })
   }
-  const db = getDb()
 
   // 校验自定义字段必填
   const requiredFields = db.prepare(
@@ -405,9 +413,14 @@ router.post('/aux-items', operationLog('新增核算项目', '基础设置'), (r
     }
   }
 
-  const duplicatedCode = db
+  let duplicatedCode = db
     .prepare('SELECT id, code, name FROM aux_items WHERE account_set_id=? AND type=? AND code=?')
     .get(req.accountSetId, type, normalizedCode) as any
+  // 编码是系统自动带出的（凭证里快速新建等），撞号时改取下一个可用编码，而不是报错
+  if (duplicatedCode && auto_code) {
+    normalizedCode = nextAuxItemCode(db, req.accountSetId || '', type)
+    duplicatedCode = null
+  }
   if (duplicatedCode) {
     return res.status(400).json({
       code: 400,
@@ -428,7 +441,7 @@ router.post('/aux-items', operationLog('新增核算项目', '基础设置'), (r
   db.prepare(
     'INSERT INTO aux_items (id, account_set_id, type, code, name, remark, field_values) VALUES (?, ?, ?, ?, ?, ?, ?)'
   ).run(id, req.accountSetId, type, normalizedCode, normalizedName, remark || '', fieldValuesJson)
-  res.json({ code: 0, message: '创建成功', data: { id } })
+  res.json({ code: 0, message: '创建成功', data: { id, code: normalizedCode } })
 })
 
 router.put('/aux-items/:id', operationLog('修改核算项目', '基础设置'), (req: AuthRequest, res) => {

@@ -591,6 +591,10 @@ import {
   up as scmMasterAuditUp,
   down as scmMasterAuditDown,
 } from './migrations/20261014_scm_master_audit.js'
+import {
+  up as assetCardExtraFieldsUp,
+  down as assetCardExtraFieldsDown,
+} from './migrations/20261017_asset_card_extra_fields.js'
 
 /**
  * 迁移示例：添加新字段
@@ -2522,5 +2526,11 @@ export const migrations: Migration[] = [
     name: 'scm_master_audit',
     up: scmMasterAuditUp,
     down: scmMasterAuditDown,
+  },
+  {
+    version: 169,
+    name: 'asset_card_extra_fields',
+    up: assetCardExtraFieldsUp,
+    down: assetCardExtraFieldsDown,
   },
 ]

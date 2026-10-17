@@ -495,7 +495,28 @@ export function resolveForeignCurrencyFields(entry: VoucherEntryInput): {
 // 现金流量项目不再由凭证录入指定、也不再必填：现金流量表按「基础资料 → 科目现金流量项目」
 // 自动推算（services/cashFlowAutoEngine.ts）。分录上的 cash_flow_code 仅作历史数据保留。
 
-/** 启用外币核算时，校验外币科目分录的原币/汇率 */
+/** 账套已启用的外币编码（不含本位币）。表不存在时返回 null，跳过「必须在外币类型中」的校验。 */
+function listEnabledForeignCurrencyCodes(db: Database, accountSetId: string): Set<string> | null {
+  try {
+    const has = db
+      .prepare(`SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='currencies'`)
+      .get() as { ok?: number } | undefined
+    if (!has) return null
+    const rows = db
+      .prepare(
+        `SELECT code FROM currencies
+         WHERE account_set_id = ? AND COALESCE(is_base, 0) = 0 AND COALESCE(is_enabled, 1) = 1`
+      )
+      .all(accountSetId) as Array<{ code: string }>
+    return new Set(
+      rows.map(r => String(r.code || '').trim().toUpperCase()).filter(Boolean)
+    )
+  } catch {
+    return null
+  }
+}
+
+/** 启用外币核算时，校验外币科目分录的原币/汇率。科目上的币种只作缺省，凭证可选账套内任一外币。 */
 export function validateVoucherEntriesForeignCurrency(
   db: Database,
   accountSetId: string,
@@ -506,6 +527,7 @@ export function validateVoucherEntriesForeignCurrency(
   const accountStmt = db.prepare(
     `SELECT name, is_foreign, currency_code FROM accounts WHERE id = ? AND account_set_id = ?`
   )
+  const allowed = listEnabledForeignCurrencyCodes(db, accountSetId)
 
   for (const entry of entries) {
     if (!entry.account_id || !entry.amount) continue
@@ -514,23 +536,31 @@ export function validateVoucherEntriesForeignCurrency(
       | undefined
     if (!account) continue
 
-    const fx = resolveForeignCurrencyFields(entry)
     if (Number(account.is_foreign) === 1) {
+      const defaultCode = String(account.currency_code || '').trim().toUpperCase()
+      const chosen = String(entry.currency_code || defaultCode || '')
+        .trim()
+        .toUpperCase()
+      if (!chosen) {
+        return `外币科目【${account.name}】请选择币种`
+      }
+      const fx = resolveForeignCurrencyFields({ ...entry, currency_code: chosen })
       if (!fx.foreignAmount) {
         return `外币科目【${account.name}】须填写原币金额`
       }
       if (!fx.exchangeRate || !(fx.exchangeRate > 0)) {
         return `外币科目【${account.name}】须填写大于 0 的汇率`
       }
-      const expectedCode = String(account.currency_code || '')
-        .trim()
-        .toUpperCase()
-      if (expectedCode && fx.currencyCode && fx.currencyCode !== expectedCode) {
-        return `外币科目【${account.name}】币种应为 ${expectedCode}`
+      if (allowed && allowed.size > 0 && !allowed.has(chosen)) {
+        return `外币科目【${account.name}】币种「${chosen}」不在本账套外币类型中，请到「外币类型」中维护`
       }
-    } else if (fx.foreignAmount || fx.currencyCode || fx.exchangeRate) {
-      // 非外币科目不允许带外币字段（写入时也会清空，这里仅提示）
-      return `科目【${account.name}】未启用外币核算，不能填写原币金额`
+      if (!entry.currency_code) entry.currency_code = chosen
+    } else {
+      const fx = resolveForeignCurrencyFields(entry)
+      if (fx.foreignAmount || fx.currencyCode || fx.exchangeRate) {
+        // 非外币科目不允许带外币字段（写入时也会清空，这里仅提示）
+        return `科目【${account.name}】未启用外币核算，不能填写原币金额`
+      }
     }
   }
   return null

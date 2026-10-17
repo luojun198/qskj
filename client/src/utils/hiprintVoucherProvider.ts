@@ -5,6 +5,7 @@
 
 export const VOUCHER_TEXT_FIELDS = [
   { field: 'doc_title', title: '凭证标题', testData: '记 账 凭 证', fontSize: 16.5, fontWeight: '700', textAlign: 'center' },
+  { field: 'doc_title_fx', title: '凭证标题（复币）', testData: '记账凭证(复币)', fontSize: 16.5, fontWeight: '700', textAlign: 'center' },
   { field: 'account_set_name', title: '账套名称', testData: '示例账套', fontSize: 11 },
   { field: 'voucher_no_text', title: '凭证字号', testData: '记-001', fontSize: 11 },
   { field: 'date_text', title: '凭证日期', testData: '2026-09-07', fontSize: 11 },
@@ -53,6 +54,8 @@ export const VOUCHER_TABLE_OPTIONAL_COLUMNS = [
   { title: '币种', field: 'currency_code', width: 30, align: 'center' },
   { title: '汇率', field: 'exchange_rate', width: 40, align: 'right' },
   { title: '外币金额', field: 'foreign_amount', width: 56, align: 'right' },
+  // 复币凭证格：上「币种 | USD」、下外币金额（参照润衡复币凭证，渲染见 VOUCHER_FX_CELL_FORMATTER_SRC）
+  { title: '外币金额（含币种）', field: 'fx_cell', width: 60, align: 'left' },
   { title: '现金流量', field: 'cash_flow_name', width: 70, align: 'left' },
 ] as const
 
@@ -512,6 +515,25 @@ export const VOUCHER_SUMMARY_FORMATTER_SRC = `function (column, nums, allData, o
  * 末页数据还带 __sum_upper（合计金额大写）：标签格跨 2 列及以上时拆成两格，
  * 第一格放「合计」，其余列合并放大写金额（如 摘要 | 肆仟柒佰壹拾柒元叁角玖分）。
  */
+/**
+ * 复币凭证「外币金额」格的渲染函数（源码字符串，必须自包含，hiprint 用 eval 还原）。
+ * 上半格「币种 | USD」带框，下半格右对齐外币金额；本位币分录显示本位币代码、不写金额。
+ * 数据见 voucherToHiprintData 的 fx_currency / fx_amount。补齐的空行同样画出「币种」框。
+ */
+export const VOUCHER_FX_CELL_FORMATTER_SRC = `function (value, row, colIndex, options, rowIndex) {
+  var r = row || {}
+  var esc = function (t) { return String(t || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }
+  var b = '1px solid #000'
+  // cw-fx-cell：防撑高（fitVoucherTableCells）跳过此格，排版由这里自己控制
+  return '<div class="cw-fx-cell" style="display:flex;flex-direction:column;justify-content:space-between;line-height:1.2;overflow:hidden">' +
+    '<div style="display:flex;border-bottom:' + b + '">' +
+      '<span style="border-right:' + b + ';padding:0 3px;white-space:nowrap">币种</span>' +
+      '<span style="flex:1;padding:0 3px;text-align:left;white-space:nowrap;overflow:hidden">' + esc(r.fx_currency) + '</span>' +
+    '</div>' +
+    '<div style="text-align:right;padding:0 3px;white-space:nowrap">' + esc(r.fx_amount) + '&nbsp;</div>' +
+  '</div>'
+}`
+
 export const VOUCHER_SUMMARY_LABEL_FORMATTER_SRC = `function (column, nums, allData, options) {
   var rows = Object.prototype.toString.call(allData) === '[object Array]' ? allData : []
   var label = ''

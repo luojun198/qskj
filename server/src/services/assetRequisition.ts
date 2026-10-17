@@ -65,7 +65,7 @@ function assertRequisitionDateWritable(db: Database, accountSetId: string, date:
   if (dt.getFullYear() !== y || dt.getMonth() !== m - 1 || dt.getDate() !== d) {
     throw new Error(`日期 ${date} 不是有效日期`)
   }
-  assertNotAfterCurrentPeriod(y, m, '领用 / 归还日期')
+  assertNotAfterCurrentPeriod(y, m, '领用 / 归还日期', db, accountSetId)
   assertPeriodOpen(db, accountSetId, y, m)
   assertNotBeforeGlStart(db, accountSetId, date, '领用 / 归还日期')
 }

@@ -243,6 +243,11 @@ async function handleSubmit() {
         showWarning(`分录「${acc.code} ${acc.name}」为外币科目，请录入汇率`)
         return
       }
+      if (!(e.currency_code || acc.currency_code)) {
+        showWarning(`分录「${acc.code} ${acc.name}」为外币科目，请选择币种`)
+        return
+      }
+      e.currency_code = e.currency_code || acc.currency_code
     }
   }
 

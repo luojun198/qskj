@@ -444,7 +444,14 @@
       </div>
 
       <div class="voucher-paper-toolbar">
-        <el-button v-if="!isReadonly" size="small" @click="addEntry">+ 添加分录</el-button>
+        <div v-if="!isReadonly" class="voucher-paper-toolbar__left">
+          <el-button size="small" @click="addEntry">+ 添加分录</el-button>
+          <el-button size="small" title="科目维护 (Alt+K)：新标签页打开，维护完关闭该标签页即可回到本凭证，已录内容不受影响" @click="openAccountMaintenance">科目维护 (Alt+K)</el-button>
+          <el-button size="small" title="平衡 (Alt+B)：对当前分录补足借贷差额（外币按汇率折原币，数量按数量反算单价）" @click="balanceCurrentEntry">平衡 (Alt+B)</el-button>
+          <el-button size="small" title="借贷互换 (Alt+X)：当前分录借方 / 贷方金额互换（外币、数量科目同样可用）" @click="swapCurrentEntrySide">借贷互换 (Alt+X)</el-button>
+        </div>
+        <span v-else />
+
         <div class="voucher-balance" :class="{ balanced: isBalanced, unbalanced: !isBalanced }">
           借方合计：{{ formatMoney(totalDebit) }}
           <span class="divider">|</span>
@@ -464,7 +471,7 @@
         :virtual-ref="foreignPopover.triggerEl"
         virtual-triggering
         placement="bottom-end"
-        :width="300"
+        :width="340"
         :show-arrow="true"
         :teleported="true"
         :persistent="false"
@@ -473,7 +480,25 @@
         <div class="foreign-popover" @keydown.esc.stop.prevent="cancelForeignPopover">
           <div class="foreign-popover-header">
             <span>外币录入</span>
-            <span class="foreign-popover-currency">{{ foreignPopover.currencyCode || '-' }}</span>
+          </div>
+          <div class="foreign-popover-row">
+            <span class="foreign-popover-label">币种</span>
+            <el-select
+              v-model="foreignPopover.currencyCode"
+              filterable
+              size="small"
+              :disabled="foreignPopover.readonly"
+              class="foreign-popover-input"
+              placeholder="选择外币"
+              @change="onForeignPopoverCurrencyChange"
+            >
+              <el-option
+                v-for="c in foreignCurrencyOptions"
+                :key="c.code"
+                :label="`${c.code} ${c.name}`"
+                :value="c.code"
+              />
+            </el-select>
           </div>
           <div class="foreign-popover-row">
             <span class="foreign-popover-label">方向</span>
@@ -779,6 +804,9 @@
         @keydown.enter.prevent="submitAddAuxItem"
       >
         <el-form label-width="80px">
+          <el-form-item label="编码">
+            <el-input v-model="addAuxItemCode" placeholder="留空自动编号" />
+          </el-form-item>
           <el-form-item label="名称" required>
             <el-input
               v-model="addAuxItemName"
@@ -955,6 +983,15 @@
                   <span class="keys"><kbd>Ctrl</kbd><kbd>F</kbd></span><span>上传附件</span>
                 </div>
                 <div class="shortcut-tip__row">
+                  <span class="keys"><kbd>Alt</kbd><kbd>K</kbd></span><span>科目维护（新标签页打开）</span>
+                </div>
+                <div class="shortcut-tip__row">
+                  <span class="keys"><kbd>Alt</kbd><kbd>B</kbd></span><span>平衡当前分录（含外币 / 数量科目）</span>
+                </div>
+                <div class="shortcut-tip__row">
+                  <span class="keys"><kbd>Alt</kbd><kbd>X</kbd></span><span>当前分录借贷互换（含外币 / 数量科目）</span>
+                </div>
+                <div class="shortcut-tip__row">
                   <span class="keys"><kbd>Esc</kbd></span><span>关闭弹窗</span>
                 </div>
 
@@ -1043,6 +1080,7 @@ import type { VoucherForm, VoucherEntry } from '@/composables/useVoucherForm'
 import { useKeyboardShortcuts, commonShortcuts } from '@/composables/useKeyboardShortcuts'
 import { showSuccess, showError, showWarning } from '@/composables/useMessage'
 import { buildEntryKey, useVoucherModalReturnStore } from '@/stores/voucherModalReturn'
+import { useBaseDataStore } from '@/stores/baseData'
 import request from '@/api/request'
 import {
   Document,
@@ -1053,6 +1091,7 @@ import {
   QuestionFilled,
 } from '@element-plus/icons-vue'
 import { formatAmount, formatDate } from '@/utils/format'
+import { getCurrencies, type Currency } from '@/api/currency'
 import { isAuxCategoryExcludedFromAccount } from '@/utils/accountCashFlow'
 import { formatAccountFullPath } from '@/utils/accountPathDisplay'
 import { accountDisplayMode } from '@/utils/accountDisplayPreference'
@@ -1180,6 +1219,39 @@ const currentEntryAccount = computed(() => {
 
 // ========== 外币录入气泡 ==========
 
+const foreignCurrencies = ref<Currency[]>([])
+const foreignCurrencyOptions = computed(() =>
+  foreignCurrencies.value.filter(c => !c.is_base && Number(c.is_enabled) !== 0)
+)
+
+async function loadForeignCurrencies() {
+  if (!props.enableForeignCurrency) {
+    foreignCurrencies.value = []
+    return
+  }
+  try {
+    const res = await getCurrencies()
+    foreignCurrencies.value = Array.isArray(res.data) ? res.data : []
+  } catch {
+    foreignCurrencies.value = []
+  }
+}
+
+watch(
+  () => [props.modelValue, props.enableForeignCurrency] as const,
+  ([visible, enabled]) => {
+    if (visible && enabled) void loadForeignCurrencies()
+  },
+  { immediate: true }
+)
+
+async function onForeignPopoverCurrencyChange(code: string) {
+  foreignPopover.currencyCode = code || ''
+  if (!code || !props.resolveExchangeRate) return
+  const rate = Number(await props.resolveExchangeRate(code))
+  if (rate > 0) foreignPopover.rate = rate
+}
+
 /** 分录科目是否为外币科目（账套开启外币核算 且 科目 is_foreign=1） */
 function isForeignRow(row: any): boolean {
   if (!props.enableForeignCurrency || !row?.account_id) return false
@@ -1244,7 +1316,10 @@ async function openForeignPopover(
   if (!row) return
   if (foreignPopover.visible && foreignPopover.row === row && foreignPopover.side === side) return
   props.setCurrentEntry(row)
-  if (!readonly) await ensureForeignDefaults(row)
+  if (!readonly) {
+    if (props.enableForeignCurrency && !foreignCurrencyOptions.value.length) await loadForeignCurrencies()
+    await ensureForeignDefaults(row)
+  }
   // 已有金额时，以已录方向为准
   const existingSide: 'debit' | 'credit' | null = row.debit_amount
     ? 'debit'
@@ -1297,6 +1372,10 @@ function confirmForeignPopover() {
   if (!row) return
   const foreign = Number(foreignPopover.foreignAmount)
   const rate = Number(foreignPopover.rate)
+  if (!String(foreignPopover.currencyCode || '').trim()) {
+    showWarning('请选择币种')
+    return
+  }
   if (!Number.isFinite(foreign) || foreign === 0) {
     showWarning('请输入原币金额')
     focusForeignInput('amount')
@@ -1434,11 +1513,27 @@ function onDocumentMousedownForForeign(event: MouseEvent) {
   }
 }
 
+// 科目维护：新标签页打开，本页（含未保存的凭证内容）原样保留；回到本页时强制刷新科目
+let accountMaintenanceOpened = false
+function openAccountMaintenance() {
+  accountMaintenanceOpened = true
+  window.open('/base/account', '_blank')
+}
+async function refreshAccountsAfterMaintenance() {
+  if (!accountMaintenanceOpened || document.visibilityState === 'hidden') return
+  accountMaintenanceOpened = false
+  await useBaseDataStore().loadAccounts(true)
+}
+
 onMounted(() => {
   document.addEventListener('mousedown', onDocumentMousedownForForeign, true)
+  window.addEventListener('focus', refreshAccountsAfterMaintenance)
+  document.addEventListener('visibilitychange', refreshAccountsAfterMaintenance)
 })
 onBeforeUnmount(() => {
   document.removeEventListener('mousedown', onDocumentMousedownForForeign, true)
+  window.removeEventListener('focus', refreshAccountsAfterMaintenance)
+  document.removeEventListener('visibilitychange', refreshAccountsAfterMaintenance)
 })
 
 // 科目变更为非外币科目、或弹窗关闭时收起气泡
@@ -1462,7 +1557,10 @@ async function ensureForeignDefaults(entry: any) {
     entry.foreign_amount = null
     return
   }
-  entry.currency_code = acc.currency_code || entry.currency_code || null
+  entry.currency_code = entry.currency_code || acc.currency_code || null
+  if (!entry.currency_code && foreignCurrencyOptions.value.length === 1) {
+    entry.currency_code = foreignCurrencyOptions.value[0].code
+  }
   if (!(Number(entry.exchange_rate) > 0) && entry.currency_code && props.resolveExchangeRate) {
     const rate = await props.resolveExchangeRate(entry.currency_code)
     if (Number(rate) > 0) entry.exchange_rate = Number(rate)
@@ -2358,6 +2456,8 @@ watch(
 const addAuxItemDialogVisible = ref(false)
 const addAuxItemCat = ref<any>(null)
 const addAuxItemCode = ref('')
+/** 打开弹窗时自动带出的编码；用户没改过则保存时允许后端撞号顺延 */
+const addAuxItemAutoCode = ref('')
 const addAuxItemName = ref('')
 const addAuxItemFieldValues = ref<Record<string, any>>({})
 const addAuxItemLoading = ref(false)
@@ -2370,6 +2470,7 @@ const addAuxItemRequiredFields = computed(() => {
 async function openAddAuxItemDialog(cat: any) {
   addAuxItemCat.value = cat
   addAuxItemCode.value = await props.fetchNextAuxCode(cat.id)
+  addAuxItemAutoCode.value = addAuxItemCode.value
   addAuxItemName.value = ''
   addAuxItemFieldValues.value = {}
   addAuxItemDialogVisible.value = true
@@ -2394,13 +2495,17 @@ async function submitAddAuxItem() {
   if (!cat) return
   addAuxItemLoading.value = true
   try {
+    // 编码没改过（仍是自动带出的）或留空：撞号时由后端顺延到下一个可用编码
+    const autoCode = !code || code === addAuxItemAutoCode.value
     const res = await request.post<any>('/base/aux-items', {
-      code,
+      code: code || addAuxItemAutoCode.value,
       name,
       type: cat.id,
       field_values: addAuxItemFieldValues.value,
+      auto_code: autoCode,
     })
-    const newItem = { id: res.data.id, name, code, type: cat.id }
+    const savedCode = res.data?.code || code
+    const newItem = { id: res.data.id, name, code: savedCode, type: cat.id }
     emit('add-aux-item', newItem, cat.code)
     addAuxItemDialogVisible.value = false
     showSuccess(`已新建${cat.name}：${name}`)
@@ -2706,6 +2811,53 @@ function autoBalanceAtFocus(row: VoucherEntry, side: 'debit' | 'credit') {
     row.credit_amount = amount
   }
   props.onAmountChange(row, side)
+}
+
+/** 工具栏「平衡」：对当前分录补足差额，普通 / 外币 / 数量科目各走各的折算 */
+function balanceCurrentEntry() {
+  const row: any = props.currentEntry
+  if (!row) {
+    showWarning('请先选中要平衡的分录')
+    return
+  }
+  const debitTotal = Number(props.totalDebit) || 0
+  const creditTotal = Number(props.totalCredit) || 0
+  if (Math.abs(debitTotal - creditTotal) < 0.005) return
+  // 借方多则本行补贷方，反之补借方
+  const side: 'debit' | 'credit' = debitTotal > creditTotal ? 'credit' : 'debit'
+  const other = side === 'debit' ? 'credit_amount' : 'debit_amount'
+  // 本行在另一方已有金额时不覆盖，避免误清
+  if (Number(row[other])) {
+    showWarning('当前分录另一方已有金额，请先用「借贷互换」或清空后再平衡')
+    return
+  }
+  if (isForeignRow(row)) void autoBalanceForeignAtFocus(row, side)
+  else if (isQuantityRow(row)) autoBalanceQuantityAtFocus(row, side)
+  else autoBalanceAtFocus(row, side)
+}
+
+/** 工具栏「借贷互换」：当前分录金额换到另一方，外币原币金额、汇率、数量保持不变 */
+function swapCurrentEntrySide() {
+  const row: any = props.currentEntry
+  if (!row) {
+    showWarning('请先选中要互换的分录')
+    return
+  }
+  const debit = Number(row.debit_amount) || 0
+  const credit = Number(row.credit_amount) || 0
+  if (debit && !credit) {
+    row.credit_amount = debit
+    row.debit_amount = null
+    row.direction = 'credit'
+    props.onAmountChange(row, 'credit')
+  } else if (credit && !debit) {
+    row.debit_amount = credit
+    row.credit_amount = null
+    row.direction = 'debit'
+    props.onAmountChange(row, 'debit')
+  } else {
+    showWarning('当前分录没有可互换的金额')
+  }
 }
 
 /**
@@ -3149,6 +3301,14 @@ function applySelectedAccount(row: any, acc: any) {
   row.account_id = acc.id
   state.input = accountInputText(acc)
   props.onAccountChange(row)
+  if (Number(acc.is_foreign) === 1) {
+    row.currency_code = acc.currency_code || null
+    row.exchange_rate = null
+  } else {
+    row.currency_code = null
+    row.exchange_rate = null
+    row.foreign_amount = null
+  }
   props.setCurrentEntry(row)
   void ensureForeignDefaults(row)
   ensureQuantityDefaults(row)
@@ -3177,6 +3337,9 @@ function onAccountDelete(row: any, event: KeyboardEvent) {
   row.account_id = null
   row.account_code = ''
   row.account_name = ''
+  row.currency_code = null
+  row.exchange_rate = null
+  row.foreign_amount = null
 
   // 清除输入状态
   const state = ensureAccountInputState(row)
@@ -3256,6 +3419,30 @@ function onVoucherDialogKeydown(e: KeyboardEvent) {
           autoBalanceAtFocus(row, 'debit')
         }
       }
+    }
+  }
+
+  // Alt+K：科目维护（不用 Ctrl 组合，避开浏览器占用）
+  if (e.altKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyK' && !isReadonly.value) {
+    e.preventDefault()
+    e.stopPropagation()
+    openAccountMaintenance()
+    return
+  }
+
+  // Alt+B 平衡 / Alt+X 借贷互换（作用于当前分录，外币、数量科目同样可用）
+  if (e.altKey && !e.ctrlKey && !e.metaKey && !isReadonly.value) {
+    if (e.code === 'KeyB') {
+      e.preventDefault()
+      e.stopPropagation()
+      balanceCurrentEntry()
+      return
+    }
+    if (e.code === 'KeyX') {
+      e.preventDefault()
+      e.stopPropagation()
+      swapCurrentEntrySide()
+      return
     }
   }
 
@@ -3506,6 +3693,12 @@ useKeyboardShortcuts([
   align-items: center;
   gap: 8px;
   margin-bottom: 8px;
+}
+
+.voucher-paper-toolbar__left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .voucher-balance {

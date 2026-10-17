@@ -388,11 +388,10 @@ const selectedAccount = computed(() => {
 /** 科目下拉按账册过滤（复币→外币科目且可按币种筛，数量→数量科目）；selectedAccount 仍从全量里找，保证下钻按 account_code 匹配 */
 const selectableAccounts = computed(() => {
   if (!hasForeign.value && !hasQuantity.value) return accounts.value
-  const cur = String(filters.value.currency_code || '').trim().toUpperCase()
   const matches = (a: any) => {
     if (hasForeign.value) {
       if (Number(a.is_foreign) !== 1) return false
-      if (cur && String(a.currency_code || '').toUpperCase() !== cur) return false
+      // 科目上的币种只是缺省，凭证可记多种外币；下拉不再按缺省币种把科目藏掉
     }
     if (hasQuantity.value && Number(a.is_quantity) !== 1) return false
     return true

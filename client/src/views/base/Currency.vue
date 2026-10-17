@@ -124,12 +124,12 @@
             </el-select>
             <el-select
               v-model="filterCurrency"
-              clearable
               placeholder="全部币种"
               size="small"
               style="width: 120px"
-              @change="loadRates"
+              @change="loadRates" :empty-values="[null, undefined]"
             >
+              <el-option label="全部币种" value="" />
               <el-option
                 v-for="c in foreignCurrencies"
                 :key="c.code"

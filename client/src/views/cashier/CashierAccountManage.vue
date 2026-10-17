@@ -9,7 +9,11 @@
         <el-radio-button value="other">其他货币资金</el-radio-button>
       </el-radio-group>
       <el-input v-model="keyword" size="small" clearable placeholder="编码 / 名称 / 开户行 / 账号" style="width:220px" />
-      <el-checkbox v-model="showDisabled" size="small">显示停用</el-checkbox>
+      <el-select v-model="enabledFilter" size="small" placeholder="状态" style="width: 128px" :empty-values="[null, undefined]">
+        <el-option label="全部启用状态" value="" />
+        <el-option label="启用" value="1" />
+        <el-option label="停用" value="0" />
+      </el-select>
       <span class="ca-tip">出纳账户可自定义名称；关联总账科目后才能生成凭证，未关联的账户可正常录单、查账。</span>
       <el-button type="primary" size="small" @click="startCreate"><el-icon><Plus /></el-icon>新增账户</el-button>
     </div>
@@ -100,7 +104,7 @@ const loading = ref(false)
 const saving = ref(false)
 const kind = ref('')
 const keyword = ref('')
-const showDisabled = ref(false)
+const enabledFilter = ref<'' | '1' | '0'>('')
 const editing = ref<(Partial<CashierAccountRecord> & { journal_count?: number }) | null>(null)
 const foreignCurrencies = ref<Array<{ code: string; name?: string }>>([])
 
@@ -111,7 +115,7 @@ const enabledSwitch = computed({
 const filtered = computed(() => {
   const kw = keyword.value.trim().toLowerCase()
   return rows.value.filter(r => (!kind.value || r.kind === kind.value)
-    && (showDisabled.value || r.is_enabled)
+    && (!enabledFilter.value || (r.is_enabled ? '1' : '0') === enabledFilter.value)
     && (!kw || [r.code, r.name, r.bank_name, r.bank_account_no].some(v => String(v || '').toLowerCase().includes(kw))))
 })
 

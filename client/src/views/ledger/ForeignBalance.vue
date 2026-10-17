@@ -254,7 +254,7 @@
         <template #empty>
           <EmptyState
             type="data"
-            description="暂无数据。请先在「会计科目」里给科目勾选「外币」并选择核算币种。"
+            description="暂无数据。请先在「会计科目」里给科目勾选「外币」。"
           />
         </template>
       </el-table>

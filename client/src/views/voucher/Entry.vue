@@ -1527,7 +1527,7 @@ async function handleSubmit(options?: { keepOpen?: boolean }) {
         return
       }
       if (!(entry.currency_code || (acc as any).currency_code)) {
-        showError(`外币科目「${entry.account_name}」缺少币种`)
+        showError(`外币科目「${entry.account_name}」请选择币种`)
         setCurrentEntry(entry)
         return
       }

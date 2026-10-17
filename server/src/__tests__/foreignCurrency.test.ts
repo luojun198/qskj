@@ -306,6 +306,141 @@ describe('voucherEntry 外币', () => {
     expect(err).toContain('原币')
     testDb.close()
   })
+
+  it('科目缺省 USD 时，凭证可选账套内其他外币', () => {
+    testDb = createFxDb()
+    const accountSetId = uuidv4()
+    testDb
+      .prepare(
+        `INSERT INTO account_sets (id, name, code, fiscal_year, start_date, status)
+         VALUES (?, 'FX', 'FX', 2026, '2026-01-01', 'active')`
+      )
+      .run(accountSetId)
+    createCurrency({ account_set_id: accountSetId, code: 'USD', name: '美元', default_rate: 7 })
+    createCurrency({ account_set_id: accountSetId, code: 'HKD', name: '港币', default_rate: 0.9 })
+    testDb
+      .prepare(
+        `INSERT INTO system_params (id, account_set_id, param_key, param_value)
+         VALUES (?, ?, 'enable_foreign_currency', 'true')`
+      )
+      .run(uuidv4(), accountSetId)
+    const accountId = uuidv4()
+    testDb
+      .prepare(
+        `INSERT INTO accounts (id, account_set_id, code, name, direction, level, is_foreign, currency_code)
+         VALUES (?, ?, '1002001', '银行存款-外币', 'debit', 2, 1, 'USD')`
+      )
+      .run(accountId, accountSetId)
+
+    const err = validateVoucherEntriesForeignCurrency(testDb as any, accountSetId, [
+      {
+        account_id: accountId,
+        account_code: '1002001',
+        account_name: '银行存款-外币',
+        direction: 'debit',
+        amount: 90,
+        currency_code: 'HKD',
+        exchange_rate: 0.9,
+        foreign_amount: 100,
+      },
+    ])
+    expect(err).toBeNull()
+    testDb.close()
+  })
+
+  it('凭证币种不在账套外币类型中时拒绝', () => {
+    testDb = createFxDb()
+    const accountSetId = uuidv4()
+    testDb
+      .prepare(
+        `INSERT INTO account_sets (id, name, code, fiscal_year, start_date, status)
+         VALUES (?, 'FX', 'FX', 2026, '2026-01-01', 'active')`
+      )
+      .run(accountSetId)
+    createCurrency({ account_set_id: accountSetId, code: 'USD', name: '美元', default_rate: 7 })
+    testDb
+      .prepare(
+        `INSERT INTO system_params (id, account_set_id, param_key, param_value)
+         VALUES (?, ?, 'enable_foreign_currency', 'true')`
+      )
+      .run(uuidv4(), accountSetId)
+    const accountId = uuidv4()
+    testDb
+      .prepare(
+        `INSERT INTO accounts (id, account_set_id, code, name, direction, level, is_foreign, currency_code)
+         VALUES (?, ?, '1002001', '银行存款-外币', 'debit', 2, 1, 'USD')`
+      )
+      .run(accountId, accountSetId)
+
+    const err = validateVoucherEntriesForeignCurrency(testDb as any, accountSetId, [
+      {
+        account_id: accountId,
+        account_code: '1002001',
+        account_name: '银行存款-外币',
+        direction: 'debit',
+        amount: 700,
+        currency_code: 'EUR',
+        exchange_rate: 7,
+        foreign_amount: 100,
+      },
+    ])
+    expect(err).toMatch(/EUR/)
+    testDb.close()
+  })
+
+  it('科目缺省币种为空时，凭证上选了外币即可保存', () => {
+    testDb = createFxDb()
+    const accountSetId = uuidv4()
+    testDb
+      .prepare(
+        `INSERT INTO account_sets (id, name, code, fiscal_year, start_date, status)
+         VALUES (?, 'FX', 'FX', 2026, '2026-01-01', 'active')`
+      )
+      .run(accountSetId)
+    createCurrency({ account_set_id: accountSetId, code: 'USD', name: '美元', default_rate: 7 })
+    createCurrency({ account_set_id: accountSetId, code: 'HKD', name: '港币', default_rate: 0.9 })
+    testDb
+      .prepare(
+        `INSERT INTO system_params (id, account_set_id, param_key, param_value)
+         VALUES (?, ?, 'enable_foreign_currency', 'true')`
+      )
+      .run(uuidv4(), accountSetId)
+    const accountId = uuidv4()
+    testDb
+      .prepare(
+        `INSERT INTO accounts (id, account_set_id, code, name, direction, level, is_foreign, currency_code)
+         VALUES (?, ?, '1002001', '银行存款-外币', 'debit', 2, 1, NULL)`
+      )
+      .run(accountId, accountSetId)
+
+    const ok = validateVoucherEntriesForeignCurrency(testDb as any, accountSetId, [
+      {
+        account_id: accountId,
+        account_code: '1002001',
+        account_name: '银行存款-外币',
+        direction: 'debit',
+        amount: 90,
+        currency_code: 'HKD',
+        exchange_rate: 0.9,
+        foreign_amount: 100,
+      },
+    ])
+    expect(ok).toBeNull()
+
+    const missing = validateVoucherEntriesForeignCurrency(testDb as any, accountSetId, [
+      {
+        account_id: accountId,
+        account_code: '1002001',
+        account_name: '银行存款-外币',
+        direction: 'debit',
+        amount: 90,
+        exchange_rate: 0.9,
+        foreign_amount: 100,
+      },
+    ])
+    expect(missing).toMatch(/请选择币种/)
+    testDb.close()
+  })
 })
 
 describe('accountBalanceRebuild + foreign balance query', () => {

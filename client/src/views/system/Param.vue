@@ -321,7 +321,7 @@
                   </el-form-item>
                   <el-form-item label="档案审核">
                     <div class="param-inline-switches">
-                      <span>物料 / 往来单位须审核后才能使用<ParamTip content="开启后，未审核的物料、客户、供应商不出现在单据录入的选择器里，保存单据时也会拦截；已有单据不受影响。关闭时审核只作标记。新增、Excel 导入的档案默认未审核，可在档案列表勾选后批量审核" /></span>
+                      <span>物料 / 往来单位须审核后才能使用<ParamTip content="开启后，未审核的物料、客户、供应商不出现在单据录入的选择器里，保存单据时也会拦截；已有单据不受影响。关闭时未审核档案仍可在单据中选用。无论此开关是否打开：已审核物料不能修改或删除，须先反审核。新增、Excel 导入的档案默认未审核，由「物料 / 往来单位审核与反审核」权限审核" /></span>
                       <el-switch v-model="scmForm.master_audit_required" size="small" inline-prompt active-text="开" inactive-text="关" />
                     </div>
                   </el-form-item>

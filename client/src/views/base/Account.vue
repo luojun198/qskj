@@ -116,13 +116,11 @@
         <el-button plain size="small" @click="handleRepairHierarchy" :loading="repairingHierarchy">
           修复层级
         </el-button>
-        <el-switch
-          v-model="showDisabled"
-          active-text="显示禁用"
-          inactive-text=""
-          class="disabled-switch"
-          @change="fetchData"
-        />
+        <el-select v-model="enabledFilter" size="small" placeholder="状态" class="disabled-switch" style="width: 128px" @change="fetchData" :empty-values="[null, undefined]">
+          <el-option label="全部启用状态" value="" />
+          <el-option label="启用" value="1" />
+          <el-option label="禁用" value="0" />
+        </el-select>
       </div>
     </div>
 
@@ -190,7 +188,11 @@
       </el-table-column>
       <el-table-column label="外币" column-key="外币" :width="getColumnWidth('外币', 72)" align="center">
         <template #default="{ row }">
-          <span v-if="row.is_foreign" class="mini-flag">{{ row.currency_code || '是' }}</span>
+          <span
+            v-if="row.is_foreign"
+            class="mini-flag"
+            :title="row.currency_code ? `缺省 ${row.currency_code}，凭证可改选其他外币` : '已启用外币'"
+          >{{ row.currency_code || '是' }}</span>
         </template>
       </el-table-column>
       <el-table-column label="数量" column-key="数量" :width="getColumnWidth('数量', 72)" align="center">
@@ -428,7 +430,7 @@ const accountAuxSelect = useVoucherAuxItems()
 const list = ref<any[]>([])
 const keyword = ref('')
 const quickFilterValues = ref<string[]>([])
-const showDisabled = ref(false)
+const enabledFilter = ref<'' | '1' | '0'>('')
 const tableRef = ref<any>(null)
 const dialogVisible = ref(false)
 const dialogType = ref<'add' | 'edit'>('add')
@@ -623,7 +625,7 @@ async function fetchData() {
   // 每次整页刷新（含账套切换后重新进入）都重新加载辅助类别，避免跨账套缓存复用
   auxCategoriesLoaded.value = false
   await performanceMonitor.measure('fetchAccountData', async () => {
-    const params: any = { is_enabled: showDisabled.value ? '' : 1, all: 1 }
+    const params: any = { is_enabled: enabledFilter.value, all: 1 }
     if (keyword.value) params.keyword = keyword.value
     const [accRes, allAccRes, paramRes] = await Promise.all([
       request.get<any[]>('/base/accounts', { params }),

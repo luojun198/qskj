@@ -172,7 +172,7 @@ export function applyAssetChange(params: ApplyChangeParams): ApplyChangeResult {
   }
   assertPeriodOpen(db, accountSetId, year, period)
   assertNotBeforeGlStart(db, accountSetId, changeDate, '变动日期')
-  assertNotAfterCurrentPeriod(year, period, '变动日期')
+  assertNotAfterCurrentPeriod(year, period, '变动日期', db, accountSetId)
   assertNotBeforeLastDepr(db, accountSetId, asset.asset_no, year, period)
 
   const ctx: ChangeContext = {

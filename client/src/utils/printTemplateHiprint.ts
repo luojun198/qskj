@@ -9,6 +9,7 @@ import {
   createVoucherPrintProvider,
   VOUCHER_SUMMARY_FORMATTER_SRC,
   VOUCHER_SUMMARY_LABEL_FORMATTER_SRC,
+  VOUCHER_FX_CELL_FORMATTER_SRC,
   VOUCHER_TABLE_FIELD,
   applyVoucherHeaderAlign,
   applyVoucherTableRows,
@@ -262,6 +263,10 @@ function injectSummaryFormatterInColumns(columns: unknown): unknown {
     if (!col || typeof col !== 'object') return entry
     if (Array.isArray((col as { columns?: unknown }).columns)) {
       return { ...col, columns: injectSummaryFormatterInColumns((col as { columns: unknown }).columns) }
+    }
+    if (col.field === 'fx_cell' && !col.renderFormatter) {
+      // 复币格：注入「币种 | USD / 金额」渲染函数（该列不参与合计，合计行里被「合计」标签格跨过）
+      return { ...col, renderFormatter: VOUCHER_FX_CELL_FORMATTER_SRC }
     }
     if (col.tableSummaryFormatter) return entry
     if (col.tableSummary === 'sum') return { ...col, tableSummaryFormatter: VOUCHER_SUMMARY_FORMATTER_SRC }
@@ -800,6 +805,8 @@ export function fitVoucherTableCells(container: HTMLElement): number {
   cells.forEach(td => {
     if (!td.textContent || !td.textContent.trim()) return
     if (td.querySelector(':scope > .cw-cell-fit')) return
+    // 复币凭证「币种 | 外币金额」格自带两段排版，不参与缩字折行
+    if (td.querySelector('.cw-fx-cell')) return
     const cs = win.getComputedStyle(td)
     // 单元格 height 是 border-box；合并边框下 computed border 读出来是 0，实际仍占 1px，统一预留
     const padV = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom) + FIT_BORDER_ALLOWANCE_PX

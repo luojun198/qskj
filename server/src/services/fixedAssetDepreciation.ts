@@ -19,6 +19,7 @@ import {
   type AssetAuxSubject,
 } from './assetVoucherBuilder.js'
 import { createAccountAuxRequirementLookup } from './auxRequirement.js'
+import { createPostingAccountResolver } from './assetAccountResolver.js'
 
 export interface DeprAsset {
   id: string
@@ -339,6 +340,15 @@ export function generateDeprVoucher(params: {
   if (lines.length === 0) throw new Error('无折旧明细，无法生成凭证')
 
   const auxContext = loadAssetAuxContext(db, accountSetId)
+  // 类别里绑的累计折旧 / 费用科目后来加了明细时，不能再记在上级科目上
+  const resolvePosting = createPostingAccountResolver(db, accountSetId)
+  const expenseOf = (raw: string | null | undefined) =>
+    resolvePosting(raw || '660201', { role: '折旧费用科目' })
+  const accumOf = (raw: string | null | undefined) =>
+    resolvePosting(raw || deprAccumAccount || '1602', {
+      preferred: deprAccumAccount,
+      role: '累计折旧科目',
+    })
 
   // 资产 → 辅助核算引用（部门/使用人）缓存，避免逐行重复查库
   const refsCache = new Map<string, Record<string, string>>()
@@ -373,7 +383,7 @@ export function generateDeprVoucher(params: {
 
   const expenseGroups = new Map<string, DeprGroup>()
   for (const ln of lines) {
-    const accountCode = ln.expense_account || '660201'
+    const accountCode = expenseOf(ln.expense_account)
     const refs = auxRefsForAccount(db, accountSetId, accountCode, refsOf(ln), auxContext)
     const key = groupKey(accountCode, refs)
     const hit = expenseGroups.get(key)
@@ -384,7 +394,7 @@ export function generateDeprVoucher(params: {
   // 贷方：按「累计折旧科目 + 辅助核算项」汇总（优先类别配置，无则用传入默认值）
   const accumGroups = new Map<string, DeprGroup>()
   for (const ln of lines) {
-    const accountCode = ln.depr_account_code || deprAccumAccount || '1602'
+    const accountCode = accumOf(ln.depr_account_code)
     const refs = auxRefsForAccount(db, accountSetId, accountCode, refsOf(ln), auxContext)
     const key = groupKey(accountCode, refs)
     const hit = accumGroups.get(key)
@@ -402,7 +412,7 @@ export function generateDeprVoucher(params: {
     checkedAssets.add(ln.asset_no)
     const row = (assetFull.get(accountSetId, ln.asset_no) as AssetAuxSubject | undefined) || { asset_no: ln.asset_no, asset_name: ln.asset_name, dept_code: ln.dept_code }
     const issues = assetAuxIssues(db, accountSetId, auxContext, auxLookup, row,
-      [ln.expense_account || '660201', ln.depr_account_code || deprAccumAccount || '1602'])
+      [expenseOf(ln.expense_account), accumOf(ln.depr_account_code)])
     if (issues.length) auxProblems.push({ asset: row, issues })
   }
   if (auxProblems.length) throw new Error(formatAssetAuxIssues(auxProblems))

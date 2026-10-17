@@ -230,6 +230,91 @@ describe('固定资产折旧引擎', () => {
       expect(debit).toBe(900)
     })
 
+    it('类别仍绑一级 1602、其下已有两个明细时，用本次指定的明细科目', () => {
+      insertAccounts(db, [
+        ['1602001', '累计折旧'],
+        ['1602002', '累计折旧'],
+      ])
+      seedAsset()
+      const lines = preview(2026, 2)
+      const result = generateDeprVoucher({
+        db,
+        accountSetId: SET_ID,
+        year: 2026,
+        month: 2,
+        lines,
+        deprAccumAccount: '1602001',
+        makerName: '测试',
+      })
+      const credit = db
+        .prepare("SELECT account_code FROM voucher_entries WHERE voucher_id=? AND direction='credit'")
+        .get(result.voucherId) as { account_code: string }
+      expect(credit.account_code).toBe('1602001')
+    })
+
+    it('一级 1602 下有多个明细且未指定时，列出明细并拒绝记在上级上', () => {
+      insertAccounts(db, [
+        ['1602001', '累计折旧'],
+        ['1602002', '累计折旧'],
+      ])
+      seedAsset()
+      const lines = preview(2026, 2)
+      expect(() =>
+        generateDeprVoucher({
+          db,
+          accountSetId: SET_ID,
+          year: 2026,
+          month: 2,
+          lines,
+          deprAccumAccount: '1602',
+          makerName: '测试',
+        })
+      ).toThrow(/1602001[\s\S]*1602002/)
+      expect(db.prepare('SELECT COUNT(*) c FROM vouchers').get()).toEqual({ c: 0 })
+    })
+
+    it('一级科目下只有一个明细时，自动改记到该明细', () => {
+      insertAccounts(db, [['1602001', '累计折旧']])
+      seedAsset()
+      const lines = preview(2026, 2)
+      const result = generateDeprVoucher({
+        db,
+        accountSetId: SET_ID,
+        year: 2026,
+        month: 2,
+        lines,
+        deprAccumAccount: '1602',
+        makerName: '测试',
+      })
+      const credit = db
+        .prepare("SELECT account_code FROM voucher_entries WHERE voucher_id=? AND direction='credit'")
+        .get(result.voucherId) as { account_code: string }
+      expect(credit.account_code).toBe('1602001')
+    })
+
+    it('类别已是明细科目时，不改用本次另外指定的科目', () => {
+      insertAccounts(db, [
+        ['1602001', '房屋累计折旧'],
+        ['1602002', '设备累计折旧'],
+      ])
+      db.prepare("UPDATE fixed_asset_category SET depr_account_code='1602001'").run()
+      seedAsset()
+      const lines = preview(2026, 2)
+      const result = generateDeprVoucher({
+        db,
+        accountSetId: SET_ID,
+        year: 2026,
+        month: 2,
+        lines,
+        deprAccumAccount: '1602002',
+        makerName: '测试',
+      })
+      const credit = db
+        .prepare("SELECT account_code FROM voucher_entries WHERE voucher_id=? AND direction='credit'")
+        .get(result.voucherId) as { account_code: string }
+      expect(credit.account_code).toBe('1602001')
+    })
+
     it('科目不存在时抛出明确提示，不生成半截凭证', () => {
       db.prepare("DELETE FROM accounts WHERE code='660201'").run()
       seedAsset()

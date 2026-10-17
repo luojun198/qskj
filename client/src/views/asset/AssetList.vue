@@ -28,48 +28,59 @@
       <el-divider direction="vertical" />
       <el-input v-model="filters.keyword" size="small" clearable placeholder="编号 / 名称" style="width:160px"
         @keyup.enter="onFilterChange" @clear="onFilterChange" />
-      <el-select v-model="filters.category_code" size="small" clearable placeholder="资产类别" style="width:130px" @change="onFilterChange">
+      <el-select v-model="filters.category_code" size="small" placeholder="资产类别" style="width:130px" @change="onFilterChange" :empty-values="[null, undefined]">
+        <el-option label="全部资产类别" value="" />
         <el-option v-for="c in dicts.category" :key="c.code" :label="c.name" :value="c.code" />
       </el-select>
-      <el-select v-model="filters.status_code" size="small" clearable placeholder="使用状态" style="width:120px" @change="onFilterChange">
+      <el-select v-model="filters.status_code" size="small" placeholder="使用状态" style="width:128px" @change="onFilterChange" :empty-values="[null, undefined]">
+        <el-option label="全部使用状态" value="" />
         <el-option v-for="c in dicts.status" :key="c.code" :label="c.name" :value="c.code" />
       </el-select>
-      <el-select v-model="filters.dept_code" size="small" clearable placeholder="使用部门" style="width:130px" @change="onFilterChange">
+      <el-select v-model="filters.dept_code" size="small" placeholder="使用部门" style="width:130px" @change="onFilterChange" :empty-values="[null, undefined]">
+        <el-option label="全部使用部门" value="" />
         <el-option v-for="c in dicts.dept" :key="c.code" :label="c.name" :value="c.code" />
       </el-select>
+      <!-- 第七份反馈：增加查询条件 -->
+      <el-select v-model="filters.purpose_code" size="small" placeholder="用途" style="width:118px" @change="onFilterChange" :empty-values="[null, undefined]">
+        <el-option label="全部用途" value="" />
+        <el-option v-for="c in dicts.purpose" :key="c.code" :label="c.name" :value="c.code" />
+      </el-select>
+      <el-select v-model="filters.depr_method" size="small" placeholder="折旧方法" style="width:128px" @change="onFilterChange" :empty-values="[null, undefined]">
+        <el-option label="全部折旧方法" value="" />
+        <el-option v-for="(label, val) in DEPR_METHODS" :key="val" :label="label" :value="val" />
+      </el-select>
+      <el-select v-model="filters.disposed" size="small" style="width:118px" @change="onFilterChange" :empty-values="[null, undefined]">
+        <el-option label="全部卡片" value="" />
+        <el-option label="在用（未处置）" value="0" />
+        <el-option label="已处置" value="1" />
+      </el-select>
+      <el-date-picker v-model="filters.acquire_range" type="daterange" size="small" value-format="YYYY-MM-DD"
+        start-placeholder="购置日期起" end-placeholder="购置日期止" range-separator="至" style="width:230px" @change="onFilterChange" />
       <el-button size="small" type="primary" plain @click="onFilterChange"><el-icon><Search /></el-icon>查询</el-button>
+      <el-button size="small" :icon="Setting" @click="columnDialogVisible = true">列设置</el-button>
     </div>
     <div ref="tableContainerRef" class="table-container">
       <el-table ref="tableRef" :data="list" :height="tableHeight" border stripe size="small" class="compact-data-table"
         highlight-current-row @row-dblclick="openEdit" @header-dragend="onDragEnd"
         @selection-change="rows => (selection = rows)">
         <el-table-column type="selection" width="42" />
-        <el-table-column label="资产编号" prop="asset_no" :width="cw('asset_no', 120)" />
-        <el-table-column label="资产名称" prop="asset_name" :width="cw('asset_name', 150)" show-overflow-tooltip />
-        <el-table-column label="类别" prop="category_name" :width="cw('category_name', 100)" />
-        <el-table-column label="状态" :width="cw('status_code', 80)">
+        <!-- 第七份反馈：列表列参照润衡「能多不能少」，卡片字段都可在「列设置」里勾选显示 / 隐藏、调整顺序 -->
+        <el-table-column
+          v-for="col in visibleDataColumns"
+          :key="col.key"
+          :column-key="col.key"
+          :label="col.label"
+          :width="cw(col.key, ASSET_COL_DEFS[col.key]?.width || 100)"
+          :align="ASSET_COL_DEFS[col.key]?.align || 'left'"
+          show-overflow-tooltip
+        >
           <template #default="{ row }">
-            <el-tag :type="statusTagType(row.status_code)" size="small">{{ row.status_name || row.status_code }}</el-tag>
+            <el-tag v-if="col.key === 'status_code'" :type="statusTagType(row.status_code)" size="small">{{ row.status_name || row.status_code }}</el-tag>
+            <template v-else>{{ assetCellText(row, col.key) }}</template>
           </template>
         </el-table-column>
-        <el-table-column label="使用部门" prop="dept_name" :width="cw('dept_name', 110)" />
-        <el-table-column label="购置日期" prop="acquire_date" :width="cw('acquire_date', 105)" />
-        <el-table-column label="原值" prop="original_value" :width="cw('original_value', 110)" align="right">
-          <template #default="{ row }">{{ fmtAmt(row.original_value) }}</template>
-        </el-table-column>
-        <el-table-column label="累计折旧" prop="accum_depr" :width="cw('accum_depr', 110)" align="right">
-          <template #default="{ row }">{{ fmtAmt(row.accum_depr) }}</template>
-        </el-table-column>
-        <el-table-column label="净值" prop="net_value" :width="cw('net_value', 110)" align="right">
-          <template #default="{ row }">{{ fmtAmt(row.net_value) }}</template>
-        </el-table-column>
-        <el-table-column label="折旧方法" prop="depr_method" :width="cw('depr_method', 110)">
-          <template #default="{ row }">{{ DEPR_METHODS[row.depr_method] || row.depr_method }}</template>
-        </el-table-column>
-        <el-table-column label="已提月数" prop="depr_months_done" :width="cw('depr_months_done', 80)" align="center" />
-        <el-table-column label="使用人" prop="user_name" :width="cw('user_name', 90)" />
         <!-- 新增资产凭证：参照金蝶卡片列表，凭证号可点开，可删除（只删凭证，卡片保留，可重新生成） -->
-        <el-table-column label="新增资产凭证" :width="cw('purchase_voucher', 150)" align="center">
+        <el-table-column v-if="columnVisible('purchase_voucher')" label="新增资产凭证" :width="cw('purchase_voucher', 150)" align="center">
           <template #default="{ row }">
             <template v-if="(row as any).purchase_voucher">
               <el-link type="primary" :underline="false" @click.stop="openPurchaseVoucher(row)">{{ purchaseVoucherLabel(row) }}</el-link>
@@ -104,6 +115,8 @@
       />
     </div>
 
+    <ColumnSettingsDialog v-model="columnDialogVisible" :columns="columnSettings" @update:columns="updateColumns" @reset="resetColumns" />
+
     <!-- 新增/编辑弹窗 -->
     <el-dialog v-model="dialogVisible" :title="editId ? '编辑固定资产' : '新增固定资产'" width="800px" draggable :close-on-click-modal="false">
       <div v-if="editId && navigationInfo" style="margin-bottom: 8px; border-bottom: 1px solid var(--el-border-color-lighter); padding-bottom: 6px;">
@@ -127,6 +140,17 @@
             <el-col :span="12">
               <el-form-item label="资产名称" required>
                 <el-input v-model="form.asset_name" />
+              </el-form-item>
+            </el-col>
+            <!-- v169 第七份反馈：参照润衡卡片补充 -->
+            <el-col :span="12">
+              <el-form-item label="规格型号">
+                <el-input v-model="form.spec" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="参考编号">
+                <el-input v-model="form.ref_no" />
               </el-form-item>
             </el-col>
             <el-col :span="12">
@@ -264,8 +288,18 @@
               </el-form-item>
             </el-col>
             <el-col :span="8">
-              <el-form-item label="安装地点">
+              <el-form-item label="存放地点">
                 <el-input v-model="form.install_place" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="16">
+              <el-form-item label="制造厂家">
+                <el-input v-model="form.manufacturer" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="8">
+              <el-form-item label="制造日期">
+                <el-date-picker v-model="form.manufacture_date" type="date" value-format="YYYY-MM-DD" style="width:100%" />
               </el-form-item>
             </el-col>
             <el-col :span="24">
@@ -428,15 +462,14 @@
 import { todayStr } from '@/utils/format'
 import { confirmRenumberAfterDelete } from '@/composables/useRenumberPrompt'
 
-/** P1-20：变动 / 处置 / 盘点日期不得晚于当前月份（与后端同口径） */
+/** P1-20：变动 / 处置 / 盘点日期不得晚于当前期间（自然月或已结账下一期，与后端同口径） */
 function disableFutureMonth(date: Date): boolean {
-  const now = new Date()
   // 同时禁选总账开账日期之前的日子（后端同样拦截）
-  return date.getFullYear() * 100 + date.getMonth() > now.getFullYear() * 100 + now.getMonth() || isBeforeGlStart(date)
+  return isAfterWritablePeriod(date) || isBeforeGlStart(date)
 }
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useGlStartDate } from '@/composables/useGlStartDate'
-const { isBeforeGlStart } = useGlStartDate()
+const { isBeforeGlStart, isAfterWritablePeriod } = useGlStartDate()
 import { useRouter } from 'vue-router'
 import { useReloadOnActivated } from '@/composables/useReloadOnActivated'
 import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
@@ -449,6 +482,8 @@ import HiprintDialog from '@/components/print/HiprintDialog.vue'
 import { buildQrMap, buildAssetCardHtml, buildAssetLabelHtml } from '@/utils/assetCardPrint'
 import AccountSelect from '@/components/base/AccountSelect.vue'
 import DialogNavigation from '@/components/common/DialogNavigation.vue'
+import ColumnSettingsDialog from '@/components/common/ColumnSettingsDialog.vue'
+import { loadColumnSettings, saveColumnSettings, type ColumnSetting } from '@/utils/columnSettings'
 
 const { tableRef: colWidthTableRef, colWidth, onDragEnd } = useListColumnWidth('asset_list')
 const { containerRef: tableContainerRef, tableHeight } = useFillHeightTable()
@@ -561,7 +596,97 @@ async function openPrint(mode: 'card' | 'label') {
   printVisible.value = true
 }
 const dicts = ref<AssetDicts>({ category: [], status: [], purpose: [], dept: [] } as any)
-const filters = reactive({ keyword: '', category_code: '', status_code: '', dept_code: '' })
+const filters = reactive({
+  keyword: '', category_code: '', status_code: '', dept_code: '',
+  purpose_code: '', depr_method: '', disposed: '', acquire_range: null as [string, string] | null,
+})
+/** 列表 / 导出共用的查询参数 */
+function cardQueryParams() {
+  return {
+    keyword: filters.keyword || undefined,
+    category_code: filters.category_code || undefined,
+    status_code: filters.status_code || undefined,
+    dept_code: filters.dept_code || undefined,
+    purpose_code: filters.purpose_code || undefined,
+    depr_method: filters.depr_method || undefined,
+    disposed: filters.disposed || undefined,
+    acquire_from: filters.acquire_range?.[0] || undefined,
+    acquire_to: filters.acquire_range?.[1] || undefined,
+  }
+}
+
+// ── 列设置（第七份反馈：卡片上的字段都能显示在列表，哪些显示由列设置控制）──
+type ColKind = 'text' | 'amount' | 'number' | 'rate'
+interface AssetColDef { label: string; width: number; align?: 'left' | 'right' | 'center'; kind?: ColKind; required?: boolean; visible?: boolean }
+const ASSET_COL_DEFS: Record<string, AssetColDef> = {
+  asset_no: { label: '资产编号', width: 120, required: true, visible: true },
+  asset_name: { label: '资产名称', width: 150, required: true, visible: true },
+  spec: { label: '规格型号', width: 130, visible: true },
+  ref_no: { label: '参考编号', width: 100 },
+  card_no: { label: '卡片号', width: 100 },
+  category_name: { label: '类别', width: 100, visible: true },
+  status_code: { label: '状态', width: 80, visible: true },
+  dept_name: { label: '使用部门', width: 110, visible: true },
+  purpose_name: { label: '用途', width: 90, visible: true },
+  depr_method: { label: '折旧方法', width: 110, visible: true },
+  use_months: { label: '使用总月数', width: 90, align: 'center', kind: 'number', visible: true },
+  depr_months_done: { label: '已提月数', width: 80, align: 'center', kind: 'number', visible: true },
+  remain_months: { label: '剩余月数', width: 80, align: 'center', kind: 'number' },
+  original_value: { label: '原值', width: 110, align: 'right', kind: 'amount', visible: true },
+  accum_depr: { label: '累计折旧', width: 110, align: 'right', kind: 'amount', visible: true },
+  net_value: { label: '净值', width: 110, align: 'right', kind: 'amount', visible: true },
+  last_month_depr: { label: '月折旧额', width: 100, align: 'right', kind: 'amount', visible: true },
+  salvage_rate: { label: '残值率', width: 80, align: 'right', kind: 'rate' },
+  salvage_value: { label: '预计净残值', width: 100, align: 'right', kind: 'amount' },
+  impairment_amount: { label: '减值准备', width: 100, align: 'right', kind: 'amount' },
+  total_workload: { label: '总工作量', width: 90, align: 'right', kind: 'number' },
+  workload_done: { label: '已完成工作量', width: 100, align: 'right', kind: 'number' },
+  acquire_date: { label: '购置日期', width: 105, visible: true },
+  start_depr_date: { label: '起折日期', width: 105 },
+  qty: { label: '数量', width: 70, align: 'right', kind: 'number' },
+  unit: { label: '计量单位', width: 80 },
+  user_name: { label: '使用人', width: 90, visible: true },
+  keeper: { label: '保管人', width: 90 },
+  install_place: { label: '存放地点', width: 120 },
+  manufacturer: { label: '制造厂家', width: 140 },
+  manufacture_date: { label: '制造日期', width: 105 },
+  foreign_value: { label: '外币原值', width: 100, align: 'right', kind: 'amount' },
+  scrap_date: { label: '处置日期', width: 105 },
+  remark: { label: '备注', width: 150 },
+  purchase_voucher: { label: '新增资产凭证', width: 150, visible: true },
+}
+const STORAGE_KEY_COLS = 'asset_list_columns_v1'
+const defaultColumnSettings = (): ColumnSetting[] =>
+  Object.entries(ASSET_COL_DEFS).map(([key, d]) => ({ key, label: d.label, visible: !!d.visible || !!d.required, required: d.required }))
+const columnDialogVisible = ref(false)
+const columnSettings = ref<ColumnSetting[]>(loadColumnSettings(STORAGE_KEY_COLS, defaultColumnSettings()))
+function updateColumns(columns: ColumnSetting[]) {
+  columnSettings.value = columns
+  saveColumnSettings(STORAGE_KEY_COLS, columns)
+}
+function resetColumns() { updateColumns(defaultColumnSettings()) }
+function columnVisible(key: string) { return columnSettings.value.some(c => c.key === key && c.visible) }
+/** 数据列（「新增资产凭证」带链接按钮，单独渲染，固定在操作列前） */
+const visibleDataColumns = computed(() => columnSettings.value.filter(c => c.visible && c.key !== 'purchase_voucher'))
+
+function assetCellValue(row: any, key: string): unknown {
+  if (key === 'remain_months') {
+    if (row.use_months == null || row.depr_method === '2') return null
+    return Math.max(0, Number(row.use_months) - Number(row.depr_months_done || 0))
+  }
+  if (key === 'depr_method') return (DEPR_METHODS as Record<string, string>)[row.depr_method] || row.depr_method || ''
+  if (key === 'status_code') return row.status_name || row.status_code || ''
+  if (key === 'foreign_value' && !row.is_foreign) return null
+  return row[key]
+}
+function assetCellText(row: any, key: string): string {
+  const v = assetCellValue(row, key)
+  if (v === null || v === undefined || v === '') return ''
+  const kind = ASSET_COL_DEFS[key]?.kind
+  if (kind === 'amount') return fmtAmt(Number(v) || 0)
+  if (kind === 'rate') return `${Math.round(Number(v) * 10000) / 100}%`
+  return String(v)
+}
 const pagination = reactive({ page: 1, page_size: 20, total: 0 })
 
 const dialogVisible = ref(false)
@@ -653,10 +778,7 @@ async function deletePurchaseVoucher(row: any) {
 
 async function handleQuery() {
   const res = await fixedAssetApi.getCards({
-    keyword: filters.keyword || undefined,
-    category_code: filters.category_code || undefined,
-    status_code: filters.status_code || undefined,
-    dept_code: filters.dept_code || undefined,
+    ...cardQueryParams(),
     page: pagination.page,
     page_size: pagination.page_size,
   })
@@ -683,10 +805,7 @@ async function exportExcel() {
       // 无勾选：按当前筛选条件循环翻页取全部（列表接口一次只返回一页）
       for (let page = 1; ; page++) {
         const res = await fixedAssetApi.getCards({
-          keyword: filters.keyword || undefined,
-          category_code: filters.category_code || undefined,
-          status_code: filters.status_code || undefined,
-          dept_code: filters.dept_code || undefined,
+          ...cardQueryParams(),
           page,
           page_size: EXPORT_PAGE_SIZE,
         })
@@ -696,29 +815,32 @@ async function exportExcel() {
       }
     }
     if (!rows.length) return ElMessage.warning('没有可导出的资产卡片')
-    const sum = (key: 'original_value' | 'accum_depr' | 'net_value') => Math.round(rows.reduce((t, r) => t + (Number((r as any)[key]) || 0), 0) * 100) / 100
-    const text = (key: string, w = 14): ExportColumnDef => ({ label: '', width: w, type: 'text', align: 'left', value: (r: any) => r[key] ?? '' })
-    const columns: ExportColumnDef[] = [
-      { ...text('asset_no', 14), label: '资产编号' },
-      { ...text('asset_name', 24), label: '资产名称' },
-      { ...text('category_name'), label: '类别' },
-      { label: '状态', width: 10, type: 'text', align: 'left', value: (r: any) => r.status_name || r.status_code || '' },
-      { ...text('dept_name'), label: '使用部门' },
-      { ...text('acquire_date', 13), label: '购置日期' },
-      { label: '原值', width: 14, type: 'amount', align: 'right', value: (r: any) => Number(r.original_value) || 0 },
-      { label: '累计折旧', width: 14, type: 'amount', align: 'right', value: (r: any) => Number(r.accum_depr) || 0 },
-      { label: '净值', width: 14, type: 'amount', align: 'right', value: (r: any) => Number(r.net_value) || 0 },
-      { label: '折旧方法', width: 14, type: 'text', align: 'left', value: (r: any) => (DEPR_METHODS as Record<string, string>)[r.depr_method] || r.depr_method || '' },
-      { label: '已提月数', width: 10, type: 'number', align: 'right', value: (r: any) => Number(r.depr_months_done) || 0 },
-      { ...text('user_name', 12), label: '使用人' },
-    ]
+    // 导出列跟随列设置（顺序、显隐与列表一致）
+    const exportCols = columnSettings.value.filter(c => c.visible)
+    const columns: ExportColumnDef[] = exportCols.map(c => {
+      const d = ASSET_COL_DEFS[c.key]
+      const label = d?.label || c.label
+      if (c.key === 'purchase_voucher') {
+        return { label, width: 16, type: 'text', align: 'left', value: (r: any) => purchaseVoucherLabel(r) }
+      }
+      if (d?.kind === 'amount' || d?.kind === 'number') {
+        return {
+          label, width: d.kind === 'amount' ? 14 : 10, type: d.kind, align: 'right',
+          value: (r: any) => { const v = assetCellValue(r, c.key); return v == null || v === '' ? '' : Number(v) || 0 },
+        }
+      }
+      return { label, width: Math.max(10, Math.round((d?.width || 100) / 8)), type: 'text', align: 'left', value: (r: any) => assetCellText(r, c.key) }
+    })
+    const SUM_KEYS = new Set(['original_value', 'accum_depr', 'net_value', 'last_month_depr', 'salvage_value', 'impairment_amount'])
+    const summaryValues = exportCols.map((c, idx) =>
+      idx === 0 ? '合计' : SUM_KEYS.has(c.key) ? Math.round(rows.reduce((t, r) => t + (Number((r as any)[c.key]) || 0), 0) * 100) / 100 : '')
     await exportStyledTable({
       fileName: '资产卡片',
       title: '资产卡片',
       subtitle: selection.value.length ? `勾选 ${rows.length} 张` : `共 ${rows.length} 张`,
       columns,
       rows,
-      summaryValues: ['合计', '', '', '', '', '', sum('original_value'), sum('accum_depr'), sum('net_value'), '', '', ''],
+      summaryValues,
     })
   } finally { exporting.value = false }
 }

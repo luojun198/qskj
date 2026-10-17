@@ -356,3 +356,104 @@ describe('期末调汇 fxRevaluation', () => {
     expect(foreignRow(testDb, USD_ACC).end_balance).toBe(725)
   })
 })
+
+describe('期末调汇：带辅助核算的外币科目按辅助项目拆分', () => {
+  const AR_ACC = 'acc-ar-usd'
+  const CAT = 'cat-customer'
+
+  /** 造一张已过账凭证：外币科目（带客户辅助）+ 本位币对方科目 */
+  function seedAuxVoucher(
+    db: Database.Database,
+    id: string,
+    customerId: string,
+    direction: 'debit' | 'credit',
+    foreign: number,
+    base: number,
+    period = 3
+  ) {
+    db.prepare(
+      `INSERT INTO vouchers (id, account_set_id, voucher_no, voucher_type_id, voucher_date, year, period, status, total_amount)
+       VALUES (?, ?, ?, 'vt-jz', ?, 2026, ?, 'posted', ?)`
+    ).run(id, SET, id, `2026-${String(period).padStart(2, '0')}-10`, period, base)
+    const aux = JSON.stringify({ customer: { id: customerId, name: customerId } })
+    const ins = db.prepare(
+      `INSERT INTO voucher_entries (id, account_set_id, voucher_id, seq, account_id, account_code, account_name,
+         direction, amount, currency_code, exchange_rate, foreign_amount, aux_data)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    ins.run(`${id}-e1`, SET, id, 1, AR_ACC, '1122', '应收账款', direction, base, 'USD', base / foreign, foreign, aux)
+    ins.run(`${id}-e2`, SET, id, 2, CASH_ACC, '1001', '库存现金', direction === 'debit' ? 'credit' : 'debit', base, null, null, null, null)
+  }
+
+  beforeEach(() => {
+    testDb = createDb()
+    testDb.prepare(
+      `INSERT INTO system_params (id, account_set_id, param_key, param_value) VALUES ('p-gain', ?, 'exchange_gain_account_code', '6603')`
+    ).run(SET)
+    testDb.prepare(`INSERT INTO aux_categories (id, account_set_id, code, name) VALUES (?, ?, 'customer', '往来单位')`).run(CAT, SET)
+    const insItem = testDb.prepare(
+      `INSERT INTO aux_items (id, account_set_id, type, code, name) VALUES (?, ?, ?, ?, ?)`
+    )
+    insItem.run('cu-a', SET, CAT, 'A', '甲公司')
+    insItem.run('cu-b', SET, CAT, 'B', '乙公司')
+    testDb
+      .prepare(
+        `INSERT INTO accounts (id, account_set_id, code, name, direction, level, is_foreign, currency_code, is_aux, aux_types)
+         VALUES (?, ?, '1122', '应收账款', 'debit', 1, 1, 'USD', 1, ?)`
+      )
+      .run(AR_ACC, SET, JSON.stringify({ [CAT]: null }))
+    // 期末汇率 6.6
+    testDb.prepare(`UPDATE currencies SET end_rate = 6.6 WHERE id = 'c-usd'`).run()
+  })
+  afterEach(() => testDb.close())
+
+  it('每个客户各自重估，分录带客户辅助项，调汇凭证可正常过账', () => {
+    seedAuxVoucher(testDb, 'v-a', 'cu-a', 'debit', 1000, 7000) // 甲 USD1000 账面7000 → 6600，-400
+    seedAuxVoucher(testDb, 'v-b', 'cu-b', 'debit', 500, 3550) // 乙 USD500 账面3550 → 3300，-250
+    seedAuxVoucher(testDb, 'v-b2', 'cu-b', 'credit', 300, 2070) // 乙收款 USD300 账面-2070 → 乙余额 USD200 账面1480 → 1320，-160
+
+    const preview = previewFxRevaluation({ db: testDb, accountSetId: SET, year: 2026, period: 3 })
+    expect(preview.blockedReason).toBeNull()
+    expect(preview.rows).toHaveLength(2)
+    const a = preview.rows.find(r => r.aux_label?.includes('甲公司'))!
+    const b = preview.rows.find(r => r.aux_label?.includes('乙公司'))!
+    expect([a.foreign_end_balance, a.book_base_balance, a.adjustment]).toEqual([1000, 7000, -400])
+    expect([b.foreign_end_balance, b.book_base_balance, b.adjustment]).toEqual([200, 1480, -160])
+    expect(preview.totalLoss).toBe(560)
+    const arEntries = preview.entries.filter(e => e.account_id === AR_ACC)
+    expect(arEntries.map(e => e._customer_id).sort()).toEqual(['cu-a', 'cu-b'])
+    expect(arEntries.every(e => e.direction === 'credit')).toBe(true)
+
+    const run = runFxRevaluation({ db: testDb, accountSetId: SET, year: 2026, period: 3 })
+    expect(run.error).toBeNull()
+    expect(run.entryCount).toBe(4)
+    // 过账后科目余额 = 原币 1200 × 6.6
+    expect(foreignRow(testDb, AR_ACC).end_balance).toBe(7920)
+    const saved = testDb
+      .prepare(`SELECT aux_data FROM voucher_entries WHERE voucher_id = ? AND account_id = ?`)
+      .all(run.voucherId, AR_ACC) as Array<{ aux_data: string }>
+    expect(saved.map(r => Object.keys(JSON.parse(r.aux_data)))).toEqual([['customer'], ['customer']])
+
+    // 反调汇后回到调汇前
+    expect(revokeFxRevaluation({ db: testDb, accountSetId: SET, year: 2026, period: 3 }).error).toBeNull()
+    expect(foreignRow(testDb, AR_ACC).end_balance).toBe(8480)
+  })
+
+  it('某客户余额缺少辅助项目（历史无辅助数据）时跳过并提示，而不是生成无法过账的凭证', () => {
+    seedAuxVoucher(testDb, 'v-a', '', 'debit', 1000, 7000)
+    const preview = previewFxRevaluation({ db: testDb, accountSetId: SET, year: 2026, period: 3 })
+    expect(preview.rows).toHaveLength(1)
+    expect(preview.rows[0].skip_reason).toContain('辅助')
+    expect(preview.entries).toHaveLength(0)
+  })
+
+  it('汇兑损益科目启用辅助核算时拦截', () => {
+    testDb
+      .prepare(`UPDATE accounts SET is_aux = 1, aux_types = ? WHERE id = 'acc-6603'`)
+      .run(JSON.stringify({ [CAT]: null }))
+    seedAuxVoucher(testDb, 'v-a', 'cu-a', 'debit', 1000, 7000)
+    const preview = previewFxRevaluation({ db: testDb, accountSetId: SET, year: 2026, period: 3 })
+    expect(preview.blockedReason).toContain('辅助核算')
+  })
+})
+

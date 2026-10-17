@@ -21,6 +21,33 @@ export const PHYSICAL_CHILD_DOC_TYPES: Record<string, string> = {
   SO: 'SR',   // 销售出库 → 销售退货
 }
 
+/** 查看页会显示价税合计的下推单据：已下推金额按含税口径 */
+const TAX_INCLUSIVE_PUSH_TYPES = new Set(['PQ', 'PO', 'SQ', 'SOa'])
+
+function r2(value: number) {
+  return Math.round((Number(value) || 0) * 100) / 100
+}
+
+/**
+ * 已下推金额 = 行金额 × 已下推数量 / 行数量。
+ * 采购询价 / 采购订单 / 销售报价 / 销售订单取价税合计，其余取不含税金额。
+ * 按行四舍五入到分。数量为 0 或尚未下推时为 0。
+ */
+export function pushedLineAmount(
+  docType: string,
+  qty: number,
+  pushedQty: number,
+  amount: number,
+  taxAmount: number,
+): number {
+  const q = Number(qty) || 0
+  const pushed = Number(pushedQty) || 0
+  if (q <= 0 || pushed <= 0) return 0
+  const net = Number(amount) || 0
+  const basis = TAX_INCLUSIVE_PUSH_TYPES.has(docType) ? net + (Number(taxAmount) || 0) : net
+  return r2(basis * pushed / q)
+}
+
 function r6(value: number) {
   return Math.round((Number(value) || 0) * 1000000) / 1000000
 }

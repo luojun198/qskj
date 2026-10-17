@@ -15,7 +15,7 @@ echo   CW Finance - Build Deployment Package
 echo ========================================
 echo.
 
-echo [0/6] Cleaning old deploy processes and required ports ...
+echo [0/7] Cleaning old deploy processes and required ports ...
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$root = '%ROOT%'; $deployNode = Join-Path $root 'deploy-final\node\node.exe'; Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $deployNode -or ($_.CommandLine -like '*deploy-final\start.bat*' -and $_.ProcessId -ne $PID) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; foreach ($port in @(3105,5275)) { Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }; Start-Sleep -Seconds 1"
 if errorlevel 1 (
     echo ERROR: Failed to clean old deploy processes or ports
@@ -24,7 +24,7 @@ if errorlevel 1 (
 echo       OK
 echo.
 
-echo [1/6] Building frontend (Vite - deploy mode, skip type check) ...
+echo [1/7] Building frontend (Vite - deploy mode, skip type check) ...
 cd /d "%ROOT%"
 call npm run build:deploy --workspace=client
 if errorlevel 1 (
@@ -34,7 +34,7 @@ if errorlevel 1 (
 echo       OK
 echo.
 
-echo [2/6] Building backend bundle (esbuild) ...
+echo [2/7] Building backend bundle (esbuild) ...
 cd /d "%ROOT%\server"
 call node scripts\buildBundle.mjs
 if errorlevel 1 (
@@ -45,7 +45,7 @@ cd /d "%ROOT%"
 echo       OK
 echo.
 
-echo [3/6] Preparing deploy directory ...
+echo [3/7] Preparing deploy directory ...
 if exist "%ROOT%\%DEPLOY%" rmdir /s /q "%ROOT%\%DEPLOY%"
 if exist "%ROOT%\%DEPLOY%" (
     echo ERROR: Failed to remove old deploy directory: %ROOT%\%DEPLOY%
@@ -60,7 +60,7 @@ mkdir "%ROOT%\%DEPLOY%\uploads"
 echo       OK
 echo.
 
-echo [4/6] Downloading Node.js %NODE_VER% ...
+echo [4/7] Downloading Node.js %NODE_VER% ...
 if not exist "%ROOT%\%NODE_ZIP%" (
     echo       Downloading from %NODE_URL% ...
     powershell -Command "Invoke-WebRequest -Uri '%NODE_URL%' -OutFile '%ROOT%\%NODE_ZIP%'"
@@ -91,7 +91,7 @@ if not exist "%ROOT%\%DEPLOY%\node\node.exe" (
 echo       OK
 echo.
 
-echo [5/6] Installing production dependencies (portable Node.js %NODE_VER%) ...
+echo [5/7] Installing production dependencies (portable Node.js %NODE_VER%) ...
 copy /y "%ROOT%\server\package.json" "%ROOT%\%DEPLOY%\server\package.json" >nul
 if exist "%ROOT%\server\package-lock.json" (
     copy /y "%ROOT%\server\package-lock.json" "%ROOT%\%DEPLOY%\server\package-lock.json" >nul
@@ -127,7 +127,7 @@ echo       ABI verified:
 echo       OK
 echo.
 
-echo [6/6] Copying files ...
+echo [6/7] Copying files ...
 cd /d "%ROOT%"
 
 copy /y "server\dist\bundle.cjs" "%DEPLOY%\server\" >nul
@@ -256,11 +256,24 @@ if errorlevel 1 (
 echo       OK
 echo.
 
+echo [7/7] Creating date-stamped archive ...
+for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"') do set "STAMP=%%i"
+set "ARCHIVE=%DEPLOY%_%STAMP%.zip"
+if exist "%ROOT%\%ARCHIVE%" del /q "%ROOT%\%ARCHIVE%"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Compress-Archive -Path '%ROOT%\%DEPLOY%\*' -DestinationPath '%ROOT%\%ARCHIVE%' -Force"
+if errorlevel 1 (
+    echo ERROR: Failed to create archive %ARCHIVE%
+    exit /b 1
+)
+echo       OK
+echo.
+
 echo ========================================
 echo   BUILD SUCCESS
 echo ========================================
 echo.
 echo   Output : %ROOT%\%DEPLOY%\
+echo   Archive: %ROOT%\%ARCHIVE%
 echo   Node.js: v%NODE_VER% (portable)
 echo   Start  : %ROOT%\%DEPLOY%\start.bat
 echo.

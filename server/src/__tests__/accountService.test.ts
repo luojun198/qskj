@@ -91,6 +91,19 @@ describe('AccountService', () => {
     })
   })
 
+  it('FIX-418 外币科目可不填缺省币种（凭证里再选）', () => {
+    db.exec(`CREATE TABLE currencies (id TEXT, account_set_id TEXT, code TEXT, is_base INTEGER DEFAULT 0)`)
+    db.prepare(`
+      INSERT INTO system_params (id, account_set_id, param_key, param_value)
+      VALUES ('set-levels', 'set-1', 'account_levels', '3'), ('set-lengths', 'set-1', 'account_code_lengths', '[4,3,3]')
+    `).run()
+    db.prepare(`INSERT INTO accounts (id, account_set_id, code, name, direction, level, parent_id) VALUES ('p1002', 'set-1', '1002', '银行存款', 'debit', 1, NULL)`).run()
+    const id = service.createAccount({
+      account_set_id: 'set-1', code: '1002003', name: '中国银行美元', direction: 'debit', parent_id: 'p1002', is_foreign: true,
+    } as any)
+    expect(db.prepare('SELECT is_foreign, currency_code FROM accounts WHERE id = ?').get(id)).toEqual({ is_foreign: 1, currency_code: null })
+  })
+
   it('repairAccountHierarchy 应修复缺失 parent_id 的非顶级科目', () => {
     db.prepare(`
       INSERT INTO system_params (id, account_set_id, param_key, param_value)

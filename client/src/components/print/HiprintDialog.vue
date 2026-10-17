@@ -17,7 +17,7 @@
           placeholder="默认模板"
           style="width: 220px"
           :loading="loadingTemplates"
-          @change="renderPreview"
+          @change="onTemplateChange"
         >
           <el-option
             v-for="t in templates"
@@ -25,7 +25,13 @@
             :label="t.name + (t.is_default ? '（默认）' : '')"
             :value="t.id"
           />
-          <el-option v-if="templates.length === 0" label="内置默认排版" value="" />
+          <el-option
+            v-for="b in builtinPanels || []"
+            :key="b.id"
+            :label="`内置：${b.name}`"
+            :value="b.id"
+          />
+          <el-option v-if="templates.length === 0 && !builtinPanels?.length" label="内置默认排版" value="" />
         </el-select>
       </template>
       <template v-if="showFontSize">
@@ -206,6 +212,13 @@ interface Props {
   voucherPrint?: boolean
   /** 打开时预选的模板（如进销存单据打印页已选中的自定义模板）；不在可选列表里时按默认模板 */
   initialTemplateId?: string
+  /** 字段模式的内置面板（下拉里显示为「内置：xxx」，id 自定，如 __builtin:foreign） */
+  builtinPanels?: Array<{ id: string; name: string; build: () => { panels: unknown[] } }>
+  /**
+   * 自定义默认选择：返回模板 id 或内置面板 id；返回 undefined 走原规则（默认模板 / 第一个）。
+   * 函数变化时（如凭证数据加载完才知道是否含外币）在用户未手动改选的前提下重新选择。
+   */
+  pickTemplate?: (templates: ApplicableTemplate[]) => string | undefined
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -232,6 +245,20 @@ const dialogTitle = computed(() => props.title || '打印')
 
 const templates = ref<ApplicableTemplate[]>([])
 const selectedTemplateId = ref<string>('')
+/** 用户在下拉里手动改选过：之后不再自动改选 */
+let userPickedTemplate = false
+function onTemplateChange() {
+  userPickedTemplate = true
+  renderPreview()
+}
+function defaultTemplateSelection(list: ApplicableTemplate[]): string {
+  const preset = props.initialTemplateId ? list.find(t => t.id === props.initialTemplateId) : undefined
+  if (preset) return preset.id
+  const picked = props.pickTemplate?.(list)
+  if (picked !== undefined) return picked
+  const def = list.find(t => t.is_default) || list[0]
+  return def ? def.id : props.builtinPanels?.[0]?.id || ''
+}
 const loadingTemplates = ref(false)
 const rendering = ref(false)
 const printing = ref(false)
@@ -331,14 +358,12 @@ const loadTemplates = async () => {
     })
     if (res.code === 0) {
       templates.value = res.data
-      const preset = props.initialTemplateId ? res.data.find(t => t.id === props.initialTemplateId) : undefined
-      const def = preset || res.data.find(t => t.is_default) || res.data[0]
-      selectedTemplateId.value = def ? def.id : ''
+      selectedTemplateId.value = defaultTemplateSelection(res.data)
     }
   } catch (e: any) {
     // 模板加载失败不阻断：走内置默认排版
     templates.value = []
-    selectedTemplateId.value = ''
+    selectedTemplateId.value = defaultTemplateSelection([])
   } finally {
     loadingTemplates.value = false
   }
@@ -353,8 +378,14 @@ const resolvePanelAndData = async (): Promise<{ panel: any; data: any } | null> 
   // html 模式：账册/报表
   const html = resolvePrintHtml()
 
+  const builtin = props.builtinPanels?.find(b => b.id === selectedTemplateId.value)
+  if (builtin && props.printData) {
+    const panel = normalizePanelForRender(builtin.build())
+    return { panel, data: fieldPrintData(panel) }
+  }
+
   let detail: PrintTemplate | null = null
-  if (props.useTemplates && selectedTemplateId.value) {
+  if (props.useTemplates && selectedTemplateId.value && !builtin) {
     try {
       const res = await getPrintTemplate(selectedTemplateId.value)
       if (res.code === 0) detail = res.data
@@ -598,7 +629,19 @@ async function maybeAutoPrint() {
   visible.value = false
 }
 
+watch(
+  () => props.pickTemplate,
+  async () => {
+    if (!visible.value || userPickedTemplate || loadingTemplates.value) return
+    const next = defaultTemplateSelection(templates.value)
+    if (next === selectedTemplateId.value) return
+    selectedTemplateId.value = next
+    await renderPreview()
+  }
+)
+
 const handleOpened = async () => {
+  userPickedTemplate = false
   await loadTemplates()
   await renderPreview()
   await maybeAutoPrint()

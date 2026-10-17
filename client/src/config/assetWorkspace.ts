@@ -100,6 +100,7 @@ export const ASSET_LINK_COLUMNS: { key: string; label: string; items: GlLinkItem
     items: [
       { path: '/asset/requisition', title: '领用归还' },
       { path: '/asset/depreciation', title: '折旧计提' },
+      { path: '/asset/depreciation/query', title: '折旧查询' },
       { path: '/asset/depreciation/reverse', title: '取消折旧' },
       { path: '/asset/inventory', title: '资产盘点' },
       { path: '/asset/vouchers', title: '凭证管理' },

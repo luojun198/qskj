@@ -3,14 +3,17 @@
     <div class="filter-row">
       <span class="title">核销单记录</span>
       <el-input v-model="filters.keyword" clearable placeholder="核销单号 / 往来单位 / 单据号" size="small" style="width:210px" @keyup.enter="query" @clear="query" />
-      <el-select v-model="filters.partner_code" filterable clearable placeholder="往来单位" size="small" style="width:200px" @change="query">
+      <el-select v-model="filters.partner_code" filterable placeholder="往来单位" size="small" style="width:200px" @change="query" :empty-values="[null, undefined]">
+        <el-option label="全部往来单位" value="" />
         <el-option v-for="p in partners" :key="p.code" :label="`${p.code} ${p.name}`" :value="p.code" />
       </el-select>
       <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="开始" end-placeholder="结束" size="small" style="width:230px" @change="query" />
-      <el-select v-model="filters.side" clearable placeholder="业务类型" size="small" style="width:110px" @change="query">
+      <el-select v-model="filters.side" placeholder="业务类型" size="small" style="width:128px" @change="query" :empty-values="[null, undefined]">
+        <el-option label="全部业务类型" value="" />
         <el-option label="应收核销" value="ar" /><el-option label="应付核销" value="ap" />
       </el-select>
-      <el-select v-model="filters.gen_mode" clearable placeholder="生成方式" size="small" style="width:110px" @change="query">
+      <el-select v-model="filters.gen_mode" placeholder="生成方式" size="small" style="width:128px" @change="query" :empty-values="[null, undefined]">
+        <el-option label="全部生成方式" value="" />
         <el-option label="手动核销" value="manual" /><el-option label="收付款自动" value="auto" />
       </el-select>
       <el-button size="small" type="primary" plain :loading="loading" @click="query">查询</el-button>

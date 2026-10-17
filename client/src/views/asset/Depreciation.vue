@@ -125,6 +125,10 @@
           <span class="history-total" v-if="historyRows.length">
             共 {{ historyRows.length }} 条，合计 ¥{{ fmtAmt(historyRows.reduce((s,r)=>s+r.month_depr,0)) }}
           </span>
+          <!-- 第七份反馈：按年月范围、类别 / 部门等条件查询走「折旧查询」页 -->
+          <el-button size="small" type="primary" link style="margin-left:auto" @click="$router.push('/asset/depreciation/query')">
+            按年月范围查询（折旧查询）→
+          </el-button>
         </div>
 
         <!-- 按期间汇总 + 操作（补生成凭证 / 反折旧） -->

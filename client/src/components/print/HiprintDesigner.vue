@@ -597,6 +597,7 @@ const keyOptions = computed(() => {
   if (form.template_type === 'voucher') {
     return [
       { label: '记账凭证（标准）', value: 'voucher:standard' },
+      { label: '记账凭证（复币）', value: 'voucher:foreign' },
       { label: '银行进账单', value: 'voucher:bank_in_slip' },
     ]
   }
@@ -998,7 +999,7 @@ onMounted(async () => {
       seed = buildDefaultScmPanel(241, 140) as unknown as { panels: HiprintPanel[] }
     }
     if (!seed && !props.templateId) {
-      const preset = (['standard', 'blank', 'a4'].includes(String(props.preset))
+      const preset = (['standard', 'blank', 'a4', 'foreign'].includes(String(props.preset))
         ? props.preset
         : 'standard') as VoucherPanelPreset
       if (form.template_type === 'voucher' || props.preset) {

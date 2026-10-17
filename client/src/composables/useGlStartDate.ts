@@ -27,5 +27,10 @@ export function useGlStartDate() {
     return isBeforeGlStart(d) || (extra ? extra(d) : false)
   }
 
-  return { glStartDate, isBeforeGlStart, disabledBeforeGlStart }
+  /** 是否晚于可写入的最晚期间（自然月与已结账下一期取较晚者，与后端 assertNotAfterCurrentPeriod 同口径） */
+  function isAfterWritablePeriod(d: Date): boolean {
+    return d.getFullYear() * 100 + d.getMonth() + 1 > store.maxWritableYm
+  }
+
+  return { glStartDate, isBeforeGlStart, disabledBeforeGlStart, isAfterWritablePeriod }
 }

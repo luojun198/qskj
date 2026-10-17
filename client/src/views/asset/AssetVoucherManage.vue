@@ -23,7 +23,8 @@
       </el-alert>
 
       <div class="avm-filters">
-        <el-select v-model="filters.kind" placeholder="凭证类型" clearable style="width: 150px" @change="reload">
+        <el-select v-model="filters.kind" placeholder="凭证类型" style="width: 150px" @change="reload" :empty-values="[null, undefined]">
+          <el-option label="全部凭证类型" value="" />
           <el-option v-for="(name, code) in ASSET_VOUCHER_KIND_LABELS" :key="code" :label="name" :value="code" />
         </el-select>
         <el-date-picker
@@ -35,7 +36,8 @@
           style="width: 150px"
           @change="reload"
         />
-        <el-select v-model="filters.status" placeholder="凭证状态" clearable style="width: 130px" @change="reload">
+        <el-select v-model="filters.status" placeholder="凭证状态" style="width: 130px" @change="reload" :empty-values="[null, undefined]">
+          <el-option label="全部凭证状态" value="" />
           <el-option label="已生成" value="generated" />
           <el-option label="未生成" value="missing" />
         </el-select>

@@ -12,11 +12,16 @@
       <el-input v-model="keyword" size="small" clearable placeholder="编号 / 名称" style="width:180px" @keyup.enter="load" @clear="load">
         <template #prefix><el-icon><Search /></el-icon></template>
       </el-input>
-      <el-select v-model="auditFilter" size="small" clearable placeholder="审核状态" style="width:110px" @change="load">
+      <el-select v-model="auditFilter" size="small" placeholder="审核状态" style="width:128px" @change="load" :empty-values="[null, undefined]">
+        <el-option label="全部审核状态" value="" />
         <el-option label="未审核" value="draft" />
         <el-option label="已审核" value="audited" />
       </el-select>
-      <el-checkbox v-model="showDisabled" size="small" @change="load">显示停用</el-checkbox>
+      <el-select v-model="enabledFilter" size="small" placeholder="状态" style="width:128px" @change="load" :empty-values="[null, undefined]">
+        <el-option label="全部启用状态" value="" />
+        <el-option label="启用" value="1" />
+        <el-option label="停用" value="0" />
+      </el-select>
       <span class="toolbar-gap" />
       <!-- 第六份反馈：客户、供应商增加另存、导入模板、批量审核；停用 -->
       <SaveAsButton :handler="exportAll" />
@@ -59,9 +64,9 @@
         <el-table-column label="电话" prop="phone" min-width="120" :width="widths.phone" show-overflow-tooltip />
         <el-table-column label="操作" column-key="操作" :width="cw('操作', 170)" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
+            <el-button link type="primary" size="small" @click="openEdit(row)">{{ row.audit_status === 'audited' ? '查看' : '编辑' }}</el-button>
             <el-button link size="small" @click="toggleEnable(row)">{{ row.enabled === 0 ? '启用' : '停用' }}</el-button>
-            <el-button link type="danger" size="small" @click="handleDelete(row)">删除</el-button>
+            <el-button v-if="row.audit_status !== 'audited'" link type="danger" size="small" @click="handleDelete(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -94,7 +99,7 @@ const loading = ref(false)
 const keyword = ref('')
 const activeTab = ref(propType.value)
 const auditFilter = ref('')
-const showDisabled = ref(false)
+const enabledFilter = ref<'' | '1' | '0'>('')
 const selection = ref<ScmPartner[]>([])
 
 const addLabel = computed(() => {
@@ -121,7 +126,7 @@ async function load() {
       partner_type: activeTab.value || undefined,
       audit_status: auditFilter.value || undefined,
       // 默认不显示停用；勾「显示停用」时全部列出
-      enabled: showDisabled.value ? undefined : '1',
+      enabled: enabledFilter.value || undefined,
     })
     if (res.code === 0) list.value = res.data
   } finally { loading.value = false }

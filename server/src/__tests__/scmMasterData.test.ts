@@ -20,7 +20,7 @@ import { closeAndResetDb, getDb, initDatabase } from '../db/index.js'
 import { upgradeDatabaseCompatibility } from '../db/databaseCompatibility.js'
 import { initDefaultAccountSet } from '../scripts/seedAccounts.js'
 import {
-  importItems, importPartners, masterUsableError, setMasterAudit, setMasterEnabled, MASTER_AUDIT_REQUIRED_KEY,
+  importItems, importPartners, masterLockedError, masterUsableError, setMasterAudit, setMasterEnabled, batchUpdateItemField, MASTER_AUDIT_REQUIRED_KEY,
 } from '../services/scmMasterData.js'
 
 let db: Database.Database
@@ -120,6 +120,32 @@ describe('批量审核 / 停用与单据引用校验', () => {
     setParam('0')
   })
 
+  it('已审核物料不能修改或删除，覆盖导入也被拦住；反审核后恢复', () => {
+    expect(masterLockedError('item', 'draft', 'edit')).toBeNull()
+    expect(masterLockedError('item', 'audited', 'edit')).toMatch(/已审核物料不能修改/)
+    expect(masterLockedError('item', 'audited', 'delete')).toMatch(/已审核物料不能删除/)
+    setMasterAudit(db, A, 'item', [item('P01').id], true, '张三')
+    const cover = importItems(db, A, [{ 物料编码: 'P01', 物料名称: '电容类（改）' }], { conflict: 'overwrite', dryRun: false })
+    expect(cover.updated).toBe(0)
+    expect(cover.issues[0].message).toMatch(/已审核物料不能覆盖导入/)
+    expect(item('P01').name).toBe('电容类')
+    setMasterAudit(db, A, 'item', [item('P01').id], false, '张三')
+    expect(importItems(db, A, [{ 物料编码: 'P01', 物料名称: '电容类' }], { conflict: 'overwrite', dryRun: false }).updated).toBe(1)
+  })
+
+  it('FIX-416 已审核往来单位不能修改或删除，覆盖导入也被拦住；反审核后恢复', () => {
+    expect(masterLockedError('partner', 'audited', 'edit')).toMatch(/已审核往来单位不能修改/)
+    expect(masterLockedError('partner', 'audited', 'delete')).toMatch(/已审核往来单位不能删除/)
+    setMasterAudit(db, A, 'partner', [partner('K01').id], true, '张三')
+    const cover = importPartners(db, A, [{ 单位编码: 'K01', 单位名称: '客户甲（改）', 类型: '客户' }], { conflict: 'overwrite', dryRun: false })
+    expect(cover.updated).toBe(0)
+    expect(cover.issues[0].message).toMatch(/已审核往来单位不能覆盖导入/)
+    expect(partner('K01').name).toBe('客户甲')
+    expect(importPartners(db, A, [{ 单位编码: 'K01', 单位名称: '客户甲（改）' }], { conflict: 'skip', dryRun: false }).skipped).toBe(1)
+    setMasterAudit(db, A, 'partner', [partner('K01').id], false, '张三')
+    expect(importPartners(db, A, [{ 单位编码: 'K01', 单位名称: '客户甲', 类型: '客户' }], { conflict: 'overwrite', dryRun: false }).updated).toBe(1)
+  })
+
   it('停用的档案不能新引用，启用后恢复', () => {
     const id = item('P01').id
     expect(setMasterEnabled(db, A, 'item', [id], false)).toEqual({ changed: 1, skipped: 0 })
@@ -129,6 +155,52 @@ describe('批量审核 / 停用与单据引用校验', () => {
     const pid = partner('G01').id
     setMasterEnabled(db, A, 'partner', [pid], false)
     expect(masterUsableError(db, A, { partner_code: 'G01', item_codes: [] })).toMatch(/已停用/)
+  })
+})
+
+describe('物料批量改字段', () => {
+  it('白名单、数值校验、已审核跳过', () => {
+    const ids = [item('P01').id, item('P02').id]
+    expect(() => batchUpdateItemField(db, A, ids, 'code', 'X')).toThrow(/不支持/)
+    expect(() => batchUpdateItemField(db, A, ids, 'sale_price', 'abc')).toThrow(/数字/)
+    expect(() => batchUpdateItemField(db, A, ids, 'default_warehouse_code', 'NOPE')).toThrow(/不存在/)
+    setMasterAudit(db, A, 'item', [item('P01').id], true, '张三')
+    expect(batchUpdateItemField(db, A, ids, 'sale_price', 88)).toEqual({ changed: 1, skipped: 1 })
+    expect(item('P02').sale_price).toBe(88)
+    expect(item('P01').sale_price).not.toBe(88)
+    expect(batchUpdateItemField(db, A, [item('P02').id], 'remark', '')).toEqual({ changed: 1, skipped: 0 })
+    expect(item('P02').remark).toBeNull()
+    setMasterAudit(db, A, 'item', [item('P01').id], false, '张三')
+  })
+
+  it('自定义字段写入 field_values，留空清除，未定义字段报错', () => {
+    db.prepare('INSERT INTO scm_item_field_defs (id, account_set_id, field_key, field_name, field_type, sort_order, is_enabled) VALUES (?,?,?,?,?,0,1)').run(uuidv4(), A, 'f1', '颜色', 'text')
+    db.prepare('INSERT INTO scm_item_field_defs (id, account_set_id, field_key, field_name, field_type, sort_order, is_enabled) VALUES (?,?,?,?,?,0,1)').run(uuidv4(), A, 'f2', '重量', 'number')
+    const ids = [item('P01').id, item('P02').id]
+    expect(() => batchUpdateItemField(db, A, ids, 'field_zz', 'x')).toThrow(/不存在/)
+    expect(() => batchUpdateItemField(db, A, ids, 'field_f2', 'abc')).toThrow(/数字/)
+    expect(batchUpdateItemField(db, A, ids, 'field_f1', '红')).toEqual({ changed: 2, skipped: 0 })
+    batchUpdateItemField(db, A, ids, 'field_f2', '2.5')
+    expect(JSON.parse(item('P02').field_values)).toMatchObject({ f1: '红', f2: 2.5 })
+    batchUpdateItemField(db, A, ids, 'field_f1', '')
+    expect(JSON.parse(item('P02').field_values)).toEqual({ f2: 2.5 })
+  })
+})
+
+describe('部分导入', () => {
+  it('partial=true 时通过校验的行导入，错误行列入 issues；默认仍整批不落库', () => {
+    const rows = [
+      { 物料编码: 'PT1', 物料名称: '好行' },
+      { 物料编码: 'PT2', 物料名称: '坏行', 进价: 'abc' },
+      { 物料编码: 'PT3', 物料名称: '子行', 上级物料编码: 'PT2' },
+    ]
+    expect(importItems(db, A, rows, { conflict: 'skip', dryRun: false }).inserted).toBe(0)
+    expect(item('PT1')).toBeUndefined()
+    const r = importItems(db, A, rows, { conflict: 'skip', dryRun: false, partial: true })
+    expect(r.inserted).toBe(1)
+    expect(r.issues.map(i => i.code)).toEqual(['PT2', 'PT3'])
+    expect(item('PT1')).toBeTruthy()
+    expect(item('PT3')).toBeUndefined()
   })
 })
 

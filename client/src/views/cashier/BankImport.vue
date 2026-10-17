@@ -188,7 +188,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onActivated, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft, Check, FolderAdd, UploadFilled, WarningFilled } from '@element-plus/icons-vue'
@@ -604,6 +604,8 @@ async function handleImport() {
     const { inserted, skipped, errors } = res.data
     ElMessage.success(`已生成 ${inserted} 条出纳日记账${skipped.length ? `，跳过疑似重复 ${skipped.length} 条` : ''}${errors.length ? `，错误 ${errors.length} 条` : ''}`)
     goBack()
+    // 本页被 keep-alive 缓存：清空已导入的文件，下次进入回到上传区（旧 preview_id 已用过）
+    resetFile()
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.message || '导入失败')
   } finally {
@@ -618,7 +620,16 @@ watch(directionCandidates, cands => {
   if (hit.length && !inFlags.value.some(v => cands.includes(v))) inFlags.value = hit
 })
 
+// keep-alive 复用：从出纳录单带另一个科目进来时（且没有正在处理的文件），切到该科目
+let mounted = false
+onActivated(() => {
+  if (!mounted || previewId.value) return
+  const q = route.query.account as string | undefined
+  if (q && bankAccounts.value.some(a => a.code === q)) accountCode.value = q
+})
+
 onMounted(async () => {
+  mounted = true
   const res = await cashierApi.getAccounts()
   if (res.code === 0) accounts.value = res.data
   if (!accountCode.value || !bankAccounts.value.some(a => a.code === accountCode.value)) {

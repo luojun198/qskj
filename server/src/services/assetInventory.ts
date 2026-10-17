@@ -330,7 +330,7 @@ function completeInventoryInner(params: {
       : todayStr()
   assertPeriodOpen(db, accountSetId, parseInt(invDate.split('-')[0]), parseInt(invDate.split('-')[1]))
   // P1-20：盘点日期不得晚于当前月份
-  assertNotAfterCurrentPeriod(parseInt(invDate.split('-')[0]), parseInt(invDate.split('-')[1]), '盘点日期')
+  assertNotAfterCurrentPeriod(parseInt(invDate.split('-')[0]), parseInt(invDate.split('-')[1]), '盘点日期', db, accountSetId)
   assertNotBeforeGlStart(db, accountSetId, invDate, '盘点日期')
 
   // P0-4 / P1-21：已处置卡片、快照不一致、状态与数量差不匹配的明细一律拒绝完成

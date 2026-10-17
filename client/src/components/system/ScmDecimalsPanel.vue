@@ -12,9 +12,19 @@
       <el-button size="small" :disabled="!configured" @click="clearAll">恢复默认显示</el-button>
       <el-button type="primary" size="small" :loading="saving" @click="save">保存小数位</el-button>
     </div>
-    <el-table :data="rows" size="small" border max-height="420" class="dec-table">
-      <el-table-column label="分类" prop="group" width="80" />
-      <el-table-column label="单据 / 报表" prop="label" min-width="160" />
+    <el-table :data="filteredRows" size="small" border max-height="420" class="dec-table">
+      <el-table-column prop="group" width="120">
+        <template #header>
+          <el-select v-model="groupFilter" size="small" clearable placeholder="按类别过滤" style="width:100px">
+            <el-option v-for="g in groups" :key="g" :label="g" :value="g" />
+          </el-select>
+        </template>
+      </el-table-column>
+      <el-table-column prop="label" min-width="160">
+        <template #header>
+          <el-input v-model="keyword" size="small" clearable placeholder="按单据类型名称检索" />
+        </template>
+      </el-table-column>
       <el-table-column v-for="k in KEYS" :key="k" :label="`${DECIMAL_LIMITS[k].label}小数位`" width="120" align="center">
         <template #default="{ row }">
           <el-input-number v-model="row[k]" size="small" :min="DECIMAL_LIMITS[k].min" :max="DECIMAL_LIMITS[k].max" :controls="false" style="width:70px" />
@@ -31,7 +41,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { scmApi } from '@/api/scm'
 import { useScmDecimalsStore } from '@/stores/scmDecimals'
@@ -44,7 +54,15 @@ const saving = ref(false)
 const unified = reactive<DecimalSetting>({ ...DEFAULT_DECIMALS })
 const rows = ref<Array<{ key: string; label: string; group: string } & DecimalSetting>>([])
 
-const sample = (v: number, d: number, grouping = true) => formatDecimal(v, Number(d) || 0, { fixed: true, grouping })
+const groupFilter = ref('')
+const keyword = ref('')
+const groups = computed(() => Array.from(new Set(rows.value.map(r => r.group))))
+const filteredRows = computed(() => {
+  const kw = keyword.value.trim().toLowerCase()
+  return rows.value.filter(r => (!groupFilter.value || r.group === groupFilter.value) && (!kw || r.label.toLowerCase().includes(kw)))
+})
+
+const sample =(v: number, d: number, grouping = true) => formatDecimal(v, Number(d) || 0, { fixed: true, grouping })
 
 async function load() {
   const r = await scmApi.getParams()

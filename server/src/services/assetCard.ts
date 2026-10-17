@@ -68,6 +68,11 @@ export function getDictDeleteBlockReason(params: {
  */
 export const UPDATABLE_CARD_FIELDS = [
   'asset_name',
+  // v169 第七份反馈：参照润衡卡片补充
+  'spec',
+  'ref_no',
+  'manufacturer',
+  'manufacture_date',
   'category_code',
   'status_code',
   'dept_code',

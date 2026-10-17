@@ -6,7 +6,7 @@ import { getDb } from '../db/index.js'
 import { authMiddleware, AuthRequest, operationLog } from '../middleware/index.js'
 import { createPreReinitializeBackup } from '../services/systemReinitialize.js'
 import {
-  ITEM_IMPORT_COLUMNS, PARTNER_IMPORT_COLUMNS, importItems, importPartners, masterAuditRequired, setMasterAudit, setMasterEnabled,
+  ITEM_IMPORT_COLUMNS, PARTNER_IMPORT_COLUMNS, importItems, importPartners, masterAuditRequired, masterLockedError, setMasterAudit, setMasterEnabled, batchUpdateItemField,
   type MasterKind,
 } from '../services/scmMasterData.js'
 import { SCM_RESET_BUSINESS_TABLES, SCM_RESET_MASTER_TABLES } from '../services/scmResetTables.js'
@@ -481,8 +481,8 @@ router.post('/scm/items', operationLog('物料新增', '供应链'), (req: AuthR
   db.prepare(`INSERT INTO scm_item
     (id,account_set_id,code,name,spec,barcode,short_code,unit,category_code,subcategory_code,item_type,
      purchase_price,sale_price,ref_cost,fixed_cost,inv_account,sale_account,batch_flag,is_asset,supplier_code,remark,enabled,parent_id,level,is_leaf,field_values,
-     volume,min_order_qty,lead_time_days,shelf_life_days,buyer,work_station,transfer_price,sale_price2,sale_price3,safety_stock,source_type,batch_out_mode,serial_flag,default_warehouse_code)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?, ?,?,?,?)`).run(
+     volume,min_order_qty,lead_time_days,shelf_life_days,buyer,work_station,transfer_price,sale_price2,sale_price3,safety_stock,source_type,batch_out_mode,serial_flag,default_warehouse_code,audit_status)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?, ?,?,?,?,'draft')`).run(
     id, aid, b.code, b.name, b.spec ?? null, b.barcode ?? null, b.short_code ?? null, unitName,
     b.category_code ?? null, b.subcategory_code ?? null, b.item_type ?? null,
     Number(b.purchase_price) || 0, Number(b.sale_price) || 0, Number(b.ref_cost) || 0, Number(b.fixed_cost) || 0,
@@ -500,8 +500,10 @@ router.post('/scm/items', operationLog('物料新增', '供应链'), (req: AuthR
 })
 router.put('/scm/items/:id', operationLog('物料修改', '供应链'), (req: AuthRequest, res) => {
   const db = getDb(); const b = req.body; const aid = asid(req)
-  const ex = db.prepare('SELECT id, code FROM scm_item WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
+  const ex = db.prepare('SELECT id, code, audit_status FROM scm_item WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
   if (!ex) return res.status(404).json({ code: 404, message: '物料不存在' })
+  const locked = masterLockedError('item', ex.audit_status, 'edit')
+  if (locked) return res.status(409).json({ code: 409, message: locked })
   const itemLeafErr = firstNonLeafError(db, aid, [[b.inv_account, '存货科目'], [b.sale_account, '销售收入科目']])
   if (itemLeafErr) return res.status(400).json({ code: 400, message: itemLeafErr })
 
@@ -557,8 +559,10 @@ router.put('/scm/items/:id', operationLog('物料修改', '供应链'), (req: Au
 })
 router.delete('/scm/items/:id', operationLog('物料删除', '供应链'), (req: AuthRequest, res) => {
   const db = getDb(); const aid = asid(req)
-  const ex = db.prepare('SELECT id, code FROM scm_item WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
+  const ex = db.prepare('SELECT id, code, audit_status FROM scm_item WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
   if (!ex) return res.status(404).json({ code: 404, message: '物料不存在' })
+  const locked = masterLockedError('item', ex.audit_status, 'delete')
+  if (locked) return res.status(409).json({ code: 409, message: locked })
   const children = db.prepare('SELECT COUNT(*) c FROM scm_item WHERE parent_id=? AND account_set_id=?').get(req.params.id, aid) as any
   if (children?.c > 0) return res.status(409).json({ code: 409, message: `该物料下有 ${children.c} 个子物料，请先删除子物料` })
   const refErr = masterRefError(db, aid, 'item', ex.code)
@@ -615,8 +619,10 @@ router.post('/scm/partners', operationLog('往来单位新增', '供应链'), (r
 })
 router.put('/scm/partners/:id', operationLog('往来单位修改', '供应链'), (req: AuthRequest, res) => {
   const db = getDb(); const b = req.body
-  const ex = db.prepare('SELECT id FROM scm_partner WHERE id=? AND account_set_id=?').get(req.params.id, asid(req))
+  const ex = db.prepare('SELECT id, audit_status FROM scm_partner WHERE id=? AND account_set_id=?').get(req.params.id, asid(req)) as any
   if (!ex) return res.status(404).json({ code: 404, message: '往来单位不存在' })
+  const locked = masterLockedError('partner', ex.audit_status, 'edit')
+  if (locked) return res.status(409).json({ code: 409, message: locked })
   const partnerLeafErr = firstNonLeafError(db, asid(req), [[b.ar_account, '应收科目'], [b.ap_account, '应付科目']])
   if (partnerLeafErr) return res.status(400).json({ code: 400, message: partnerLeafErr })
   db.prepare(`UPDATE scm_partner SET name=?,short_name=?,partner_type=?,ar_account=?,ap_account=?,credit_limit=?,tax_rate=?,region_code=?,
@@ -634,8 +640,10 @@ router.put('/scm/partners/:id', operationLog('往来单位修改', '供应链'),
 })
 router.delete('/scm/partners/:id', operationLog('往来单位删除', '供应链'), (req: AuthRequest, res) => {
   const db = getDb(); const aid = asid(req)
-  const ex = db.prepare('SELECT id, code FROM scm_partner WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
+  const ex = db.prepare('SELECT id, code, audit_status FROM scm_partner WHERE id=? AND account_set_id=?').get(req.params.id, aid) as any
   if (!ex) return res.status(404).json({ code: 404, message: '往来单位不存在' })
+  const locked = masterLockedError('partner', ex.audit_status, 'delete')
+  if (locked) return res.status(409).json({ code: 409, message: locked })
   const refErr = masterRefError(db, aid, 'partner', ex.code)
   if (refErr) return res.status(409).json({ code: 409, message: refErr })
   db.prepare('DELETE FROM scm_partner WHERE id=? AND account_set_id=?').run(req.params.id, aid)
@@ -655,6 +663,11 @@ for (const path of ['items', 'partners'] as const) {
     } catch (e: any) { res.status(400).json({ code: 400, message: e?.message || '操作失败' }) }
   })
 }
+router.post('/scm/items/batch-update', operationLog('物料批量修改', '供应链'), (req: AuthRequest, res) => {
+  try {
+    res.json({ code: 0, data: batchUpdateItemField(getDb(), asid(req), idsOf(req.body), String(req.body?.field || ''), req.body?.value) })
+  } catch (e: any) { res.status(400).json({ code: 400, message: e?.message || '操作失败' }) }
+})
 for (const path of ['items', 'partners', 'warehouses'] as const) {
   router.post(`/scm/${path}/batch-enable`, operationLog('档案批量停用 / 启用', '供应链'), (req: AuthRequest, res) => {
     try {
@@ -670,7 +683,7 @@ router.post('/scm/items/import', operationLog('物料导入', '供应链'), (req
   if (!rows.length) return res.status(400).json({ code: 400, message: '没有可导入的数据' })
   if (rows.length > MAX_MASTER_IMPORT_ROWS) return res.status(400).json({ code: 400, message: `单次最多导入 ${MAX_MASTER_IMPORT_ROWS} 行` })
   try {
-    res.json({ code: 0, data: importItems(getDb(), asid(req), rows, { conflict: req.body?.conflict === 'overwrite' ? 'overwrite' : 'skip', dryRun: req.body?.dry_run !== false }) })
+    res.json({ code: 0, data: importItems(getDb(), asid(req), rows, { conflict: req.body?.conflict === 'overwrite' ? 'overwrite' : 'skip', dryRun: req.body?.dry_run !== false, partial: !!req.body?.partial }) })
   } catch (e: any) { res.status(400).json({ code: 400, message: e?.message || '导入失败' }) }
 })
 router.post('/scm/partners/import', operationLog('往来单位导入', '供应链'), (req: AuthRequest, res) => {
@@ -680,7 +693,7 @@ router.post('/scm/partners/import', operationLog('往来单位导入', '供应�
   const t = req.body?.default_type
   try {
     res.json({ code: 0, data: importPartners(getDb(), asid(req), rows, {
-      conflict: req.body?.conflict === 'overwrite' ? 'overwrite' : 'skip', dryRun: req.body?.dry_run !== false,
+      conflict: req.body?.conflict === 'overwrite' ? 'overwrite' : 'skip', dryRun: req.body?.dry_run !== false, partial: !!req.body?.partial,
       defaultType: t === 'customer' || t === 'supplier' ? t : 'both',
     }) })
   } catch (e: any) { res.status(400).json({ code: 400, message: e?.message || '导入失败' }) }

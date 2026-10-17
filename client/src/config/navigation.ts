@@ -157,6 +157,7 @@ const ROUTE_PERMISSION_MAP: Record<string, string | string[]> = {
   '/asset/requisition': 'asset:requisition',
   '/asset/import': 'asset:edit',
   '/asset/depreciation': 'asset:depr',
+  '/asset/depreciation/query': 'asset:view',
   '/asset/depreciation/reverse': 'asset:depr',
   // 凭证管理：进入需 asset:view；删除 / 重新生成按凭证类型由后端细分权限
   '/asset/vouchers': 'asset:view',
@@ -553,6 +554,7 @@ function getStaticNavApps(enableCashFlow: boolean, enableForeignCurrency = false
             { path: '/asset/change', title: '资产变动', permission: ['asset:change', 'asset:impair'], icon: 'ArrowLeftRight' },
             { path: '/asset/requisition', title: '领用归还', permission: 'asset:requisition', icon: 'UserCheck' },
             { path: '/asset/depreciation', title: '折旧计提', permission: 'asset:depr', icon: 'TrendingDown' },
+            { path: '/asset/depreciation/query', title: '折旧查询', permission: 'asset:view', icon: 'FileSearch' },
             { path: '/asset/inventory', title: '资产盘点', permission: 'asset:inventory', icon: 'ClipboardCheck' },
             { path: '/asset/vouchers', title: '凭证管理', permission: 'asset:view', icon: 'FilePen' },
           ],

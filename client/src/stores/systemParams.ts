@@ -18,6 +18,8 @@ export const useSystemParamsStore = defineStore('systemParams', () => {
   // 无凭证时回退账套 fiscal_year + 当前月），供报表等页面作为默认年度/期间。
   const currentYear = ref<number>(new Date().getFullYear())
   const currentPeriod = ref<number>(new Date().getMonth() + 1)
+  /** 资产变动 / 处置 / 盘点 / 计提可写入的最晚期间 YYYYMM（后端 meta.max_writable_ym；缺省按自然月） */
+  const maxWritableYm = ref<number>(new Date().getFullYear() * 100 + new Date().getMonth() + 1)
   // 建账日期（YYYY-MM-DD）与建账年度：年度选择器等页面据此限定可选年份下限
   const startDate = ref<string>('')
   const startYear = computed(() => {
@@ -44,6 +46,7 @@ export const useSystemParamsStore = defineStore('systemParams', () => {
       const meta = (res as any).meta || {}
       if (Number.isInteger(meta.current_year)) currentYear.value = meta.current_year
       if (Number.isInteger(meta.current_period)) currentPeriod.value = meta.current_period
+      if (Number.isInteger(meta.max_writable_ym)) maxWritableYm.value = meta.max_writable_ym
       paymentVoucherMode.value = 'scm'
       masterAuditRequired.value = false
       for (const p of params) {
@@ -78,6 +81,7 @@ export const useSystemParamsStore = defineStore('systemParams', () => {
     requireAudit,
     paymentVoucherMode,
     masterAuditRequired,
+    maxWritableYm,
     currentYear,
     currentPeriod,
     startDate,

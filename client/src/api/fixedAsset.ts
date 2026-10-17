@@ -37,6 +37,36 @@ export interface AssetCard {
   remark: string | null
   scrap_reason: string | null
   scrap_date: string | null
+  /** v169 第七份反馈：参照润衡卡片补充 */
+  spec?: string | null
+  ref_no?: string | null
+  manufacturer?: string | null
+  manufacture_date?: string | null
+  is_foreign?: number | null
+  foreign_value?: number | null
+  impairment_amount?: number | null
+  /** 列表：最近一次计提的月折旧额与期间 YYYYMM */
+  last_month_depr?: number | null
+  last_depr_ym?: number | null
+}
+
+/** 折旧查询行（/asset/depr/query） */
+export interface DeprQueryRow {
+  year: number
+  month: number
+  asset_no: string
+  ref_no: string | null
+  asset_name: string | null
+  spec: string | null
+  category_name: string | null
+  dept_name: string | null
+  purpose_name: string | null
+  depr_method: string | null
+  month_workload: number | null
+  month_depr: number
+  accum_depr: number
+  original_value: number | null
+  voucher_no: string | null
 }
 
 export interface AssetDicts {
@@ -272,6 +302,14 @@ export const fixedAssetApi = {
     category_code?: string
     status_code?: string
     dept_code?: string
+    purpose_code?: string
+    depr_method?: string
+    /** '0' 在用（未处置） / '1' 已处置 */
+    disposed?: string
+    acquire_from?: string
+    acquire_to?: string
+    start_depr_from?: string
+    start_depr_to?: string
     page?: number
     page_size?: number
   }) =>
@@ -321,6 +359,17 @@ export const fixedAssetApi = {
       '/asset/depr/execute',
       data
     ),
+  /** 折旧查询：from / to 为 YYYYMM（含两端） */
+  queryDepr: (params: {
+    from: number
+    to: number
+    category_code?: string
+    dept_code?: string
+    purpose_code?: string
+    depr_method?: string
+    keyword?: string
+    hide_zero?: string
+  }) => request.get<DeprQueryRow[]>('/asset/depr/query', { params }),
   getDeprHistory: (params: { year?: number; month?: number }) =>
     request.get<any[]>('/asset/depr/history', { params }),
   // 按期间补生成折旧凭证

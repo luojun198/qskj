@@ -107,14 +107,16 @@
         <template v-else>
           <div class="bvc-toolbar">
             <el-radio-group v-model="status" size="small" @change="reloadList">
+              <el-radio-button value="all">全部</el-radio-button>
               <el-radio-button value="pending">待生成</el-radio-button>
               <el-radio-button value="generated">已生成</el-radio-button>
-              <el-radio-button value="all">全部</el-radio-button>
             </el-radio-group>
-            <el-select v-if="activeTab === 'scm'" v-model="scmDocType" size="small" clearable placeholder="全部单据类型" style="width:150px" @change="reloadList">
+            <el-select v-if="activeTab === 'scm'" v-model="scmDocType" size="small" placeholder="全部单据类型" style="width:150px" @change="reloadList" :empty-values="[null, undefined]">
+              <el-option label="全部单据类型" value="" />
               <el-option v-for="t in summary?.scm_doc_types || []" :key="t" :label="SCM_TYPE_NAMES[t] || t" :value="t" />
             </el-select>
-            <el-select v-if="activeTab === 'asset'" v-model="assetKind" size="small" clearable placeholder="全部业务类型" style="width:140px" @change="reloadList">
+            <el-select v-if="activeTab === 'asset'" v-model="assetKind" size="small" placeholder="全部业务类型" style="width:140px" @change="reloadList" :empty-values="[null, undefined]">
+              <el-option label="全部业务类型" value="" />
               <el-option v-for="(name, code) in ASSET_VOUCHER_KIND_LABELS" :key="code" :label="name" :value="code" />
             </el-select>
             <span class="bvc-muted">业务期间</span>
@@ -315,7 +317,7 @@ const summary = ref<BizVoucherSummary | null>(null)
 const auxPending = ref(0)
 const monthRange = ref<[string, string] | null>(null)
 const activeTab = ref<TabKey>('overview')
-const status = ref<BizVoucherStatus>('pending')
+const status = ref<BizVoucherStatus>('all')
 const scmDocType = ref('')
 const assetKind = ref<AssetVoucherKind | ''>('')
 const keyword = ref('')
@@ -537,7 +539,7 @@ async function reloadAll() {
 
 function switchTab(key: TabKey) {
   activeTab.value = key
-  status.value = 'pending'
+  status.value = 'all'
   keyword.value = ''
   allSelection.value = null
   router.replace({ query: { ...route.query, tab: key } })

@@ -52,9 +52,13 @@
       </div>
 
       <el-alert v-if="preview?.issues.length" type="warning" :closable="false" show-icon class="import-alert"
-        title="有问题的行需要先在 Excel 里修正后重新上传；存在问题行时不会导入任何数据（避免只导一半）。" />
+        title="有问题的行不会导入，其余通过校验的行可以先导入；问题行请在 Excel 里修正后再单独上传。" />
+      <el-alert v-else-if="preview && !done && preview.inserted + preview.updated === 0" type="info" :closable="false" show-icon class="import-alert"
+        :title="`文件中的 ${preview.skipped} 个编码都已存在，按「跳过」不会导入任何数据；如需用文件内容更新已有档案，请选择「编码已存在：覆盖」。`" />
+      <el-alert v-else-if="preview && !done" type="success" :closable="false" show-icon class="import-alert"
+        :title="`预检通过：将新增 ${preview.inserted}、覆盖 ${preview.updated}${preview.skipped ? `、跳过 ${preview.skipped}` : ''}，请点击下方「导入」按钮保存。`" />
       <el-alert v-if="done" type="success" :closable="false" show-icon class="import-alert"
-        :title="`导入完成：新增 ${done.inserted}，覆盖 ${done.updated}，跳过 ${done.skipped}。新导入的档案为「未审核」，可在列表勾选后批量审核。`" />
+        :title="`导入完成：新增 ${done.inserted}，覆盖 ${done.updated}，跳过 ${done.skipped}${done.issues.length ? `，${done.issues.length} 行有问题未导入（见下表）` : ''}。新导入的档案为「未审核」，可在列表勾选后批量审核。`" />
 
       <div class="table-container">
         <el-table v-if="preview?.issues.length" :data="preview.issues" size="small" border stripe max-height="300">
@@ -71,7 +75,7 @@
 
       <footer class="import-footer">
         <el-button v-if="!done" type="primary" :loading="busy"
-          :disabled="!preview || preview.issues.length > 0 || preview.inserted + preview.updated === 0" @click="doImport">
+          :disabled="!preview || preview.inserted + preview.updated === 0" @click="doImport">
           导入（新增 {{ preview?.inserted ?? 0 }}，覆盖 {{ preview?.updated ?? 0 }}）
         </el-button>
         <el-button v-else type="primary" @click="goBack">返回{{ kind === 'items' ? '物料档案' : '往来单位' }}</el-button>
@@ -81,7 +85,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onActivated, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowLeft, Download, UploadFilled } from '@element-plus/icons-vue'
@@ -161,7 +165,7 @@ async function onFilePicked(file: any) {
 }
 
 async function call(dryRun: boolean) {
-  const r = await scmApi.importMaster(kind.value, { rows: rows.value, conflict: conflict.value, dry_run: dryRun, default_type: defaultType.value })
+  const r = await scmApi.importMaster(kind.value, { rows: rows.value, conflict: conflict.value, dry_run: dryRun, partial: true, default_type: defaultType.value })
   return r.data as Result
 }
 
@@ -177,16 +181,29 @@ async function doImport() {
   busy.value = true
   try {
     const r = await call(false)
-    if (r.issues.length) { preview.value = r; ElMessage.error('有问题行，未导入'); return }
+    preview.value = r
     done.value = r
-    ElMessage.success(`导入完成：新增 ${r.inserted}，覆盖 ${r.updated}`)
+    ElMessage.success(`导入完成：新增 ${r.inserted}，覆盖 ${r.updated}${r.issues.length ? `，${r.issues.length} 行有问题未导入` : ''}`)
   } catch (e: any) {
     ElMessage.error(errMsg(e, '导入失败'))
   } finally { busy.value = false }
 }
 
-onMounted(async () => {
+let loadedKind = ''
+async function loadColumns() {
+  loadedKind = kind.value
   try { columns.value = (await scmApi.getMasterImportColumns(kind.value)).data } catch (e: any) { ElMessage.error(errMsg(e, '加载导入列失败')) }
+}
+
+onMounted(loadColumns)
+// 本页在 Layout 的 keep-alive 下会被复用（onMounted 不再重跑）：
+// 上次已导入完成、或从物料 / 往来单位入口切换了 kind 时，再次进入要回到干净的上传状态，
+// 否则会停留在旧的「导入完成」画面——没有上传区也没有导入按钮，看起来像「不能保存、没有提示」
+onActivated(() => {
+  if (!loadedKind || route.name !== 'ScmMasterImport') return
+  if (kind.value !== loadedKind) { reset(); columns.value = []; void loadColumns(); return }
+  if (done.value) reset()
+  if (route.query.partner_type) defaultType.value = String(route.query.partner_type)
 })
 </script>
 

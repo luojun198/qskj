@@ -113,17 +113,15 @@ export function useVoucherAuxItems() {
     void searchAuxItemsDebounced(catId, keyword)
   }
 
+  /** 下一个可用编码由后端按纯数字最大值 + 1 计算并跳过已存在的（FIX-419） */
   async function fetchNextAuxCode(catId: string): Promise<string> {
     try {
-      const res = await request.get<VoucherAuxItem[]>('/base/aux-items', {
-        params: { category_id: catId, status: 'active', limit: 1, order: 'desc' },
+      const res = await request.get<{ next_code: string }>('/base/aux-items/next-code', {
+        params: { type: catId },
       })
-      const top = res.data?.[0]
-      const n = top?.code ? Number.parseInt(String(top.code), 10) : 0
-      const next = Number.isNaN(n) ? 1 : n + 1
-      return String(next).padStart(6, '0')
+      return res.data?.next_code || ''
     } catch {
-      return '000001'
+      return ''
     }
   }
 

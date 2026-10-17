@@ -1,12 +1,12 @@
 <template>
   <el-dialog
     v-model="visible"
-    :title="row ? '编辑往来单位' : '新增往来单位'"
+    :title="!row ? '新增往来单位' : isAudited ? '查看往来单位（已审核）' : '编辑往来单位'"
     width="760px"
     draggable
     @keydown="onDialogKeydown"
   >
-    <el-form :model="form" label-width="90px" size="small">
+    <el-form :model="form" label-width="90px" size="small" :disabled="isAudited">
       <div class="form-sector">
         <div class="form-sector-title">基本身份</div>
         <el-row :gutter="16">
@@ -89,17 +89,19 @@
     </el-form>
     <template #footer>
       <div style="display: flex; justify-content: flex-end; gap: 8px;">
-        <el-button @click="visible = false">取消</el-button>
+        <span v-if="isAudited" class="audited-tip">已审核的往来单位不能修改、删除，须先反审核</span>
+        <el-button @click="visible = false">{{ isAudited ? '关闭' : '取消' }}</el-button>
+        <el-button v-if="isAudited" v-permission="'scm:master-audit'" type="warning" :loading="saving" @click="handleUnaudit">反审核</el-button>
         <el-button v-if="!row" :loading="saving" @click="handleSave(true)">保存并新增 (Ctrl+Enter)</el-button>
-        <el-button type="primary" :loading="saving" @click="handleSave(false)">确认保存 (Enter)</el-button>
+        <el-button v-if="!isAudited" type="primary" :loading="saving" @click="handleSave(false)">确认保存 (Enter)</el-button>
       </div>
     </template>
   </el-dialog>
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { computed, ref, watch } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { scmApi, type ScmPartner } from '@/api/scm'
 import AccountSelect from '@/components/base/AccountSelect.vue'
 
@@ -110,6 +112,8 @@ const emit = defineEmits<{ (e: 'update:modelValue', v: boolean): void; (e: 'save
 const visible = ref(false)
 const form = ref<Partial<ScmPartner>>({})
 const saving = ref(false)
+/** 已审核档案只读（FIX-416，与物料 FIX-412 同口径；服务端同样拦截） */
+const isAudited = computed(() => !!props.row && form.value.audit_status === 'audited')
 
 /** 最近一次自动取到的编号；用户没手改时，切换「单位属性」会按新属性的编码规则重新取号 */
 let autoCode = ''
@@ -144,7 +148,20 @@ watch(() => props.modelValue, v => { visible.value = v; if (v) { if (props.row) 
 // 内部 ref → 父（含 el-dialog 自身关闭：X/遮罩/ESC）
 watch(visible, v => emit('update:modelValue', v))
 
+async function handleUnaudit() {
+  if (!props.row?.id) return
+  try { await ElMessageBox.confirm(`反审核「${form.value.name}」？反审核后可修改、删除，参数要求审核时单据将不能再选它。`, '反审核', { type: 'warning' }) } catch { return }
+  saving.value = true
+  try {
+    await scmApi.batchAuditMaster('partners', [props.row.id as string], 'unaudit')
+    form.value.audit_status = 'draft'
+    ElMessage.success('已反审核，可修改')
+    emit('saved', { ...form.value })
+  } finally { saving.value = false }
+}
+
 async function handleSave(continueAdd = false) {
+  if (isAudited.value) return
   if (!form.value.code || !form.value.name) return ElMessage.warning('编号和名称不能为空')
   saving.value = true
   try {
@@ -166,3 +183,7 @@ function onDialogKeydown(e: KeyboardEvent) {
   else handleSave(false)
 }
 </script>
+
+<style scoped>
+.audited-tip { margin-right: auto; align-self: center; color: var(--el-color-warning); font-size: 12px; }
+</style>

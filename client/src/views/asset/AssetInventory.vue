@@ -163,16 +163,15 @@
 
 <script setup lang="ts">
 
-/** P1-20：变动 / 处置 / 盘点日期不得晚于当前月份（与后端同口径） */
+/** P1-20：变动 / 处置 / 盘点日期不得晚于当前期间（自然月或已结账下一期，与后端同口径） */
 function disableFutureMonth(date: Date): boolean {
-  const now = new Date()
   // 同时禁选总账开账日期之前的日子（后端同样拦截）
-  return date.getFullYear() * 100 + date.getMonth() > now.getFullYear() * 100 + now.getMonth() || isBeforeGlStart(date)
+  return isAfterWritablePeriod(date) || isBeforeGlStart(date)
 }
 import { todayStr } from '@/utils/format'
 import { ref, computed, onMounted } from 'vue'
 import { useGlStartDate } from '@/composables/useGlStartDate'
-const { isBeforeGlStart } = useGlStartDate()
+const { isBeforeGlStart, isAfterWritablePeriod } = useGlStartDate()
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, ArrowLeft, Select, Check } from '@element-plus/icons-vue'
 import { fixedAssetApi, type InventorySummary, type InventoryItem } from '@/api/fixedAsset'

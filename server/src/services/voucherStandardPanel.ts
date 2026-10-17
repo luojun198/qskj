@@ -251,6 +251,16 @@ export const VOUCHER_STANDARD_PANEL = {
                   "checked": false
                 },
                 {
+                  "title": "外币金额（含币种）",
+                  "field": "fx_cell",
+                  "width": 60,
+                  "align": "left",
+                  "halign": "center",
+                  "columnId": "fx_cell",
+                  "colspan": 1,
+                  "checked": false
+                },
+                {
                   "title": "现金流量",
                   "field": "cash_flow_name",
                   "width": 70,
@@ -401,6 +411,16 @@ export const VOUCHER_STANDARD_PANEL = {
                   "align": "right",
                   "halign": "center",
                   "columnId": "foreign_amount",
+                  "colspan": 1,
+                  "checked": false
+                },
+                {
+                  "title": "外币金额（含币种）",
+                  "field": "fx_cell",
+                  "width": 60,
+                  "align": "left",
+                  "halign": "center",
+                  "columnId": "fx_cell",
                   "colspan": 1,
                   "checked": false
                 },

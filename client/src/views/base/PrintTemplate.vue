@@ -19,6 +19,7 @@
               <el-dropdown-item command="standard">标准记账凭证（210×148）</el-dropdown-item>
               <el-dropdown-item command="blank">套打底图模板</el-dropdown-item>
               <el-dropdown-item command="a4">A4 竖版凭证</el-dropdown-item>
+              <el-dropdown-item command="foreign">复币记账凭证（外币，参照润衡）</el-dropdown-item>
               <el-dropdown-item command="scm" divided>业务单据模板（进销存）</el-dropdown-item>
             </el-dropdown-menu>
           </template>

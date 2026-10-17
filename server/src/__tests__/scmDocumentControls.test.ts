@@ -3,6 +3,7 @@ import Database from 'better-sqlite3'
 import {
   computeSourceLineUsedQty,
   findDraftDocumentUsingSourceLines,
+  pushedLineAmount,
   validateFinishKitting,
   validatePlanFinishQuantities,
   validatePlanIssueQuantities,
@@ -265,5 +266,30 @@ describe('下推进度只统计实物下游单据', () => {
     addDoc(db, 'PI9', 'PI', 'audited', 'M1', 40, 'POL1')
     expect(computeSourceLineUsedQty(db, AID, 'PI', 'POL1')).toBe(40)
     expect(computeSourceLineUsedQty(db, AID, 'SO', 'POL1')).toBe(0)
+  })
+})
+
+describe('已下推金额', () => {
+  it('部分下推按数量比例分摊，含税类型含税额', () => {
+    // 数量 10，不含税 100，税额 13，已下推 4 → 价税合计 113 的 40%
+    expect(pushedLineAmount('PO', 10, 4, 100, 13)).toBe(45.2)
+    expect(pushedLineAmount('SOa', 10, 4, 100, 13)).toBe(45.2)
+    expect(pushedLineAmount('PQ', 10, 4, 100, 13)).toBe(45.2)
+    expect(pushedLineAmount('SQ', 10, 4, 100, 13)).toBe(45.2)
+  })
+
+  it('不显示价税合计的类型只用不含税金额', () => {
+    expect(pushedLineAmount('MR', 10, 4, 100, 13)).toBe(40)
+    expect(pushedLineAmount('PI', 10, 4, 100, 13)).toBe(40)
+  })
+
+  it('未下推或行数量为 0 时金额为 0', () => {
+    expect(pushedLineAmount('PO', 10, 0, 100, 13)).toBe(0)
+    expect(pushedLineAmount('PO', 0, 4, 100, 13)).toBe(0)
+  })
+
+  it('按分四舍五入', () => {
+    // 100.005 * 1/3 = 33.335 → 33.34
+    expect(pushedLineAmount('PO', 3, 1, 100, 0.005)).toBe(33.34)
   })
 })

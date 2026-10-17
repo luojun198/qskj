@@ -193,7 +193,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onActivated, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, type UploadFile } from 'element-plus'
 import { ArrowLeft, Loading, UploadFilled } from '@element-plus/icons-vue'
@@ -303,6 +303,8 @@ async function doRevert() {
   try {
     const r = await scmAcdImportApi.revert(current.value.id)
     ElMessage.success(`已撤销（撤销前备份：${r.data.backup}）`)
+    // 撤销后可重新导入：导入页签若还停在上次的核对报告（没有选择文件入口），回到选择文件
+    if (step.value >= 2) reset()
     await loadBatches()
     const again = batches.value.find(b => b.id === current.value?.id)
     if (again) await openBatch(again)
@@ -313,6 +315,15 @@ async function doRevert() {
 
 watch(tab, t => { if (t === 'history') loadBatches() })
 onMounted(loadBatches)
+// keep-alive 复用：上次已导入完成（停在核对报告）时再次进入回到选择文件，报告可在「导入历史」查看；
+// 同时刷新导入历史（撤销 / 在别处导入后条数与状态要跟上）
+let firstActivate = true
+onActivated(() => {
+  if (firstActivate) { firstActivate = false; return }
+  if (busy.value) return
+  if (step.value >= 3) { reset(); tab.value = 'import' }
+  loadBatches()
+})
 </script>
 
 <style scoped>

@@ -165,7 +165,7 @@ export interface ScmDoc { id?: string; process_mode?: string | null; product_lin
   biz_person?: string; payment_type?: string; settle_account?: string; invoice_type?: string; invoice_no?: string; invoice_date?: string;
   contract_no?: string; currency?: string; exchange_rate?: number; discount_rate?: number; expect_date?: string; dest_warehouse_code?: string;
   credit_days?: number; due_date?: string; maker?: string; auditor?: string; audited_at?: string; total_tax?: number; field_values?: Record<string, any> | string;
-  voucher_id?: string; pushed_qty?: number;
+  voucher_id?: string; pushed_qty?: number; pushed_amount?: number;
   /** 1 = 原系统（润衡 ACD）导入的历史单据，原系统已制证 */
   external_voucher?: number;
   // 收付款单列表核销信息
@@ -182,7 +182,7 @@ export interface ScmDoc { id?: string; process_mode?: string | null; product_lin
   downstream_doc_count?: number; downstream_plan_count?: number; upstream_doc_count?: number; downstream_line_count?: number
   // 挂靠的生产/委外计划（领料/完工/委外发货入库等）——本单的上游来源之一，见 hasTrace
   plan_id?: string | null }
-export interface ScmDocLine { id?: string; seq?: number; item_code?: string | null; item_name?: string; spec?: string; unit?: string; warehouse_code?: string; qty?: number; pushed_qty?: number; price?: number; amount?: number; tax_rate?: number | null; tax_amount?: number | null; unit_cost?: number; batch_no?: string; source_line_id?: string; remark?: string;
+export interface ScmDocLine { id?: string; seq?: number; item_code?: string | null; item_name?: string; spec?: string; unit?: string; warehouse_code?: string; qty?: number; pushed_qty?: number; pushed_amount?: number; price?: number; amount?: number; tax_rate?: number | null; tax_amount?: number | null; unit_cost?: number; batch_no?: string; source_line_id?: string; remark?: string;
   sales_order_no?: string;
   purchase_order_no?: string;
   // 扩展明细字段（Phase 2）
@@ -532,11 +532,13 @@ export const scmApi = {
   // 档案批量审核 / 停用 / Excel 导入（第六份反馈）
   batchAuditMaster: (kind: 'items' | 'partners', ids: string[], action: 'audit' | 'unaudit') =>
     request.post<{ changed: number; skipped: number }>(`/scm/${kind}/batch-audit`, { ids, action }),
+  batchUpdateItems: (ids: string[], field: string, value: unknown) =>
+    request.post<{ changed: number; skipped: number }>('/scm/items/batch-update', { ids, field, value }),
   batchEnableMaster: (kind: 'items' | 'partners' | 'warehouses', ids: string[], enabled: boolean) =>
     request.post<{ changed: number; skipped: number }>(`/scm/${kind}/batch-enable`, { ids, enabled }),
   getMasterImportColumns: (kind: 'items' | 'partners') =>
     request.get<Array<{ key: string; label: string; required?: boolean; note?: string }>>(`/scm/${kind}/import/columns`),
-  importMaster: (kind: 'items' | 'partners', body: { rows: Array<Record<string, unknown>>; conflict: 'skip' | 'overwrite'; dry_run: boolean; default_type?: string }) =>
+  importMaster: (kind: 'items' | 'partners', body: { rows: Array<Record<string, unknown>>; conflict: 'skip' | 'overwrite'; dry_run: boolean; partial?: boolean; default_type?: string }) =>
     request.post<{ total: number; inserted: number; updated: number; skipped: number; issues: Array<{ row: number; code: string; message: string }> }>(
       `/scm/${kind}/import`, body, { timeout: 600_000 }),
   // 物料自定义字段定义
@@ -629,7 +631,7 @@ export const scmApi = {
   getDocNextNo: (doc_type: string, doc_date?: string, ctx: { partner_code?: string; warehouse_code?: string; dept_code?: string; biz_person?: string } = {}) =>
     request.get<{ next_no: string }>('/scm/docs/next-no', { params: { doc_type, doc_date, ...ctx } }),
   getDocs: (params: { doc_type?: string; partner_code?: string; warehouse_code?: string; status?: string; start_date?: string; end_date?: string; payment_mode?: 'advance'; keyword?: string; biz_person?: string; sort?: string; page?: number; page_size?: number; invoice_open?: 1; expand?: 'product' }) =>
-    request.get<{ list: ScmDoc[]; total: number; page: number; page_size: number; summary?: { total_qty: number; total_amount: number; total_tax: number; pushed_qty?: number } }>('/scm/docs', { params }),
+    request.get<{ list: ScmDoc[]; total: number; page: number; page_size: number; summary?: { total_qty: number; total_amount: number; total_tax: number; pushed_qty?: number; pushed_amount?: number } }>('/scm/docs', { params }),
   getSalesOrderRelations: (params?: { keyword?: string; status?: string; start_date?: string; end_date?: string; page?: number; page_size?: number }) =>
     request.get<SalesOrderRelationResult>('/scm/sales-order-relations', { params }),
   // 单据翻页：按过滤条件取有序 id 数组（与列表同序），用于查看/编辑页首/上/下/尾翻阅

@@ -104,7 +104,8 @@ export const LIST_ALL_COLS: ListColDef[] = [
   { key: 'total_amount',     label: '金额',     visible: true,  always: true },
   { key: 'total_tax',        label: '税额',     visible: false, line: TAX_LINE },
   { key: 'total_with_tax',   label: '价税合计', visible: true,  line: TAX_LINE },
-  { key: 'push',             label: '下推数量', visible: true,  pushOnly: true },
+  { key: 'push',             label: '已下推数量', visible: true,  pushOnly: true },
+  { key: 'push_amount',      label: '已下推金额', visible: true,  pushOnly: true },
   // 订单关联单号（参照金蝶序时簿）：采购订单 = 入库单 / 付款单，销售订单 = 出库单 / 收款单；列表按类型改显示名
   { key: 'linked_docs',      label: '关联下游单号', visible: true, onlyTypes: ['PO', 'SOa'] },
   { key: 'linked_payments',  label: '关联收付款单号', visible: true, onlyTypes: ['PO', 'SOa'] },

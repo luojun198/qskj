@@ -98,6 +98,76 @@ export function descendToLeaf(db: Db, accountSetId: string, rootCode: string, le
   return pickLeaf(tree, root, leafHints)?.code ?? rootCode
 }
 
+function leafDescendants(tree: Tree, root: Row): Row[] {
+  const leaves: Row[] = []
+  const walk = (r: Row) => {
+    const ks = tree.kids.get(r.id) || []
+    if (!ks.length) {
+      if (r !== root) leaves.push(r)
+      return
+    }
+    ks.forEach(walk)
+  }
+  walk(root)
+  return leaves
+}
+
+function isLeafRow(tree: Tree, row: Row): boolean {
+  return !(tree.kids.get(row.id) || []).length
+}
+
+/**
+ * 把「配置里的科目」解析成可以记账的明细科目。
+ *
+ * 资产类别曾绑在一级科目上（如 1602 累计折旧），之后又在其下加了明细科目时，
+ * 一级科目不能再直接记账。规则：
+ * - 配置本身已是明细，或账套里没有这个编码：原样返回（没有编码交给后续「科目不存在」提示）
+ * - 调用方另外指定了明细科目（重新生成页上选的）：用指定的
+ * - 下面只有一个明细科目：自动改用它
+ * - 有多个明细又没指定：报错并列出可选科目，不猜
+ */
+export function createPostingAccountResolver(db: Db, accountSetId: string) {
+  const tree = loadTree(db, accountSetId)
+  const cache = new Map<string, string>()
+  return (configured: string | null | undefined, options?: { preferred?: string | null; role?: string }): string => {
+    const code = (configured || '').trim()
+    if (!code) return ''
+    const preferred = (options?.preferred || '').trim()
+    const key = `${code}\n${preferred}`
+    const hit = cache.get(key)
+    if (hit !== undefined) return hit
+
+    const node = tree.rows.find(r => r.code === code)
+    if (!node || isLeafRow(tree, node)) {
+      cache.set(key, code)
+      return code
+    }
+
+    const leaves = leafDescendants(tree, node)
+    const usable = leaves.filter(tree.enabled)
+    const pool = usable.length ? usable : leaves
+
+    if (preferred && preferred !== code) {
+      const pref = tree.rows.find(r => r.code === preferred)
+      if (pref && isLeafRow(tree, pref)) {
+        cache.set(key, pref.code)
+        return pref.code
+      }
+    }
+
+    if (pool.length === 1) {
+      cache.set(key, pool[0].code)
+      return pool[0].code
+    }
+
+    const role = options?.role || '科目'
+    const list = pool.map(l => `${l.code} ${l.name}`).join('、')
+    throw new Error(
+      `${role}「${node.code} ${node.name}」下面已有明细科目：${list}。不能记在上级科目上，请改选其中一个明细科目，或到「资产类别」中修改。`
+    )
+  }
+}
+
 /** 按名称定位根科目并下探到最底层末级；找不到返回 null */
 export function resolveAssetAccount(db: Db, accountSetId: string, spec: AssetAccountSpec): ResolvedAssetAccount | null {
   const tree = loadTree(db, accountSetId)

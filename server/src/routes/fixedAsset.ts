@@ -20,7 +20,8 @@ import {
 import { disposeAsset, cancelDisposal } from '../services/assetDisposal.js'
 import { generatePurchaseVoucher } from '../services/assetAcquisition.js'
 import { deleteVoucherRecords, normalizeRequestedVoucherTypeId } from '../services/voucherEntry.js'
-import { assertPeriodOpen, assetCardAuxWarnings, normalizeSalvageRate } from '../services/assetVoucherBuilder.js'
+import { queryDeprRecords } from '../services/assetDeprQuery.js'
+import { assertPeriodOpen, latestWritablePeriodKey, assetCardAuxWarnings, normalizeSalvageRate } from '../services/assetVoucherBuilder.js'
 import { deleteVoucherWithRefs } from '../services/voucherDelete.js'
 import { getVoucherImmutableReason, assertPeriodNotBeforeGlStart } from '../services/voucherMutationGuard.js'
 import { getDictDeleteBlockReason, buildAssetCardUpdate, getCardValueLockReason } from '../services/assetCard.js'
@@ -446,22 +447,39 @@ router.delete('/asset/dict/:type/:id', operationLog('固定资产字典删除', 
 router.get('/asset/cards', (req: AuthRequest, res) => {
   const db = getDb()
   const asid = req.accountSetId || ''
-  const { keyword, category_code, status_code, dept_code, page = '1', page_size = '20' } = req.query as Record<string, string>
+  const {
+    keyword, category_code, status_code, dept_code, purpose_code, depr_method, disposed,
+    acquire_from, acquire_to, start_depr_from, start_depr_to, page = '1', page_size = '20',
+  } = req.query as Record<string, string>
 
-  const conds = ['account_set_id = ?']
+  const conds = ['fa.account_set_id = ?']
   const params: any[] = [asid]
   if (keyword) {
-    conds.push('(asset_no LIKE ? OR asset_name LIKE ?)')
-    params.push(`%${keyword}%`, `%${keyword}%`)
+    // 第七份反馈：关键字同时查规格型号 / 参考编号 / 卡片号 / 使用人 / 保管人 / 存放地点 / 制造厂家
+    const kwCols = ['asset_no', 'asset_name', 'spec', 'ref_no', 'card_no', 'user_name', 'keeper', 'install_place', 'manufacturer']
+    conds.push(`(${kwCols.map(c => `fa.${c} LIKE ?`).join(' OR ')})`)
+    params.push(...kwCols.map(() => `%${keyword}%`))
   }
-  if (category_code) { conds.push('category_code = ?'); params.push(category_code) }
-  if (status_code) { conds.push('status_code = ?'); params.push(status_code) }
-  if (dept_code) { conds.push('dept_code = ?'); params.push(dept_code) }
+  if (category_code) { conds.push('fa.category_code = ?'); params.push(category_code) }
+  if (status_code) { conds.push('fa.status_code = ?'); params.push(status_code) }
+  if (dept_code) { conds.push('fa.dept_code = ?'); params.push(dept_code) }
+  if (purpose_code) { conds.push('fa.purpose_code = ?'); params.push(purpose_code) }
+  if (depr_method) { conds.push('fa.depr_method = ?'); params.push(depr_method) }
+  if (disposed === '0') conds.push("COALESCE(fa.scrap_date,'') = ''")
+  if (disposed === '1') conds.push("COALESCE(fa.scrap_date,'') <> ''")
+  if (acquire_from) { conds.push('fa.acquire_date >= ?'); params.push(acquire_from) }
+  if (acquire_to) { conds.push('fa.acquire_date <= ?'); params.push(acquire_to) }
+  if (start_depr_from) { conds.push('fa.start_depr_date >= ?'); params.push(start_depr_from) }
+  if (start_depr_to) { conds.push('fa.start_depr_date <= ?'); params.push(start_depr_to) }
 
   const where = `WHERE ${conds.join(' AND ')}`
-  const total = (db.prepare(`SELECT COUNT(*) c FROM fixed_asset ${where}`).get(...params) as any).c
+  const total = (db.prepare(`SELECT COUNT(*) c FROM fixed_asset fa ${where}`).get(...params) as any).c
   const offset = (parseInt(page) - 1) * parseInt(page_size)
-  const rows = db.prepare(`SELECT * FROM fixed_asset ${where} ORDER BY asset_no LIMIT ? OFFSET ?`).all(...params, parseInt(page_size), offset)
+  // 最近一次计提的月折旧额与期间（列表「月折旧额」列）
+  const rows = db.prepare(`SELECT fa.*,
+      (SELECT d.month_depr FROM fixed_asset_depr d WHERE d.account_set_id=fa.account_set_id AND d.asset_no=fa.asset_no ORDER BY d.year DESC, d.month DESC LIMIT 1) AS last_month_depr,
+      (SELECT d.year * 100 + d.month FROM fixed_asset_depr d WHERE d.account_set_id=fa.account_set_id AND d.asset_no=fa.asset_no ORDER BY d.year DESC, d.month DESC LIMIT 1) AS last_depr_ym
+    FROM fixed_asset fa ${where} ORDER BY fa.asset_no LIMIT ? OFFSET ?`).all(...params, parseInt(page_size), offset)
 
   // 附加字典名称
   const catMap = new Map(db.prepare('SELECT code,name FROM fixed_asset_category WHERE account_set_id=?').all(asid).map((r: any) => [r.code, r.name]))
@@ -572,11 +590,12 @@ router.post('/asset/cards', operationLog('固定资产新增', '固定资产'), 
   if (accumNum > originalNum) {
     return res.status(400).json({ code: 400, message: '累计折旧不能大于原值' })
   }
-  for (const dateField of ['acquire_date', 'start_depr_date'] as const) {
+  for (const dateField of ['acquire_date', 'start_depr_date', 'manufacture_date'] as const) {
     const v = (req.body as any)[dateField]
     // normalizeDate 同时校验格式与真实日期（拒绝 2026-13-01 这类）
     if (v && normalizeDate(String(v)) !== String(v)) {
-      return res.status(400).json({ code: 400, message: `${dateField === 'acquire_date' ? '取得日期' : '起折日期'}必须为 YYYY-MM-DD 格式的有效日期` })
+      const label = dateField === 'acquire_date' ? '取得日期' : dateField === 'start_depr_date' ? '起折日期' : '制造日期'
+      return res.status(400).json({ code: 400, message: `${label}必须为 YYYY-MM-DD 格式的有效日期` })
     }
   }
   if (qty !== undefined && qty !== null && (!Number.isFinite(Number(qty)) || Number(qty) < 0)) {
@@ -617,6 +636,11 @@ router.post('/asset/cards', operationLog('固定资产新增', '固定资产'), 
     Number(accum_depr), Number(depr_months_done), net_value,
     card_no ?? null, qty, unit ?? null, user_name ?? null, keeper ?? null,
     source ?? null, install_place ?? null, remark ?? null
+  )
+  // v169 补充字段（规格型号 / 参考编号 / 制造厂家 / 制造日期）
+  const extra = (k: string) => { const v = (req.body as any)[k]; return v === undefined || v === '' ? null : String(v) }
+  db.prepare('UPDATE fixed_asset SET spec=?, ref_no=?, manufacturer=?, manufacture_date=? WHERE id=?').run(
+    extra('spec'), extra('ref_no'), extra('manufacturer'), extra('manufacture_date'), id
   )
 
   // 可选：生成购置凭证（借固定资产/贷资金来源），按「购买资产凭证类型」参数
@@ -1420,11 +1444,10 @@ router.post(
       return res.status(400).json({ code: 400, message: e.message })
     }
 
-    // P2-1：不允许对未来期间计提（此前可对 2030-01 随意计提）
-    const now = new Date()
-    const nowYm = now.getFullYear() * 100 + (now.getMonth() + 1)
-    if (Number(year) * 100 + Number(month) > nowYm) {
-      return res.status(400).json({ code: 400, message: '不能对晚于当前月份的期间计提折旧' })
+    // P2-1：不允许对未来期间计提（此前可对 2030-01 随意计提）；当前期间 = 自然月与已结账下一期取较晚者（FIX-417）
+    const maxYm = latestWritablePeriodKey(db, asid)
+    if (Number(year) * 100 + Number(month) > maxYm) {
+      return res.status(400).json({ code: 400, message: `不能对晚于当前期间（${Math.floor(maxYm / 100)}年${maxYm % 100}月）的期间计提折旧` })
     }
 
     // 顺序校验（参数驱动 + 逐月严格）：设置了折旧起始期间后，
@@ -1552,6 +1575,21 @@ router.get('/asset/depr/history', (req: AuthRequest, res) => {
     ORDER BY fd.year, fd.month, fd.asset_no
   `).all(...params)
   res.json({ code: 0, data: rows })
+})
+
+// GET /asset/depr/query — 折旧查询（第七份反馈：参照润衡「折旧查询」，按年月范围 + 条件逐月列出计提记录）
+// from / to 为 YYYYMM（含两端）；部门 / 用途取计提当时的记录，类别取卡片当前类别
+router.get('/asset/depr/query', (req: AuthRequest, res) => {
+  const q = req.query as Record<string, string>
+  try {
+    res.json({ code: 0, data: queryDeprRecords(getDb(), req.accountSetId || '', {
+      fromYm: Number(q.from), toYm: Number(q.to),
+      category_code: q.category_code, dept_code: q.dept_code, purpose_code: q.purpose_code,
+      depr_method: q.depr_method, keyword: q.keyword, hideZero: q.hide_zero === '1',
+    }) })
+  } catch (e: any) {
+    res.status(400).json({ code: 400, message: e.message })
+  }
 })
 
 // POST /asset/depr/generate-voucher — 对已计提但未生成凭证的期间补生成凭证

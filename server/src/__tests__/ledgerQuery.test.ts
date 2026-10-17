@@ -168,7 +168,7 @@ describe('ledgerQuery', () => {
     }
   })
 
-  it('明细账编码区间带币种时，分录与原币期初都只取该币种子科目', () => {
+  it('明细账编码区间带币种时，分录按分录币种过滤（空则回退科目缺省）', () => {
     const query = buildLedgerDetailQuery({
       accountSetId: 'as-1',
       accountCodeStart: '1002',
@@ -179,8 +179,9 @@ describe('ledgerQuery', () => {
       page: 1,
       pageSize: 20,
     })
-    expect(query.listSql).toContain("UPPER(COALESCE(currency_code, '')) = ?")
+    expect(query.listSql).toContain("UPPER(COALESCE(NULLIF(ve.currency_code, '')")
     expect(query.listParams).toContain('USD')
+    expect(query.foreignInitBalanceSql).toContain("UPPER(COALESCE(NULLIF(ve.currency_code, ''), a.currency_code, '')) = ?")
     expect(query.foreignInitBalanceSql).toContain("UPPER(COALESCE(a.currency_code, '')) = ?")
     expect(query.foreignInitBalanceParams).toContain('USD')
     // 区间原币期初只取叶子科目，避免父科目重复

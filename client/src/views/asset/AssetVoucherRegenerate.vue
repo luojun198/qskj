@@ -58,7 +58,7 @@
               <AccountSelect v-model="form.accum_account" placeholder="默认 1602 累计折旧" search-keyword="累计折旧" />
             </el-form-item>
             <el-form-item label="说明">
-              <span class="avr-hint">按该期已保存的折旧明细重新合并生成一张凭证，折旧费用科目取资产用途 / 类别配置。</span>
+              <span class="avr-hint">按该期已保存的折旧明细重新合并生成一张凭证。折旧费用科目取资产用途。累计折旧优先用资产类别里的明细科目；若类别里绑的是后来又加了明细的上级科目（例如 1602），请在这里选择要用的明细科目。</span>
             </el-form-item>
           </template>
 

@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { initCashFlowForAccountSetSafe } from '../services/cashFlowAccountMap.js'
 import { firstNonLeafError } from '../services/accountReferences.js'
+import { latestWritablePeriodKey } from '../services/assetVoucherBuilder.js'
 import { v4 as uuidv4 } from 'uuid'
 import bcrypt from 'bcryptjs'
 import { readdirSync, readFileSync, existsSync, mkdirSync } from 'fs'
@@ -1206,6 +1207,8 @@ router.get('/params', (req: AuthRequest, res) => {
       start_date: startDate,
       current_year: currentYear,
       current_period: currentPeriod,
+      // 资产业务可写入的最晚期间 YYYYMM（自然月与已结账下一期取较晚者，FIX-417）
+      max_writable_ym: latestWritablePeriodKey(db, asId as string),
       resolved_accounting_standard_name: getResolvedAccountingStandardName(db, asId as string),
       dashboard_rules_editable: true,
       dashboard_effective_rules: dashboardConfig.rules,

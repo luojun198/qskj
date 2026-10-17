@@ -83,6 +83,7 @@ import {
   validateFinishKitting,
   PHYSICAL_CHILD_DOC_TYPES,
   computeSourceLineUsedQty,
+  pushedLineAmount,
   findDraftDocumentUsingSourceLines,
   validatePlanFinishQuantities,
   validatePlanIssueQuantities,
@@ -755,7 +756,7 @@ function queryDocRows(db: ReturnType<typeof getDb>, whereSql: string, params: an
   //    注：原 SQL 中 pushed_qty 是「下游引用本主单所有明细行的数量之和」；pushed_lines 是「下游引用数量>0 的明细行数」；
   //    fully_pushed_lines 是「下游引用数量 >= qty 的明细行数」。这里一次性算清。
   const lineRows = db.prepare(`
-    SELECT id, doc_id, qty, arap_source_log_id FROM scm_doc_line WHERE doc_id IN (${inPH})
+    SELECT id, doc_id, qty, amount, tax_amount, arap_source_log_id FROM scm_doc_line WHERE doc_id IN (${inPH})
   `).all(...ids) as any[]
 
   // 2a) 下游引用数量：scm_doc_line.source_line_id 反查 + 生产计划产品 source_line_id 反查
@@ -886,12 +887,13 @@ function queryDocRows(db: ReturnType<typeof getDb>, whereSql: string, params: an
     doc.voucher_no = doc.voucher_id ? (voucherNoById.get(doc.voucher_id) || null) : null
     const lines = linesByDoc.get(doc.id) || []
     const totalLines = lines.length
-    let pushedLines = 0, fullyPushedLines = 0, pushedQty = 0, planOccupiedQty = 0
+    let pushedLines = 0, fullyPushedLines = 0, pushedQty = 0, planOccupiedQty = 0, pushedAmountCents = 0
     for (const l of lines) {
       const qty = Number(l.qty || 0)
       // 下游实物单据对本明细行的引用数量（不含 MRP/生产计划的计划占用）
       const linePushed = pushedByLine.get(l.id) || 0
       pushedQty += linePushed
+      pushedAmountCents += Math.round(pushedLineAmount(doc.doc_type, qty, linePushed, l.amount, l.tax_amount) * 100)
       planOccupiedQty += planOccupiedByLine.get(l.id) || 0
       if (linePushed > 0) pushedLines++
       if (qty > 0 && linePushed >= qty) fullyPushedLines++
@@ -900,6 +902,7 @@ function queryDocRows(db: ReturnType<typeof getDb>, whereSql: string, params: an
     doc.pushed_lines = pushedLines
     doc.fully_pushed_lines = fullyPushedLines
     doc.pushed_qty = pushedQty
+    doc.pushed_amount = pushedAmountCents / 100
     doc.plan_occupied_qty = planOccupiedQty
 
     const down = downstreamByDoc.get(doc.id)
@@ -978,7 +981,7 @@ router.get('/scm/docs', (req: AuthRequest, res) => {
     FROM scm_doc d WHERE ${where}`).get(...ps) as any
   const total = agg.c
   const summary: Record<string, number> = { total_qty: Math.round((Number(agg.q) || 0) * 1e6) / 1e6, total_amount: round2(Number(agg.a) || 0), total_tax: round2(Number(agg.t) || 0) }
-  // 有实物下推链路的类型：同时汇总全部筛选结果的已下推数量（口径同 queryDocRows 的 pushed_qty），供「下推数量」列合计
+  // 有实物下推链路的类型：同时汇总全部筛选结果的已下推数量与金额（口径同 queryDocRows），供列表合计
   const childType = doc_type ? PHYSICAL_CHILD_DOC_TYPES[doc_type] : undefined
   if (childType) {
     const pushed = db.prepare(`SELECT COALESCE(SUM(cl.qty),0) q FROM scm_doc d
@@ -987,6 +990,22 @@ router.get('/scm/docs', (req: AuthRequest, res) => {
       JOIN scm_doc cd ON cd.id=cl.doc_id AND cd.doc_type=? AND cd.status<>'voided'
       WHERE ${where}`).get(childType, ...ps) as any
     summary.pushed_qty = Math.round((Number(pushed.q) || 0) * 1e6) / 1e6
+    const pushedLines = db.prepare(`SELECT sl.qty AS qty, COALESCE(sl.amount,0) AS amount, COALESCE(sl.tax_amount,0) AS tax_amount,
+        COALESCE(p.q, 0) AS pushed
+      FROM scm_doc d
+      JOIN scm_doc_line sl ON sl.doc_id=d.id
+      LEFT JOIN (
+        SELECT cl.source_line_id AS lid, SUM(cl.qty) AS q
+        FROM scm_doc_line cl
+        JOIN scm_doc cd ON cd.id=cl.doc_id AND cd.account_set_id=? AND cd.doc_type=? AND cd.status<>'voided'
+        GROUP BY cl.source_line_id
+      ) p ON p.lid=sl.id
+      WHERE ${where}`).all(asid(req), childType, ...ps) as any[]
+    let pushedAmountCents = 0
+    for (const line of pushedLines) {
+      pushedAmountCents += Math.round(pushedLineAmount(doc_type, line.qty, line.pushed, line.amount, line.tax_amount) * 100)
+    }
+    summary.pushed_amount = pushedAmountCents / 100
   }
   const paging = normalizePaging(page, page_size)
   // 多级排序：sort=key:asc,key2:desc（白名单见 services/scmDocListSort.ts）；未传时日期降序、单据号降序
@@ -1126,6 +1145,9 @@ router.get('/scm/docs/:id', (req: AuthRequest, res) => {
   if (doc.doc_type === 'PI') {
     const orderNos = getPurchaseReceiptOrderNosByLine(db, asid(req), lines)
     for (const line of lines) line.purchase_order_no = orderNos.get(line.id) || ''
+  }
+  for (const line of lines) {
+    line.pushed_amount = pushedLineAmount(doc.doc_type, line.qty, line.pushed_qty, line.amount, line.tax_amount)
   }
 
   // 上游来源（行级，去重）：本单各行 source_line_id → 父行所属单据，支持多对一合并

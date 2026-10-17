@@ -52,12 +52,12 @@ describe('固定资产业务规则（批次 E）', () => {
     const future = nextMonthDate()
     expect(() =>
       applyAssetChange({ db, accountSetId: SET_ID, assetId: 'fa-F2', kind: 'original_value', changeDate: future, payload: { amount: 100 }, operatorName: 't' })
-    ).toThrow(/变动日期不能晚于当前月份/)
+    ).toThrow(/变动日期不能晚于当前期间/)
     expect(() =>
       disposeAsset({ db, accountSetId: SET_ID, assetId: 'fa-F2', changeTypeCode: null, scrapDate: future, scrapReason: '报废' })
-    ).toThrow(/处置日期不能晚于当前月份/)
+    ).toThrow(/处置日期不能晚于当前期间/)
     const invId = createInventory({ db, accountSetId: SET_ID, name: '未来盘点', inventoryDate: future })
-    expect(() => completeInventory({ db, accountSetId: SET_ID, inventoryId: invId })).toThrow(/盘点日期不能晚于当前月份/)
+    expect(() => completeInventory({ db, accountSetId: SET_ID, inventoryId: invId })).toThrow(/盘点日期不能晚于当前期间/)
     expect((db.prepare("SELECT original_value FROM fixed_asset WHERE asset_no='F2'").get() as any).original_value).toBe(1000)
   })
 

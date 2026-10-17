@@ -124,7 +124,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onActivated, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft, Download, UploadFilled } from '@element-plus/icons-vue'
@@ -174,7 +174,19 @@ onMounted(async () => {
     if (!importTypes.value.includes(docType.value)) docType.value = importTypes.value[0]
   } catch (e: any) {
     ElMessage.error(errMsg(e, '加载导入配置失败'))
-  }
+  } finally { configLoaded = true }
+})
+
+// 本页在 Layout 的 keep-alive 下被复用（onMounted 不再重跑）：
+//  · 从另一种单据列表点「导入」进来（query.doc_type 变了）→ 切换单据类型并回到上传状态
+//  · 上次导入的草稿已全部审核生效 → 回到上传状态，不再停在旧结果页
+// 仍有未审核草稿时保留结果页，方便继续批量审核
+let configLoaded = false
+onActivated(() => {
+  if (!configLoaded || busy.value || auditing.value) return
+  const q = String(route.query.doc_type || '')
+  if (q && q !== docType.value && importTypes.value.includes(q)) { docType.value = q; reset(); return }
+  if (created.value.length && !pendingIds.value.length) reset()
 })
 
 function errMsg(e: any, fallback: string): string {

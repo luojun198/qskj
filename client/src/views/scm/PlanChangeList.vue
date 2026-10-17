@@ -3,7 +3,8 @@
     <div class="filter-row">
       <span class="title">工单变更单</span>
       <el-input v-model="filters.keyword" clearable placeholder="变更单号 / 工单号 / 原因" size="small" style="width:200px" @keyup.enter="query" @clear="query" />
-      <el-select v-model="filters.status" clearable placeholder="状态" size="small" style="width:100px" @change="query">
+      <el-select v-model="filters.status" placeholder="状态" size="small" style="width:128px" @change="query" :empty-values="[null, undefined]">
+        <el-option label="全部审核状态" value="" />
         <el-option label="草稿" value="draft" /><el-option label="已审核" value="audited" />
       </el-select>
       <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="开始" end-placeholder="结束" size="small" style="width:230px" @change="query" />

@@ -266,7 +266,7 @@
               </div>
             </el-form-item>
           </el-col>
-          <el-col v-if="hcol('currency')" :span="6">
+          <el-col v-if="showCurrency" :span="6">
             <el-form-item label="币别">
               <div style="display:flex;gap:4px;width:100%">
                 <el-select v-model="form.currency" filterable allow-create clearable default-first-option placeholder="CNY" style="flex:1" @change="onCurrencyChange">
@@ -277,7 +277,7 @@
             </el-form-item>
           </el-col>
           <!-- 多币种双轨：外币单据显示记账汇率（缺省按单据期间从汇率表带出，可改；审核时锁定） -->
-          <el-col v-if="hcol('currency') && isForeignCurrency" :span="6">
+          <el-col v-if="showCurrency && isForeignCurrency" :span="6">
             <el-form-item label="记账汇率">
               <el-input-number v-model="form.exchange_rate" :min="0.000001" :precision="6" :controls="false" :disabled="isView" style="width:100%" placeholder="1 外币 = ? 本位币" />
             </el-form-item>
@@ -659,15 +659,22 @@
             </template>
           </template>
         </el-table-column>
-        <el-table-column v-if="showPushCol && isView" column-key="push_progress" label="下推进度" :width="lw('push_progress') ?? 120" align="center">
+        <el-table-column v-if="showPushCol && isView" column-key="push_qty" label="已下推数量" :width="lw('push_qty') ?? 110" align="right">
           <template #default="{ row }">
             <template v-if="!row.__summary && (Number(row.qty) || 0) > 0">
               <span :class="(row.pushed_qty || 0) >= row.qty ? 'text-success' : ((row.pushed_qty || 0) > 0 ? 'text-warning' : 'text-muted')">
-                {{ row.pushed_qty || 0 }} / {{ row.qty }}
+                {{ decStore.qty(row.pushed_qty || 0, form.doc_type) }}
               </span>
             </template>
             <span v-else-if="!row.__summary" class="text-muted">—</span>
-            <template v-else>{{ row.pushed_qty || 0 }} / {{ Math.round((Number(row.qty) || 0) * 1e6) / 1e6 }}</template>
+            <template v-else>{{ decStore.qty(row.pushed_qty || 0, form.doc_type) }}</template>
+          </template>
+        </el-table-column>
+        <el-table-column v-if="showPushCol && isView" column-key="push_amount" label="已下推金额" :width="lw('push_amount') ?? 120" align="right">
+          <template #default="{ row }">
+            <template v-if="!row.__summary && (Number(row.qty) || 0) > 0">{{ decStore.amount(row.pushed_amount || 0, form.doc_type) }}</template>
+            <span v-else-if="!row.__summary" class="text-muted">—</span>
+            <template v-else>{{ decStore.amount(row.pushed_amount || 0, form.doc_type) }}</template>
           </template>
         </el-table-column>
         <el-table-column v-if="!isMr && !isCostInbound" column-key="price" label="单价" :width="lw('price') ?? 120" align="right" prop="price">
@@ -1165,6 +1172,7 @@
 </template>
 
 <script setup lang="ts">
+import { shouldShowCurrencyHeader } from '@/utils/scmCurrencyHeader'
 import { todayStr } from '@/utils/format'
 import { ref, computed, watch, onMounted, onActivated, onDeactivated, onBeforeUnmount, nextTick, defineAsyncComponent, onErrorCaptured } from 'vue'
 import { useGlStartDate } from '@/composables/useGlStartDate'
@@ -1181,7 +1189,7 @@ import { useAutoBlankRow } from '@/composables/useAutoBlankRow'
 import { useScopedColumnWidth } from '@/composables/useColumnWidthMemory'
 import { resetColWidth } from '@/directives/colWidth'
 import { hasPermission } from '@/utils/permission'
-import { PUSH_MAP, pushTarget, docGeneratesVoucher, paymentVoucherByCashier, canGenerateDownstream, canShowStandardPushAction, downstreamActionLabel, normalizePushProgress } from '@/utils/scmDoc'
+import { PUSH_MAP, pushTarget, isPushProgressDoc, docGeneratesVoucher, paymentVoucherByCashier, canGenerateDownstream, canShowStandardPushAction, downstreamActionLabel, normalizePushProgress } from '@/utils/scmDoc'
 import { useSystemParamsStore } from '@/stores/systemParams'
 import { useScmDecimalsStore } from '@/stores/scmDecimals'
 import { resolveDefaultWarehouse } from '@/utils/scmDefaultWarehouse'
@@ -1439,6 +1447,8 @@ const isSalesOrderOrDispatch = computed(() => ['SOa', 'SO'].includes(form.value.
 
 // 采购/销售类单据：支持「查询实时库存」（含订单/入出库/退货/发票）
 const isPurchaseOrSale = computed(() => ['PQ','PO','PI','PR','RP','SQ','SOa','SO','SR','RS'].includes(form.value.doc_type))
+// 币别 / 记账汇率：采购、销售类单据一律可选外币，其余类型按字段配置；「隐藏字段」可关闭
+const showCurrency = computed(() => shouldShowCurrencyHeader(form.value.doc_type, headerCols.value, headerHidden.value))
 // 领料/补料/委外发货同为库存消耗单据，复用销售订单的实时库存查询和逐行展示。
 const supportsRealtimeStock = computed(() =>
   isPurchaseOrSale.value || ['PL', 'PB', 'WO'].includes(form.value.doc_type))
@@ -1869,7 +1879,7 @@ const footerFieldDefs = computed(() => allFooterFieldDefs.value.filter(f => !foo
 
 // 该类型单据是否参与下推链路。列配置的 immediate watch 会在 setup 阶段立即读取，
 // 必须先于 LINE_CORE_COLUMNS / lineColumnDefaults 初始化，避免暂时性死区。
-const showPushCol = computed(() => !!pushTarget(form.value.doc_type))
+const showPushCol = computed(() => isPushProgressDoc(form.value.doc_type))
 
 const LINE_CORE_COLUMNS: Array<{ key: string; label: string; available?: () => boolean }> = [
   { key: 'item_code', label: '编号' },
@@ -1885,7 +1895,8 @@ const LINE_CORE_COLUMNS: Array<{ key: string; label: string; available?: () => b
   { key: 'qty', label: '数量' },
   { key: 'source_type', label: '来源', available: () => isMr.value },
   { key: 'supplier_code', label: '供应商/委外厂', available: () => isMr.value },
-  { key: 'push_progress', label: '下推进度', available: () => showPushCol.value && isView.value },
+  { key: 'push_qty', label: '已下推数量', available: () => showPushCol.value && isView.value },
+  { key: 'push_amount', label: '已下推金额', available: () => showPushCol.value && isView.value },
   { key: 'price', label: '单价', available: () => !isMr.value && !isCostInbound.value },
   { key: 'amount', label: '金额' },
   { key: 'serial_no', label: '序列号', available: () => showSerialCols.value },
@@ -2992,6 +3003,7 @@ const summaryRow = computed<Record<string, any>>(() => {
     gross_amount: lines.value.reduce((s, r) => s + grossOf(r), 0) || null,
     process_fee: sum(r => r.process_fee) || null,
     pushed_qty: Math.round(sum(r => r.pushed_qty) * 1e6) / 1e6,
+    pushed_amount: Math.round(sum(r => r.pushed_amount) * 100) / 100,
     price: null, price_with_tax: null, discount_rate: null, scrap_rate: null,
   }
 })

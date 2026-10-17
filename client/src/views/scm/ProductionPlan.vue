@@ -26,11 +26,12 @@
     </div>
     <div class="filter-row filter-row--query" style="margin-bottom: 8px;">
       <el-input v-model="filters.keyword" clearable placeholder="计划号 / 成品编码 / 名称 / 备注" size="small" style="width:220px" @keyup.enter="query" @clear="query" />
-      <el-select v-model="filters.status" multiple collapse-tags clearable placeholder="状态" size="small" style="width:170px" @change="query">
+      <el-select v-model="filters.status" multiple collapse-tags clearable placeholder="全部状态" size="small" style="width:170px" @change="query">
         <el-option label="草稿" value="draft" /><el-option label="已审核" value="released" /><el-option label="已关闭" value="closed" />
       </el-select>
       <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="开工从" end-placeholder="开工至" size="small" style="width:230px" @change="query" />
-      <el-select v-if="planTypeFilter === 'outsource'" v-model="filters.supplier_code" clearable filterable placeholder="委外厂" size="small" style="width:160px" @change="query">
+      <el-select v-if="planTypeFilter === 'outsource'" v-model="filters.supplier_code" filterable placeholder="委外厂" size="small" style="width:160px" @change="query" :empty-values="[null, undefined]">
+        <el-option label="全部委外厂" value="" />
         <el-option v-for="p in suppliers" :key="p.code" :label="`${p.code} ${p.name}`" :value="p.code" />
       </el-select>
       <el-checkbox v-model="filters.overdue" size="small" @change="query">仅看逾期</el-checkbox>

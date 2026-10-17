@@ -1327,6 +1327,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '折旧计提', icon: 'TrendCharts', parent: '固定资产' },
       },
       {
+        path: 'asset/depreciation/query',
+        name: 'AssetDepreciationQuery',
+        component: () => import('@/views/asset/DepreciationQuery.vue'),
+        meta: { title: '折旧查询', parent: '固定资产' },
+      },
+      {
         path: 'asset/depreciation/reverse',
         name: 'AssetDepreciationReverse',
         component: () => import('@/views/asset/DepreciationReverse.vue'),

@@ -1047,7 +1047,6 @@ export function buildLedgerDetailQuery(filters: {
     const rangeParams: SqlParam[] = [filters.accountSetId]
     if (filters.accountCodeStart) { rangeParts.push('code >= ?'); rangeParams.push(filters.accountCodeStart) }
     if (filters.accountCodeEnd) { rangeParts.push('code <= ?'); rangeParams.push(filters.accountCodeEnd) }
-    if (rangeCurrency) { rangeParts.push("UPPER(COALESCE(currency_code, '')) = ?"); rangeParams.push(rangeCurrency) }
     conditions.push(`ve.account_id IN (
       SELECT id FROM accounts
       WHERE ${rangeParts.join(' AND ')}${scopeSql}
@@ -1058,6 +1057,14 @@ export function buildLedgerDetailQuery(filters: {
     params.push(filters.accountId)
   } else {
     appendAccountScopeCondition(filters.accountScope, 've.account_id', conditions, params)
+  }
+
+  // 科目上的币种只是缺省；筛选币种时按分录币种（空则回退缺省）
+  if (rangeCurrency) {
+    conditions.push(
+      "UPPER(COALESCE(NULLIF(ve.currency_code, ''), (SELECT currency_code FROM accounts WHERE id = ve.account_id), '')) = ?"
+    )
+    params.push(rangeCurrency)
   }
 
   if (filters.startDate) {
@@ -1241,10 +1248,13 @@ export function buildLedgerDetailQuery(filters: {
   let foreignInitBalanceSql: string
   let foreignInitBalanceParams: SqlParam[]
   if (hasCodeRange) {
-    const currencyClause = rangeCurrency ? " AND UPPER(COALESCE(a.currency_code, '')) = ?" : ''
+    const accountCurrencyClause = rangeCurrency ? " AND UPPER(COALESCE(a.currency_code, '')) = ?" : ''
+    const entryCurrencyClause = rangeCurrency
+      ? " AND UPPER(COALESCE(NULLIF(ve.currency_code, ''), a.currency_code, '')) = ?"
+      : ''
     const currencyParams: SqlParam[] = rangeCurrency ? [rangeCurrency] : []
     const voucherInit = buildVoucherInitBeforeStartSql(
-      `${rangeWhereSql}${currencyClause}`,
+      `${rangeWhereSql}${entryCurrencyClause}`,
       [...rangeWhereParams, ...currencyParams],
       FX_AMOUNT
     )
@@ -1256,7 +1266,7 @@ export function buildLedgerDetailQuery(filters: {
          WHERE ib.account_set_id = ?
            AND ib.year = ?
            AND COALESCE(ib.aux_item_id, '') = ''
-           ${rangeWhereSql}${currencyClause}
+           ${rangeWhereSql}${accountCurrencyClause}
            ${INIT_BALANCE_LEAF_ACCOUNTS_ONLY}),
         0
       ) + COALESCE(${voucherInit.sql}, 0) as foreign_init_balance

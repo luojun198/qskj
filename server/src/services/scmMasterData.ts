@@ -23,6 +23,17 @@ export function masterAuditRequired(db: Database.Database, aid: string): boolean
   } catch { return false }
 }
 
+/** 已审核档案不能改、不能删，须先反审核。停用 / 启用不走这条。 */
+export function masterLockedError(
+  kind: 'item' | 'partner',
+  auditStatus: string | null | undefined,
+  action: 'edit' | 'delete',
+): string | null {
+  if (auditStatus !== 'audited') return null
+  const name = LABEL[kind]
+  return action === 'delete' ? `已审核${name}不能删除，请先反审核` : `已审核${name}不能修改，请先反审核`
+}
+
 /** 批量审核 / 反审核（只处理物料、往来单位） */
 export function setMasterAudit(db: Database.Database, aid: string, kind: 'item' | 'partner', ids: string[], audit: boolean, operator: string) {
   if (!ids.length) throw new Error(`请选择要${audit ? '审核' : '反审核'}的${LABEL[kind]}`)
@@ -33,6 +44,65 @@ export function setMasterAudit(db: Database.Database, aid: string, kind: 'item' 
         WHERE account_set_id=? AND id IN (${ph}) AND audit_status<>'audited'`).run(operator, aid, ...ids)
     : db.prepare(`UPDATE ${t} SET audit_status='draft', auditor=NULL, audited_at=NULL, updated_at=datetime('now')
         WHERE account_set_id=? AND id IN (${ph}) AND audit_status='audited'`).run(aid, ...ids)
+  return { changed: r.changes, skipped: ids.length - r.changes }
+}
+
+/** 物料批量改字段：白名单（字段 → 类型） */
+export const ITEM_BATCH_FIELDS: Record<string, 'text' | 'number' | 'bool' | 'account' | 'warehouse' | 'partner'> = {
+  spec: 'text', item_type: 'text', barcode: 'text', short_code: 'text', remark: 'text',
+  purchase_price: 'number', sale_price: 'number', ref_cost: 'number', safety_stock: 'number',
+  inv_account: 'account', sale_account: 'account',
+  default_warehouse_code: 'warehouse', supplier_code: 'partner',
+  batch_flag: 'bool',
+}
+
+/** 批量把选中物料的某个字段改为同一个值；已审核的跳过（须先反审核） */
+export function batchUpdateItemField(db: Database.Database, aid: string, ids: string[], field: string, value: unknown) {
+  if (!ids.length) throw new Error('请选择要修改的物料')
+  if (field.startsWith('field_')) return batchUpdateItemCustomField(db, aid, ids, field.slice(6), value)
+  const kind = ITEM_BATCH_FIELDS[field]
+  if (!kind) throw new Error('该字段不支持批量修改')
+  let v: string | number | null
+  const s = value === null || value === undefined ? '' : String(value).trim()
+  if (kind === 'number') {
+    const n = Number(s)
+    if (s === '' || !Number.isFinite(n) || n < 0) throw new Error('请输入不小于 0 的数字')
+    v = n
+  } else if (kind === 'bool') {
+    v = value === true || value === 1 || s === '1' || s === 'true' ? 1 : 0
+  } else if (s === '') {
+    v = null
+  } else {
+    v = s
+    if (kind === 'account') assertLeafAccountCode(db as any, aid, s, field === 'inv_account' ? '存货科目' : '销售收入科目')
+    if (kind === 'warehouse' && !db.prepare('SELECT 1 FROM scm_warehouse WHERE account_set_id=? AND code=?').get(aid, s)) throw new Error(`仓库「${s}」不存在`)
+    if (kind === 'partner' && !db.prepare('SELECT 1 FROM scm_partner WHERE account_set_id=? AND code=?').get(aid, s)) throw new Error(`往来单位「${s}」不存在`)
+  }
+  const ph = ids.map(() => '?').join(',')
+  // field 来自白名单，可安全拼接
+  const r = db.prepare(`UPDATE scm_item SET ${field}=?, updated_at=datetime('now')
+      WHERE account_set_id=? AND id IN (${ph}) AND COALESCE(audit_status,'draft')<>'audited'`).run(v, aid, ...ids)
+  return { changed: r.changes, skipped: ids.length - r.changes }
+}
+
+/** 自定义字段（field_values JSON）批量改值；留空 = 清除该字段 */
+function batchUpdateItemCustomField(db: Database.Database, aid: string, ids: string[], key: string, value: unknown) {
+  const def = db.prepare('SELECT field_name, field_type FROM scm_item_field_defs WHERE account_set_id=? AND field_key=? AND is_enabled=1').get(aid, key) as any
+  if (!def) throw new Error('该自定义字段不存在或已停用')
+  const s = value === null || value === undefined ? '' : String(value).trim()
+  let v: string | number | null = s === '' ? null : s
+  if (v !== null && def.field_type === 'number') {
+    const n = Number(s)
+    if (!Number.isFinite(n)) throw new Error(`${def.field_name}须为数字`)
+    v = n
+  }
+  const ph = ids.map(() => '?').join(',')
+  const base = "COALESCE(NULLIF(field_values,''),'{}')"
+  const path = `$."${key.replace(/"/g, '')}"`
+  const expr = v === null ? `json_remove(${base}, ?)` : `json_set(${base}, ?, ?)`
+  const args = v === null ? [path] : [path, v]
+  const r = db.prepare(`UPDATE scm_item SET field_values=${expr}, updated_at=datetime('now')
+      WHERE account_set_id=? AND id IN (${ph}) AND COALESCE(audit_status,'draft')<>'audited'`).run(...args, aid, ...ids)
   return { changed: r.changes, skipped: ids.length - r.changes }
 }
 
@@ -178,12 +248,12 @@ function itemTypeLookup(db: Database.Database, aid: string) {
 
 export function importItems(
   db: Database.Database, aid: string, rows: Array<Record<string, unknown>>,
-  opts: { conflict: 'skip' | 'overwrite'; dryRun: boolean },
+  opts: { conflict: 'skip' | 'overwrite'; dryRun: boolean; partial?: boolean },
 ): ImportResult {
   const result: ImportResult = { total: rows.length, inserted: 0, updated: 0, skipped: 0, issues: [] }
   const checkAccount = accountChecker(db, aid)
   const typeOf = itemTypeLookup(db, aid)
-  const existing = new Map((db.prepare('SELECT id, code, level FROM scm_item WHERE account_set_id=?').all(aid) as any[]).map(r => [r.code, r]))
+  const existing = new Map((db.prepare('SELECT id, code, level, audit_status FROM scm_item WHERE account_set_id=?').all(aid) as any[]).map(r => [r.code, r]))
   const warehouses = db.prepare('SELECT code, name FROM scm_warehouse WHERE account_set_id=?').all(aid) as any[]
   const partners = new Set((db.prepare('SELECT code FROM scm_partner WHERE account_set_id=?').all(aid) as any[]).map(r => r.code))
   const seen = new Map<string, number>()
@@ -217,6 +287,7 @@ export function importItems(
     if (parent && parent === code) errs.push('上级物料不能是自己')
     if (parent && !existing.has(parent) && !rows.some(r => str(pick(r, ITEM_IMPORT_COLUMNS[0])) === parent)) errs.push(`上级物料「${parent}」不存在`)
     const batch = str(get('batch_flag'))
+    if (existing.get(code)?.audit_status === 'audited' && opts.conflict !== 'skip') errs.push('已审核物料不能覆盖导入，请先反审核')
     if (errs.length) { result.issues.push({ row: rowNo, code, message: errs.join('；') }); return }
     if (existing.has(code) && opts.conflict === 'skip') { result.skipped++; return }
     ok.push({
@@ -229,8 +300,8 @@ export function importItems(
       },
     })
   })
-  // 预检返回将新增 / 覆盖的数量；正式导入有错误行时整批不落库（与单据导入一致：先修正 Excel 再导）
-  if (opts.dryRun || result.issues.length) {
+  // 预检返回将新增 / 覆盖的数量；正式导入有错误行时默认整批不落库；partial=true 时只导入通过校验的行，错误行列入 issues
+  if (opts.dryRun || (result.issues.length && !opts.partial)) {
     if (opts.dryRun) {
       result.inserted = ok.filter(p => !existing.has(p.code)).length
       result.updated = ok.filter(p => existing.has(p.code)).length
@@ -289,7 +360,7 @@ export function importItems(
       }
     }
     for (const p of pending) result.issues.push({ row: p.rowNo, code: p.code, message: `上级物料「${p.parent}」未能导入` })
-    if (pending.length) throw new Error('存在无法确定上级的物料，已整体回滚')
+    if (pending.length && !opts.partial) throw new Error('存在无法确定上级的物料，已整体回滚')
   })()
   return result
 }
@@ -301,11 +372,12 @@ const PARTNER_TYPE_TEXT: Record<string, 'customer' | 'supplier' | 'both'> = {
 
 export function importPartners(
   db: Database.Database, aid: string, rows: Array<Record<string, unknown>>,
-  opts: { conflict: 'skip' | 'overwrite'; dryRun: boolean; defaultType?: 'customer' | 'supplier' | 'both' },
+  opts: { conflict: 'skip' | 'overwrite'; dryRun: boolean; partial?: boolean; defaultType?: 'customer' | 'supplier' | 'both' },
 ): ImportResult {
   const result: ImportResult = { total: rows.length, inserted: 0, updated: 0, skipped: 0, issues: [] }
   const checkAccount = accountChecker(db, aid)
   const existing = new Map((db.prepare('SELECT id, code FROM scm_partner WHERE account_set_id=?').all(aid) as any[]).map(r => [r.code, r.id]))
+  const audited = new Set((db.prepare("SELECT code FROM scm_partner WHERE account_set_id=? AND audit_status='audited'").all(aid) as any[]).map(r => r.code))
   const seen = new Map<string, number>()
   const ok: Array<{ code: string; v: Record<string, any> }> = []
   rows.forEach((raw, idx) => {
@@ -327,6 +399,7 @@ export function importPartners(
     }
     const ar = str(get('ar_account')); const ap = str(get('ap_account'))
     for (const [c, l] of [[ar, '应收科目'], [ap, '应付科目']] as const) { const e = checkAccount(c, l); if (e) errs.push(e) }
+    if (audited.has(code) && opts.conflict !== 'skip') errs.push('已审核往来单位不能覆盖导入，请先反审核')
     if (errs.length) { result.issues.push({ row: rowNo, code, message: errs.join('；') }); return }
     if (existing.has(code) && opts.conflict === 'skip') { result.skipped++; return }
     ok.push({
@@ -339,8 +412,8 @@ export function importPartners(
       },
     })
   })
-  // 预检返回将新增 / 覆盖的数量；正式导入有错误行时整批不落库（与单据导入一致：先修正 Excel 再导）
-  if (opts.dryRun || result.issues.length) {
+  // 预检返回将新增 / 覆盖的数量；正式导入有错误行时默认整批不落库；partial=true 时只导入通过校验的行，错误行列入 issues
+  if (opts.dryRun || (result.issues.length && !opts.partial)) {
     if (opts.dryRun) {
       result.inserted = ok.filter(p => !existing.has(p.code)).length
       result.updated = ok.filter(p => existing.has(p.code)).length

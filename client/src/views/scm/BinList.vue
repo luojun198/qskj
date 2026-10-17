@@ -2,7 +2,8 @@
   <div class="page scm-cat-page">
     <div class="cat-bar">
       <span class="cat-title">库位档案</span>
-      <el-select v-model="filterWh" clearable filterable placeholder="按仓库筛选" size="small" style="width:180px" @change="load">
+      <el-select v-model="filterWh" filterable placeholder="按仓库筛选" size="small" style="width:180px" @change="load" :empty-values="[null, undefined]">
+        <el-option label="全部仓库" value="" />
         <el-option v-for="w in warehouses" :key="w.code" :value="w.code" :label="w.name || w.code" />
       </el-select>
       <el-button type="primary" size="small" @click="openAdd"><el-icon><Plus /></el-icon>新增库位</el-button>

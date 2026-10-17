@@ -121,7 +121,7 @@ describe('固定资产领用归还', () => {
   describe('评审 P2：日期与期间校验', () => {
     it('非真实日期、未来月份、已结账期间一律拒绝', () => {
       expect(() => checkout({ actionDate: '2026-02-30' })).toThrow(/不是有效日期/)
-      expect(() => checkout({ actionDate: '2099-01-01' })).toThrow(/不能晚于当前月份/)
+      expect(() => checkout({ actionDate: '2099-01-01' })).toThrow(/不能晚于当前期间/)
       closePeriod(db, 2026, 6)
       expect(() => checkout({ actionDate: '2026-06-01' })).toThrow()
     })

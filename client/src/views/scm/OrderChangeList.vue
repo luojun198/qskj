@@ -3,10 +3,12 @@
     <div class="filter-row">
       <span class="title">{{ title }}</span>
       <el-input v-model="filters.keyword" clearable placeholder="变更单号 / 订单号 / 往来单位 / 原因" size="small" style="width:240px" @keyup.enter="query" @clear="query" />
-      <el-select v-if="!fixedType" v-model="filters.doc_type" clearable placeholder="订单类型" size="small" style="width:120px" @change="query">
+      <el-select v-if="!fixedType" v-model="filters.doc_type" placeholder="订单类型" size="small" style="width:128px" @change="query" :empty-values="[null, undefined]">
+        <el-option label="全部订单类型" value="" />
         <el-option label="采购订单" value="PO" /><el-option label="销售订单" value="SOa" />
       </el-select>
-      <el-select v-model="filters.status" clearable placeholder="状态" size="small" style="width:100px" @change="query">
+      <el-select v-model="filters.status" placeholder="状态" size="small" style="width:128px" @change="query" :empty-values="[null, undefined]">
+        <el-option label="全部审核状态" value="" />
         <el-option label="草稿" value="draft" /><el-option label="已审核" value="audited" />
       </el-select>
       <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="开始" end-placeholder="结束" size="small" style="width:230px" @change="query" />

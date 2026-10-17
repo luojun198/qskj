@@ -37,29 +37,34 @@
           v-model="filters.item_type"
           class="item-filter"
           size="small"
-          clearable
           placeholder="属性"
-          @change="load"
+          @change="load" :empty-values="[null, undefined]"
         >
+          <el-option label="全部物料属性" value="" />
           <el-option v-for="(n, k) in dynamicItemTypes" :key="k" :label="n" :value="k" />
         </el-select>
         <el-select
           v-model="filters.is_leaf"
           class="item-filter"
           size="small"
-          clearable
           placeholder="性质"
-          @change="load"
+          @change="load" :empty-values="[null, undefined]"
         >
+          <el-option label="全部明细/目录" value="" />
           <el-option label="明细" :value="1" />
           <el-option label="目录" :value="0" />
         </el-select>
 
-        <el-select v-model="auditFilter" class="item-filter" size="small" clearable placeholder="审核" @change="load">
+        <el-select v-model="auditFilter" class="item-filter" size="small" placeholder="审核" @change="load" :empty-values="[null, undefined]">
+          <el-option label="全部审核状态" value="" />
           <el-option label="未审核" value="draft" />
           <el-option label="已审核" value="audited" />
         </el-select>
-        <el-checkbox v-model="showDisabled" size="small" @change="load">显示停用</el-checkbox>
+        <el-select v-model="enabledFilter" class="item-filter" size="small" placeholder="状态" @change="load" :empty-values="[null, undefined]">
+          <el-option label="全部启用状态" value="" />
+          <el-option label="启用" value="1" />
+          <el-option label="停用" value="0" />
+        </el-select>
 
         <!-- 一键 / 层级 展开收纳（仅树形模式有效，搜索模式禁用） -->
         <el-button-group class="level-actions">
@@ -89,6 +94,7 @@
         <el-button v-permission="'scm:master-audit'" size="small" type="warning" plain :disabled="!selection.length" @click="batchAudit('unaudit')">反审核</el-button>
         <el-button size="small" plain :disabled="!selection.length" @click="batchEnable(false)">停用</el-button>
         <el-button size="small" plain :disabled="!selection.length" @click="batchEnable(true)">启用</el-button>
+        <el-button size="small" plain :disabled="!selection.length" @click="openBatchEdit">批量修改</el-button>
 
         <!-- 字段配置 -->
         <el-button size="small" plain @click="openFieldConfig">
@@ -141,16 +147,19 @@
           <span v-if="column.key === 'code'" :style="treeIndent(row)" class="item-code">{{ row.code }}</span>
           <span v-else-if="column.key === 'name'" :style="treeIndent(row)" class="item-name">{{ row.name }}</span>
           <el-tag v-else-if="column.key === 'is_leaf'" :type="row.is_leaf !== 0 ? undefined : 'info'" size="small" effect="plain">{{ row.is_leaf !== 0 ? '明细' : '目录' }}</el-tag>
+          <el-tag v-else-if="column.key === 'audit_status'" :type="isAudited(row) ? 'success' : 'info'" size="small" effect="plain">{{ isAudited(row) ? '已审核' : '未审核' }}</el-tag>
           <span v-else-if="column.key === 'is_asset' && row.is_asset" class="mini-flag">资</span>
           <template v-else>{{ itemColumnText(row, column.key) }}</template>
         </template>
       </el-table-column>
 
-      <el-table-column label="操作" column-key="actions" :width="colWidth('actions', 140)" fixed="right">
+      <el-table-column label="操作" column-key="actions" :width="colWidth('actions', 220)" fixed="right">
         <template #default="{ row }">
-          <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
+          <el-button link type="primary" size="small" @click="openEdit(row)">{{ isAudited(row) ? '查看' : '编辑' }}</el-button>
+          <el-button v-if="!isAudited(row)" v-permission="'scm:master-audit'" link type="success" size="small" @click="rowAudit(row, 'audit')">审核</el-button>
+          <el-button v-else v-permission="'scm:master-audit'" link type="warning" size="small" @click="rowAudit(row, 'unaudit')">反审核</el-button>
           <el-button link size="small" @click="toggleEnable(row)">{{ row.enabled === 0 ? '启用' : '停用' }}</el-button>
-          <el-button link type="danger" size="small" @click="handleDelete(row)">删除</el-button>
+          <el-button v-if="!isAudited(row)" link type="danger" size="small" @click="handleDelete(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -189,16 +198,19 @@
           <span v-if="column.key === 'code'" class="item-code">{{ row.code }}</span>
           <span v-else-if="column.key === 'name'" class="item-name">{{ row.name }}</span>
           <el-tag v-else-if="column.key === 'is_leaf'" :type="row.is_leaf !== 0 ? undefined : 'info'" size="small" effect="plain">{{ row.is_leaf !== 0 ? '明细' : '目录' }}</el-tag>
+          <el-tag v-else-if="column.key === 'audit_status'" :type="isAudited(row) ? 'success' : 'info'" size="small" effect="plain">{{ isAudited(row) ? '已审核' : '未审核' }}</el-tag>
           <span v-else-if="column.key === 'is_asset' && row.is_asset" class="mini-flag">资</span>
           <template v-else>{{ itemColumnText(row, column.key) }}</template>
         </template>
       </el-table-column>
 
-      <el-table-column label="操作" column-key="actions" :width="colWidth('actions', 140)" fixed="right">
+      <el-table-column label="操作" column-key="actions" :width="colWidth('actions', 220)" fixed="right">
         <template #default="{ row }">
-          <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
+          <el-button link type="primary" size="small" @click="openEdit(row)">{{ isAudited(row) ? '查看' : '编辑' }}</el-button>
+          <el-button v-if="!isAudited(row)" v-permission="'scm:master-audit'" link type="success" size="small" @click="rowAudit(row, 'audit')">审核</el-button>
+          <el-button v-else v-permission="'scm:master-audit'" link type="warning" size="small" @click="rowAudit(row, 'unaudit')">反审核</el-button>
           <el-button link size="small" @click="toggleEnable(row)">{{ row.enabled === 0 ? '启用' : '停用' }}</el-button>
-          <el-button link type="danger" size="small" @click="handleDelete(row)">删除</el-button>
+          <el-button v-if="!isAudited(row)" link type="danger" size="small" @click="handleDelete(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -206,6 +218,35 @@
     <ColumnSettingsDialog v-model="columnDialogVisible" :columns="columnSettings" @update:columns="updateColumns" @reset="resetColumns" />
 
     <!-- 字段配置弹窗 -->
+    <el-dialog v-model="batchEditVisible" title="批量修改字段" width="420px">
+      <el-form label-width="90px" size="small">
+        <el-form-item label="选中物料">{{ selection.length }} 个（已审核的将跳过）</el-form-item>
+        <el-form-item label="修改字段">
+          <el-select v-model="batchEdit.field" style="width: 100%" @change="batchEdit.value = ''">
+            <el-option v-for="f in batchFieldList" :key="f.key" :label="f.label" :value="f.key" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="改为">
+          <el-select v-if="batchEdit.field === 'item_type'" v-model="batchEdit.value" style="width: 100%">
+            <el-option v-for="(label, code) in dynamicItemTypes" :key="code" :label="label" :value="code" />
+          </el-select>
+          <el-select v-else-if="batchField?.options?.length" v-model="batchEdit.value" clearable style="width: 100%">
+            <el-option v-for="o in batchField.options" :key="o" :label="o" :value="o" />
+          </el-select>
+          <el-date-picker v-else-if="batchField?.date" v-model="batchEdit.value" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
+          <el-select v-else-if="batchField?.type === 'bool'" v-model="batchEdit.value" style="width: 100%">
+            <el-option label="是" :value="1" /><el-option label="否" :value="0" />
+          </el-select>
+          <el-input-number v-else-if="batchField?.type === 'number'" v-model="batchEdit.value" :min="0" :controls="false" style="width: 100%" />
+          <el-input v-else v-model="batchEdit.value" :placeholder="batchField?.hint || '留空表示清空'" clearable />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button size="small" @click="batchEditVisible = false">取消</el-button>
+        <el-button size="small" type="primary" :disabled="!batchEdit.field" @click="submitBatchEdit">确定</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="fieldConfigVisible" title="物料自定义字段配置" width="680px" draggable>
       <el-table :data="fieldDefsEdit" border size="small" style="width:100%">
         <el-table-column label="字段编码" width="150">
@@ -313,13 +354,16 @@ const { tableRef, onDragEnd, colWidth } = useListColumnWidth('scm_item')
 
 const hasSearch = computed(() => !!(filters.keyword || filters.item_type || filters.is_leaf !== ''))
 
-// 审核状态筛选 / 显示停用（默认不显示停用物料）
+// 审核状态筛选 / 启用状态筛选（默认全部，停用物料置灰显示）
 const auditFilter = ref('')
-const showDisabled = ref(false)
-const statusOk = (r: any) => (showDisabled.value || r.enabled !== 0) && (!auditFilter.value || (r.audit_status || 'audited') === auditFilter.value)
-const statusFiltering = computed(() => !showDisabled.value || !!auditFilter.value)
+const enabledFilter = ref<'' | '1' | '0'>('')
+const statusOk = (r: any) =>
+  (!enabledFilter.value || (r.enabled === 0 ? '0' : '1') === enabledFilter.value) &&
+  (!auditFilter.value || (r.audit_status || 'audited') === auditFilter.value)
+const statusFiltering = computed(() => !!enabledFilter.value || !!auditFilter.value)
 const selection = ref<ScmItem[]>([])
 function onSelectionChange(rows: ScmItem[]) { selection.value = rows }
+function isAudited(row: any) { return row?.audit_status === 'audited' }
 const rowClass = ({ row }: { row: any }) => (row.enabled === 0 ? 'row-disabled' : '')
 
 // activeFieldDefs：页面显示用（is_enabled=1 的字段）
@@ -410,17 +454,72 @@ function sortTreeLevel(nodes: any[]): any[] {
 function treeIndent(row: any) { return { paddingLeft: `${((row.level || 1) - 1) * 14}px`, display: 'inline-block' } }
 
 // ── 批量审核 / 停用 / 另存（第六份反馈） ─────────────────────────────────
-async function batchAudit(action: 'audit' | 'unaudit') {
-  const r = await scmApi.batchAuditMaster('items', selection.value.map(x => x.id), action)
+async function applyAudit(ids: string[], action: 'audit' | 'unaudit') {
+  if (!ids.length) return
+  if (action === 'unaudit') {
+    try {
+      await ElMessageBox.confirm(
+        `反审核${ids.length === 1 ? '该物料' : `选中的 ${ids.length} 个物料`}后可以修改。若已开启「档案须审核后才能使用」，新单据将不能再选这些物料。`,
+        '反审核',
+        { type: 'warning' },
+      )
+    } catch { return }
+  } else {
+    try {
+      await ElMessageBox.confirm(`确认审核${ids.length === 1 ? '该物料' : `选中的 ${ids.length} 个物料`}？审核后不能修改或删除，须先反审核。`, '审核', { type: 'info' })
+    } catch { return }
+  }
+  const r = await scmApi.batchAuditMaster('items', ids, action)
   ElMessage.success(`${action === 'audit' ? '审核' : '反审核'} ${r.data.changed} 个${r.data.skipped ? `，${r.data.skipped} 个状态无需变更` : ''}`)
   load()
 }
+function batchAudit(action: 'audit' | 'unaudit') { return applyAudit(selection.value.map(x => x.id), action) }
+function rowAudit(row: ScmItem, action: 'audit' | 'unaudit') { return applyAudit([row.id], action) }
 async function batchEnable(enabled: boolean) {
   if (!enabled) {
     try { await ElMessageBox.confirm(`停用选中的 ${selection.value.length} 个物料？停用后单据录入时不能再选，已有单据和库存不受影响。`, '停用', { type: 'warning' }) } catch { return }
   }
   const r = await scmApi.batchEnableMaster('items', selection.value.map(x => x.id), enabled)
   ElMessage.success(`已${enabled ? '启用' : '停用'} ${r.data.changed} 个`)
+  load()
+}
+// ── 批量修改某字段为某值 ──
+const BATCH_FIELDS: Array<{ key: string; label: string; type: 'text' | 'number' | 'bool'; hint?: string }> = [
+  { key: 'item_type', label: '物料属性', type: 'text' },
+  { key: 'purchase_price', label: '进价', type: 'number' },
+  { key: 'sale_price', label: '售价', type: 'number' },
+  { key: 'ref_cost', label: '参考成本', type: 'number' },
+  { key: 'safety_stock', label: '安全库存', type: 'number' },
+  { key: 'inv_account', label: '存货科目', type: 'text', hint: '末级科目编码' },
+  { key: 'sale_account', label: '收入科目', type: 'text', hint: '末级科目编码' },
+  { key: 'default_warehouse_code', label: '默认仓库', type: 'text', hint: '仓库编码' },
+  { key: 'supplier_code', label: '默认供应商', type: 'text', hint: '往来单位编码' },
+  { key: 'batch_flag', label: '批次管理', type: 'bool' },
+  { key: 'spec', label: '规格型号', type: 'text' },
+  { key: 'barcode', label: '条形码', type: 'text' },
+  { key: 'short_code', label: '简码', type: 'text' },
+  { key: 'remark', label: '备注', type: 'text' },
+]
+const batchEditVisible = ref(false)
+const batchEdit = reactive<{ field: string; value: any }>({ field: '', value: '' })
+// 自定义字段（物料自定义字段配置）一并可批量改，key 为 field_<字段键>
+const batchFieldList = computed(() => [
+  ...BATCH_FIELDS,
+  ...activeFieldDefs.value.map(d => {
+    let options: string[] = []
+    try { options = d.field_type === 'select' ? JSON.parse(d.options_json || '[]') : [] } catch {}
+    return { key: `field_${d.field_key}`, label: `${d.field_name}（自定义）`, type: d.field_type === 'number' ? 'number' : 'text', date: d.field_type === 'date', options }
+  }),
+] as Array<{ key: string; label: string; type: 'text' | 'number' | 'bool'; hint?: string; date?: boolean; options?: string[] }>)
+const batchField = computed(() => batchFieldList.value.find(f => f.key === batchEdit.field))
+function openBatchEdit() { batchEdit.field = ''; batchEdit.value = ''; batchEditVisible.value = true }
+async function submitBatchEdit() {
+  const f = batchField.value
+  if (!f) return
+  if (f.type === 'number' && (batchEdit.value === '' || batchEdit.value == null)) return ElMessage.warning('请输入数值')
+  const r = await scmApi.batchUpdateItems(selection.value.map(x => x.id), f.key, batchEdit.value)
+  ElMessage.success(`已修改 ${r.data.changed} 个${r.data.skipped ? `，${r.data.skipped} 个已审核已跳过` : ''}`)
+  batchEditVisible.value = false
   load()
 }
 async function toggleEnable(row: any) {
@@ -669,6 +768,7 @@ function openEdit(row: ScmItem) {
 
 // ── 删除 ──────────────────────────────────────────────────────────────────
 async function handleDelete(row: ScmItem) {
+  if (isAudited(row)) return ElMessage.warning('已审核物料不能删除，请先反审核')
   await ElMessageBox.confirm(`确认删除物料「${row.name}」？`, '提示', { type: 'warning' })
   await scmApi.deleteItem(row.id)
   ElMessage.success('已删除')
@@ -833,7 +933,7 @@ onActivated(() => {
 }
 
 .item-filter {
-  width: 110px;
+  width: 128px;
 }
 
 .item-table {

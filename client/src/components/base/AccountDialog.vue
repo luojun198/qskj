@@ -80,7 +80,13 @@
                   <el-switch v-model="form.is_bank" :active-value="1" :inactive-value="0" />
                 </div>
                 <div v-if="enableForeignCurrency" class="form-switch-item">
-                  <span class="form-switch-label">外币</span>
+                  <el-tooltip
+                    effect="dark"
+                    placement="top"
+                    content="开启后：该科目录入凭证时可填原币。缺省币种可不填，填了则做凭证时默认带出，仍可改选账套内其他外币。"
+                  >
+                    <span class="form-switch-label">外币</span>
+                  </el-tooltip>
                   <el-switch
                     v-model="form.is_foreign"
                     :active-value="1"
@@ -107,8 +113,8 @@
             </el-form-item>
           </el-col>
           <el-col v-if="enableForeignCurrency && form.is_foreign" :span="12">
-            <el-form-item label="核算币种" required>
-              <el-select v-model="form.currency_code" filterable clearable style="width: 100%" placeholder="选择外币">
+            <el-form-item label="缺省币种">
+              <el-select v-model="form.currency_code" filterable clearable style="width: 100%" placeholder="可不填，做凭证时再选">
                 <el-option
                   v-for="c in foreignCurrencyOptions"
                   :key="c.code"
@@ -311,12 +317,9 @@ function formatRate(c: Currency) {
   return rate.toFixed(decimals)
 }
 
-/** 保存前置校验：勾了外币必须选币种 */
+/** 保存前置校验：缺省币种可空；勾了数量必须填计量单位 */
 function handleSave(kind: 'save' | 'save-and-add') {
-  if (enableForeignCurrency.value && Number(props.form.is_foreign) === 1 && !props.form.currency_code) {
-    ElMessage.warning('已勾选外币核算，请选择核算币种')
-    return
-  }
+  if (!props.form.currency_code) props.form.currency_code = null
   if (Number(props.form.is_quantity) === 1 && !String(props.form.quantity_unit || '').trim()) {
     ElMessage.warning('已勾选数量核算，请填写计量单位')
     return

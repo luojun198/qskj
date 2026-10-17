@@ -19,20 +19,20 @@
       <el-select
         v-model="filters.action"
         placeholder="操作类型"
-        clearable
-        style="width: 120px"
-        @change="reload"
+        style="width: 128px"
+        @change="reload" :empty-values="[null, undefined]"
       >
+        <el-option label="全部操作类型" value="" />
         <el-option label="领用" value="out" />
         <el-option label="归还" value="in" />
       </el-select>
       <el-select
         v-model="filters.dept_code"
         placeholder="使用部门"
-        clearable
         style="width: 150px"
-        @change="reload"
+        @change="reload" :empty-values="[null, undefined]"
       >
+        <el-option label="全部使用部门" value="" />
         <el-option v-for="d in dicts?.dept || []" :key="d.code" :label="d.name" :value="d.code" />
       </el-select>
       <el-date-picker

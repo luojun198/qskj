@@ -139,8 +139,9 @@ export class AccountService {
     const code = String(currencyCode || '')
       .trim()
       .toUpperCase()
+    // FIX-410 起「核算币种」改为「缺省币种」，可不填（凭证里再选）；此前前端放开、后端仍拦（FIX-418）
     if (!code) {
-      throw new Error('外币核算科目必须指定币种')
+      return { isForeign: 1, currencyCode: null }
     }
     const currency = this.db
       .prepare(

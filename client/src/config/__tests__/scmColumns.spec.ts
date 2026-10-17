@@ -53,10 +53,14 @@ describe('listColsForType', () => {
     expect(keysOf(listColsForType('RS', { header_fields: null, line_fields: JSON.stringify(['item', 'qty', 'tax_amount']) }))).toContain('total_with_tax')
   })
 
-  it('下推数量仅对有下推链路的类型可用', () => {
-    expect(keysOf(listColsForType('SOa', undefined))).toContain('push')
-    expect(keysOf(listColsForType('PO', undefined))).toContain('push')
+  it('下推数量与已下推金额仅对有下推链路的类型可用', () => {
+    expect(keysOf(listColsForType('SOa', undefined))).toEqual(expect.arrayContaining(['push', 'push_amount']))
+    expect(keysOf(listColsForType('PO', undefined))).toEqual(expect.arrayContaining(['push', 'push_amount']))
+    expect(keysOf(listColsForType('MR', undefined))).toEqual(expect.arrayContaining(['push', 'push_amount']))
     expect(keysOf(listColsForType('SO', undefined))).not.toContain('push')
+    expect(keysOf(listColsForType('SO', undefined))).not.toContain('push_amount')
+    expect(LIST_ALL_COLS.find(c => c.key === 'push')?.label).toBe('已下推数量')
+    expect(LIST_ALL_COLS.find(c => c.key === 'push_amount')?.label).toBe('已下推金额')
   })
 
   it('自定义字段：仅表头/表尾且未被全局隐藏，key 带 cf: 前缀并按位置分组；表体字段不进列表', () => {
@@ -86,8 +90,8 @@ describe('LIST_ALL_COLS', () => {
   it('默认显示列保持原样（新增列一律默认不显示），单据号为必选', () => {
     const visible = LIST_ALL_COLS.filter(c => c.visible).map(c => c.key)
     // 例外：订单关联单号（linked_docs / linked_payments）仅采购 / 销售订单可用，收付款核销信息 4 列仅收付款单可用，均为客户明确要求默认可见
-    // 组装单成品明细列（pl_*，仅 AS 的成品明细视图）同样默认可见
-    expect(visible.sort()).toEqual(['pl_item_code', 'pl_item_name', 'pl_spec', 'pl_unit', 'pl_qty', 'pl_fee', 'pl_amount','doc_date', 'doc_no', 'doc_type', 'partner', 'push', 'status', 'total_amount', 'total_qty', 'total_with_tax', 'warehouse', 'linked_docs', 'linked_payments', 'verified_amount', 'unverified_amount', 'verify_nos', 'pay_linked_docs'].sort())
+    // 已下推金额（push_amount）与已下推数量一并默认可见；组装单成品明细列（pl_*，仅 AS 的成品明细视图）同样默认可见
+    expect(visible.sort()).toEqual(['pl_item_code', 'pl_item_name', 'pl_spec', 'pl_unit', 'pl_qty', 'pl_fee', 'pl_amount','doc_date', 'doc_no', 'doc_type', 'partner', 'push', 'push_amount', 'status', 'total_amount', 'total_qty', 'total_with_tax', 'warehouse', 'linked_docs', 'linked_payments', 'verified_amount', 'unverified_amount', 'verify_nos', 'pay_linked_docs'].sort())
     expect(LIST_ALL_COLS.filter(c => ['linked_docs', 'linked_payments'].includes(c.key)).every(c => c.onlyTypes?.join() === 'PO,SOa')).toBe(true)
     expect(LIST_ALL_COLS.filter(c => ['verified_amount', 'unverified_amount', 'verify_nos', 'pay_linked_docs'].includes(c.key)).every(c => c.onlyTypes?.join() === 'RCV,PAY')).toBe(true)
     expect(LIST_ALL_COLS.filter(c => c.required).map(c => c.key)).toEqual(['doc_no'])

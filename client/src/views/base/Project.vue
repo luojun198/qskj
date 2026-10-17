@@ -64,13 +64,11 @@
         >
           批量删除
         </el-button>
-        <el-switch
-          v-model="showClosed"
-          size="small"
-          active-text="已完结"
-          inactive-text=""
-          class="project-closed-switch"
-        />
+        <el-select v-model="statusFilter" size="small" placeholder="状态" class="project-closed-switch" style="width: 128px" :empty-values="[null, undefined]">
+          <el-option label="全部完结状态" value="" />
+          <el-option label="进行中" value="active" />
+          <el-option label="已完结" value="closed" />
+        </el-select>
       </div>
     </div>
 
@@ -205,7 +203,7 @@
           </el-select>
         </el-form-item>
         <el-form-item label="项目编码" required>
-          <el-input v-model="itemForm.code" disabled />
+          <el-input v-model="itemForm.code" placeholder="自动编号，可修改" />
         </el-form-item>
         <el-form-item label="名称" required><el-input v-model="itemForm.name" /></el-form-item>
         <el-form-item label="状态">
@@ -723,7 +721,7 @@ async function loadPageItems() {
       page: pagination.page,
       pageSize: pagination.pageSize,
     }
-    if (!showClosed.value) params.status = 'active'
+    if (statusFilter.value) params.status = statusFilter.value
     if (searchFilterIds.value?.length) params.ids = searchFilterIds.value
     const { items, total } = await fetchAuxItemsPage(params)
     const maxPage = Math.max(1, Math.ceil(total / pagination.pageSize))
@@ -786,7 +784,7 @@ function normalizeDirectionFieldValue(field: any, raw: string): string {
 }
 
 // ========== 状态过滤 & 多选 ==========
-const showClosed = ref(false)
+const statusFilter = ref<'' | 'active' | 'closed'>('')
 
 watch(activeTab, () => {
   pagination.page = 1
@@ -795,7 +793,7 @@ watch(activeTab, () => {
   void loadPageItems()
 })
 
-watch(showClosed, () => {
+watch(statusFilter, () => {
   pagination.page = 1
   void loadPageItems()
 })
@@ -927,21 +925,14 @@ async function handleDeleteCat(row: any) {
 }
 
 async function nextItemCodeForCategory(categoryId: string) {
+  // 后端按纯数字编码最大值 + 1 并跳过已存在的（FIX-419；此前按字符串倒序取第 1 条会取到旧号）
   try {
-    const res = await request.get<any[]>('/base/aux-items', {
-      params: { type: categoryId, order: 'desc', limit: 1 },
+    const res = await request.get<{ next_code: string }>('/base/aux-items/next-code', {
+      params: { type: categoryId },
     })
-    const top = (res.data || [])[0]
-    const nextNum =
-      (top
-        ? (() => {
-            const codeNum = Number.parseInt(String(top.code || ''), 10)
-            return Number.isNaN(codeNum) ? 0 : codeNum
-          })()
-        : 0) + 1
-    return String(nextNum).padStart(6, '0')
+    return res.data?.next_code || ''
   } catch {
-    return '000001'
+    return ''
   }
 }
 
@@ -993,9 +984,13 @@ function applyLocalItemUpdate(id: string) {
   }
 }
 
+/** 新增时自动带出的编码；用户没改过则保存时允许后端撞号顺延 */
+const itemAutoCode = ref('')
+
 async function resetItemFormForAdd(categoryId?: string) {
   const type = categoryId || itemForm.value.type || activeTab.value
   const code = await nextItemCodeForCategory(type)
+  itemAutoCode.value = code
   itemForm.value = {
     type,
     code,
@@ -1083,7 +1078,13 @@ async function handleSaveItem(continueAdd = false) {
     const savedCategoryId = itemForm.value.type
 
     if (itemDialogType.value === 'add') {
-      const res = await request.post<{ id: string }>('/base/aux-items', itemForm.value)
+      // 编码没改过（仍是自动带出的）或留空：撞号时由后端顺延到下一个可用编码
+      const autoCode = !itemForm.value.code || itemForm.value.code === itemAutoCode.value
+      const res = await request.post<{ id: string; code?: string }>('/base/aux-items', {
+        ...itemForm.value,
+        auto_code: autoCode,
+      })
+      if (res.data?.code) itemForm.value.code = res.data.code
       if (res.data?.id) {
         applyLocalItemUpdate(res.data.id)
       }
@@ -1182,7 +1183,7 @@ async function handleBatchDelete() {
       await startAsyncTask('aux-items-delete', () =>
         request.post('/base/aux-items/batch-delete-async', {
           type: activeTab.value,
-          ...(showClosed.value ? {} : { status: 'active' }),
+          ...(statusFilter.value ? { status: statusFilter.value } : {}),
         })
       )
     } else {
@@ -1289,8 +1290,8 @@ function locateCategory(catId: string) {
 }
 
 function locateItem(item: any) {
-  if (item.status === 'closed') {
-    showClosed.value = true
+  if (statusFilter.value && statusFilter.value !== (item.status || 'active')) {
+    statusFilter.value = ''
   }
   activeTab.value = item.type
   searchFilterIds.value = [item.id]
@@ -1329,7 +1330,7 @@ async function exportData() {
     await startAsyncTask('aux-items-export', () =>
       request.post('/base/aux-items/export-async', {
         type: activeTab.value,
-        status: showClosed.value ? undefined : 'active',
+        status: statusFilter.value || undefined,
       })
     )
   } catch (action) {
@@ -1513,16 +1514,10 @@ async function onImportFileChange(file: UploadFile) {
       return
     }
 
-    const res = await request.get<any[]>('/base/aux-items', {
-      params: { type: activeTab.value, order: 'desc', limit: 1 },
-    })
-    const topItem = (res.data || [])[0]
-    const maxCode = topItem
-      ? (() => {
-          const codeNum = Number.parseInt(String(topItem.code || ''), 10)
-          return Number.isNaN(codeNum) ? 0 : codeNum
-        })()
-      : 0
+    // 导入时空编码从「下一个可用编码 - 1」续号（FIX-419：不再按字符串倒序取第 1 条）
+    const nextCode = await nextItemCodeForCategory(activeTab.value)
+    const nextNum = Number.parseInt(nextCode, 10)
+    const maxCode = Number.isNaN(nextNum) ? 0 : nextNum - 1
 
     const cat = categories.value.find(c => c.id === activeTab.value)
     const customFields = (cat?.fields || []).filter((f: any) => f.is_enabled !== 0)

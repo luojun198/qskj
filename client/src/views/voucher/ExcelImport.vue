@@ -299,6 +299,8 @@ async function doImport() {
   try {
     const res = await voucherExcelApi.confirm(rows.value, opt)
     ElMessage.success(`转入成功，新增 ${res.data.created} 张凭证（${res.data.voucher_nos.join('、')}）`)
+    // 本页被 keep-alive 缓存：不清空的话下次进入仍是这份文件且「确认转入」可点，再点会重复生成凭证
+    reset()
     router.push('/voucher/entry')
   } catch (err: any) {
     const serverErrors = err?.response?.data?.data?.errors

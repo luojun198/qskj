@@ -2,14 +2,17 @@
   <div class="page wr-page">
     <div class="filter-row">
       <span class="title">生产报工</span>
-      <el-select v-model="planId" filterable clearable placeholder="全部工单（可选）" style="width:260px" size="small" @change="onPlan">
+      <el-select v-model="planId" filterable placeholder="全部工单（可选）" style="width:260px" size="small" @change="onPlan" :empty-values="[null, undefined]">
+        <el-option label="全部工单" value="" />
         <el-option v-for="p in plans" :key="p.id" :label="`${p.code}  ${p.first_product_name || p.item_name || p.item_code}  (${statusName(p.status)})`" :value="p.id" />
       </el-select>
       <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="开始" end-placeholder="结束" size="small" style="width:230px" @change="query" />
-      <el-select v-model="filters.work_center_code" clearable placeholder="工作中心" size="small" style="width:140px" @change="query">
+      <el-select v-model="filters.work_center_code" placeholder="工作中心" size="small" style="width:140px" @change="query" :empty-values="[null, undefined]">
+        <el-option label="全部工作中心" value="" />
         <el-option v-for="w in workCenters" :key="w.code" :label="w.name || w.code" :value="w.code" />
       </el-select>
-      <el-select v-model="filters.status" clearable placeholder="状态" size="small" style="width:100px" @change="query">
+      <el-select v-model="filters.status" placeholder="状态" size="small" style="width:128px" @change="query" :empty-values="[null, undefined]">
+        <el-option label="全部审核状态" value="" />
         <el-option label="草稿" value="draft" /><el-option label="已审核" value="audited" />
       </el-select>
       <el-input v-model="filters.keyword" clearable placeholder="报工单号 / 工单号 / 成品" size="small" style="width:180px" @keyup.enter="query" @clear="query" />

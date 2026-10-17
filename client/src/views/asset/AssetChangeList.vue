@@ -20,10 +20,10 @@
       <el-select
         v-model="filters.kind"
         placeholder="变动类型"
-        clearable
         style="width: 150px"
-        @change="reload"
+        @change="reload" :empty-values="[null, undefined]"
       >
+        <el-option label="全部变动类型" value="" />
         <el-option
           v-for="(name, code) in ASSET_CHANGE_KIND_LABELS"
           :key="code"
@@ -43,10 +43,10 @@
       <el-select
         v-model="filters.dept_code"
         placeholder="使用部门"
-        clearable
         style="width: 160px"
-        @change="reload"
+        @change="reload" :empty-values="[null, undefined]"
       >
+        <el-option label="全部使用部门" value="" />
         <el-option v-for="d in dicts?.dept || []" :key="d.code" :label="d.name" :value="d.code" />
       </el-select>
       <el-button type="primary" :icon="Search" @click="reload">查询</el-button>

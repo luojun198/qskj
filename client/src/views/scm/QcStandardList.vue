@@ -2,7 +2,8 @@
   <div class="page qc-std-page">
     <div class="filter-row">
       <el-input v-model="keyword" clearable placeholder="物料编号/名称/标准名称" size="small" style="width:220px" @keyup.enter="load" />
-      <el-select v-model="qcType" clearable placeholder="检验类型" size="small" style="width:130px" @change="load">
+      <el-select v-model="qcType" placeholder="检验类型" size="small" style="width:130px" @change="load" :empty-values="[null, undefined]">
+        <el-option label="全部检验类型" value="" />
         <el-option label="到货检验(IQC)" value="IQC" /><el-option label="过程检验(IPQC)" value="IPQC" /><el-option label="完工检验(FQC)" value="FQC" />
       </el-select>
       <el-button type="primary" plain size="small" @click="load"><el-icon><Search /></el-icon>查询</el-button>

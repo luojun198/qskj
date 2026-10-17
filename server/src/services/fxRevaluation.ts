@@ -59,6 +59,8 @@ export interface FxRevaluationRow {
   entry_direction: 'debit' | 'credit' | null
   /** 跳过原因（原币数据不完整等），有值时不生成分录 */
   skip_reason: string | null
+  /** 带辅助核算的科目按辅助项目拆分后，该行对应的辅助项目（如「往来单位：某某公司」） */
+  aux_label?: string
 }
 
 export interface FxRevaluationPreview {
@@ -107,6 +109,13 @@ function isForeignCurrencyEnabledDb(db: Db, accountSetId: string): boolean {
     )
     .get(accountSetId) as { param_value?: string } | undefined
   return row?.param_value === 'true'
+}
+
+function isAuxAccount(db: Db, accountSetId: string, accountId: string): boolean {
+  const row = db
+    .prepare(`SELECT is_aux, aux_types FROM accounts WHERE id = ? AND account_set_id = ?`)
+    .get(accountId, accountSetId) as { is_aux?: number; aux_types?: string | null } | undefined
+  return Boolean(row?.is_aux) && loadAccountAuxCategories(db, accountSetId, row?.aux_types ?? null).length > 0
 }
 
 function loadGainAccount(db: Db, accountSetId: string) {
@@ -266,6 +275,119 @@ function countUnpostedVouchers(params: {
   return Number(row?.n) || 0
 }
 
+interface AuxSplitPart {
+  ids: Record<string, string>
+  label: string
+  foreign: number
+  base: number
+}
+
+/** 科目启用的辅助类目（按 aux_types 声明顺序）：[{ id, code, name }] */
+function loadAccountAuxCategories(db: Db, accountSetId: string, auxTypes: string | null) {
+  if (!auxTypes) return []
+  let ids: string[] = []
+  try {
+    ids = Object.keys(JSON.parse(auxTypes) || {})
+  } catch {
+    return []
+  }
+  const cats: Array<{ id: string; code: string; name: string }> = []
+  for (const id of ids) {
+    const c = db
+      .prepare(`SELECT id, code, name FROM aux_categories WHERE id = ? AND account_set_id = ?`)
+      .get(id, accountSetId) as { id: string; code: string; name: string } | undefined
+    if (c) cats.push(c)
+  }
+  return cats
+}
+
+/**
+ * 带辅助核算的外币科目：按辅助项目（组合）汇总已记账原币 / 本位币余额（按科目方向取正向）。
+ * 期初取 init_balances 的辅助明细行（仅单类目科目），之后累加基准年年初至期末的已记账分录。
+ * 调用方会再与科目级余额核对，对不上时回退为按原币余额比例分摊，保证合计与科目级调汇额一致。
+ */
+function loadAuxSplitParts(params: {
+  db: Db
+  accountSetId: string
+  accountId: string
+  direction: 'debit' | 'credit'
+  cats: Array<{ id: string; code: string; name: string }>
+  baseYear: number
+  periodEnd: string
+}): AuxSplitPart[] {
+  const { db, accountSetId, accountId, direction, cats } = params
+  const parts = new Map<string, AuxSplitPart>()
+  const itemNameCache = new Map<string, string>()
+  const itemName = (id: string) => {
+    if (!itemNameCache.has(id)) {
+      const row = db.prepare(`SELECT name FROM aux_items WHERE id = ?`).get(id) as { name?: string } | undefined
+      itemNameCache.set(id, row?.name || id)
+    }
+    return itemNameCache.get(id)!
+  }
+  const bucket = (ids: Record<string, string>) => {
+    const key = cats.map(c => ids[c.code] || '').join('|')
+    let part = parts.get(key)
+    if (!part) {
+      const label = cats.map(c => `${c.name}：${itemName(ids[c.code])}`).join('，')
+      part = { ids, label, foreign: 0, base: 0 }
+      parts.set(key, part)
+    }
+    return part
+  }
+  const sign = (d: string) => (d === direction ? 1 : -1)
+
+  if (cats.length === 1) {
+    const initRows = db
+      .prepare(
+        `SELECT aux_item_id, init_balance, init_debit, init_credit,
+                foreign_init_balance, foreign_opening_debit, foreign_opening_credit
+         FROM init_balances
+         WHERE account_set_id = ? AND account_id = ? AND year = ? AND COALESCE(aux_item_id, '') != ''`
+      )
+      .all(accountSetId, accountId, params.baseYear) as any[]
+    for (const r of initRows) {
+      const itemId = String(r.aux_item_id).split('|')[0].split(':').pop() || ''
+      if (!itemId) continue
+      const base =
+        Number(r.init_debit) || Number(r.init_credit)
+          ? (direction === 'debit' ? 1 : -1) * ((Number(r.init_debit) || 0) - (Number(r.init_credit) || 0))
+          : Number(r.init_balance) || 0
+      const foreign =
+        Number(r.foreign_opening_debit) || Number(r.foreign_opening_credit)
+          ? (direction === 'debit' ? 1 : -1) * ((Number(r.foreign_opening_debit) || 0) - (Number(r.foreign_opening_credit) || 0))
+          : Number(r.foreign_init_balance) || 0
+      if (!base && !foreign) continue
+      const part = bucket({ [cats[0].code]: itemId })
+      part.base = round2(part.base + base)
+      part.foreign = round2(part.foreign + foreign)
+    }
+  }
+
+  const entryRows = db
+    .prepare(
+      `SELECT ve.direction, ve.amount, ve.foreign_amount, ve.aux_data
+       FROM voucher_entries ve JOIN vouchers v ON v.id = ve.voucher_id
+       WHERE ve.account_set_id = ? AND ve.account_id = ? AND v.status = 'posted'
+         AND v.voucher_date >= ? AND v.voucher_date <= ?`
+    )
+    .all(accountSetId, accountId, `${params.baseYear}-01-01`, params.periodEnd) as any[]
+  for (const e of entryRows) {
+    let aux: Record<string, { id?: string }> = {}
+    try {
+      aux = e.aux_data ? JSON.parse(e.aux_data) : {}
+    } catch {
+      aux = {}
+    }
+    const ids: Record<string, string> = {}
+    for (const c of cats) ids[c.code] = String(aux[c.code]?.id || '')
+    const part = bucket(ids)
+    part.base = round2(part.base + sign(e.direction) * (Number(e.amount) || 0))
+    part.foreign = round2(part.foreign + sign(e.direction) * (Number(e.foreign_amount) || 0))
+  }
+  return [...parts.values()].filter(p => Math.abs(p.base) >= ADJUSTMENT_EPSILON || Math.abs(p.foreign) >= ADJUSTMENT_EPSILON)
+}
+
 /**
  * 预览期末调汇：对每个外币科目，按期末汇率重估本位币余额，差额进汇兑损益科目。
  * 原币不变，所以生成的分录不带 currency_code / exchange_rate / foreign_amount。
@@ -301,6 +423,11 @@ export function previewFxRevaluation(params: {
   }
   if (!gainAccount) {
     base.blockedReason = '未设置汇兑损益科目，请先到「外币类型」页面配置'
+    return base
+  }
+
+  if (isAuxAccount(db, accountSetId, gainAccount.id)) {
+    base.blockedReason = '汇兑损益科目不能启用辅助核算，请到「外币类型」页面改选科目'
     return base
   }
 
@@ -368,58 +495,138 @@ export function previewFxRevaluation(params: {
 
     // 科目是后来才勾成外币核算的：历史本位币有余额但原币为 0，按字面重估会把整笔余额冲成汇兑损益。
     // 这是原币数据缺失而不是汇率变动，跳过并提示补录原币期初/凭证。
-    let skipReason: string | null = null
+    let accountSkipReason: string | null = null
     if (Math.abs(foreignEnd) < ADJUSTMENT_EPSILON && Math.abs(bookBase) >= ADJUSTMENT_EPSILON) {
-      skipReason = '原币余额为 0 但本位币有余额，原币数据不完整，已跳过'
+      accountSkipReason = '原币余额为 0 但本位币有余额，原币数据不完整，已跳过'
     }
 
-    let entryDirection: 'debit' | 'credit' | null = null
-    if (!skipReason && Math.abs(adjustment) >= ADJUSTMENT_EPSILON) {
-      // adjustment > 0：余额沿科目方向增加 → 外币科目按其方向记账
-      const increase = adjustment > 0
-      if (r.direction === 'debit') entryDirection = increase ? 'debit' : 'credit'
-      else entryDirection = increase ? 'credit' : 'debit'
+    // 带辅助核算的科目：凭证分录必须带齐辅助项目，否则过账校验会拒绝。按辅助项目拆开分别重估。
+    interface Part {
+      auxIds?: Record<string, string>
+      auxLabel?: string
+      foreign: number
+      book: number
+      revalued: number
+      adjustment: number
+      skipReason: string | null
+    }
+    let parts: Part[] = [
+      { foreign: foreignEnd, book: bookBase, revalued, adjustment, skipReason: accountSkipReason },
+    ]
+    const accMeta = db
+      .prepare(`SELECT is_aux, aux_types FROM accounts WHERE id = ? AND account_set_id = ?`)
+      .get(r.account_id, accountSetId) as { is_aux?: number; aux_types?: string | null } | undefined
+    const auxCats = accMeta?.is_aux ? loadAccountAuxCategories(db, accountSetId, accMeta.aux_types ?? null) : []
+    if (auxCats.length > 0 && !accountSkipReason) {
+      const auxParts = loadAuxSplitParts({
+        db,
+        accountSetId,
+        accountId: r.account_id,
+        direction: r.direction,
+        cats: auxCats,
+        baseYear: resolveOpeningBaseYear(db as any, accountSetId, year),
+        periodEnd,
+      })
+      const sumForeign = round2(auxParts.reduce((t, p) => t + p.foreign, 0))
+      const sumBook = round2(auxParts.reduce((t, p) => t + p.base, 0))
+      const missingAux = auxParts.some(p => auxCats.some(c => !p.ids[c.code]))
+      const consistent =
+        Math.abs(sumForeign - foreignEnd) < ADJUSTMENT_EPSILON && Math.abs(sumBook - bookBase) < ADJUSTMENT_EPSILON
+      if (auxParts.length === 0 || missingAux) {
+        parts = [
+          { ...parts[0], skipReason: '该科目启用了辅助核算，但余额缺少辅助项目（如期初未按辅助项目录入），无法拆分调汇，已跳过' },
+        ]
+      } else if (consistent) {
+        // 与科目级余额一致：每个辅助项目各自按期末汇率重估
+        parts = auxParts.map(ap => {
+          const apRevalued = round2(ap.foreign * rate)
+          const missing = Math.abs(ap.foreign) < ADJUSTMENT_EPSILON && Math.abs(ap.base) >= ADJUSTMENT_EPSILON
+          return {
+            auxIds: ap.ids,
+            auxLabel: ap.label,
+            foreign: ap.foreign,
+            book: ap.base,
+            revalued: apRevalued,
+            adjustment: round2(apRevalued - ap.base),
+            skipReason: missing ? '原币余额为 0 但本位币有余额，原币数据不完整，已跳过' : null,
+          }
+        })
+      } else if (Math.abs(sumForeign) >= ADJUSTMENT_EPSILON && Math.abs(adjustment) >= ADJUSTMENT_EPSILON) {
+        // 辅助项目余额与科目级对不上（如存在账前发生额）：科目级调汇额按各项目原币余额比例分摊，合计不变
+        let allocated = 0
+        const sorted = [...auxParts].sort((x, y) => Math.abs(y.foreign) - Math.abs(x.foreign))
+        parts = sorted.map((ap, i) => {
+          const share =
+            i === sorted.length - 1 ? round2(adjustment - allocated) : round2((adjustment * ap.foreign) / sumForeign)
+          allocated = round2(allocated + share)
+          return {
+            auxIds: ap.ids,
+            auxLabel: ap.label,
+            foreign: ap.foreign,
+            book: ap.base,
+            revalued: round2(ap.base + share),
+            adjustment: share,
+            skipReason: null,
+          }
+        })
+      } else {
+        parts = [{ ...parts[0], skipReason: '辅助项目余额与科目余额不一致，无法拆分调汇，已跳过' }]
+      }
     }
 
-    rows.push({
-      account_id: r.account_id,
-      account_code: r.account_code,
-      account_name: r.account_name,
-      direction: r.direction,
-      currency_code: currency,
-      foreign_end_balance: foreignEnd,
-      book_base_balance: bookBase,
-      closing_rate: rate,
-      closing_rate_source: rateSource,
-      revalued_base_balance: revalued,
-      adjustment,
-      entry_direction: entryDirection,
-      skip_reason: skipReason,
-    })
+    for (const part of parts) {
+      let entryDirection: 'debit' | 'credit' | null = null
+      if (!part.skipReason && Math.abs(part.adjustment) >= ADJUSTMENT_EPSILON) {
+        // adjustment > 0：余额沿科目方向增加 → 外币科目按其方向记账
+        const increase = part.adjustment > 0
+        if (r.direction === 'debit') entryDirection = increase ? 'debit' : 'credit'
+        else entryDirection = increase ? 'credit' : 'debit'
+      }
 
-    if (!entryDirection) continue
-    const amount = Math.abs(adjustment)
-    const summary = `${period}月期末调汇 ${currency} ${foreignEnd.toFixed(2)} × ${rate}`
-    entries.push({
-      account_id: r.account_id,
-      account_code: r.account_code,
-      account_name: r.account_name,
-      direction: entryDirection,
-      amount,
-      summary,
-    } as VoucherEntryInput)
-    // 对方科目方向相反；外币科目借方增加 = 汇兑收益（贷损益），借方减少 = 汇兑损失
-    const gainDirection: 'debit' | 'credit' = entryDirection === 'debit' ? 'credit' : 'debit'
-    entries.push({
-      account_id: gainAccount.id,
-      account_code: gainAccount.code,
-      account_name: gainAccount.name,
-      direction: gainDirection,
-      amount,
-      summary,
-    } as VoucherEntryInput)
-    if (gainDirection === 'credit') totalGain = round2(totalGain + amount)
-    else totalLoss = round2(totalLoss + amount)
+      rows.push({
+        account_id: r.account_id,
+        account_code: r.account_code,
+        account_name: r.account_name,
+        direction: r.direction,
+        currency_code: currency,
+        foreign_end_balance: part.foreign,
+        book_base_balance: part.book,
+        closing_rate: rate,
+        closing_rate_source: rateSource,
+        revalued_base_balance: part.revalued,
+        adjustment: part.adjustment,
+        entry_direction: entryDirection,
+        skip_reason: part.skipReason,
+        ...(part.auxLabel ? { aux_label: part.auxLabel } : {}),
+      })
+
+      if (!entryDirection) continue
+      const amount = Math.abs(part.adjustment)
+      const summary = `${period}月期末调汇 ${currency} ${part.foreign.toFixed(2)} × ${rate}`
+      const auxFields: Record<string, string> = {}
+      for (const c of auxCats) if (part.auxIds?.[c.code]) auxFields[`_${c.code}_id`] = part.auxIds[c.code]
+      entries.push({
+        account_id: r.account_id,
+        account_code: r.account_code,
+        account_name: r.account_name,
+        direction: entryDirection,
+        amount,
+        summary,
+        ...auxFields,
+      } as VoucherEntryInput)
+      // 对方科目方向相反；外币科目借方增加 = 汇兑收益（贷损益），借方减少 = 汇兑损失
+      const gainDirection: 'debit' | 'credit' = entryDirection === 'debit' ? 'credit' : 'debit'
+      entries.push({
+        account_id: gainAccount.id,
+        account_code: gainAccount.code,
+        account_name: gainAccount.name,
+        direction: gainDirection,
+        amount,
+        summary,
+      } as VoucherEntryInput)
+      if (gainDirection === 'credit') totalGain = round2(totalGain + amount)
+      else totalLoss = round2(totalLoss + amount)
+    }
   }
 
   base.rows = rows

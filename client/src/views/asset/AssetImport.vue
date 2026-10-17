@@ -6,7 +6,19 @@
         <h3>资产卡片批量导入</h3>
       </div>
       <div class="import-header__right">
+        <!-- 第七份反馈：确认导入放顶部右侧（原在表格下方，不好找） -->
+        <span v-if="rows.length && errors.length" class="footer-tip">请先修正 Excel 中的问题行</span>
         <el-button :icon="Download" @click="downloadTemplate">下载导入模板</el-button>
+        <el-button
+          v-if="rows.length"
+          v-permission="'asset:edit'"
+          type="primary"
+          :disabled="!!errors.length"
+          :loading="importing"
+          @click="doImport"
+        >
+          确认导入 {{ rows.length }} 张卡片
+        </el-button>
       </div>
     </header>
 
@@ -93,18 +105,6 @@
         </el-table>
       </div>
 
-      <footer class="import-footer">
-        <el-button
-          v-permission="'asset:edit'"
-          type="primary"
-          :disabled="!!errors.length"
-          :loading="importing"
-          @click="doImport"
-        >
-          确认导入 {{ rows.length }} 张卡片
-        </el-button>
-        <span v-if="errors.length" class="footer-tip">请先修正 Excel 中的问题行</span>
-      </footer>
     </template>
   </div>
 </template>
@@ -238,6 +238,8 @@ async function doImport() {
   try {
     const res = await fixedAssetApi.batchImport(rows.value)
     ElMessage.success(`导入成功，新增 ${res.data.successCount} 张资产卡片`)
+    // 本页被 keep-alive 缓存：不清空的话下次进入仍是这份文件且「确认导入」可点
+    reset()
     router.push('/asset/list')
   } finally {
     importing.value = false
@@ -334,11 +336,10 @@ onMounted(async () => {
   color: var(--el-color-success);
 }
 
-.import-footer {
+.import-header__right {
   display: flex;
   align-items: center;
-  gap: 12px;
-  flex-shrink: 0;
+  gap: 8px;
 }
 
 .footer-tip {

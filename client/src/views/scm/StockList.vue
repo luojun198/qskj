@@ -9,7 +9,8 @@
       <el-input v-model="keyword" placeholder="物料编号/名称" clearable size="small" style="width: 220px" @keyup.enter="load" @clear="load">
         <template #prefix><el-icon><Search /></el-icon></template>
       </el-input>
-      <el-select v-model="warehouse" placeholder="全部仓库" clearable filterable size="small" style="width: 180px" :disabled="!splitWarehouse" @change="load">
+      <el-select v-model="warehouse" placeholder="全部仓库" filterable size="small" style="width: 180px" :disabled="!splitWarehouse" @change="load" :empty-values="[null, undefined]">
+        <el-option label="全部仓库" value="" />
         <el-option v-for="w in warehouses" :key="w.code" :label="w.name || w.code" :value="w.code" />
       </el-select>
       <el-button type="primary" size="small" @click="load"><el-icon><Search /></el-icon>查询</el-button>

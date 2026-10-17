@@ -118,7 +118,7 @@ export const PERMISSIONS: PermissionDef[] = [
   // ── 供应链 ──────────────────────────────────────────
   { code: 'scm:item',         name: '物料档案',     module: 'scm',     moduleName: '供应链' },
   { code: 'scm:partner',      name: '往来单位档案', module: 'scm',     moduleName: '供应链' },
-  { code: 'scm:master-audit', name: '档案审核（物料 / 往来单位）', module: 'scm', moduleName: '供应链' },
+  { code: 'scm:master-audit', name: '物料 / 往来单位审核与反审核', module: 'scm', moduleName: '供应链' },
   { code: 'scm:warehouse',    name: '仓库档案',     module: 'scm',     moduleName: '供应链' },
   { code: 'scm:category',     name: '物料分类',     module: 'scm',     moduleName: '供应链' },
   { code: 'scm:stock',        name: '库存查询',     module: 'scm',     moduleName: '供应链' },
@@ -287,7 +287,7 @@ export const ACD_PERMISSION_CATALOG: AcdPermissionEntry[] = [
   { acdCode: '501', acdName: '成本初始化',   cw: ['scm:param'] },
   { acdCode: '502', acdName: '成本反过帐',   cw: ['scm:audit'] },
   { acdCode: '503', acdName: '成本套帐信息', cw: ['scm:param'] },
-  { acdCode: '504', acdName: '产品档案',     cw: ['scm:item', 'scm:category'] },
+  { acdCode: '504', acdName: '产品档案',     cw: ['scm:item', 'scm:category', 'scm:master-audit'] },
   { acdCode: '505', acdName: '期初库存',     cw: ['scm:opening'] },
   { acdCode: '506', acdName: '打印格式定义', cw: ['system:print'] },
   { acdCode: '511', acdName: '入库单管理',   cw: ['scm:inventory'] },

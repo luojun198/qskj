@@ -9,7 +9,8 @@
     </div>
     <div class="filters toolbar">
       <el-input v-model="filters.keyword" placeholder="单号或备注" clearable style="width:220px" @keyup.enter="load" />
-      <el-select v-model="filters.status" clearable placeholder="全部状态" style="width:130px" @change="load">
+      <el-select v-model="filters.status" placeholder="全部状态" style="width:130px" @change="load" :empty-values="[null, undefined]">
+        <el-option label="全部审核状态" value="" />
         <el-option label="草稿" value="draft" /><el-option label="已审核" value="audited" />
       </el-select>
       <el-button :loading="loading" @click="load"><el-icon><Search /></el-icon>查询</el-button>

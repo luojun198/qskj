@@ -9,7 +9,8 @@
         <el-radio-button value="ap">应付</el-radio-button>
       </el-radio-group>
       <el-input v-model="filters.keyword" clearable placeholder="对账单号 / 往来单位 / 备注" size="small" style="width:220px" @keyup.enter="query" @clear="query" />
-      <el-select v-model="filters.status" clearable placeholder="状态" size="small" style="width:100px" @change="query">
+      <el-select v-model="filters.status" placeholder="状态" size="small" style="width:128px" @change="query" :empty-values="[null, undefined]">
+        <el-option label="全部审核状态" value="" />
         <el-option label="草稿" value="draft" /><el-option label="已审核" value="audited" />
       </el-select>
       <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="开始" end-placeholder="结束" size="small" style="width:230px" @change="query" />
