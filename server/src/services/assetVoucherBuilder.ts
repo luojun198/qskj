@@ -90,28 +90,35 @@ export function assertPeriodOpen(
 }
 
 /**
- * 账套允许写入的最晚期间（year*100+month）：当前自然月与「最后一个已结账期间的下一期」取较晚者。
- * 第七份反馈：总账 10 月已结账、当前会计期是 11 月，但电脑日期还在 10 月，计提 11 月被误拦（FIX-417）。
+ * 固定资产允许写入的最晚期间（year*100+month），取以下三者中最晚的：
+ * - 当前自然月
+ * - 总账最后一个已结账期间的下一期（FIX-417：总账 10 月已结账、电脑日期还在 10 月）
+ * - 最近一次计提折旧期间的下一期（FIX-420，润衡做法：固定资产按自己的期间走，
+ *   10 月计提过就能计提 11 月，不需要总账先结账）
+ * 不能跳月：计提执行另有「逐月必须已生成折旧凭证」的顺序校验，且上限只比最近计提多一个月。
  */
 export function latestWritablePeriodKey(db: Database | null | undefined, accountSetId?: string): number {
   const now = new Date()
   let key = now.getFullYear() * 100 + (now.getMonth() + 1)
   if (!db || !accountSetId) return key
+  const nextOf = (y: number, m: number) => (m >= 12 ? (y + 1) * 100 + 1 : y * 100 + m + 1)
   try {
     const last = db
       .prepare(`SELECT year, period FROM period_closing WHERE account_set_id=? AND status='closed' ORDER BY year DESC, period DESC LIMIT 1`)
       .get(accountSetId) as { year?: number; period?: number } | undefined
-    if (last?.year && last?.period) {
-      const y = Number(last.year), m = Number(last.period)
-      const next = m >= 12 ? (y + 1) * 100 + 1 : y * 100 + m + 1
-      if (next > key) key = next
-    }
+    if (last?.year && last?.period) key = Math.max(key, nextOf(Number(last.year), Number(last.period)))
   } catch { /* 旧库 / 单测库没有 period_closing：按自然月 */ }
+  try {
+    const depr = db
+      .prepare('SELECT year, month FROM fixed_asset_depr WHERE account_set_id=? ORDER BY year DESC, month DESC LIMIT 1')
+      .get(accountSetId) as { year?: number; month?: number } | undefined
+    if (depr?.year && depr?.month) key = Math.max(key, nextOf(Number(depr.year), Number(depr.month)))
+  } catch { /* 没有折旧表的库：不参与 */ }
   return key
 }
 
 /**
- * P1-20：变动 / 处置 / 盘点日期不得晚于当前期间（自然月，或已结账期间的下一期）。
+ * P1-20：变动 / 处置 / 盘点日期不得晚于当前期间（自然月、已结账下一期、最近计提下一期中最晚者）。
  * 此前只挡"已结账"与"早于最后一次折旧"，填成未来日期的变动会立刻改写卡片原值 / 净值，
  * 当月计提就按"未来才生效"的新基数摊余，处置填未来日期则当月漏提，期间归属与报表口径全错。
  * 与「不能对晚于当前月份计提折旧」（routes/fixedAsset.ts 计提执行）同口径。

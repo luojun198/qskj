@@ -14,6 +14,7 @@ beforeEach(() => {
   db.exec(`
     CREATE TABLE aux_items (id TEXT PRIMARY KEY, account_set_id TEXT, type TEXT, code TEXT, name TEXT, status TEXT DEFAULT 'active');
     CREATE TABLE period_closing (id TEXT PRIMARY KEY, account_set_id TEXT, year INTEGER, period INTEGER, status TEXT);
+    CREATE TABLE fixed_asset_depr (id TEXT PRIMARY KEY, account_set_id TEXT, asset_no TEXT, year INTEGER, month INTEGER, month_depr REAL);
   `)
 })
 afterEach(() => { db.close(); vi.useRealTimers() })
@@ -62,6 +63,21 @@ describe('FIX-417 可写入的最晚期间', () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date(2026, 9, 17))
     db.prepare("INSERT INTO period_closing VALUES ('1','S',2026,12,'closed')").run()
     db.prepare("INSERT INTO period_closing VALUES ('2','S',2027,1,'open')").run()
+    expect(latestWritablePeriodKey(db, 'S')).toBe(202701)
+  })
+
+  it('FIX-420 润衡做法：10 月计提过、总账未结账，也允许 11 月；不会再往后放', () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date(2026, 9, 17))
+    db.prepare("INSERT INTO fixed_asset_depr VALUES ('d1','S','A01',2026,10,10)").run()
+    expect(latestWritablePeriodKey(db, 'S')).toBe(202611)
+    expect(() => assertNotAfterCurrentPeriod(2026, 12, '变动日期', db as any, 'S')).toThrow(/2026年11月/)
+    // 其他账套的折旧不影响
+    expect(latestWritablePeriodKey(db, 'X')).toBe(202610)
+  })
+
+  it('FIX-420 12 月计提过跨年到次年 1 月', () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date(2026, 9, 17))
+    db.prepare("INSERT INTO fixed_asset_depr VALUES ('d1','S','A01',2026,12,10)").run()
     expect(latestWritablePeriodKey(db, 'S')).toBe(202701)
   })
 
